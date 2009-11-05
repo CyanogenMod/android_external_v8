@@ -294,6 +294,15 @@ class CodeGenerator: public AstVisitor {
                                Handle<Script> script,
                                bool is_eval);
 
+  // Printing of AST, etc. as requested by flags.
+  static void MakeCodePrologue(FunctionLiteral* fun);
+
+  // Allocate and install the code.
+  static Handle<Code> MakeCodeEpilogue(FunctionLiteral* fun,
+                                       MacroAssembler* masm,
+                                       Code::Flags flags,
+                                       Handle<Script> script);
+
 #ifdef ENABLE_LOGGING_AND_PROFILING
   static bool ShouldGenerateLog(Expression* type);
 #endif
@@ -302,6 +311,8 @@ class CodeGenerator: public AstVisitor {
                               FunctionLiteral* lit,
                               bool is_toplevel,
                               Handle<Script> script);
+
+  static void RecordPositions(MacroAssembler* masm, int pos);
 
   // Accessors
   MacroAssembler* masm() { return masm_; }
@@ -387,7 +398,7 @@ class CodeGenerator: public AstVisitor {
   void LoadReference(Reference* ref);
   void UnloadReference(Reference* ref);
 
-  Operand ContextOperand(Register context, int index) const {
+  static Operand ContextOperand(Register context, int index) {
     return Operand(context, Context::SlotOffset(index));
   }
 
@@ -398,7 +409,7 @@ class CodeGenerator: public AstVisitor {
                                             JumpTarget* slow);
 
   // Expressions
-  Operand GlobalObject() const {
+  static Operand GlobalObject() {
     return ContextOperand(rsi, Context::GLOBAL_INDEX);
   }
 
@@ -500,10 +511,11 @@ class CodeGenerator: public AstVisitor {
   static bool PatchInlineRuntimeEntry(Handle<String> name,
                                       const InlineRuntimeLUT& new_entry,
                                       InlineRuntimeLUT* old_entry);
+  static Handle<Code> ComputeLazyCompile(int argc);
   Handle<JSFunction> BuildBoilerplate(FunctionLiteral* node);
   void ProcessDeclarations(ZoneList<Declaration*>* declarations);
 
-  Handle<Code> ComputeCallInitialize(int argc, InLoopFlag in_loop);
+  static Handle<Code> ComputeCallInitialize(int argc, InLoopFlag in_loop);
 
   // Declare global variables and functions in the given array of
   // name/value pairs.
@@ -547,6 +559,14 @@ class CodeGenerator: public AstVisitor {
   void GenerateFastMathOp(MathOp op, ZoneList<Expression*>* args);
   inline void GenerateMathSin(ZoneList<Expression*>* args);
   inline void GenerateMathCos(ZoneList<Expression*>* args);
+
+  // Simple condition analysis.
+  enum ConditionAnalysis {
+    ALWAYS_TRUE,
+    ALWAYS_FALSE,
+    DONT_KNOW
+  };
+  ConditionAnalysis AnalyzeCondition(Expression* cond);
 
   // Methods used to indicate which source code is generated for. Source
   // positions are collected by the assembler and emitted with the relocation
@@ -597,6 +617,8 @@ class CodeGenerator: public AstVisitor {
   friend class JumpTarget;
   friend class Reference;
   friend class Result;
+  friend class FastCodeGenerator;
+  friend class CodeGenSelector;
 
   friend class CodeGeneratorPatcher;  // Used in test-log-stack-tracer.cc
 
@@ -611,6 +633,18 @@ class CodeGenerator: public AstVisitor {
 // times by generated code to perform common tasks, often the slow
 // case of a JavaScript operation.  They are all subclasses of CodeStub,
 // which is declared in code-stubs.h.
+
+
+class ToBooleanStub: public CodeStub {
+ public:
+  ToBooleanStub() { }
+
+  void Generate(MacroAssembler* masm);
+
+ private:
+  Major MajorKey() { return ToBoolean; }
+  int MinorKey() { return 0; }
+};
 
 
 // Flag that indicates whether or not the code that handles smi arguments

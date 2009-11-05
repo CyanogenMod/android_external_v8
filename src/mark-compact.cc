@@ -279,11 +279,9 @@ class MarkingVisitor : public ObjectVisitor {
 
   void VisitDebugTarget(RelocInfo* rinfo) {
     ASSERT(RelocInfo::IsJSReturn(rinfo->rmode()) &&
-           rinfo->IsCallInstruction());
+           rinfo->IsPatchedReturnSequence());
     HeapObject* code = Code::GetCodeFromTargetAddress(rinfo->call_address());
     MarkCompactCollector::MarkObject(code);
-    // When compacting we convert the call to a real object pointer.
-    if (IsCompacting()) rinfo->set_call_object(code);
   }
 
  private:
@@ -1380,6 +1378,15 @@ class UpdatingVisitor: public ObjectVisitor {
     Object* target = Code::GetCodeFromTargetAddress(rinfo->target_address());
     VisitPointer(&target);
     rinfo->set_target_address(
+        reinterpret_cast<Code*>(target)->instruction_start());
+  }
+
+  void VisitDebugTarget(RelocInfo* rinfo) {
+    ASSERT(RelocInfo::IsJSReturn(rinfo->rmode()) &&
+           rinfo->IsPatchedReturnSequence());
+    Object* target = Code::GetCodeFromTargetAddress(rinfo->call_address());
+    VisitPointer(&target);
+    rinfo->set_call_address(
         reinterpret_cast<Code*>(target)->instruction_start());
   }
 

@@ -38,6 +38,7 @@
 #include "serialize.h"
 #include "stub-cache.h"
 #include "v8threads.h"
+#include "top.h"
 
 namespace v8 {
 namespace internal {
@@ -612,12 +613,23 @@ void ExternalReferenceTable::PopulateTable() {
   }
 
   // Top addresses
-  const char* top_address_format = "Top::get_address_from_id(%i)";
-  size_t top_format_length = strlen(top_address_format);
+  const char* top_address_format = "Top::%s";
+
+  const char* AddressNames[] = {
+#define C(name) #name,
+    TOP_ADDRESS_LIST(C)
+    TOP_ADDRESS_LIST_PROF(C)
+    NULL
+#undef C
+  };
+
+  size_t top_format_length = strlen(top_address_format) - 2;
   for (uint16_t i = 0; i < Top::k_top_address_count; ++i) {
-    Vector<char> name = Vector<char>::New(top_format_length + 1);
+    const char* address_name = AddressNames[i];
+    Vector<char> name =
+        Vector<char>::New(top_format_length + strlen(address_name) + 1);
     const char* chars = name.start();
-    OS::SNPrintF(name, top_address_format, i);
+    OS::SNPrintF(name, top_address_format, address_name);
     Add(Top::get_address_from_id((Top::AddressId)i), TOP_ADDRESS, i, chars);
   }
 
@@ -922,7 +934,9 @@ class ReferenceUpdater: public ObjectVisitor {
       serializer_(serializer),
       reference_encoder_(serializer->reference_encoder_),
       offsets_(8),
-      addresses_(8) {
+      addresses_(8),
+      offsets_32_bit_(0),
+      data_32_bit_(0) {
   }
 
   virtual void VisitPointers(Object** start, Object** end) {
@@ -939,8 +953,12 @@ class ReferenceUpdater: public ObjectVisitor {
     ASSERT(RelocInfo::IsCodeTarget(rinfo->rmode()));
     Code* target = Code::GetCodeFromTargetAddress(rinfo->target_address());
     Address encoded_target = serializer_->GetSavedAddress(target);
-    offsets_.Add(rinfo->target_address_address() - obj_address_);
-    addresses_.Add(encoded_target);
+    // All calls and jumps are to code objects that encode into 32 bits.
+    offsets_32_bit_.Add(rinfo->target_address_address() - obj_address_);
+    uint32_t small_target =
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(encoded_target));
+    ASSERT(reinterpret_cast<uintptr_t>(encoded_target) == small_target);
+    data_32_bit_.Add(small_target);
   }
 
 
@@ -965,6 +983,10 @@ class ReferenceUpdater: public ObjectVisitor {
     for (int i = 0; i < offsets_.length(); i++) {
       memcpy(start_address + offsets_[i], &addresses_[i], sizeof(Address));
     }
+    for (int i = 0; i < offsets_32_bit_.length(); i++) {
+      memcpy(start_address + offsets_32_bit_[i], &data_32_bit_[i],
+             sizeof(uint32_t));
+    }
   }
 
  private:
@@ -973,6 +995,10 @@ class ReferenceUpdater: public ObjectVisitor {
   ExternalReferenceEncoder* reference_encoder_;
   List<int> offsets_;
   List<Address> addresses_;
+  // Some updates are 32-bit even on a 64-bit platform.
+  // We keep a separate list of them on 64-bit platforms.
+  List<int> offsets_32_bit_;
+  List<uint32_t> data_32_bit_;
 };
 
 
@@ -1432,7 +1458,9 @@ void Deserializer::VisitPointers(Object** start, Object** end) {
 
 void Deserializer::VisitCodeTarget(RelocInfo* rinfo) {
   ASSERT(RelocInfo::IsCodeTarget(rinfo->rmode()));
-  Address encoded_address = reinterpret_cast<Address>(rinfo->target_object());
+  // On all platforms, the encoded code object address is only 32 bits.
+  Address encoded_address = reinterpret_cast<Address>(Memory::uint32_at(
+      reinterpret_cast<Address>(rinfo->target_object_address())));
   Code* target_object = reinterpret_cast<Code*>(Resolve(encoded_address));
   rinfo->set_target_address(target_object->instruction_start());
 }
@@ -1663,7 +1691,6 @@ Object* Deserializer::Resolve(Address encoded) {
 
   // Encoded addresses of HeapObjects always have 'HeapObject' tags.
   ASSERT(o->IsHeapObject());
-
   switch (GetSpace(encoded)) {
     // For Map space and Old space, we cache the known Pages in map_pages,
     // old_pointer_pages and old_data_pages. Even though MapSpace keeps a list

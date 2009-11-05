@@ -32,6 +32,9 @@
 #include "code-stubs.h"
 #include "smart-pointer.h"
 #include "unicode-inl.h"
+#if V8_TARGET_ARCH_ARM
+#include "arm/constants-arm.h"
+#endif
 
 //
 // All object types in the V8 JavaScript are described in this file.
@@ -53,6 +56,14 @@
 //       - Array
 //         - ByteArray
 //         - PixelArray
+//         - ExternalArray
+//           - ExternalByteArray
+//           - ExternalUnsignedByteArray
+//           - ExternalShortArray
+//           - ExternalUnsignedShortArray
+//           - ExternalIntArray
+//           - ExternalUnsignedIntArray
+//           - ExternalFloatArray
 //         - FixedArray
 //           - DescriptorArray
 //           - HashTable
@@ -271,6 +282,16 @@ enum PropertyNormalizationMode {
   V(PROXY_TYPE)                                 \
   V(BYTE_ARRAY_TYPE)                            \
   V(PIXEL_ARRAY_TYPE)                           \
+  /* Note: the order of these external array */ \
+  /* types is relied upon in */                 \
+  /* Object::IsExternalArray(). */              \
+  V(EXTERNAL_BYTE_ARRAY_TYPE)                   \
+  V(EXTERNAL_UNSIGNED_BYTE_ARRAY_TYPE)          \
+  V(EXTERNAL_SHORT_ARRAY_TYPE)                  \
+  V(EXTERNAL_UNSIGNED_SHORT_ARRAY_TYPE)         \
+  V(EXTERNAL_INT_ARRAY_TYPE)                    \
+  V(EXTERNAL_UNSIGNED_INT_ARRAY_TYPE)           \
+  V(EXTERNAL_FLOAT_ARRAY_TYPE)                  \
   V(FILLER_TYPE)                                \
                                                 \
   V(ACCESSOR_INFO_TYPE)                         \
@@ -670,6 +691,13 @@ enum InstanceType {
   PROXY_TYPE,
   BYTE_ARRAY_TYPE,
   PIXEL_ARRAY_TYPE,
+  EXTERNAL_BYTE_ARRAY_TYPE,
+  EXTERNAL_UNSIGNED_BYTE_ARRAY_TYPE,
+  EXTERNAL_SHORT_ARRAY_TYPE,
+  EXTERNAL_UNSIGNED_SHORT_ARRAY_TYPE,
+  EXTERNAL_INT_ARRAY_TYPE,
+  EXTERNAL_UNSIGNED_INT_ARRAY_TYPE,
+  EXTERNAL_FLOAT_ARRAY_TYPE,
   FILLER_TYPE,
   SMI_TYPE,
 
@@ -777,6 +805,14 @@ class Object BASE_EMBEDDED {
   inline bool IsNumber();
   inline bool IsByteArray();
   inline bool IsPixelArray();
+  inline bool IsExternalArray();
+  inline bool IsExternalByteArray();
+  inline bool IsExternalUnsignedByteArray();
+  inline bool IsExternalShortArray();
+  inline bool IsExternalUnsignedShortArray();
+  inline bool IsExternalIntArray();
+  inline bool IsExternalUnsignedIntArray();
+  inline bool IsExternalFloatArray();
   inline bool IsFailure();
   inline bool IsRetryAfterGC();
   inline bool IsOutOfMemoryFailure();
@@ -904,10 +940,10 @@ class Object BASE_EMBEDDED {
 
 // Smi represents integer Numbers that can be stored in 31 bits.
 // Smis are immediate which means they are NOT allocated in the heap.
-// Smi stands for small integer.
 // The this pointer has the following format: [31 bit signed int] 0
-// On 64-bit, the top 32 bits of the pointer is allowed to have any
-// value.
+// For long smis it has the following format:
+//     [32 bit signed int] [31 bits zero padding] 0
+// Smi stands for small integer.
 class Smi: public Object {
  public:
   // Returns the integer value.
@@ -921,8 +957,6 @@ class Smi: public Object {
   // Returns whether value can be represented in a Smi.
   static inline bool IsValid(intptr_t value);
 
-  static inline bool IsIntptrValid(intptr_t);
-
   // Casting.
   static inline Smi* cast(Object* object);
 
@@ -933,10 +967,8 @@ class Smi: public Object {
   void SmiVerify();
 #endif
 
-  static const int kSmiNumBits = 31;
-  // Min and max limits for Smi values.
-  static const int kMinValue = -(1 << (kSmiNumBits - 1));
-  static const int kMaxValue = (1 << (kSmiNumBits - 1)) - 1;
+  static const int kMinValue = (-1 << (kSmiValueSize - 1));
+  static const int kMaxValue = -(kMinValue + 1);
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(Smi);
@@ -949,10 +981,10 @@ class Smi: public Object {
 //
 // Failures are a single word, encoded as follows:
 // +-------------------------+---+--+--+
-// |rrrrrrrrrrrrrrrrrrrrrrrrr|sss|tt|11|
+// |...rrrrrrrrrrrrrrrrrrrrrr|sss|tt|11|
 // +-------------------------+---+--+--+
-//  3                       7 6 4 32 10
-//  1
+//                          7 6 4 32 10
+//
 //
 // The low two bits, 0-1, are the failure tag, 11.  The next two bits,
 // 2-3, are a failure type tag 'tt' with possible values:
@@ -1014,8 +1046,8 @@ class Failure: public Object {
 #endif
 
  private:
-  inline int value() const;
-  static inline Failure* Construct(Type type, int value = 0);
+  inline intptr_t value() const;
+  static inline Failure* Construct(Type type, intptr_t value = 0);
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(Failure);
 };
@@ -1291,7 +1323,7 @@ class HeapNumber: public HeapObject {
   // is a mixture of sign, exponent and mantissa.  Our current platforms are all
   // little endian apart from non-EABI arm which is little endian with big
   // endian floating point word ordering!
-#if !defined(V8_HOST_ARCH_ARM) || __ARM_EABI__
+#if !defined(V8_HOST_ARCH_ARM) || defined(USE_ARM_EABI)
   static const int kMantissaOffset = kValueOffset;
   static const int kExponentOffset = kValueOffset + 4;
 #else
@@ -1324,7 +1356,14 @@ class JSObject: public HeapObject {
   enum ElementsKind {
     FAST_ELEMENTS,
     DICTIONARY_ELEMENTS,
-    PIXEL_ELEMENTS
+    PIXEL_ELEMENTS,
+    EXTERNAL_BYTE_ELEMENTS,
+    EXTERNAL_UNSIGNED_BYTE_ELEMENTS,
+    EXTERNAL_SHORT_ELEMENTS,
+    EXTERNAL_UNSIGNED_SHORT_ELEMENTS,
+    EXTERNAL_INT_ELEMENTS,
+    EXTERNAL_UNSIGNED_INT_ELEMENTS,
+    EXTERNAL_FLOAT_ELEMENTS
   };
 
   // [properties]: Backing storage for properties.
@@ -1344,6 +1383,14 @@ class JSObject: public HeapObject {
   inline bool HasFastElements();
   inline bool HasDictionaryElements();
   inline bool HasPixelElements();
+  inline bool HasExternalArrayElements();
+  inline bool HasExternalByteElements();
+  inline bool HasExternalUnsignedByteElements();
+  inline bool HasExternalShortElements();
+  inline bool HasExternalUnsignedShortElements();
+  inline bool HasExternalIntElements();
+  inline bool HasExternalUnsignedIntElements();
+  inline bool HasExternalFloatElements();
   inline NumberDictionary* element_dictionary();  // Gets slow elements.
 
   // Collects elements starting at index 0.
@@ -2036,33 +2083,33 @@ class DescriptorArray: public FixedArray {
 //     // The Element size indicates number of elements per entry.
 //     static const int kEntrySize = ..;
 //   };
-// table.  The prefix size indicates an amount of memory in the
+// The prefix size indicates an amount of memory in the
 // beginning of the backing storage that can be used for non-element
 // information by subclasses.
 
 template<typename Shape, typename Key>
 class HashTable: public FixedArray {
  public:
-  // Returns the number of elements in the dictionary.
+  // Returns the number of elements in the hash table.
   int NumberOfElements() {
     return Smi::cast(get(kNumberOfElementsIndex))->value();
   }
 
-  // Returns the capacity of the dictionary.
+  // Returns the capacity of the hash table.
   int Capacity() {
     return Smi::cast(get(kCapacityIndex))->value();
   }
 
   // ElementAdded should be called whenever an element is added to a
-  // dictionary.
+  // hash table.
   void ElementAdded() { SetNumberOfElements(NumberOfElements() + 1); }
 
   // ElementRemoved should be called whenever an element is removed from
-  // a dictionary.
+  // a hash table.
   void ElementRemoved() { SetNumberOfElements(NumberOfElements() - 1); }
   void ElementsRemoved(int n) { SetNumberOfElements(NumberOfElements() - n); }
 
-  // Returns a new array for dictionary usage. Might return Failure.
+  // Returns a new HashTable object. Might return Failure.
   static Object* Allocate(int at_least_space_for);
 
   // Returns the key at entry.
@@ -2112,7 +2159,7 @@ class HashTable: public FixedArray {
     return (entry * kEntrySize) + kElementsStartIndex;
   }
 
-  // Update the number of elements in the dictionary.
+  // Update the number of elements in the hash table.
   void SetNumberOfElements(int nof) {
     fast_set(this, kNumberOfElementsIndex, Smi::FromInt(nof));
   }
@@ -2148,7 +2195,7 @@ class HashTableKey {
   virtual uint32_t Hash() = 0;
   // Returns the hash value for object.
   virtual uint32_t HashForObject(Object* key) = 0;
-  // Returns the key object for storing into the dictionary.
+  // Returns the key object for storing into the hash table.
   // If allocations fails a failure object is returned.
   virtual Object* AsObject() = 0;
   // Required.
@@ -2495,6 +2542,9 @@ class PixelArray: public Array {
   void PixelArrayVerify();
 #endif  // DEBUG
 
+  // Maximal acceptable length for a pixel array.
+  static const int kMaxLength = 0x3fffffff;
+
   // PixelArray headers are not quadword aligned.
   static const int kExternalPointerOffset = Array::kAlignedSize;
   static const int kHeaderSize = kExternalPointerOffset + kPointerSize;
@@ -2502,6 +2552,200 @@ class PixelArray: public Array {
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(PixelArray);
+};
+
+
+// An ExternalArray represents a fixed-size array of primitive values
+// which live outside the JavaScript heap. Its subclasses are used to
+// implement the CanvasArray types being defined in the WebGL
+// specification. As of this writing the first public draft is not yet
+// available, but Khronos members can access the draft at:
+//   https://cvs.khronos.org/svn/repos/3dweb/trunk/doc/spec/WebGL-spec.html
+//
+// The semantics of these arrays differ from CanvasPixelArray.
+// Out-of-range values passed to the setter are converted via a C
+// cast, not clamping. Out-of-range indices cause exceptions to be
+// raised rather than being silently ignored.
+class ExternalArray: public Array {
+ public:
+  // [external_pointer]: The pointer to the external memory area backing this
+  // external array.
+  DECL_ACCESSORS(external_pointer, void)  // Pointer to the data store.
+
+  // Casting.
+  static inline ExternalArray* cast(Object* obj);
+
+  // Maximal acceptable length for an external array.
+  static const int kMaxLength = 0x3fffffff;
+
+  // ExternalArray headers are not quadword aligned.
+  static const int kExternalPointerOffset = Array::kAlignedSize;
+  static const int kHeaderSize = kExternalPointerOffset + kPointerSize;
+  static const int kAlignedSize = OBJECT_SIZE_ALIGN(kHeaderSize);
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalArray);
+};
+
+
+class ExternalByteArray: public ExternalArray {
+ public:
+  // Setter and getter.
+  inline int8_t get(int index);
+  inline void set(int index, int8_t value);
+
+  // This accessor applies the correct conversion from Smi, HeapNumber
+  // and undefined.
+  Object* SetValue(uint32_t index, Object* value);
+
+  // Casting.
+  static inline ExternalByteArray* cast(Object* obj);
+
+#ifdef DEBUG
+  void ExternalByteArrayPrint();
+  void ExternalByteArrayVerify();
+#endif  // DEBUG
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalByteArray);
+};
+
+
+class ExternalUnsignedByteArray: public ExternalArray {
+ public:
+  // Setter and getter.
+  inline uint8_t get(int index);
+  inline void set(int index, uint8_t value);
+
+  // This accessor applies the correct conversion from Smi, HeapNumber
+  // and undefined.
+  Object* SetValue(uint32_t index, Object* value);
+
+  // Casting.
+  static inline ExternalUnsignedByteArray* cast(Object* obj);
+
+#ifdef DEBUG
+  void ExternalUnsignedByteArrayPrint();
+  void ExternalUnsignedByteArrayVerify();
+#endif  // DEBUG
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalUnsignedByteArray);
+};
+
+
+class ExternalShortArray: public ExternalArray {
+ public:
+  // Setter and getter.
+  inline int16_t get(int index);
+  inline void set(int index, int16_t value);
+
+  // This accessor applies the correct conversion from Smi, HeapNumber
+  // and undefined.
+  Object* SetValue(uint32_t index, Object* value);
+
+  // Casting.
+  static inline ExternalShortArray* cast(Object* obj);
+
+#ifdef DEBUG
+  void ExternalShortArrayPrint();
+  void ExternalShortArrayVerify();
+#endif  // DEBUG
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalShortArray);
+};
+
+
+class ExternalUnsignedShortArray: public ExternalArray {
+ public:
+  // Setter and getter.
+  inline uint16_t get(int index);
+  inline void set(int index, uint16_t value);
+
+  // This accessor applies the correct conversion from Smi, HeapNumber
+  // and undefined.
+  Object* SetValue(uint32_t index, Object* value);
+
+  // Casting.
+  static inline ExternalUnsignedShortArray* cast(Object* obj);
+
+#ifdef DEBUG
+  void ExternalUnsignedShortArrayPrint();
+  void ExternalUnsignedShortArrayVerify();
+#endif  // DEBUG
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalUnsignedShortArray);
+};
+
+
+class ExternalIntArray: public ExternalArray {
+ public:
+  // Setter and getter.
+  inline int32_t get(int index);
+  inline void set(int index, int32_t value);
+
+  // This accessor applies the correct conversion from Smi, HeapNumber
+  // and undefined.
+  Object* SetValue(uint32_t index, Object* value);
+
+  // Casting.
+  static inline ExternalIntArray* cast(Object* obj);
+
+#ifdef DEBUG
+  void ExternalIntArrayPrint();
+  void ExternalIntArrayVerify();
+#endif  // DEBUG
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalIntArray);
+};
+
+
+class ExternalUnsignedIntArray: public ExternalArray {
+ public:
+  // Setter and getter.
+  inline uint32_t get(int index);
+  inline void set(int index, uint32_t value);
+
+  // This accessor applies the correct conversion from Smi, HeapNumber
+  // and undefined.
+  Object* SetValue(uint32_t index, Object* value);
+
+  // Casting.
+  static inline ExternalUnsignedIntArray* cast(Object* obj);
+
+#ifdef DEBUG
+  void ExternalUnsignedIntArrayPrint();
+  void ExternalUnsignedIntArrayVerify();
+#endif  // DEBUG
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalUnsignedIntArray);
+};
+
+
+class ExternalFloatArray: public ExternalArray {
+ public:
+  // Setter and getter.
+  inline float get(int index);
+  inline void set(int index, float value);
+
+  // This accessor applies the correct conversion from Smi, HeapNumber
+  // and undefined.
+  Object* SetValue(uint32_t index, Object* value);
+
+  // Casting.
+  static inline ExternalFloatArray* cast(Object* obj);
+
+#ifdef DEBUG
+  void ExternalFloatArrayPrint();
+  void ExternalFloatArrayVerify();
+#endif  // DEBUG
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalFloatArray);
 };
 
 
@@ -2997,6 +3241,10 @@ class Script: public Struct {
   DECL_ACCESSORS(eval_from_instructions_offset, Smi)
 
   static inline Script* cast(Object* obj);
+
+  // If script source is an external string, check that the underlying
+  // resource is accessible. Otherwise, always return true.
+  inline bool HasValidSource();
 
 #ifdef DEBUG
   void ScriptPrint();
@@ -3572,6 +3820,7 @@ class CompilationCacheShape {
   static const int kEntrySize = 2;
 };
 
+
 class CompilationCacheTable: public HashTable<CompilationCacheShape,
                                               HashTableKey*> {
  public:
@@ -3845,6 +4094,8 @@ class String: public HeapObject {
   static const int kShortLengthShift = kHashShift + kShortStringTag;
   static const int kMediumLengthShift = kHashShift + kMediumStringTag;
   static const int kLongLengthShift = kHashShift + kLongStringTag;
+  // Maximal string length that can be stored in the hash/length field.
+  static const int kMaxLength = (1 << (32 - kLongLengthShift)) - 1;
 
   // Limit for truncation in short printing.
   static const int kMaxShortPrintLength = 1024;

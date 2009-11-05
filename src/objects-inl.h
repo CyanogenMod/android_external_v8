@@ -360,6 +360,65 @@ bool Object::IsPixelArray() {
 }
 
 
+bool Object::IsExternalArray() {
+  if (!Object::IsHeapObject())
+    return false;
+  InstanceType instance_type =
+      HeapObject::cast(this)->map()->instance_type();
+  return (instance_type >= EXTERNAL_BYTE_ARRAY_TYPE &&
+          instance_type <= EXTERNAL_FLOAT_ARRAY_TYPE);
+}
+
+
+bool Object::IsExternalByteArray() {
+  return Object::IsHeapObject() &&
+      HeapObject::cast(this)->map()->instance_type() ==
+      EXTERNAL_BYTE_ARRAY_TYPE;
+}
+
+
+bool Object::IsExternalUnsignedByteArray() {
+  return Object::IsHeapObject() &&
+      HeapObject::cast(this)->map()->instance_type() ==
+      EXTERNAL_UNSIGNED_BYTE_ARRAY_TYPE;
+}
+
+
+bool Object::IsExternalShortArray() {
+  return Object::IsHeapObject() &&
+      HeapObject::cast(this)->map()->instance_type() ==
+      EXTERNAL_SHORT_ARRAY_TYPE;
+}
+
+
+bool Object::IsExternalUnsignedShortArray() {
+  return Object::IsHeapObject() &&
+      HeapObject::cast(this)->map()->instance_type() ==
+      EXTERNAL_UNSIGNED_SHORT_ARRAY_TYPE;
+}
+
+
+bool Object::IsExternalIntArray() {
+  return Object::IsHeapObject() &&
+      HeapObject::cast(this)->map()->instance_type() ==
+      EXTERNAL_INT_ARRAY_TYPE;
+}
+
+
+bool Object::IsExternalUnsignedIntArray() {
+  return Object::IsHeapObject() &&
+      HeapObject::cast(this)->map()->instance_type() ==
+      EXTERNAL_UNSIGNED_INT_ARRAY_TYPE;
+}
+
+
+bool Object::IsExternalFloatArray() {
+  return Object::IsHeapObject() &&
+      HeapObject::cast(this)->map()->instance_type() ==
+      EXTERNAL_FLOAT_ARRAY_TYPE;
+}
+
+
 bool Object::IsFailure() {
   return HAS_FAILURE_TAG(this);
 }
@@ -744,15 +803,17 @@ int Smi::value() {
 
 Smi* Smi::FromInt(int value) {
   ASSERT(Smi::IsValid(value));
+  int smi_shift_bits = kSmiTagSize + kSmiShiftSize;
   intptr_t tagged_value =
-      (static_cast<intptr_t>(value) << kSmiTagSize) | kSmiTag;
+      (static_cast<intptr_t>(value) << smi_shift_bits) | kSmiTag;
   return reinterpret_cast<Smi*>(tagged_value);
 }
 
 
 Smi* Smi::FromIntptr(intptr_t value) {
   ASSERT(Smi::IsValid(value));
-  return reinterpret_cast<Smi*>((value << kSmiTagSize) | kSmiTag);
+  int smi_shift_bits = kSmiTagSize + kSmiShiftSize;
+  return reinterpret_cast<Smi*>((value << smi_shift_bits) | kSmiTag);
 }
 
 
@@ -776,7 +837,7 @@ int Failure::requested() const {
       kFailureTypeTagSize + kSpaceTagSize - kObjectAlignmentBits;
   STATIC_ASSERT(kShiftBits >= 0);
   ASSERT(type() == RETRY_AFTER_GC);
-  return value() >> kShiftBits;
+  return static_cast<int>(value() >> kShiftBits);
 }
 
 
@@ -802,29 +863,31 @@ Failure* Failure::OutOfMemoryException() {
 }
 
 
-int Failure::value() const {
-  return static_cast<int>(reinterpret_cast<intptr_t>(this) >> kFailureTagSize);
+intptr_t Failure::value() const {
+  return reinterpret_cast<intptr_t>(this) >> kFailureTagSize;
 }
 
 
 Failure* Failure::RetryAfterGC(int requested_bytes) {
   // Assert that the space encoding fits in the three bytes allotted for it.
   ASSERT((LAST_SPACE & ~kSpaceTagMask) == 0);
-  int requested = requested_bytes >> kObjectAlignmentBits;
+  intptr_t requested = requested_bytes >> kObjectAlignmentBits;
+  int tag_bits = kSpaceTagSize + kFailureTypeTagSize;
+  if (((requested << tag_bits) >> tag_bits) != requested) {
+    // No room for entire requested size in the bits. Round down to
+    // maximally representable size.
+    requested = static_cast<intptr_t>(
+                    (~static_cast<uintptr_t>(0)) >> (tag_bits + 1));
+  }
   int value = (requested << kSpaceTagSize) | NEW_SPACE;
-  ASSERT(value >> kSpaceTagSize == requested);
-  ASSERT(Smi::IsValid(value));
-  ASSERT(value == ((value << kFailureTypeTagSize) >> kFailureTypeTagSize));
-  ASSERT(Smi::IsValid(value << kFailureTypeTagSize));
   return Construct(RETRY_AFTER_GC, value);
 }
 
 
-Failure* Failure::Construct(Type type, int value) {
-  int info = (value << kFailureTypeTagSize) | type;
+Failure* Failure::Construct(Type type, intptr_t value) {
+  intptr_t info = (static_cast<intptr_t>(value) << kFailureTypeTagSize) | type;
   ASSERT(((info << kFailureTagSize) >> kFailureTagSize) == info);
-  return reinterpret_cast<Failure*>(
-      (static_cast<intptr_t>(info) << kFailureTagSize) | kFailureTag);
+  return reinterpret_cast<Failure*>((info << kFailureTagSize) | kFailureTag);
 }
 
 
@@ -832,6 +895,11 @@ bool Smi::IsValid(intptr_t value) {
 #ifdef DEBUG
   bool in_range = (value >= kMinValue) && (value <= kMaxValue);
 #endif
+
+#ifdef V8_TARGET_ARCH_X64
+  // To be representable as a long smi, the value must be a 32-bit integer.
+  bool result = (value == static_cast<int32_t>(value));
+#else
   // To be representable as an tagged small integer, the two
   // most-significant bits of 'value' must be either 00 or 11 due to
   // sign-extension. To check this we add 01 to the two
@@ -843,20 +911,8 @@ bool Smi::IsValid(intptr_t value) {
   // in fact doesn't work correctly with gcc4.1.1 in some cases: The
   // compiler may produce undefined results in case of signed integer
   // overflow. The computation must be done w/ unsigned ints.
-  bool result =
-      ((static_cast<unsigned int>(value) + 0x40000000U) & 0x80000000U) == 0;
-  ASSERT(result == in_range);
-  return result;
-}
-
-
-bool Smi::IsIntptrValid(intptr_t value) {
-#ifdef DEBUG
-  bool in_range = (value >= kMinValue) && (value <= kMaxValue);
+  bool result = (static_cast<uintptr_t>(value + 0x40000000U) < 0x80000000U);
 #endif
-  // See Smi::IsValid(int) for description.
-  bool result =
-      ((static_cast<uintptr_t>(value) + 0x40000000U) < 0x80000000U);
   ASSERT(result == in_range);
   return result;
 }
@@ -1087,14 +1143,16 @@ ACCESSORS(JSObject, properties, FixedArray, kPropertiesOffset)
 Array* JSObject::elements() {
   Object* array = READ_FIELD(this, kElementsOffset);
   // In the assert below Dictionary is covered under FixedArray.
-  ASSERT(array->IsFixedArray() || array->IsPixelArray());
+  ASSERT(array->IsFixedArray() || array->IsPixelArray() ||
+         array->IsExternalArray());
   return reinterpret_cast<Array*>(array);
 }
 
 
 void JSObject::set_elements(Array* value, WriteBarrierMode mode) {
   // In the assert below Dictionary is covered under FixedArray.
-  ASSERT(value->IsFixedArray() || value->IsPixelArray());
+  ASSERT(value->IsFixedArray() || value->IsPixelArray() ||
+         value->IsExternalArray());
   WRITE_FIELD(this, kElementsOffset, value);
   CONDITIONAL_WRITE_BARRIER(this, kElementsOffset, mode);
 }
@@ -1557,6 +1615,14 @@ CAST_ACCESSOR(JSRegExp)
 CAST_ACCESSOR(Proxy)
 CAST_ACCESSOR(ByteArray)
 CAST_ACCESSOR(PixelArray)
+CAST_ACCESSOR(ExternalArray)
+CAST_ACCESSOR(ExternalByteArray)
+CAST_ACCESSOR(ExternalUnsignedByteArray)
+CAST_ACCESSOR(ExternalShortArray)
+CAST_ACCESSOR(ExternalUnsignedShortArray)
+CAST_ACCESSOR(ExternalIntArray)
+CAST_ACCESSOR(ExternalUnsignedIntArray)
+CAST_ACCESSOR(ExternalFloatArray)
 CAST_ACCESSOR(Struct)
 
 
@@ -1937,6 +2003,116 @@ uint8_t PixelArray::get(int index) {
 void PixelArray::set(int index, uint8_t value) {
   ASSERT((index >= 0) && (index < this->length()));
   uint8_t* ptr = external_pointer();
+  ptr[index] = value;
+}
+
+
+void* ExternalArray::external_pointer() {
+  intptr_t ptr = READ_INTPTR_FIELD(this, kExternalPointerOffset);
+  return reinterpret_cast<void*>(ptr);
+}
+
+
+void ExternalArray::set_external_pointer(void* value, WriteBarrierMode mode) {
+  intptr_t ptr = reinterpret_cast<intptr_t>(value);
+  WRITE_INTPTR_FIELD(this, kExternalPointerOffset, ptr);
+}
+
+
+int8_t ExternalByteArray::get(int index) {
+  ASSERT((index >= 0) && (index < this->length()));
+  int8_t* ptr = static_cast<int8_t*>(external_pointer());
+  return ptr[index];
+}
+
+
+void ExternalByteArray::set(int index, int8_t value) {
+  ASSERT((index >= 0) && (index < this->length()));
+  int8_t* ptr = static_cast<int8_t*>(external_pointer());
+  ptr[index] = value;
+}
+
+
+uint8_t ExternalUnsignedByteArray::get(int index) {
+  ASSERT((index >= 0) && (index < this->length()));
+  uint8_t* ptr = static_cast<uint8_t*>(external_pointer());
+  return ptr[index];
+}
+
+
+void ExternalUnsignedByteArray::set(int index, uint8_t value) {
+  ASSERT((index >= 0) && (index < this->length()));
+  uint8_t* ptr = static_cast<uint8_t*>(external_pointer());
+  ptr[index] = value;
+}
+
+
+int16_t ExternalShortArray::get(int index) {
+  ASSERT((index >= 0) && (index < this->length()));
+  int16_t* ptr = static_cast<int16_t*>(external_pointer());
+  return ptr[index];
+}
+
+
+void ExternalShortArray::set(int index, int16_t value) {
+  ASSERT((index >= 0) && (index < this->length()));
+  int16_t* ptr = static_cast<int16_t*>(external_pointer());
+  ptr[index] = value;
+}
+
+
+uint16_t ExternalUnsignedShortArray::get(int index) {
+  ASSERT((index >= 0) && (index < this->length()));
+  uint16_t* ptr = static_cast<uint16_t*>(external_pointer());
+  return ptr[index];
+}
+
+
+void ExternalUnsignedShortArray::set(int index, uint16_t value) {
+  ASSERT((index >= 0) && (index < this->length()));
+  uint16_t* ptr = static_cast<uint16_t*>(external_pointer());
+  ptr[index] = value;
+}
+
+
+int32_t ExternalIntArray::get(int index) {
+  ASSERT((index >= 0) && (index < this->length()));
+  int32_t* ptr = static_cast<int32_t*>(external_pointer());
+  return ptr[index];
+}
+
+
+void ExternalIntArray::set(int index, int32_t value) {
+  ASSERT((index >= 0) && (index < this->length()));
+  int32_t* ptr = static_cast<int32_t*>(external_pointer());
+  ptr[index] = value;
+}
+
+
+uint32_t ExternalUnsignedIntArray::get(int index) {
+  ASSERT((index >= 0) && (index < this->length()));
+  uint32_t* ptr = static_cast<uint32_t*>(external_pointer());
+  return ptr[index];
+}
+
+
+void ExternalUnsignedIntArray::set(int index, uint32_t value) {
+  ASSERT((index >= 0) && (index < this->length()));
+  uint32_t* ptr = static_cast<uint32_t*>(external_pointer());
+  ptr[index] = value;
+}
+
+
+float ExternalFloatArray::get(int index) {
+  ASSERT((index >= 0) && (index < this->length()));
+  float* ptr = static_cast<float*>(external_pointer());
+  return ptr[index];
+}
+
+
+void ExternalFloatArray::set(int index, float value) {
+  ASSERT((index >= 0) && (index < this->length()));
+  float* ptr = static_cast<float*>(external_pointer());
   ptr[index] = value;
 }
 
@@ -2361,6 +2537,20 @@ INT_ACCESSORS(SharedFunctionInfo, this_property_assignments_count,
               kThisPropertyAssignmentsCountOffset)
 
 
+bool Script::HasValidSource() {
+  Object* src = this->source();
+  if (!src->IsString()) return true;
+  String* src_str = String::cast(src);
+  if (!StringShape(src_str).IsExternal()) return true;
+  if (src_str->IsAsciiRepresentation()) {
+    return ExternalAsciiString::cast(src)->resource() != NULL;
+  } else if (src_str->IsTwoByteRepresentation()) {
+    return ExternalTwoByteString::cast(src)->resource() != NULL;
+  }
+  return true;
+}
+
+
 void SharedFunctionInfo::DontAdaptArguments() {
   ASSERT(code()->kind() == Code::BUILTIN);
   set_formal_parameter_count(kDontAdaptArgumentsSentinel);
@@ -2635,6 +2825,25 @@ JSObject::ElementsKind JSObject::GetElementsKind() {
     ASSERT(array->IsDictionary());
     return DICTIONARY_ELEMENTS;
   }
+  if (array->IsExternalArray()) {
+    switch (array->map()->instance_type()) {
+      case EXTERNAL_BYTE_ARRAY_TYPE:
+        return EXTERNAL_BYTE_ELEMENTS;
+      case EXTERNAL_UNSIGNED_BYTE_ARRAY_TYPE:
+        return EXTERNAL_UNSIGNED_BYTE_ELEMENTS;
+      case EXTERNAL_SHORT_ARRAY_TYPE:
+        return EXTERNAL_SHORT_ELEMENTS;
+      case EXTERNAL_UNSIGNED_SHORT_ARRAY_TYPE:
+        return EXTERNAL_UNSIGNED_SHORT_ELEMENTS;
+      case EXTERNAL_INT_ARRAY_TYPE:
+        return EXTERNAL_INT_ELEMENTS;
+      case EXTERNAL_UNSIGNED_INT_ARRAY_TYPE:
+        return EXTERNAL_UNSIGNED_INT_ELEMENTS;
+      default:
+        ASSERT(array->map()->instance_type() == EXTERNAL_FLOAT_ARRAY_TYPE);
+        return EXTERNAL_FLOAT_ELEMENTS;
+    }
+  }
   ASSERT(array->IsPixelArray());
   return PIXEL_ELEMENTS;
 }
@@ -2652,6 +2861,52 @@ bool JSObject::HasDictionaryElements() {
 
 bool JSObject::HasPixelElements() {
   return GetElementsKind() == PIXEL_ELEMENTS;
+}
+
+
+bool JSObject::HasExternalArrayElements() {
+  return (HasExternalByteElements() ||
+          HasExternalUnsignedByteElements() ||
+          HasExternalShortElements() ||
+          HasExternalUnsignedShortElements() ||
+          HasExternalIntElements() ||
+          HasExternalUnsignedIntElements() ||
+          HasExternalFloatElements());
+}
+
+
+bool JSObject::HasExternalByteElements() {
+  return GetElementsKind() == EXTERNAL_BYTE_ELEMENTS;
+}
+
+
+bool JSObject::HasExternalUnsignedByteElements() {
+  return GetElementsKind() == EXTERNAL_UNSIGNED_BYTE_ELEMENTS;
+}
+
+
+bool JSObject::HasExternalShortElements() {
+  return GetElementsKind() == EXTERNAL_SHORT_ELEMENTS;
+}
+
+
+bool JSObject::HasExternalUnsignedShortElements() {
+  return GetElementsKind() == EXTERNAL_UNSIGNED_SHORT_ELEMENTS;
+}
+
+
+bool JSObject::HasExternalIntElements() {
+  return GetElementsKind() == EXTERNAL_INT_ELEMENTS;
+}
+
+
+bool JSObject::HasExternalUnsignedIntElements() {
+  return GetElementsKind() == EXTERNAL_UNSIGNED_INT_ELEMENTS;
+}
+
+
+bool JSObject::HasExternalFloatElements() {
+  return GetElementsKind() == EXTERNAL_FLOAT_ELEMENTS;
 }
 
 

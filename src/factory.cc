@@ -222,6 +222,18 @@ Handle<PixelArray> Factory::NewPixelArray(int length,
 }
 
 
+Handle<ExternalArray> Factory::NewExternalArray(int length,
+                                                ExternalArrayType array_type,
+                                                void* external_pointer,
+                                                PretenureFlag pretenure) {
+  ASSERT(0 <= length);
+  CALL_HEAP_FUNCTION(Heap::AllocateExternalArray(length,
+                                                 array_type,
+                                                 external_pointer,
+                                                 pretenure), ExternalArray);
+}
+
+
 Handle<Map> Factory::NewMap(InstanceType type, int instance_size) {
   CALL_HEAP_FUNCTION(Heap::AllocateMap(type, instance_size), Map);
 }
@@ -477,7 +489,6 @@ Handle<JSFunction> Factory::NewFunction(Handle<String> name,
 
 Handle<JSFunction> Factory::NewFunctionBoilerplate(Handle<String> name,
                                                    int number_of_literals,
-                                                   bool contains_array_literal,
                                                    Handle<Code> code) {
   Handle<JSFunction> function = NewFunctionBoilerplate(name);
   function->set_code(*code);
@@ -485,7 +496,7 @@ Handle<JSFunction> Factory::NewFunctionBoilerplate(Handle<String> name,
   // If the function contains object, regexp or array literals,
   // allocate extra space for a literals array prefix containing the
   // object, regexp and array constructor functions.
-  if (number_of_literals > 0 || contains_array_literal) {
+  if (number_of_literals > 0) {
     literals_array_size += JSFunction::kLiteralsPrefixSize;
   }
   Handle<FixedArray> literals =

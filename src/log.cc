@@ -934,6 +934,21 @@ void Logger::HeapSampleJSRetainersEvent(
 }
 
 
+void Logger::HeapSampleJSProducerEvent(const char* constructor,
+                                       Address* stack) {
+#ifdef ENABLE_LOGGING_AND_PROFILING
+  if (!Log::IsEnabled() || !FLAG_log_gc) return;
+  LogMessageBuilder msg;
+  msg.Append("heap-js-prod-item,%s", constructor);
+  while (*stack != NULL) {
+    msg.Append(",0x%" V8PRIxPTR, *stack++);
+  }
+  msg.Append("\n");
+  msg.WriteToLogFile();
+#endif
+}
+
+
 void Logger::DebugTag(const char* call_site_tag) {
 #ifdef ENABLE_LOGGING_AND_PROFILING
   if (!Log::IsEnabled() || !FLAG_log) return;
@@ -1070,37 +1085,33 @@ int Logger::GetLogLines(int from_pos, char* dest_buf, int max_size) {
 }
 
 
-void Logger::LogCompiledFunctions() {
-  HandleScope scope;
-  Handle<SharedFunctionInfo>* sfis = NULL;
+static int EnumerateCompiledFunctions(Handle<SharedFunctionInfo>* sfis) {
+  AssertNoAllocation no_alloc;
   int compiled_funcs_count = 0;
-
-  {
-    AssertNoAllocation no_alloc;
-
-    HeapIterator iterator;
-    while (iterator.has_next()) {
-      HeapObject* obj = iterator.next();
-      ASSERT(obj != NULL);
-      if (obj->IsSharedFunctionInfo()
-          && SharedFunctionInfo::cast(obj)->is_compiled()) {
-        ++compiled_funcs_count;
-      }
-    }
-
-    sfis = NewArray< Handle<SharedFunctionInfo> >(compiled_funcs_count);
-    iterator.reset();
-
-    int i = 0;
-    while (iterator.has_next()) {
-      HeapObject* obj = iterator.next();
-      ASSERT(obj != NULL);
-      if (obj->IsSharedFunctionInfo()
-          && SharedFunctionInfo::cast(obj)->is_compiled()) {
-        sfis[i++] = Handle<SharedFunctionInfo>(SharedFunctionInfo::cast(obj));
-      }
+  HeapIterator iterator;
+  while (iterator.has_next()) {
+    HeapObject* obj = iterator.next();
+    ASSERT(obj != NULL);
+    if (!obj->IsSharedFunctionInfo()) continue;
+    SharedFunctionInfo* sfi = SharedFunctionInfo::cast(obj);
+    if (sfi->is_compiled()
+        && (!sfi->script()->IsScript()
+            || Script::cast(sfi->script())->HasValidSource())) {
+      if (sfis != NULL)
+        sfis[compiled_funcs_count] = Handle<SharedFunctionInfo>(sfi);
+      ++compiled_funcs_count;
     }
   }
+  return compiled_funcs_count;
+}
+
+
+void Logger::LogCompiledFunctions() {
+  HandleScope scope;
+  const int compiled_funcs_count = EnumerateCompiledFunctions(NULL);
+  Handle<SharedFunctionInfo>* sfis =
+      NewArray< Handle<SharedFunctionInfo> >(compiled_funcs_count);
+  EnumerateCompiledFunctions(sfis);
 
   // During iteration, there can be heap allocation due to
   // GetScriptLineNumber call.

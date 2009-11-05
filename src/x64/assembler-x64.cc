@@ -264,7 +264,8 @@ static void InitCoverageLog();
 
 byte* Assembler::spare_buffer_ = NULL;
 
-Assembler::Assembler(void* buffer, int buffer_size) {
+Assembler::Assembler(void* buffer, int buffer_size)
+    : code_targets_(100) {
   if (buffer == NULL) {
     // do our own buffer management
     if (buffer_size <= kMinimalBufferSize) {
@@ -392,7 +393,7 @@ void Assembler::GrowBuffer() {
   // Some internal data structures overflow for very large buffers,
   // they must ensure that kMaximalBufferSize is not too large.
   if ((desc.buffer_size > kMaximalBufferSize) ||
-      (desc.buffer_size > Heap::OldGenerationSize())) {
+      (desc.buffer_size > Heap::MaxOldGenerationSize())) {
     V8::FatalProcessOutOfMemory("Assembler::GrowBuffer");
   }
 
@@ -573,11 +574,11 @@ void Assembler::immediate_arithmetic_op_16(byte subcode,
     emit(src.value_);
   } else if (dst.is(rax)) {
     emit(0x05 | (subcode << 3));
-    emitl(src.value_);
+    emitw(src.value_);
   } else {
     emit(0x81);
     emit_modrm(subcode, dst);
-    emitl(src.value_);
+    emitw(src.value_);
   }
 }
 
@@ -596,7 +597,7 @@ void Assembler::immediate_arithmetic_op_16(byte subcode,
   } else {
     emit(0x81);
     emit_operand(subcode, dst);
-    emitl(src.value_);
+    emitw(src.value_);
   }
 }
 
@@ -707,7 +708,7 @@ void Assembler::shift_32(Register dst, int subcode) {
 void Assembler::shift_32(Register dst, Immediate shift_amount, int subcode) {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
-  ASSERT(is_uint6(shift_amount.value_));  // illegal shift count
+  ASSERT(is_uint5(shift_amount.value_));  // illegal shift count
   if (shift_amount.value_ == 1) {
     emit_optional_rex_32(dst);
     emit(0xD1);
@@ -762,6 +763,15 @@ void Assembler::call(Label* L) {
 }
 
 
+void Assembler::call(Handle<Code> target, RelocInfo::Mode rmode) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  // 1110 1000 #32-bit disp
+  emit(0xE8);
+  emit_code_target(target, rmode);
+}
+
+
 void Assembler::call(Register adr) {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
@@ -784,6 +794,12 @@ void Assembler::call(const Operand& op) {
 }
 
 
+void Assembler::clc() {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  emit(0xF8);
+}
+
 void Assembler::cdq() {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
@@ -792,6 +808,11 @@ void Assembler::cdq() {
 
 
 void Assembler::cmovq(Condition cc, Register dst, Register src) {
+  if (cc == always) {
+    movq(dst, src);
+  } else if (cc == never) {
+    return;
+  }
   // No need to check CpuInfo for CMOV support, it's a required part of the
   // 64-bit architecture.
   ASSERT(cc >= 0);  // Use mov for unconditional moves.
@@ -806,6 +827,11 @@ void Assembler::cmovq(Condition cc, Register dst, Register src) {
 
 
 void Assembler::cmovq(Condition cc, Register dst, const Operand& src) {
+  if (cc == always) {
+    movq(dst, src);
+  } else if (cc == never) {
+    return;
+  }
   ASSERT(cc >= 0);
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
@@ -818,6 +844,11 @@ void Assembler::cmovq(Condition cc, Register dst, const Operand& src) {
 
 
 void Assembler::cmovl(Condition cc, Register dst, Register src) {
+  if (cc == always) {
+    movl(dst, src);
+  } else if (cc == never) {
+    return;
+  }
   ASSERT(cc >= 0);
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
@@ -830,6 +861,11 @@ void Assembler::cmovl(Condition cc, Register dst, Register src) {
 
 
 void Assembler::cmovl(Condition cc, Register dst, const Operand& src) {
+  if (cc == always) {
+    movl(dst, src);
+  } else if (cc == never) {
+    return;
+  }
   ASSERT(cc >= 0);
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
@@ -899,6 +935,27 @@ void Assembler::decl(const Operand& dst) {
   last_pc_ = pc_;
   emit_optional_rex_32(dst);
   emit(0xFF);
+  emit_operand(1, dst);
+}
+
+
+void Assembler::decb(Register dst) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  if (dst.code() > 3) {
+    // Register is not one of al, bl, cl, dl.  Its encoding needs REX.
+    emit_rex_32(dst);
+  }
+  emit(0xFE);
+  emit_modrm(0x1, dst);
+}
+
+
+void Assembler::decb(const Operand& dst) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  emit_optional_rex_32(dst);
+  emit(0xFE);
   emit_operand(1, dst);
 }
 
@@ -1027,6 +1084,12 @@ void Assembler::int3() {
 
 
 void Assembler::j(Condition cc, Label* L) {
+  if (cc == always) {
+    jmp(L);
+    return;
+  } else if (cc == never) {
+    return;
+  }
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   ASSERT(is_uint4(cc));
@@ -1062,6 +1125,19 @@ void Assembler::j(Condition cc, Label* L) {
 }
 
 
+void Assembler::j(Condition cc,
+                  Handle<Code> target,
+                  RelocInfo::Mode rmode) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  ASSERT(is_uint4(cc));
+  // 0000 1111 1000 tttn #32-bit disp
+  emit(0x0F);
+  emit(0x80 | cc);
+  emit_code_target(target, rmode);
+}
+
+
 void Assembler::jmp(Label* L) {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
@@ -1090,6 +1166,15 @@ void Assembler::jmp(Label* L) {
     emitl(current);
     L->link_to(current);
   }
+}
+
+
+void Assembler::jmp(Handle<Code> target, RelocInfo::Mode rmode) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  // 1110 1001 #32-bit disp
+  emit(0xE9);
+  emit_code_target(target, rmode);
 }
 
 
@@ -1167,6 +1252,15 @@ void Assembler::movb(const Operand& dst, Register src) {
   last_pc_ = pc_;
   emit_rex_32(src, dst);
   emit(0x88);
+  emit_operand(src, dst);
+}
+
+void Assembler::movw(const Operand& dst, Register src) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  emit(0x66);
+  emit_optional_rex_32(src, dst);
+  emit(0x89);
   emit_operand(src, dst);
 }
 
@@ -1341,10 +1435,7 @@ void Assembler::movq(Register dst, Handle<Object> value, RelocInfo::Mode mode) {
     // There is no possible reason to store a heap pointer without relocation
     // info, so it must be a smi.
     ASSERT(value->IsSmi());
-    // Smis never have more than 32 significant bits, but they might
-    // have garbage in the high bits.
-    movq(dst,
-         Immediate(static_cast<int32_t>(reinterpret_cast<intptr_t>(*value))));
+    movq(dst, reinterpret_cast<int64_t>(*value), RelocInfo::NONE);
   } else {
     EnsureSpace ensure_space(this);
     last_pc_ = pc_;
@@ -1354,6 +1445,26 @@ void Assembler::movq(Register dst, Handle<Object> value, RelocInfo::Mode mode) {
     emit(0xB8 | dst.low_bits());
     emitq(reinterpret_cast<uintptr_t>(value.location()), mode);
   }
+}
+
+
+void Assembler::movsxbq(Register dst, const Operand& src) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  emit_rex_32(dst, src);
+  emit(0x0F);
+  emit(0xBE);
+  emit_operand(dst, src);
+}
+
+
+void Assembler::movsxwq(Register dst, const Operand& src) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  emit_rex_64(dst, src);
+  emit(0x0F);
+  emit(0xBF);
+  emit_operand(dst, src);
 }
 
 
@@ -1391,6 +1502,16 @@ void Assembler::movzxbl(Register dst, const Operand& src) {
   emit_optional_rex_32(dst, src);
   emit(0x0F);
   emit(0xB6);
+  emit_operand(dst, src);
+}
+
+
+void Assembler::movzxwq(Register dst, const Operand& src) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  emit_rex_64(dst, src);
+  emit(0x0F);
+  emit(0xB7);
   emit_operand(dst, src);
 }
 
@@ -1618,22 +1739,6 @@ void Assembler::pushfq() {
 }
 
 
-void Assembler::rcl(Register dst, uint8_t imm8) {
-  EnsureSpace ensure_space(this);
-  last_pc_ = pc_;
-  ASSERT(is_uint6(imm8));  // illegal shift count
-  if (imm8 == 1) {
-    emit_rex_64(dst);
-    emit(0xD1);
-    emit_modrm(0x2, dst);
-  } else {
-    emit_rex_64(dst);
-    emit(0xC1);
-    emit_modrm(0x2, dst);
-    emit(imm8);
-  }
-}
-
 void Assembler::rdtsc() {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
@@ -1657,6 +1762,10 @@ void Assembler::ret(int imm16) {
 
 
 void Assembler::setcc(Condition cc, Register reg) {
+  if (cc > last_condition) {
+    movb(reg, Immediate(cc == always ? 1 : 0));
+    return;
+  }
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   ASSERT(is_uint4(cc));
@@ -1715,6 +1824,18 @@ void Assembler::store_rax(void* dst, RelocInfo::Mode mode) {
 
 void Assembler::store_rax(ExternalReference ref) {
   store_rax(ref.address(), RelocInfo::EXTERNAL_REFERENCE);
+}
+
+
+void Assembler::testb(Register dst, Register src) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  if (dst.code() > 3 || src.code() > 3) {
+    // Register is not one of al, bl, cl, dl.  Its encoding needs REX.
+    emit_rex_32(dst, src);
+  }
+  emit(0x84);
+  emit_modrm(dst, src);
 }
 
 
@@ -1888,6 +2009,14 @@ void Assembler::fstp_d(const Operand& adr) {
 }
 
 
+void Assembler::fstp(int index) {
+  ASSERT(is_uint3(index));
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  emit_farith(0xDD, 0xD8, index);
+}
+
+
 void Assembler::fild_s(const Operand& adr) {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
@@ -1939,7 +2068,7 @@ void Assembler::fistp_d(const Operand& adr) {
   last_pc_ = pc_;
   emit_optional_rex_32(adr);
   emit(0xDF);
-  emit_operand(8, adr);
+  emit_operand(7, adr);
 }
 
 
@@ -2108,6 +2237,22 @@ void Assembler::fucompp() {
 }
 
 
+void Assembler::fucomi(int i) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  emit(0xDB);
+  emit(0xE8 + i);
+}
+
+
+void Assembler::fucomip() {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  emit(0xDF);
+  emit(0xE9);
+}
+
+
 void Assembler::fcompp() {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
@@ -2176,18 +2321,7 @@ void Assembler::movsd(const Operand& dst, XMMRegister src) {
 }
 
 
-void Assembler::movsd(Register dst, XMMRegister src) {
-  EnsureSpace ensure_space(this);
-  last_pc_ = pc_;
-  emit(0xF2);  // double
-  emit_optional_rex_32(src, dst);
-  emit(0x0F);
-  emit(0x11);  // store
-  emit_sse_operand(src, dst);
-}
-
-
-void Assembler::movsd(XMMRegister dst, Register src) {
+void Assembler::movsd(XMMRegister dst, XMMRegister src) {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   emit(0xF2);  // double
@@ -2387,7 +2521,8 @@ void Assembler::WriteRecordedPositions() {
 }
 
 
-const int RelocInfo::kApplyMask = 1 << RelocInfo::INTERNAL_REFERENCE;
-
+const int RelocInfo::kApplyMask = RelocInfo::kCodeTargetMask |
+                                  1 << RelocInfo::INTERNAL_REFERENCE |
+                                  1 << RelocInfo::JS_RETURN;
 
 } }  // namespace v8::internal

@@ -982,7 +982,7 @@ bool NewSpace::Setup(Address start, int size) {
   // To support fast containment testing in the new space, the size of
   // this chunk must be a power of two and it must be aligned to its size.
   int initial_semispace_capacity = Heap::InitialSemiSpaceSize();
-  int maximum_semispace_capacity = Heap::SemiSpaceSize();
+  int maximum_semispace_capacity = Heap::MaxSemiSpaceSize();
 
   ASSERT(initial_semispace_capacity <= maximum_semispace_capacity);
   ASSERT(IsPowerOf2(maximum_semispace_capacity));
@@ -998,7 +998,7 @@ bool NewSpace::Setup(Address start, int size) {
 #undef SET_NAME
 #endif
 
-  ASSERT(size == 2 * maximum_semispace_capacity);
+  ASSERT(size == 2 * Heap::ReservedSemiSpaceSize());
   ASSERT(IsAddressAligned(start, size, 0));
 
   if (!to_space_.Setup(start,
@@ -1540,8 +1540,7 @@ void FreeListNode::set_size(int size_in_bytes) {
 
 
 Address FreeListNode::next() {
-  ASSERT(map() == Heap::raw_unchecked_byte_array_map() ||
-         map() == Heap::raw_unchecked_two_pointer_filler_map());
+  ASSERT(IsFreeListNode(this));
   if (map() == Heap::raw_unchecked_byte_array_map()) {
     ASSERT(Size() >= kNextOffset + kPointerSize);
     return Memory::Address_at(address() + kNextOffset);
@@ -1552,8 +1551,7 @@ Address FreeListNode::next() {
 
 
 void FreeListNode::set_next(Address next) {
-  ASSERT(map() == Heap::raw_unchecked_byte_array_map() ||
-         map() == Heap::raw_unchecked_two_pointer_filler_map());
+  ASSERT(IsFreeListNode(this));
   if (map() == Heap::raw_unchecked_byte_array_map()) {
     ASSERT(Size() >= kNextOffset + kPointerSize);
     Memory::Address_at(address() + kNextOffset) = next;

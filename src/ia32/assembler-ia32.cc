@@ -1166,6 +1166,19 @@ void Assembler::shr_cl(Register dst) {
 }
 
 
+void Assembler::subb(const Operand& op, int8_t imm8) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  if (op.is_reg(eax)) {
+    EMIT(0x2c);
+  } else {
+    EMIT(0x80);
+    emit_operand(ebp, op);  // ebp == 5
+  }
+  EMIT(imm8);
+}
+
+
 void Assembler::sub(const Operand& dst, const Immediate& x) {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
@@ -1837,6 +1850,22 @@ void Assembler::fucompp() {
 }
 
 
+void Assembler::fucomi(int i) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0xDB);
+  EMIT(0xE8 + i);
+}
+
+
+void Assembler::fucomip() {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0xDF);
+  EMIT(0xE9);
+}
+
+
 void Assembler::fcompp() {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
@@ -2096,7 +2125,7 @@ void Assembler::GrowBuffer() {
   // Some internal data structures overflow for very large buffers,
   // they must ensure that kMaximalBufferSize is not too large.
   if ((desc.buffer_size > kMaximalBufferSize) ||
-      (desc.buffer_size > Heap::OldGenerationSize())) {
+      (desc.buffer_size > Heap::MaxOldGenerationSize())) {
     V8::FatalProcessOutOfMemory("Assembler::GrowBuffer");
   }
 

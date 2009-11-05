@@ -147,6 +147,15 @@ class CodeGenerator: public AstVisitor {
                                Handle<Script> script,
                                bool is_eval);
 
+  // Printing of AST, etc. as requested by flags.
+  static void MakeCodePrologue(FunctionLiteral* fun);
+
+  // Allocate and install the code.
+  static Handle<Code> MakeCodeEpilogue(FunctionLiteral* fun,
+                                       MacroAssembler* masm,
+                                       Code::Flags flags,
+                                       Handle<Script> script);
+
 #ifdef ENABLE_LOGGING_AND_PROFILING
   static bool ShouldGenerateLog(Expression* type);
 #endif
@@ -155,6 +164,8 @@ class CodeGenerator: public AstVisitor {
                               FunctionLiteral* lit,
                               bool is_toplevel,
                               Handle<Script> script);
+
+  static void RecordPositions(MacroAssembler* masm, int pos);
 
   // Accessors
   MacroAssembler* masm() { return masm_; }
@@ -231,7 +242,7 @@ class CodeGenerator: public AstVisitor {
   void LoadReference(Reference* ref);
   void UnloadReference(Reference* ref);
 
-  MemOperand ContextOperand(Register context, int index) const {
+  static MemOperand ContextOperand(Register context, int index) {
     return MemOperand(context, Context::SlotOffset(index));
   }
 
@@ -243,7 +254,7 @@ class CodeGenerator: public AstVisitor {
                                                JumpTarget* slow);
 
   // Expressions
-  MemOperand GlobalObject() const  {
+  static MemOperand GlobalObject()  {
     return ContextOperand(cp, Context::GLOBAL_INDEX);
   }
 
@@ -319,10 +330,11 @@ class CodeGenerator: public AstVisitor {
                                       const InlineRuntimeLUT& new_entry,
                                       InlineRuntimeLUT* old_entry);
 
+  static Handle<Code> ComputeLazyCompile(int argc);
   Handle<JSFunction> BuildBoilerplate(FunctionLiteral* node);
   void ProcessDeclarations(ZoneList<Declaration*>* declarations);
 
-  Handle<Code> ComputeCallInitialize(int argc, InLoopFlag in_loop);
+  static Handle<Code> ComputeCallInitialize(int argc, InLoopFlag in_loop);
 
   // Declare global variables and functions in the given array of
   // name/value pairs.
@@ -365,6 +377,14 @@ class CodeGenerator: public AstVisitor {
   inline void GenerateMathSin(ZoneList<Expression*>* args);
   inline void GenerateMathCos(ZoneList<Expression*>* args);
 
+  // Simple condition analysis.
+  enum ConditionAnalysis {
+    ALWAYS_TRUE,
+    ALWAYS_FALSE,
+    DONT_KNOW
+  };
+  ConditionAnalysis AnalyzeCondition(Expression* cond);
+
   // Methods used to indicate which source code is generated for. Source
   // positions are collected by the assembler and emitted with the relocation
   // information.
@@ -406,6 +426,8 @@ class CodeGenerator: public AstVisitor {
   friend class VirtualFrame;
   friend class JumpTarget;
   friend class Reference;
+  friend class FastCodeGenerator;
+  friend class CodeGenSelector;
 
   DISALLOW_COPY_AND_ASSIGN(CodeGenerator);
 };

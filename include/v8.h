@@ -756,7 +756,7 @@ class V8EXPORT Value : public Data {
   /** JS == */
   bool Equals(Handle<Value> that) const;
   bool StrictEquals(Handle<Value> that) const;
-  
+
  private:
   inline bool QuickIsString() const;
   bool FullIsString() const;
@@ -919,6 +919,12 @@ class V8EXPORT String : public Primitive {
   static Local<String> NewSymbol(const char* data, int length = -1);
 
   /**
+   * Creates a new string by concatenating the left and the right strings
+   * passed in as parameters.
+   */
+  static Local<String> Concat(Handle<String> left, Handle<String>right);
+
+  /**
    * Creates a new external string using the data defined in the given
    * resource. The resource is deleted when the external string is no
    * longer live on V8's heap. The caller of this function should not
@@ -1036,7 +1042,7 @@ class V8EXPORT String : public Primitive {
     Value(const Value&);
     void operator=(const Value&);
   };
-  
+
  private:
   void VerifyExternalStringResource(ExternalStringResource* val) const;
   static void CheckCast(v8::Value* obj);
@@ -1063,6 +1069,7 @@ class V8EXPORT Number : public Primitive {
 class V8EXPORT Integer : public Number {
  public:
   static Local<Integer> New(int32_t value);
+  static Local<Integer> NewFromUnsigned(uint32_t value);
   int64_t Value() const;
   static inline Integer* Cast(v8::Value* obj);
  private:
@@ -1117,6 +1124,16 @@ enum PropertyAttribute {
   ReadOnly   = 1 << 0,
   DontEnum   = 1 << 1,
   DontDelete = 1 << 2
+};
+
+enum ExternalArrayType {
+  kExternalByteArray = 1,
+  kExternalUnsignedByteArray,
+  kExternalShortArray,
+  kExternalUnsignedShortArray,
+  kExternalIntArray,
+  kExternalUnsignedIntArray,
+  kExternalFloatArray
 };
 
 /**
@@ -1193,7 +1210,7 @@ class V8EXPORT Object : public Value {
 
   /** Gets a native pointer from an internal field. */
   inline void* GetPointerFromInternalField(int index);
-  
+
   /** Sets a native pointer in an internal field. */
   void SetPointerInInternalField(int index, void* value);
 
@@ -1246,7 +1263,7 @@ class V8EXPORT Object : public Value {
   bool SetHiddenValue(Handle<String> key, Handle<Value> value);
   Local<Value> GetHiddenValue(Handle<String> key);
   bool DeleteHiddenValue(Handle<String> key);
-  
+
   /**
    * Returns true if this is an instance of an api function (one
    * created from a function created from a function template) and has
@@ -1271,16 +1288,28 @@ class V8EXPORT Object : public Value {
    */
   void SetIndexedPropertiesToPixelData(uint8_t* data, int length);
 
+  /**
+   * Set the backing store of the indexed properties to be managed by the
+   * embedding layer. Access to the indexed properties will follow the rules
+   * spelled out for the CanvasArray subtypes in the WebGL specification.
+   * Note: The embedding program still owns the data and needs to ensure that
+   *       the backing store is preserved while V8 has a reference.
+   */
+  void SetIndexedPropertiesToExternalArrayData(void* data,
+                                               ExternalArrayType array_type,
+                                               int number_of_elements);
+
   static Local<Object> New();
   static inline Object* Cast(Value* obj);
  private:
   Object();
   static void CheckCast(Value* obj);
   Local<Value> CheckedGetInternalField(int index);
+  void* SlowGetPointerFromInternalField(int index);
 
   /**
    * If quick access to the internal field is possible this method
-   * returns the value.  Otherwise an empty handle is returned. 
+   * returns the value.  Otherwise an empty handle is returned.
    */
   inline Local<Value> UncheckedGetInternalField(int index);
 };
@@ -2095,6 +2124,29 @@ enum ProfilerModules {
 
 
 /**
+ * Collection of V8 heap information.
+ *
+ * Instances of this class can be passed to v8::V8::HeapStatistics to
+ * get heap statistics from V8.
+ */
+class V8EXPORT HeapStatistics {
+ public:
+  HeapStatistics();
+  size_t total_heap_size() { return total_heap_size_; }
+  size_t used_heap_size() { return used_heap_size_; }
+
+ private:
+  void set_total_heap_size(size_t size) { total_heap_size_ = size; }
+  void set_used_heap_size(size_t size) { used_heap_size_ = size; }
+
+  size_t total_heap_size_;
+  size_t used_heap_size_;
+
+  friend class V8;
+};
+
+
+/**
  * Container class for static utility functions.
  */
 class V8EXPORT V8 {
@@ -2344,17 +2396,20 @@ class V8EXPORT V8 {
    */
   static bool Dispose();
 
+  /**
+   * Get statistics about the heap memory usage.
+   */
+  static void GetHeapStatistics(HeapStatistics* heap_statistics);
 
   /**
    * Optional notification that the embedder is idle.
    * V8 uses the notification to reduce memory footprint.
    * This call can be used repeatedly if the embedder remains idle.
-   * \param is_high_priority tells whether the embedder is high priority.
    * Returns true if the embedder should stop calling IdleNotification
    * until real work has been done.  This indicates that V8 has done
    * as much cleanup as it will be able to do.
    */
-  static bool IdleNotification(bool is_high_priority);
+  static bool IdleNotification();
 
   /**
    * Optional notification that the system is running low on memory.
@@ -2720,12 +2775,37 @@ const int kHeapObjectTag = 1;
 const int kHeapObjectTagSize = 2;
 const intptr_t kHeapObjectTagMask = (1 << kHeapObjectTagSize) - 1;
 
-
 // Tag information for Smi.
 const int kSmiTag = 0;
 const int kSmiTagSize = 1;
 const intptr_t kSmiTagMask = (1 << kSmiTagSize) - 1;
 
+template <size_t ptr_size> struct SmiConstants;
+
+// Smi constants for 32-bit systems.
+template <> struct SmiConstants<4> {
+  static const int kSmiShiftSize = 0;
+  static const int kSmiValueSize = 31;
+  static inline int SmiToInt(internal::Object* value) {
+    int shift_bits = kSmiTagSize + kSmiShiftSize;
+    // Throw away top 32 bits and shift down (requires >> to be sign extending).
+    return static_cast<int>(reinterpret_cast<intptr_t>(value)) >> shift_bits;
+  }
+};
+
+// Smi constants for 64-bit systems.
+template <> struct SmiConstants<8> {
+  static const int kSmiShiftSize = 31;
+  static const int kSmiValueSize = 32;
+  static inline int SmiToInt(internal::Object* value) {
+    int shift_bits = kSmiTagSize + kSmiShiftSize;
+    // Shift down and throw away top 32 bits.
+    return static_cast<int>(reinterpret_cast<intptr_t>(value) >> shift_bits);
+  }
+};
+
+const int kSmiShiftSize = SmiConstants<sizeof(void*)>::kSmiShiftSize;
+const int kSmiValueSize = SmiConstants<sizeof(void*)>::kSmiValueSize;
 
 /**
  * This class exports constants and functionality from within v8 that
@@ -2744,7 +2824,6 @@ class Internals {
   static const int kJSObjectHeaderSize = 3 * sizeof(void*);
   static const int kFullStringRepresentationMask = 0x07;
   static const int kExternalTwoByteRepresentationTag = 0x03;
-  static const int kAlignedPointerShift = 2;
 
   // These constants are compiler dependent so their values must be
   // defined within the implementation.
@@ -2762,7 +2841,23 @@ class Internals {
   }
 
   static inline int SmiValue(internal::Object* value) {
-    return static_cast<int>(reinterpret_cast<intptr_t>(value)) >> kSmiTagSize;
+    return SmiConstants<sizeof(void*)>::SmiToInt(value);
+  }
+
+  static inline int GetInstanceType(internal::Object* obj) {
+    typedef internal::Object O;
+    O* map = ReadField<O*>(obj, kHeapObjectMapOffset);
+    return ReadField<uint8_t>(map, kMapInstanceTypeOffset);
+  }
+
+  static inline void* GetExternalPointer(internal::Object* obj) {
+    if (HasSmiTag(obj)) {
+      return obj;
+    } else if (GetInstanceType(obj) == kProxyType) {
+      return ReadField<void*>(obj, kProxyProxyOffset);
+    } else {
+      return NULL;
+    }
   }
 
   static inline bool IsExternalTwoByteString(int instance_type) {
@@ -2922,9 +3017,7 @@ Local<Value> Object::UncheckedGetInternalField(int index) {
   typedef internal::Object O;
   typedef internal::Internals I;
   O* obj = *reinterpret_cast<O**>(this);
-  O* map = I::ReadField<O*>(obj, I::kHeapObjectMapOffset);
-  int instance_type = I::ReadField<uint8_t>(map, I::kMapInstanceTypeOffset);
-  if (instance_type == I::kJSObjectType) {
+  if (I::GetInstanceType(obj) == I::kJSObjectType) {
     // If the object is a plain JSObject, which is the common case,
     // we know where to find the internal fields and can return the
     // value directly.
@@ -2949,25 +3042,27 @@ void* External::Unwrap(Handle<v8::Value> obj) {
 
 void* External::QuickUnwrap(Handle<v8::Value> wrapper) {
   typedef internal::Object O;
-  typedef internal::Internals I;
   O* obj = *reinterpret_cast<O**>(const_cast<v8::Value*>(*wrapper));
-  if (I::HasSmiTag(obj)) {
-    int value = I::SmiValue(obj) << I::kAlignedPointerShift;
-    return reinterpret_cast<void*>(value);
-  } else {
-    O* map = I::ReadField<O*>(obj, I::kHeapObjectMapOffset);
-    int instance_type = I::ReadField<uint8_t>(map, I::kMapInstanceTypeOffset);
-    if (instance_type == I::kProxyType) {
-      return I::ReadField<void*>(obj, I::kProxyProxyOffset);
-    } else {
-      return NULL;
-    }
-  }
+  return internal::Internals::GetExternalPointer(obj);
 }
 
 
 void* Object::GetPointerFromInternalField(int index) {
-  return External::Unwrap(GetInternalField(index));
+  typedef internal::Object O;
+  typedef internal::Internals I;
+
+  O* obj = *reinterpret_cast<O**>(this);
+
+  if (I::GetInstanceType(obj) == I::kJSObjectType) {
+    // If the object is a plain JSObject, which is the common case,
+    // we know where to find the internal fields and can return the
+    // value directly.
+    int offset = I::kJSObjectHeaderSize + (sizeof(void*) * index);
+    O* value = I::ReadField<O*>(obj, offset);
+    return I::GetExternalPointer(value);
+  }
+
+  return SlowGetPointerFromInternalField(index);
 }
 
 
@@ -2983,10 +3078,8 @@ String::ExternalStringResource* String::GetExternalStringResource() const {
   typedef internal::Object O;
   typedef internal::Internals I;
   O* obj = *reinterpret_cast<O**>(const_cast<String*>(this));
-  O* map = I::ReadField<O*>(obj, I::kHeapObjectMapOffset);
-  int instance_type = I::ReadField<uint8_t>(map, I::kMapInstanceTypeOffset);
   String::ExternalStringResource* result;
-  if (I::IsExternalTwoByteString(instance_type)) {
+  if (I::IsExternalTwoByteString(I::GetInstanceType(obj))) {
     void* value = I::ReadField<void*>(obj, I::kStringResourceOffset);
     result = reinterpret_cast<String::ExternalStringResource*>(value);
   } else {
@@ -3012,9 +3105,7 @@ bool Value::QuickIsString() const {
   typedef internal::Internals I;
   O* obj = *reinterpret_cast<O**>(const_cast<Value*>(this));
   if (!I::HasHeapObjectTag(obj)) return false;
-  O* map = I::ReadField<O*>(obj, I::kHeapObjectMapOffset);
-  int instance_type = I::ReadField<uint8_t>(map, I::kMapInstanceTypeOffset);
-  return (instance_type < I::kFirstNonstringType);
+  return (I::GetInstanceType(obj) < I::kFirstNonstringType);
 }
 
 

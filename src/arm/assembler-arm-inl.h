@@ -81,7 +81,13 @@ void RelocInfo::set_target_address(Address target) {
 
 Object* RelocInfo::target_object() {
   ASSERT(IsCodeTarget(rmode_) || rmode_ == EMBEDDED_OBJECT);
-  return reinterpret_cast<Object*>(Assembler::target_address_at(pc_));
+  return Memory::Object_at(Assembler::target_address_address_at(pc_));
+}
+
+
+Handle<Object> RelocInfo::target_object_handle(Assembler *origin) {
+  ASSERT(IsCodeTarget(rmode_) || rmode_ == EMBEDDED_OBJECT);
+  return Memory::Object_Handle_at(Assembler::target_address_address_at(pc_));
 }
 
 
@@ -104,7 +110,7 @@ Address* RelocInfo::target_reference_address() {
 
 
 Address RelocInfo::call_address() {
-  ASSERT(IsCallInstruction());
+  ASSERT(IsPatchedReturnSequence());
   // The 2 instructions offset assumes patched return sequence.
   ASSERT(IsJSReturn(rmode()));
   return Memory::Address_at(pc_ + 2 * Assembler::kInstrSize);
@@ -112,7 +118,7 @@ Address RelocInfo::call_address() {
 
 
 void RelocInfo::set_call_address(Address target) {
-  ASSERT(IsCallInstruction());
+  ASSERT(IsPatchedReturnSequence());
   // The 2 instructions offset assumes patched return sequence.
   ASSERT(IsJSReturn(rmode()));
   Memory::Address_at(pc_ + 2 * Assembler::kInstrSize) = target;
@@ -125,7 +131,7 @@ Object* RelocInfo::call_object() {
 
 
 Object** RelocInfo::call_object_address() {
-  ASSERT(IsCallInstruction());
+  ASSERT(IsPatchedReturnSequence());
   // The 2 instructions offset assumes patched return sequence.
   ASSERT(IsJSReturn(rmode()));
   return reinterpret_cast<Object**>(pc_ + 2 * Assembler::kInstrSize);
@@ -137,7 +143,7 @@ void RelocInfo::set_call_object(Object* target) {
 }
 
 
-bool RelocInfo::IsCallInstruction() {
+bool RelocInfo::IsPatchedReturnSequence() {
   // On ARM a "call instruction" is actually two instructions.
   //   mov lr, pc
   //   ldr pc, [pc, #XXX]

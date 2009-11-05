@@ -319,11 +319,17 @@ void MacroAssembler::CmpInstanceType(Register map, InstanceType type) {
 
 
 void MacroAssembler::FCmp() {
-  fucompp();
-  push(eax);
-  fnstsw_ax();
-  sahf();
-  pop(eax);
+  if (CpuFeatures::IsSupported(CpuFeatures::CMOV)) {
+    fucomip();
+    ffree(0);
+    fincstp();
+  } else {
+    fucompp();
+    push(eax);
+    fnstsw_ax();
+    sahf();
+    pop(eax);
+  }
 }
 
 
@@ -767,6 +773,24 @@ void MacroAssembler::UndoAllocationInNewSpace(Register object) {
 }
 
 
+void MacroAssembler::AllocateHeapNumber(Register result,
+                                        Register scratch1,
+                                        Register scratch2,
+                                        Label* gc_required) {
+  // Allocate heap number in new space.
+  AllocateInNewSpace(HeapNumber::kSize,
+                     result,
+                     scratch1,
+                     scratch2,
+                     gc_required,
+                     TAG_OBJECT);
+
+  // Set the map.
+  mov(FieldOperand(result, HeapObject::kMapOffset),
+      Immediate(Factory::heap_number_map()));
+}
+
+
 void MacroAssembler::NegativeZeroTest(CodeGenerator* cgen,
                                       Register result,
                                       Register op,
@@ -1049,7 +1073,6 @@ void MacroAssembler::InvokeBuiltin(Builtins::JavaScript id, InvokeFlag flag) {
   if (!resolved) {
     uint32_t flags =
         Bootstrapper::FixupFlagsArgumentsCount::encode(argc) |
-        Bootstrapper::FixupFlagsIsPCRelative::encode(true) |
         Bootstrapper::FixupFlagsUseCodeObject::encode(false);
     Unresolved entry = { pc_offset() - sizeof(int32_t), flags, name };
     unresolved_.Add(entry);
@@ -1068,7 +1091,6 @@ void MacroAssembler::GetBuiltinEntry(Register target, Builtins::JavaScript id) {
   if (!resolved) {
     uint32_t flags =
         Bootstrapper::FixupFlagsArgumentsCount::encode(argc) |
-        Bootstrapper::FixupFlagsIsPCRelative::encode(false) |
         Bootstrapper::FixupFlagsUseCodeObject::encode(true);
     Unresolved entry = { pc_offset() - sizeof(int32_t), flags, name };
     unresolved_.Add(entry);
