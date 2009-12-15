@@ -30,12 +30,10 @@
 #include "bootstrapper.h"
 #include "debug.h"
 #include "serialize.h"
+#include "simulator.h"
 #include "stub-cache.h"
 #include "oprofile-agent.h"
-
-#if V8_TARGET_ARCH_ARM
-#include "arm/simulator-arm.h"
-#endif
+#include "log.h"
 
 namespace v8 {
 namespace internal {
@@ -61,7 +59,6 @@ bool V8::Initialize(Deserializer *des) {
 
   // Enable logging before setting up the heap
   Logger::Setup();
-  if (des) des->GetLog();
 
   // Setup the platform OS support.
   OS::Setup();
@@ -108,7 +105,7 @@ bool V8::Initialize(Deserializer *des) {
 
   // Deserializing may put strange things in the root array's copy of the
   // stack guard.
-  Heap::SetStackLimit(StackGuard::jslimit());
+  Heap::SetStackLimits();
 
   // Setup the CPU support. Must be done after heap setup and after
   // any deserialization because we have to have the initial heap
@@ -116,6 +113,11 @@ bool V8::Initialize(Deserializer *des) {
   CPU::Setup();
 
   OProfileAgent::Initialize();
+
+  if (FLAG_log_code) {
+    HandleScope scope;
+    LOG(LogCompiledFunctions());
+  }
 
   return true;
 }

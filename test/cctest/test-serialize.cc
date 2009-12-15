@@ -123,13 +123,17 @@ TEST(ExternalReferenceEncoder) {
       ExternalReference::the_hole_value_location();
   CHECK_EQ(make_code(UNCLASSIFIED, 2),
            encoder.Encode(the_hole_value_location.address()));
-  ExternalReference stack_guard_limit_address =
-      ExternalReference::address_of_stack_guard_limit();
+  ExternalReference stack_limit_address =
+      ExternalReference::address_of_stack_limit();
   CHECK_EQ(make_code(UNCLASSIFIED, 4),
-           encoder.Encode(stack_guard_limit_address.address()));
-  CHECK_EQ(make_code(UNCLASSIFIED, 10),
+           encoder.Encode(stack_limit_address.address()));
+  ExternalReference real_stack_limit_address =
+      ExternalReference::address_of_real_stack_limit();
+  CHECK_EQ(make_code(UNCLASSIFIED, 5),
+           encoder.Encode(real_stack_limit_address.address()));
+  CHECK_EQ(make_code(UNCLASSIFIED, 11),
            encoder.Encode(ExternalReference::debug_break().address()));
-  CHECK_EQ(make_code(UNCLASSIFIED, 6),
+  CHECK_EQ(make_code(UNCLASSIFIED, 7),
            encoder.Encode(ExternalReference::new_space_start().address()));
   CHECK_EQ(make_code(UNCLASSIFIED, 3),
            encoder.Encode(ExternalReference::roots_address().address()));
@@ -158,74 +162,49 @@ TEST(ExternalReferenceDecoder) {
            decoder.Decode(make_code(UNCLASSIFIED, 1)));
   CHECK_EQ(ExternalReference::the_hole_value_location().address(),
            decoder.Decode(make_code(UNCLASSIFIED, 2)));
-  CHECK_EQ(ExternalReference::address_of_stack_guard_limit().address(),
+  CHECK_EQ(ExternalReference::address_of_stack_limit().address(),
            decoder.Decode(make_code(UNCLASSIFIED, 4)));
+  CHECK_EQ(ExternalReference::address_of_real_stack_limit().address(),
+           decoder.Decode(make_code(UNCLASSIFIED, 5)));
   CHECK_EQ(ExternalReference::debug_break().address(),
-           decoder.Decode(make_code(UNCLASSIFIED, 10)));
+           decoder.Decode(make_code(UNCLASSIFIED, 11)));
   CHECK_EQ(ExternalReference::new_space_start().address(),
-           decoder.Decode(make_code(UNCLASSIFIED, 6)));
+           decoder.Decode(make_code(UNCLASSIFIED, 7)));
 }
 
 
 static void Serialize() {
-#ifdef DEBUG
-  FLAG_debug_serialization = true;
-#endif
-  StatsTable::SetCounterFunction(counter_function);
-
-  v8::HandleScope scope;
-  const int kExtensionCount = 1;
-  const char* extension_list[kExtensionCount] = { "v8/gc" };
-  v8::ExtensionConfiguration extensions(kExtensionCount, extension_list);
-  Serializer::Enable();
-  v8::Persistent<v8::Context> env = v8::Context::New(&extensions);
-  env->Enter();
-
+  // We have to create one context.  One reason for this is so that the builtins
+  // can be loaded from v8natives.js and their addresses can be processed.  This
+  // will clear the pending fixups array, which would otherwise contain GC roots
+  // that would confuse the serialization/deserialization process.
+  v8::Persistent<v8::Context> env = v8::Context::New();
+  env.Dispose();
   Snapshot::WriteToFile(FLAG_testing_serialization_file);
 }
 
 
-// Test that the whole heap can be serialized when running from the
-// internal snapshot.
-// (Smoke test.)
-TEST(SerializeInternal) {
-  Snapshot::Initialize(NULL);
-  Serialize();
-}
-
-
-// Test that the whole heap can be serialized when running from a
-// bootstrapped heap.
-// (Smoke test.)
+// Test that the whole heap can be serialized.
 TEST(Serialize) {
-  if (Snapshot::IsEnabled()) return;
+  Serializer::Enable();
+  v8::V8::Initialize();
   Serialize();
 }
 
 
-// Test that the heap isn't destroyed after a serialization.
-TEST(SerializeNondestructive) {
-  if (Snapshot::IsEnabled()) return;
-  StatsTable::SetCounterFunction(counter_function);
-  v8::HandleScope scope;
+// Test that heap serialization is non-destructive.
+TEST(SerializeTwice) {
   Serializer::Enable();
-  v8::Persistent<v8::Context> env = v8::Context::New();
-  v8::Context::Scope context_scope(env);
-  Serializer().Serialize();
-  const char* c_source = "\"abcd\".charAt(2) == 'c'";
-  v8::Local<v8::String> source = v8::String::New(c_source);
-  v8::Local<v8::Script> script = v8::Script::Compile(source);
-  v8::Local<v8::Value> value = script->Run();
-  CHECK(value->BooleanValue());
+  v8::V8::Initialize();
+  Serialize();
+  Serialize();
 }
+
 
 //----------------------------------------------------------------------------
 // Tests that the heap can be deserialized.
 
 static void Deserialize() {
-#ifdef DEBUG
-  FLAG_debug_serialization = true;
-#endif
   CHECK(Snapshot::Initialize(FLAG_testing_serialization_file));
 }
 
@@ -248,13 +227,32 @@ DEPENDENT_TEST(Deserialize, Serialize) {
 
   Deserialize();
 
+  v8::Persistent<v8::Context> env = v8::Context::New();
+  env->Enter();
+
   SanityCheck();
 }
 
-DEPENDENT_TEST(DeserializeAndRunScript, Serialize) {
+
+DEPENDENT_TEST(DeserializeFromSecondSerialization, SerializeTwice) {
   v8::HandleScope scope;
 
   Deserialize();
+
+  v8::Persistent<v8::Context> env = v8::Context::New();
+  env->Enter();
+
+  SanityCheck();
+}
+
+
+DEPENDENT_TEST(DeserializeAndRunScript2, Serialize) {
+  v8::HandleScope scope;
+
+  Deserialize();
+
+  v8::Persistent<v8::Context> env = v8::Context::New();
+  env->Enter();
 
   const char* c_source = "\"1234\".length";
   v8::Local<v8::String> source = v8::String::New(c_source);
@@ -263,32 +261,20 @@ DEPENDENT_TEST(DeserializeAndRunScript, Serialize) {
 }
 
 
-DEPENDENT_TEST(DeserializeNatives, Serialize) {
+DEPENDENT_TEST(DeserializeFromSecondSerializationAndRunScript2,
+               SerializeTwice) {
   v8::HandleScope scope;
 
   Deserialize();
 
-  const char* c_source = "\"abcd\".charAt(2) == 'c'";
+  v8::Persistent<v8::Context> env = v8::Context::New();
+  env->Enter();
+
+  const char* c_source = "\"1234\".length";
   v8::Local<v8::String> source = v8::String::New(c_source);
   v8::Local<v8::Script> script = v8::Script::Compile(source);
-  v8::Local<v8::Value> value = script->Run();
-  CHECK(value->BooleanValue());
+  CHECK_EQ(4, script->Run()->Int32Value());
 }
-
-
-DEPENDENT_TEST(DeserializeExtensions, Serialize) {
-  v8::HandleScope scope;
-
-  Deserialize();
-  const char* c_source = "gc();";
-  v8::Local<v8::String> source = v8::String::New(c_source);
-  v8::Local<v8::Script> script = v8::Script::Compile(source);
-  v8::Local<v8::Value> value = script->Run();
-  CHECK(value->IsUndefined());
-}
-
-
-extern "C" void V8_Fatal(const char* file, int line, const char* format, ...);
 
 
 TEST(TestThatAlwaysSucceeds) {

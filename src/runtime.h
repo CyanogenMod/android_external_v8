@@ -149,7 +149,7 @@ namespace internal {
   F(StringIndexOf, 3, 1) \
   F(StringLastIndexOf, 3, 1) \
   F(StringLocaleCompare, 2, 1) \
-  F(StringSlice, 3, 1) \
+  F(SubString, 3, 1) \
   F(StringReplaceRegExpWithString, 4, 1) \
   F(StringMatch, 3, 1) \
   F(StringTrim, 3, 1) \
@@ -234,6 +234,7 @@ namespace internal {
   F(ReThrow, 1, 1) \
   F(ThrowReferenceError, 1, 1) \
   F(StackGuard, 1, 1) \
+  F(PromoteScheduledException, 0, 1) \
   \
   /* Contexts */ \
   F(NewContext, 1, 1) \
@@ -263,6 +264,8 @@ namespace internal {
   F(Log, 2, 1) \
   /* ES5 */ \
   F(LocalKeys, 1, 1) \
+  /* Handle scopes */ \
+  F(DeleteHandleScopeExtensions, 0, 1) \
   \
   /* Pseudo functions - handled as macros by parser */ \
   F(IS_VAR, 1, 1)
@@ -315,6 +318,14 @@ namespace internal {
 #define RUNTIME_FUNCTION_LIST_DEBUGGER_SUPPORT(F)
 #endif
 
+#ifdef ENABLE_LOGGING_AND_PROFILING
+#define RUNTIME_FUNCTION_LIST_PROFILER_SUPPORT(F) \
+  F(ProfilerResume, 1, 1) \
+  F(ProfilerPause, 1, 1)
+#else
+#define RUNTIME_FUNCTION_LIST_PROFILER_SUPPORT(F)
+#endif
+
 #ifdef DEBUG
 #define RUNTIME_FUNCTION_LIST_DEBUG(F) \
   /* Testing */ \
@@ -333,7 +344,8 @@ namespace internal {
   RUNTIME_FUNCTION_LIST_ALWAYS_1(F) \
   RUNTIME_FUNCTION_LIST_ALWAYS_2(F) \
   RUNTIME_FUNCTION_LIST_DEBUG(F) \
-  RUNTIME_FUNCTION_LIST_DEBUGGER_SUPPORT(F)
+  RUNTIME_FUNCTION_LIST_DEBUGGER_SUPPORT(F) \
+  RUNTIME_FUNCTION_LIST_PROFILER_SUPPORT(F)
 
 // ----------------------------------------------------------------------------
 // Runtime provides access to all C++ runtime functions.

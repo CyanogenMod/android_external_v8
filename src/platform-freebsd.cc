@@ -84,8 +84,8 @@ void OS::Setup() {
 }
 
 
-double OS::nan_value() {
-  return NAN;
+uint64_t OS::CpuFeaturesImpliedByPlatform() {
+  return 0;  // FreeBSD runs on anything.
 }
 
 

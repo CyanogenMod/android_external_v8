@@ -155,6 +155,15 @@ void MacroAssembler::Ret(Condition cond) {
 }
 
 
+void MacroAssembler::StackLimitCheck(Label* on_stack_overflow) {
+  LoadRoot(ip, Heap::kStackLimitRootIndex);
+  cmp(sp, Operand(ip));
+  b(lo, on_stack_overflow);
+}
+
+
+
+
 void MacroAssembler::SmiJumpTable(Register index, Vector<Label*> targets) {
   // Empty the const pool.
   CheckConstPool(true, true);
@@ -274,9 +283,7 @@ void MacroAssembler::LeaveFrame(StackFrame::Type type) {
 }
 
 
-void MacroAssembler::EnterExitFrame(StackFrame::Type type) {
-  ASSERT(type == StackFrame::EXIT || type == StackFrame::EXIT_DEBUG);
-
+void MacroAssembler::EnterExitFrame(ExitFrame::Mode mode) {
   // Compute the argv pointer and keep it in a callee-saved register.
   // r0 is argc.
   add(r6, sp, Operand(r0, LSL, kPointerSizeLog2));
@@ -298,8 +305,11 @@ void MacroAssembler::EnterExitFrame(StackFrame::Type type) {
   stm(db_w, sp, fp.bit() | ip.bit() | lr.bit());
   mov(fp, Operand(sp));  // setup new frame pointer
 
-  // Push debug marker.
-  mov(ip, Operand(type == StackFrame::EXIT_DEBUG ? 1 : 0));
+  if (mode == ExitFrame::MODE_DEBUG) {
+    mov(ip, Operand(Smi::FromInt(0)));
+  } else {
+    mov(ip, Operand(CodeObject()));
+  }
   push(ip);
 
   // Save the frame pointer and the context in top.
@@ -316,7 +326,7 @@ void MacroAssembler::EnterExitFrame(StackFrame::Type type) {
 #ifdef ENABLE_DEBUGGER_SUPPORT
   // Save the state of all registers to the stack from the memory
   // location. This is needed to allow nested break points.
-  if (type == StackFrame::EXIT_DEBUG) {
+  if (mode == ExitFrame::MODE_DEBUG) {
     // Use sp as base to push.
     CopyRegistersFromMemoryToStack(sp, kJSCallerSaved);
   }
@@ -348,14 +358,14 @@ void MacroAssembler::AlignStack(int offset) {
 }
 
 
-void MacroAssembler::LeaveExitFrame(StackFrame::Type type) {
+void MacroAssembler::LeaveExitFrame(ExitFrame::Mode mode) {
 #ifdef ENABLE_DEBUGGER_SUPPORT
   // Restore the memory copy of the registers by digging them out from
   // the stack. This is needed to allow nested break points.
-  if (type == StackFrame::EXIT_DEBUG) {
+  if (mode == ExitFrame::MODE_DEBUG) {
     // This code intentionally clobbers r2 and r3.
     const int kCallerSavedSize = kNumJSCallerSaved * kPointerSize;
-    const int kOffset = ExitFrameConstants::kDebugMarkOffset - kCallerSavedSize;
+    const int kOffset = ExitFrameConstants::kCodeOffset - kCallerSavedSize;
     add(r3, fp, Operand(kOffset));
     CopyRegistersFromStackToMemory(r3, r2, kJSCallerSaved);
   }
@@ -784,15 +794,13 @@ void MacroAssembler::AllocateInNewSpace(int object_size,
   mov(scratch1, Operand(new_space_allocation_top));
   if ((flags & RESULT_CONTAINS_TOP) == 0) {
     ldr(result, MemOperand(scratch1));
-  } else {
-#ifdef DEBUG
+  } else if (FLAG_debug_code) {
     // Assert that result actually contains top on entry. scratch2 is used
     // immediately below so this use of scratch2 does not cause difference with
     // respect to register content between debug and release mode.
     ldr(scratch2, MemOperand(scratch1));
     cmp(result, scratch2);
     Check(eq, "Unexpected allocation top");
-#endif
   }
 
   // Calculate new top and bail out if new space is exhausted. Use result
@@ -805,7 +813,11 @@ void MacroAssembler::AllocateInNewSpace(int object_size,
   cmp(result, Operand(scratch2));
   b(hi, gc_required);
 
-  // Update allocation top. result temporarily holds the new top,
+  // Update allocation top. result temporarily holds the new top.
+  if (FLAG_debug_code) {
+    tst(result, Operand(kObjectAlignmentMask));
+    Check(eq, "Unaligned allocation in new space");
+  }
   str(result, MemOperand(scratch1));
 
   // Tag and adjust back to start of new object.
@@ -834,15 +846,13 @@ void MacroAssembler::AllocateInNewSpace(Register object_size,
   mov(scratch1, Operand(new_space_allocation_top));
   if ((flags & RESULT_CONTAINS_TOP) == 0) {
     ldr(result, MemOperand(scratch1));
-  } else {
-#ifdef DEBUG
+  } else if (FLAG_debug_code) {
     // Assert that result actually contains top on entry. scratch2 is used
     // immediately below so this use of scratch2 does not cause difference with
     // respect to register content between debug and release mode.
     ldr(scratch2, MemOperand(scratch1));
     cmp(result, scratch2);
     Check(eq, "Unexpected allocation top");
-#endif
   }
 
   // Calculate new top and bail out if new space is exhausted. Use result
@@ -856,7 +866,11 @@ void MacroAssembler::AllocateInNewSpace(Register object_size,
   cmp(result, Operand(scratch2));
   b(hi, gc_required);
 
-  // Update allocation top. result temporarily holds the new top,
+  // Update allocation top. result temporarily holds the new top.
+  if (FLAG_debug_code) {
+    tst(result, Operand(kObjectAlignmentMask));
+    Check(eq, "Unaligned allocation in new space");
+  }
   str(result, MemOperand(scratch1));
 
   // Adjust back to start of new object.
@@ -972,6 +986,17 @@ void MacroAssembler::IllegalOperation(int num_arguments) {
     add(sp, sp, Operand(num_arguments * kPointerSize));
   }
   LoadRoot(r0, Heap::kUndefinedValueRootIndex);
+}
+
+
+void MacroAssembler::IntegerToDoubleConversionWithVFP3(Register inReg,
+                                                       Register outHighReg,
+                                                       Register outLowReg) {
+  // ARMv7 VFP3 instructions to implement integer to double conversion.
+  mov(r7, Operand(inReg, ASR, kSmiTagSize));
+  fmsr(s15, r7);
+  fsitod(d7, s15);
+  fmrrd(outLowReg, outHighReg, d7);
 }
 
 
@@ -1141,6 +1166,9 @@ void MacroAssembler::Abort(const char* msg) {
     RecordComment(msg);
   }
 #endif
+  // Disable stub call restrictions to always allow calls to abort.
+  set_allow_stub_calls(true);
+
   mov(r0, Operand(p0));
   push(r0);
   mov(r0, Operand(Smi::FromInt(p1 - p0)));
@@ -1148,6 +1176,26 @@ void MacroAssembler::Abort(const char* msg) {
   CallRuntime(Runtime::kAbort, 2);
   // will not return here
 }
+
+
+void MacroAssembler::LoadContext(Register dst, int context_chain_length) {
+  if (context_chain_length > 0) {
+    // Move up the chain of contexts to the context containing the slot.
+    ldr(dst, MemOperand(cp, Context::SlotOffset(Context::CLOSURE_INDEX)));
+    // Load the function context (which is the incoming, outer context).
+    ldr(dst, FieldMemOperand(dst, JSFunction::kContextOffset));
+    for (int i = 1; i < context_chain_length; i++) {
+      ldr(dst, MemOperand(dst, Context::SlotOffset(Context::CLOSURE_INDEX)));
+      ldr(dst, FieldMemOperand(dst, JSFunction::kContextOffset));
+    }
+    // The context may be an intermediate context, not a function context.
+    ldr(dst, MemOperand(dst, Context::SlotOffset(Context::FCONTEXT_INDEX)));
+  } else {  // Slot is in the current function context.
+    // The context may be an intermediate context, not a function context.
+    ldr(dst, MemOperand(cp, Context::SlotOffset(Context::FCONTEXT_INDEX)));
+  }
+}
+
 
 
 #ifdef ENABLE_DEBUGGER_SUPPORT

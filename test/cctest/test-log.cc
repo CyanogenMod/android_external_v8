@@ -19,6 +19,7 @@
 using v8::internal::Address;
 using v8::internal::EmbeddedVector;
 using v8::internal::Logger;
+using v8::internal::StrLength;
 
 namespace i = v8::internal;
 
@@ -55,7 +56,7 @@ TEST(GetMessages) {
   CHECK_EQ(0, Logger::GetLogLines(0, log_lines, 3));
   // See Logger::StringEvent.
   const char* line_1 = "aaa,\"bbb\"\n";
-  const int line_1_len = strlen(line_1);
+  const int line_1_len = StrLength(line_1);
   // Still smaller than log message length.
   CHECK_EQ(0, Logger::GetLogLines(0, log_lines, line_1_len - 1));
   // The exact size.
@@ -68,7 +69,7 @@ TEST(GetMessages) {
   CHECK_EQ(line_1, log_lines);
   memset(log_lines, 0, sizeof(log_lines));
   const char* line_2 = "cccc,\"dddd\"\n";
-  const int line_2_len = strlen(line_2);
+  const int line_2_len = StrLength(line_2);
   // Now start with line_2 beginning.
   CHECK_EQ(0, Logger::GetLogLines(line_1_len, log_lines, 0));
   CHECK_EQ(0, Logger::GetLogLines(line_1_len, log_lines, 3));
@@ -82,7 +83,7 @@ TEST(GetMessages) {
   memset(log_lines, 0, sizeof(log_lines));
   // Now get entire buffer contents.
   const char* all_lines = "aaa,\"bbb\"\ncccc,\"dddd\"\n";
-  const int all_lines_len = strlen(all_lines);
+  const int all_lines_len = StrLength(all_lines);
   CHECK_EQ(all_lines_len, Logger::GetLogLines(0, log_lines, all_lines_len));
   CHECK_EQ(all_lines, log_lines);
   memset(log_lines, 0, sizeof(log_lines));
@@ -104,7 +105,7 @@ TEST(BeyondWritePosition) {
   Logger::StringEvent("cccc", "dddd");
   // See Logger::StringEvent.
   const char* all_lines = "aaa,\"bbb\"\ncccc,\"dddd\"\n";
-  const int all_lines_len = strlen(all_lines);
+  const int all_lines_len = StrLength(all_lines);
   EmbeddedVector<char, 100> buffer;
   const int beyond_write_pos = all_lines_len;
   CHECK_EQ(0, Logger::GetLogLines(beyond_write_pos, buffer.start(), 1));
@@ -246,7 +247,7 @@ TEST(ProfLazyMode) {
   i::FLAG_logfile = "*";
 
   // If tests are being run manually, V8 will be already initialized
-  // by the test below.
+  // by the bottom test.
   const bool need_to_set_up_logger = i::V8::IsRunning();
   v8::HandleScope scope;
   v8::Handle<v8::Context> env = v8::Context::New();
@@ -256,11 +257,10 @@ TEST(ProfLazyMode) {
   // No sampling should happen prior to resuming profiler.
   CHECK(!LoggerTestHelper::IsSamplerActive());
 
-  // Read initial logged data (static libs map).
   EmbeddedVector<char, 102400> buffer;
+  // Nothing must be logged until profiling is resumed.
   int log_pos = GetLogLines(0, &buffer);
-  CHECK_GT(log_pos, 0);
-  CHECK_GT(buffer.length(), log_pos);
+  CHECK_EQ(0, log_pos);
 
   CompileAndRunScript("var a = (function(x) { return x + 1; })(10);");
 
@@ -438,7 +438,7 @@ namespace {
 class SimpleExternalString : public v8::String::ExternalStringResource {
  public:
   explicit SimpleExternalString(const char* source)
-      : utf_source_(strlen(source)) {
+      : utf_source_(StrLength(source)) {
     for (int i = 0; i < utf_source_.length(); ++i)
       utf_source_[i] = source[i];
   }
@@ -471,6 +471,145 @@ TEST(Issue23768) {
 
   // Must not crash.
   i::Logger::LogCompiledFunctions();
+}
+
+
+static v8::Handle<v8::Value> ObjMethod1(const v8::Arguments& args) {
+  return v8::Handle<v8::Value>();
+}
+
+TEST(LogCallbacks) {
+  const bool saved_prof_lazy = i::FLAG_prof_lazy;
+  const bool saved_prof = i::FLAG_prof;
+  const bool saved_prof_auto = i::FLAG_prof_auto;
+  i::FLAG_prof = true;
+  i::FLAG_prof_lazy = false;
+  i::FLAG_prof_auto = false;
+  i::FLAG_logfile = "*";
+
+  // If tests are being run manually, V8 will be already initialized
+  // by the bottom test.
+  const bool need_to_set_up_logger = i::V8::IsRunning();
+  v8::HandleScope scope;
+  v8::Handle<v8::Context> env = v8::Context::New();
+  if (need_to_set_up_logger) Logger::Setup();
+  env->Enter();
+
+  // Skip all initially logged stuff.
+  EmbeddedVector<char, 102400> buffer;
+  int log_pos = GetLogLines(0, &buffer);
+
+  v8::Persistent<v8::FunctionTemplate> obj =
+      v8::Persistent<v8::FunctionTemplate>::New(v8::FunctionTemplate::New());
+  obj->SetClassName(v8::String::New("Obj"));
+  v8::Handle<v8::ObjectTemplate> proto = obj->PrototypeTemplate();
+  v8::Local<v8::Signature> signature = v8::Signature::New(obj);
+  proto->Set(v8::String::New("method1"),
+             v8::FunctionTemplate::New(ObjMethod1,
+                                       v8::Handle<v8::Value>(),
+                                       signature),
+             static_cast<v8::PropertyAttribute>(v8::DontDelete));
+
+  env->Global()->Set(v8_str("Obj"), obj->GetFunction());
+  CompileAndRunScript("Obj.prototype.method1.toString();");
+
+  i::Logger::LogCompiledFunctions();
+  log_pos = GetLogLines(log_pos, &buffer);
+  CHECK_GT(log_pos, 0);
+  buffer[log_pos] = 0;
+
+  const char* callback_rec = "code-creation,Callback,";
+  char* pos = strstr(buffer.start(), callback_rec);
+  CHECK_NE(NULL, pos);
+  pos += strlen(callback_rec);
+  EmbeddedVector<char, 100> ref_data;
+  i::OS::SNPrintF(ref_data,
+                  "0x%" V8PRIxPTR ",1,\"method1\"", ObjMethod1);
+  *(pos + strlen(ref_data.start())) = '\0';
+  CHECK_EQ(ref_data.start(), pos);
+
+  obj.Dispose();
+
+  env->Exit();
+  Logger::TearDown();
+  i::FLAG_prof_lazy = saved_prof_lazy;
+  i::FLAG_prof = saved_prof;
+  i::FLAG_prof_auto = saved_prof_auto;
+}
+
+
+static v8::Handle<v8::Value> Prop1Getter(v8::Local<v8::String> property,
+                                         const v8::AccessorInfo& info) {
+  return v8::Handle<v8::Value>();
+}
+
+static void Prop1Setter(v8::Local<v8::String> property,
+                                         v8::Local<v8::Value> value,
+                                         const v8::AccessorInfo& info) {
+}
+
+static v8::Handle<v8::Value> Prop2Getter(v8::Local<v8::String> property,
+                                         const v8::AccessorInfo& info) {
+  return v8::Handle<v8::Value>();
+}
+
+TEST(LogAccessorCallbacks) {
+  const bool saved_prof_lazy = i::FLAG_prof_lazy;
+  const bool saved_prof = i::FLAG_prof;
+  const bool saved_prof_auto = i::FLAG_prof_auto;
+  i::FLAG_prof = true;
+  i::FLAG_prof_lazy = false;
+  i::FLAG_prof_auto = false;
+  i::FLAG_logfile = "*";
+
+  // If tests are being run manually, V8 will be already initialized
+  // by the bottom test.
+  const bool need_to_set_up_logger = i::V8::IsRunning();
+  v8::HandleScope scope;
+  v8::Handle<v8::Context> env = v8::Context::New();
+  if (need_to_set_up_logger) Logger::Setup();
+  env->Enter();
+
+  // Skip all initially logged stuff.
+  EmbeddedVector<char, 102400> buffer;
+  int log_pos = GetLogLines(0, &buffer);
+
+  v8::Persistent<v8::FunctionTemplate> obj =
+      v8::Persistent<v8::FunctionTemplate>::New(v8::FunctionTemplate::New());
+  obj->SetClassName(v8::String::New("Obj"));
+  v8::Handle<v8::ObjectTemplate> inst = obj->InstanceTemplate();
+  inst->SetAccessor(v8::String::New("prop1"), Prop1Getter, Prop1Setter);
+  inst->SetAccessor(v8::String::New("prop2"), Prop2Getter);
+
+  i::Logger::LogAccessorCallbacks();
+  log_pos = GetLogLines(log_pos, &buffer);
+  CHECK_GT(log_pos, 0);
+  buffer[log_pos] = 0;
+  printf("%s", buffer.start());
+
+  EmbeddedVector<char, 100> prop1_getter_record;
+  i::OS::SNPrintF(prop1_getter_record,
+                  "code-creation,Callback,0x%" V8PRIxPTR ",1,\"get prop1\"",
+                  Prop1Getter);
+  CHECK_NE(NULL, strstr(buffer.start(), prop1_getter_record.start()));
+  EmbeddedVector<char, 100> prop1_setter_record;
+  i::OS::SNPrintF(prop1_setter_record,
+                  "code-creation,Callback,0x%" V8PRIxPTR ",1,\"set prop1\"",
+                  Prop1Setter);
+  CHECK_NE(NULL, strstr(buffer.start(), prop1_setter_record.start()));
+  EmbeddedVector<char, 100> prop2_getter_record;
+  i::OS::SNPrintF(prop2_getter_record,
+                  "code-creation,Callback,0x%" V8PRIxPTR ",1,\"get prop2\"",
+                  Prop2Getter);
+  CHECK_NE(NULL, strstr(buffer.start(), prop2_getter_record.start()));
+
+  obj.Dispose();
+
+  env->Exit();
+  Logger::TearDown();
+  i::FLAG_prof_lazy = saved_prof_lazy;
+  i::FLAG_prof = saved_prof;
+  i::FLAG_prof_auto = saved_prof_auto;
 }
 
 
@@ -593,7 +732,7 @@ class ParseLogResult {
       entities[i] = NULL;
     }
     const size_t map_length = bounds.Length();
-    entities_map = i::NewArray<int>(map_length);
+    entities_map = i::NewArray<int>(static_cast<int>(map_length));
     for (size_t i = 0; i < map_length; ++i) {
       entities_map[i] = -1;
     }
@@ -769,7 +908,7 @@ static inline void PrintCodeEntityInfo(CodeEntityInfo entity) {
   const int max_len = 50;
   if (entity != NULL) {
     char* eol = strchr(entity, '\n');
-    int len = eol - entity;
+    int len = static_cast<int>(eol - entity);
     len = len <= max_len ? len : max_len;
     printf("%-*.*s ", max_len, len, entity);
   } else {
@@ -789,7 +928,7 @@ static void PrintCodeEntitiesInfo(
 
 
 static inline int StrChrLen(const char* s, char c) {
-  return strchr(s, c) - s;
+  return static_cast<int>(strchr(s, c) - s);
 }
 
 

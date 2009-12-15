@@ -37,6 +37,7 @@
 #include "platform.h"
 #include "serialize.h"
 #include "snapshot.h"
+#include "utils.h"
 #include "v8threads.h"
 #include "version.h"
 
@@ -125,6 +126,48 @@ static FatalErrorCallback& GetFatalErrorHandler() {
 // When V8 cannot allocated memory FatalProcessOutOfMemory is called.
 // The default fatal error handler is called and execution is stopped.
 void i::V8::FatalProcessOutOfMemory(const char* location) {
+  i::HeapStats heap_stats;
+  int start_marker;
+  heap_stats.start_marker = &start_marker;
+  int new_space_size;
+  heap_stats.new_space_size = &new_space_size;
+  int new_space_capacity;
+  heap_stats.new_space_capacity = &new_space_capacity;
+  int old_pointer_space_size;
+  heap_stats.old_pointer_space_size = &old_pointer_space_size;
+  int old_pointer_space_capacity;
+  heap_stats.old_pointer_space_capacity = &old_pointer_space_capacity;
+  int old_data_space_size;
+  heap_stats.old_data_space_size = &old_data_space_size;
+  int old_data_space_capacity;
+  heap_stats.old_data_space_capacity = &old_data_space_capacity;
+  int code_space_size;
+  heap_stats.code_space_size = &code_space_size;
+  int code_space_capacity;
+  heap_stats.code_space_capacity = &code_space_capacity;
+  int map_space_size;
+  heap_stats.map_space_size = &map_space_size;
+  int map_space_capacity;
+  heap_stats.map_space_capacity = &map_space_capacity;
+  int cell_space_size;
+  heap_stats.cell_space_size = &cell_space_size;
+  int cell_space_capacity;
+  heap_stats.cell_space_capacity = &cell_space_capacity;
+  int lo_space_size;
+  heap_stats.lo_space_size = &lo_space_size;
+  int global_handle_count;
+  heap_stats.global_handle_count = &global_handle_count;
+  int weak_global_handle_count;
+  heap_stats.weak_global_handle_count = &weak_global_handle_count;
+  int pending_global_handle_count;
+  heap_stats.pending_global_handle_count = &pending_global_handle_count;
+  int near_death_global_handle_count;
+  heap_stats.near_death_global_handle_count = &near_death_global_handle_count;
+  int destroyed_global_handle_count;
+  heap_stats.destroyed_global_handle_count = &destroyed_global_handle_count;
+  int end_marker;
+  heap_stats.end_marker = &end_marker;
+  i::Heap::RecordStats(&heap_stats);
   i::V8::SetFatalError();
   FatalErrorCallback callback = GetFatalErrorHandler();
   {
@@ -450,7 +493,7 @@ void Context::Exit() {
 }
 
 
-void Context::SetData(v8::Handle<Value> data) {
+void Context::SetData(v8::Handle<String> data) {
   if (IsDeadCheck("v8::Context::SetData()")) return;
   ENTER_V8;
   {
@@ -1174,7 +1217,7 @@ Local<Value> Script::Id() {
 }
 
 
-void Script::SetData(v8::Handle<Value> data) {
+void Script::SetData(v8::Handle<String> data) {
   ON_BAILOUT("v8::Script::SetData()", return);
   LOG_API("Script::SetData");
   {
@@ -1191,19 +1234,26 @@ void Script::SetData(v8::Handle<Value> data) {
 
 
 v8::TryCatch::TryCatch()
-    : next_(i::Top::try_catch_handler()),
+    : next_(i::Top::try_catch_handler_address()),
       exception_(i::Heap::the_hole_value()),
       message_(i::Smi::FromInt(0)),
       is_verbose_(false),
       can_continue_(true),
       capture_message_(true),
-      js_handler_(NULL) {
+      rethrow_(false) {
   i::Top::RegisterTryCatchHandler(this);
 }
 
 
 v8::TryCatch::~TryCatch() {
-  i::Top::UnregisterTryCatchHandler(this);
+  if (rethrow_) {
+    v8::HandleScope scope;
+    v8::Local<v8::Value> exc = v8::Local<v8::Value>::New(Exception());
+    i::Top::UnregisterTryCatchHandler(this);
+    v8::ThrowException(exc);
+  } else {
+    i::Top::UnregisterTryCatchHandler(this);
+  }
 }
 
 
@@ -1214,6 +1264,13 @@ bool v8::TryCatch::HasCaught() const {
 
 bool v8::TryCatch::CanContinue() const {
   return can_continue_;
+}
+
+
+v8::Handle<v8::Value> v8::TryCatch::ReThrow() {
+  if (!HasCaught()) return v8::Local<v8::Value>();
+  rethrow_ = true;
+  return v8::Undefined();
 }
 
 
@@ -2032,11 +2089,11 @@ Local<String> v8::Object::ObjectProtoToString() {
       Local<String> str = Utils::ToLocal(class_name);
       const char* postfix = "]";
 
-      size_t prefix_len = strlen(prefix);
-      size_t str_len = str->Length();
-      size_t postfix_len = strlen(postfix);
+      int prefix_len = i::StrLength(prefix);
+      int str_len = str->Length();
+      int postfix_len = i::StrLength(postfix);
 
-      size_t buf_len = prefix_len + str_len + postfix_len;
+      int buf_len = prefix_len + str_len + postfix_len;
       char* buf = i::NewArray<char>(buf_len);
 
       // Write prefix.
@@ -2621,11 +2678,8 @@ bool v8::V8::Initialize() {
   if (i::V8::IsRunning()) return true;
   ENTER_V8;
   HandleScope scope;
-  if (i::Snapshot::Initialize()) {
-    return true;
-  } else {
-    return i::V8::Initialize(NULL);
-  }
+  if (i::Snapshot::Initialize()) return true;
+  return i::V8::Initialize(NULL);
 }
 
 
@@ -2653,10 +2707,8 @@ bool v8::V8::IdleNotification() {
 
 
 void v8::V8::LowMemoryNotification() {
-#if defined(ANDROID)
   if (!i::V8::IsRunning()) return;
   i::Heap::CollectAllGarbage(true);
-#endif
 }
 
 
@@ -2952,7 +3004,7 @@ Local<String> v8::String::New(const char* data, int length) {
   LOG_API("String::New(char)");
   if (length == 0) return Empty();
   ENTER_V8;
-  if (length == -1) length = strlen(data);
+  if (length == -1) length = i::StrLength(data);
   i::Handle<i::String> result =
       i::Factory::NewStringFromUtf8(i::Vector<const char>(data, length));
   return Utils::ToLocal(result);
@@ -2975,7 +3027,7 @@ Local<String> v8::String::NewUndetectable(const char* data, int length) {
   EnsureInitialized("v8::String::NewUndetectable()");
   LOG_API("String::NewUndetectable(char)");
   ENTER_V8;
-  if (length == -1) length = strlen(data);
+  if (length == -1) length = i::StrLength(data);
   i::Handle<i::String> result =
       i::Factory::NewStringFromUtf8(i::Vector<const char>(data, length));
   result->MarkAsUndetectable();
@@ -3043,7 +3095,8 @@ static void DisposeExternalString(v8::Persistent<v8::Value> obj,
     v8::String::ExternalStringResource* resource =
         reinterpret_cast<v8::String::ExternalStringResource*>(parameter);
     if (resource != NULL) {
-      const size_t total_size = resource->length() * sizeof(*resource->data());
+      const int total_size =
+          static_cast<int>(resource->length() * sizeof(*resource->data()));
       i::Counters::total_external_string_memory.Decrement(total_size);
 
       // The object will continue to live in the JavaScript heap until the
@@ -3073,7 +3126,8 @@ static void DisposeExternalAsciiString(v8::Persistent<v8::Value> obj,
     v8::String::ExternalAsciiStringResource* resource =
         reinterpret_cast<v8::String::ExternalAsciiStringResource*>(parameter);
     if (resource != NULL) {
-      const size_t total_size = resource->length() * sizeof(*resource->data());
+      const int total_size =
+          static_cast<int>(resource->length() * sizeof(*resource->data()));
       i::Counters::total_external_string_memory.Decrement(total_size);
 
       // The object will continue to live in the JavaScript heap until the
@@ -3095,7 +3149,8 @@ Local<String> v8::String::NewExternal(
   EnsureInitialized("v8::String::NewExternal()");
   LOG_API("String::NewExternal");
   ENTER_V8;
-  const size_t total_size = resource->length() * sizeof(*resource->data());
+  const int total_size =
+      static_cast<int>(resource->length() * sizeof(*resource->data()));
   i::Counters::total_external_string_memory.Increment(total_size);
   i::Handle<i::String> result = NewExternalStringHandle(resource);
   i::Handle<i::Object> handle = i::GlobalHandles::Create(*result);
@@ -3130,7 +3185,8 @@ Local<String> v8::String::NewExternal(
   EnsureInitialized("v8::String::NewExternal()");
   LOG_API("String::NewExternal");
   ENTER_V8;
-  const size_t total_size = resource->length() * sizeof(*resource->data());
+  const int total_size =
+      static_cast<int>(resource->length() * sizeof(*resource->data()));
   i::Counters::total_external_string_memory.Increment(total_size);
   i::Handle<i::String> result = NewExternalAsciiStringHandle(resource);
   i::Handle<i::Object> handle = i::GlobalHandles::Create(*result);
@@ -3185,6 +3241,10 @@ Local<v8::Object> v8::Object::New() {
 Local<v8::Value> v8::Date::New(double time) {
   EnsureInitialized("v8::Date::New()");
   LOG_API("Date::New");
+  if (isnan(time)) {
+    // Introduce only canonical NaN value into the VM, to avoid signaling NaNs.
+    time = i::OS::nan_value();
+  }
   ENTER_V8;
   EXCEPTION_PREAMBLE();
   i::Handle<i::Object> obj =
@@ -3248,7 +3308,7 @@ Local<String> v8::String::NewSymbol(const char* data, int length) {
   EnsureInitialized("v8::String::NewSymbol()");
   LOG_API("String::NewSymbol(char)");
   ENTER_V8;
-  if (length == -1) length = strlen(data);
+  if (length == -1) length = i::StrLength(data);
   i::Handle<i::String> result =
       i::Factory::LookupSymbol(i::Vector<const char>(data, length));
   return Utils::ToLocal(result);
@@ -3257,6 +3317,10 @@ Local<String> v8::String::NewSymbol(const char* data, int length) {
 
 Local<Number> v8::Number::New(double value) {
   EnsureInitialized("v8::Number::New()");
+  if (isnan(value)) {
+    // Introduce only canonical NaN value into the VM, to avoid signaling NaNs.
+    value = i::OS::nan_value();
+  }
   ENTER_V8;
   i::Handle<i::Object> result = i::Factory::NewNumber(value);
   return Utils::NumberToLocal(result);
@@ -3709,6 +3773,14 @@ void Debug::SetHostDispatchHandler(HostDispatchHandler handler,
   EnsureInitialized("v8::Debug::SetHostDispatchHandler");
   ENTER_V8;
   i::Debugger::SetHostDispatchHandler(handler, period);
+}
+
+
+void Debug::SetDebugMessageDispatchHandler(
+    DebugMessageDispatchHandler handler) {
+  EnsureInitialized("v8::Debug::SetDebugMessageDispatchHandler");
+  ENTER_V8;
+  i::Debugger::SetDebugMessageDispatchHandler(handler);
 }
 
 

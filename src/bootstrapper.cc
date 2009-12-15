@@ -36,6 +36,7 @@
 #include "global-handles.h"
 #include "macro-assembler.h"
 #include "natives.h"
+#include "snapshot.h"
 
 namespace v8 {
 namespace internal {
@@ -92,14 +93,39 @@ class SourceCodeCache BASE_EMBEDDED {
 
 static SourceCodeCache natives_cache(Script::TYPE_NATIVE);
 static SourceCodeCache extensions_cache(Script::TYPE_EXTENSION);
+// This is for delete, not delete[].
+static List<char*>* delete_these_non_arrays_on_tear_down = NULL;
+
+
+NativesExternalStringResource::NativesExternalStringResource(const char* source)
+    : data_(source), length_(StrLength(source)) {
+  if (delete_these_non_arrays_on_tear_down == NULL) {
+    delete_these_non_arrays_on_tear_down = new List<char*>(2);
+  }
+  // The resources are small objects and we only make a fixed number of
+  // them, but let's clean them up on exit for neatness.
+  delete_these_non_arrays_on_tear_down->
+      Add(reinterpret_cast<char*>(this));
+}
 
 
 Handle<String> Bootstrapper::NativesSourceLookup(int index) {
   ASSERT(0 <= index && index < Natives::GetBuiltinsCount());
   if (Heap::natives_source_cache()->get(index)->IsUndefined()) {
-    Handle<String> source_code =
-      Factory::NewStringFromAscii(Natives::GetScriptSource(index));
-    Heap::natives_source_cache()->set(index, *source_code);
+    if (!Snapshot::IsEnabled() || FLAG_new_snapshot) {
+      // We can use external strings for the natives.
+      NativesExternalStringResource* resource =
+          new NativesExternalStringResource(
+              Natives::GetScriptSource(index).start());
+      Handle<String> source_code =
+          Factory::NewExternalStringFromAscii(resource);
+      Heap::natives_source_cache()->set(index, *source_code);
+    } else {
+      // Old snapshot code can't cope with external strings at all.
+      Handle<String> source_code =
+        Factory::NewStringFromAscii(Natives::GetScriptSource(index));
+      Heap::natives_source_cache()->set(index, *source_code);
+    }
   }
   Handle<Object> cached_source(Heap::natives_source_cache()->get(index));
   return Handle<String>::cast(cached_source);
@@ -125,6 +151,16 @@ void Bootstrapper::Initialize(bool create_heap_objects) {
 
 
 void Bootstrapper::TearDown() {
+  if (delete_these_non_arrays_on_tear_down != NULL) {
+    int len = delete_these_non_arrays_on_tear_down->length();
+    ASSERT(len < 20);  // Don't use this mechanism for unbounded allocations.
+    for (int i = 0; i < len; i++) {
+      delete delete_these_non_arrays_on_tear_down->at(i);
+    }
+    delete delete_these_non_arrays_on_tear_down;
+    delete_these_non_arrays_on_tear_down = NULL;
+  }
+
   natives_cache.Initialize(false);  // Yes, symmetrical
   extensions_cache.Initialize(false);
 }
@@ -316,8 +352,11 @@ Genesis* Genesis::current_ = NULL;
 
 void Bootstrapper::Iterate(ObjectVisitor* v) {
   natives_cache.Iterate(v);
+  v->Synchronize("NativesCache");
   extensions_cache.Iterate(v);
+  v->Synchronize("Extensions");
   PendingFixups::Iterate(v);
+  v->Synchronize("PendingFixups");
 }
 
 
@@ -1072,21 +1111,29 @@ bool Genesis::InstallNatives() {
             Factory::LookupAsciiSymbol("context_data"),
             proxy_context_data,
             common_attributes);
-    Handle<Proxy> proxy_eval_from_function =
-        Factory::NewProxy(&Accessors::ScriptEvalFromFunction);
+    Handle<Proxy> proxy_eval_from_script =
+        Factory::NewProxy(&Accessors::ScriptEvalFromScript);
     script_descriptors =
         Factory::CopyAppendProxyDescriptor(
             script_descriptors,
-            Factory::LookupAsciiSymbol("eval_from_function"),
-            proxy_eval_from_function,
+            Factory::LookupAsciiSymbol("eval_from_script"),
+            proxy_eval_from_script,
             common_attributes);
-    Handle<Proxy> proxy_eval_from_position =
-        Factory::NewProxy(&Accessors::ScriptEvalFromPosition);
+    Handle<Proxy> proxy_eval_from_script_position =
+        Factory::NewProxy(&Accessors::ScriptEvalFromScriptPosition);
     script_descriptors =
         Factory::CopyAppendProxyDescriptor(
             script_descriptors,
-            Factory::LookupAsciiSymbol("eval_from_position"),
-            proxy_eval_from_position,
+            Factory::LookupAsciiSymbol("eval_from_script_position"),
+            proxy_eval_from_script_position,
+            common_attributes);
+    Handle<Proxy> proxy_eval_from_function_name =
+        Factory::NewProxy(&Accessors::ScriptEvalFromFunctionName);
+    script_descriptors =
+        Factory::CopyAppendProxyDescriptor(
+            script_descriptors,
+            Factory::LookupAsciiSymbol("eval_from_function_name"),
+            proxy_eval_from_function_name,
             common_attributes);
 
     Handle<Map> script_map = Handle<Map>(script_fun->initial_map());
@@ -1299,8 +1346,6 @@ bool Genesis::InstallExtension(v8::RegisteredExtension* current) {
   ASSERT(Top::has_pending_exception() != result);
   if (!result) {
     Top::clear_pending_exception();
-    v8::Utils::ReportApiFailure(
-        "v8::Context::New()", "Error installing extension");
   }
   current->set_state(v8::INSTALLED);
   return result;

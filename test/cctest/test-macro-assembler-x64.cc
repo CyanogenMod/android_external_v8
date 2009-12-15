@@ -57,7 +57,7 @@ using v8::internal::rsp;
 using v8::internal::r8;
 using v8::internal::r9;
 using v8::internal::r11;
-using v8::internal::r12;
+using v8::internal::r12;  // Remember: r12..r15 are callee save!
 using v8::internal::r13;
 using v8::internal::r14;
 using v8::internal::r15;
@@ -133,7 +133,7 @@ TEST(SmiMove) {
                                                    true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
   MacroAssembler* masm = &assembler;  // Create a pointer for the __ macro.
   masm->set_allow_stub_calls(false);
   Label exit;
@@ -218,7 +218,7 @@ TEST(SmiCompare) {
                                       true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
@@ -265,7 +265,7 @@ TEST(Integer32ToSmi) {
                                                  true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
@@ -364,7 +364,7 @@ void TestI64PlusConstantToSmi(MacroAssembler* masm,
   int64_t result = x + y;
   ASSERT(Smi::IsValid(result));
   __ movl(rax, Immediate(id));
-  __ Move(r8, Smi::FromInt(result));
+  __ Move(r8, Smi::FromInt(static_cast<int>(result)));
   __ movq(rcx, x, RelocInfo::NONE);
   __ movq(r11, rcx);
   __ Integer64PlusConstantToSmi(rdx, rcx, y);
@@ -390,7 +390,7 @@ TEST(Integer64PlusConstantToSmi) {
                                                  true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
@@ -431,7 +431,7 @@ TEST(SmiCheck) {
                                                    true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
@@ -676,7 +676,7 @@ TEST(SmiNeg) {
                                       true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
@@ -761,7 +761,7 @@ TEST(SmiAdd) {
                                                  true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
@@ -948,7 +948,7 @@ TEST(SmiSub) {
                                       true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
@@ -1035,7 +1035,7 @@ TEST(SmiMul) {
                                                  true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
@@ -1138,12 +1138,14 @@ TEST(SmiDiv) {
                                       true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
   Label exit;
 
+  __ push(r12);
+  __ push(r15);
   TestSmiDiv(masm, &exit, 0x10, 1, 1);
   TestSmiDiv(masm, &exit, 0x20, 1, 0);
   TestSmiDiv(masm, &exit, 0x30, -1, 0);
@@ -1168,6 +1170,8 @@ TEST(SmiDiv) {
   __ xor_(r15, r15);  // Success.
   __ bind(&exit);
   __ movq(rax, r15);
+  __ pop(r15);
+  __ pop(r12);
   __ ret(0);
 
   CodeDesc desc;
@@ -1241,12 +1245,14 @@ TEST(SmiMod) {
                                       true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
   Label exit;
 
+  __ push(r12);
+  __ push(r15);
   TestSmiMod(masm, &exit, 0x10, 1, 1);
   TestSmiMod(masm, &exit, 0x20, 1, 0);
   TestSmiMod(masm, &exit, 0x30, -1, 0);
@@ -1271,6 +1277,8 @@ TEST(SmiMod) {
   __ xor_(r15, r15);  // Success.
   __ bind(&exit);
   __ movq(rax, r15);
+  __ pop(r15);
+  __ pop(r12);
   __ ret(0);
 
   CodeDesc desc;
@@ -1330,7 +1338,7 @@ TEST(SmiIndex) {
                                       true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
@@ -1396,7 +1404,7 @@ TEST(SmiSelectNonSmi) {
                                       true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);  // Avoid inline checks.
@@ -1472,7 +1480,7 @@ TEST(SmiAnd) {
                                       true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
@@ -1550,7 +1558,7 @@ TEST(SmiOr) {
                                       true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
@@ -1630,7 +1638,7 @@ TEST(SmiXor) {
                                       true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
@@ -1694,7 +1702,7 @@ TEST(SmiNot) {
                                       true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
@@ -1835,7 +1843,7 @@ TEST(SmiShiftLeft) {
                                       true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
@@ -1872,7 +1880,7 @@ void TestSmiShiftLogicalRight(MacroAssembler* masm,
     int shift = shifts[i];
     intptr_t result = static_cast<unsigned int>(x) >> shift;
     if (Smi::IsValid(result)) {
-      __ Move(r8, Smi::FromInt(result));
+      __ Move(r8, Smi::FromInt(static_cast<int>(result)));
       __ Move(rcx, Smi::FromInt(x));
       __ SmiShiftLogicalRightConstant(r9, rcx, shift, exit);
 
@@ -1938,7 +1946,7 @@ TEST(SmiShiftLogicalRight) {
                                       true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
@@ -2004,7 +2012,7 @@ TEST(SmiShiftArithmeticRight) {
                                       true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
@@ -2065,7 +2073,7 @@ TEST(PositiveSmiTimesPowerOfTwoToInteger64) {
                                       true));
   CHECK(buffer);
   HandleScope handles;
-  MacroAssembler assembler(buffer, actual_size);
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);

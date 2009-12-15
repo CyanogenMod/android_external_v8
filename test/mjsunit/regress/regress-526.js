@@ -25,33 +25,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef V8_LOCATION_H_
-#define V8_LOCATION_H_
+// Test object literals with computed property and getter.
 
-#include "utils.h"
+var o = { foo: function() { }, get bar() { return {x:42} } };
 
-namespace v8 {
-namespace internal {
-
-class Location BASE_EMBEDDED {
- public:
-  static Location Temporary() { return Location(TEMP); }
-  static Location Nowhere() { return Location(NOWHERE); }
-  static Location Constant() { return Location(CONSTANT); }
-
-  bool is_temporary() { return type_ == TEMP; }
-  bool is_nowhere() { return type_ == NOWHERE; }
-  bool is_constant() { return type_ == CONSTANT; }
-
- private:
-  enum Type { TEMP, NOWHERE, CONSTANT };
-
-  explicit Location(Type type) : type_(type) {}
-
-  Type type_;
-};
-
-
-} }  // namespace v8::internal
-
-#endif  // V8_LOCATION_H_
+assertEquals(42, o.bar.x);

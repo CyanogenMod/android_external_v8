@@ -735,16 +735,24 @@ Handle<Code> ComputeCallMiss(int argc) {
 
 
 Object* LoadCallbackProperty(Arguments args) {
+  ASSERT(args[0]->IsJSObject());
+  ASSERT(args[1]->IsJSObject());
   AccessorInfo* callback = AccessorInfo::cast(args[2]);
   Address getter_address = v8::ToCData<Address>(callback->getter());
   v8::AccessorGetter fun = FUNCTION_CAST<v8::AccessorGetter>(getter_address);
   ASSERT(fun != NULL);
-  v8::AccessorInfo info(args.arguments());
+  CustomArguments custom_args(callback->data(),
+                              JSObject::cast(args[0]),
+                              JSObject::cast(args[1]));
+  v8::AccessorInfo info(custom_args.end());
   HandleScope scope;
   v8::Handle<v8::Value> result;
   {
     // Leaving JavaScript.
     VMState state(EXTERNAL);
+#ifdef ENABLE_LOGGING_AND_PROFILING
+    state.set_external_callback(getter_address);
+#endif
     result = fun(v8::Utils::ToLocal(args.at<String>(4)), info);
   }
   RETURN_IF_SCHEDULED_EXCEPTION();
@@ -768,6 +776,9 @@ Object* StoreCallbackProperty(Arguments args) {
   {
     // Leaving JavaScript.
     VMState state(EXTERNAL);
+#ifdef ENABLE_LOGGING_AND_PROFILING
+    state.set_external_callback(setter_address);
+#endif
     fun(v8::Utils::ToLocal(name), v8::Utils::ToLocal(value), info);
   }
   RETURN_IF_SCHEDULED_EXCEPTION();

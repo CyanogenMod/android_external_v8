@@ -129,8 +129,9 @@ class Data;
 
 namespace internal {
 
-class Object;
 class Arguments;
+class Object;
+class Top;
 
 }
 
@@ -452,8 +453,8 @@ class V8EXPORT HandleScope {
   void* operator new(size_t size);
   void operator delete(void*, size_t);
 
-  // This Data class is accessible internally through a typedef in the
-  // ImplementationUtilities class.
+  // This Data class is accessible internally as HandleScopeData through a
+  // typedef in the ImplementationUtilities class.
   class V8EXPORT Data {
    public:
     int extensions;
@@ -597,7 +598,7 @@ class V8EXPORT Script {
    * with the debugger as this data object is only available through the
    * debugger API.
    */
-  void SetData(Handle<Value> data);
+  void SetData(Handle<String> data);
 };
 
 
@@ -2473,6 +2474,15 @@ class V8EXPORT TryCatch {
   bool CanContinue() const;
 
   /**
+   * Throws the exception caught by this TryCatch in a way that avoids
+   * it being caught again by this same TryCatch.  As with ThrowException
+   * it is illegal to execute any JavaScript operations after calling
+   * ReThrow; the caller must return immediately to where the exception
+   * is caught.
+   */
+  Handle<Value> ReThrow();
+
+  /**
    * Returns the exception caught by this try/catch block.  If no exception has
    * been caught an empty handle is returned.
    *
@@ -2523,14 +2533,16 @@ class V8EXPORT TryCatch {
    */
   void SetCaptureMessage(bool value);
 
- public:
-  TryCatch* next_;
+ private:
+  void* next_;
   void* exception_;
   void* message_;
-  bool is_verbose_;
-  bool can_continue_;
-  bool capture_message_;
-  void* js_handler_;
+  bool is_verbose_ : 1;
+  bool can_continue_ : 1;
+  bool capture_message_ : 1;
+  bool rethrow_ : 1;
+
+  friend class v8::internal::Top;
 };
 
 
@@ -2622,7 +2634,7 @@ class V8EXPORT Context {
    * with the debugger to provide additional information on the context through
    * the debugger API.
    */
-  void SetData(Handle<Value> data);
+  void SetData(Handle<String> data);
   Local<Value> GetData();
 
   /**
@@ -2807,6 +2819,18 @@ template <> struct SmiConstants<8> {
 const int kSmiShiftSize = SmiConstants<sizeof(void*)>::kSmiShiftSize;
 const int kSmiValueSize = SmiConstants<sizeof(void*)>::kSmiValueSize;
 
+template <size_t ptr_size> struct InternalConstants;
+
+// Internal constants for 32-bit systems.
+template <> struct InternalConstants<4> {
+  static const int kStringResourceOffset = 3 * sizeof(void*);
+};
+
+// Internal constants for 64-bit systems.
+template <> struct InternalConstants<8> {
+  static const int kStringResourceOffset = 2 * sizeof(void*);
+};
+
 /**
  * This class exports constants and functionality from within v8 that
  * is necessary to implement inline functions in the v8 api.  Don't
@@ -2819,7 +2843,9 @@ class Internals {
   // the implementation of v8.
   static const int kHeapObjectMapOffset = 0;
   static const int kMapInstanceTypeOffset = sizeof(void*) + sizeof(int);
-  static const int kStringResourceOffset = 2 * sizeof(void*);
+  static const int kStringResourceOffset =
+      InternalConstants<sizeof(void*)>::kStringResourceOffset;
+
   static const int kProxyProxyOffset = sizeof(void*);
   static const int kJSObjectHeaderSize = 3 * sizeof(void*);
   static const int kFullStringRepresentationMask = 0x07;

@@ -48,10 +48,10 @@
 #ifndef NOMCX
 #define NOMCX
 #endif
-// Require Windows 2000 or higher (this is required for the IsDebuggerPresent
+// Require Windows XP or higher (this is required for the RtlCaptureContext
 // function to be present).
 #ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x500
+#define _WIN32_WINNT 0x501
 #endif
 
 #include <windows.h>
@@ -839,7 +839,7 @@ void* OS::Allocate(const size_t requested,
                    size_t* allocated,
                    bool is_executable) {
   // VirtualAlloc rounds allocated size to page size automatically.
-  size_t msize = RoundUp(requested, GetPageSize());
+  size_t msize = RoundUp(requested, static_cast<int>(GetPageSize()));
 
   // Windows XP SP2 allows Data Excution Prevention (DEP).
   int prot = is_executable ? PAGE_EXECUTE_READWRITE : PAGE_READWRITE;
@@ -852,7 +852,7 @@ void* OS::Allocate(const size_t requested,
   ASSERT(IsAligned(reinterpret_cast<size_t>(mbase), OS::AllocateAlignment()));
 
   *allocated = msize;
-  UpdateAllocatedSpaceLimits(mbase, msize);
+  UpdateAllocatedSpaceLimits(mbase, static_cast<int>(msize));
   return mbase;
 }
 
@@ -1208,22 +1208,7 @@ int OS::StackWalk(Vector<OS::StackFrame> frames) {
 
   // Capture current context.
   CONTEXT context;
-  memset(&context, 0, sizeof(context));
-  context.ContextFlags = CONTEXT_CONTROL;
-  context.ContextFlags = CONTEXT_CONTROL;
-#ifdef  _WIN64
-  // TODO(X64): Implement context capture.
-#else
-  __asm    call x
-  __asm x: pop eax
-  __asm    mov context.Eip, eax
-  __asm    mov context.Ebp, ebp
-  __asm    mov context.Esp, esp
-  // NOTE: At some point, we could use RtlCaptureContext(&context) to
-  // capture the context instead of inline assembler. However it is
-  // only available on XP, Vista, Server 2003 and Server 2008 which
-  // might not be sufficient.
-#endif
+  RtlCaptureContext(&context);
 
   // Initialize the stack walking
   STACKFRAME64 stack_frame;
@@ -1331,9 +1316,16 @@ int OS::StackWalk(Vector<OS::StackFrame> frames) { return 0; }
 #endif  // __MINGW32__
 
 
+uint64_t OS::CpuFeaturesImpliedByPlatform() {
+  return 0;  // Windows runs on anything.
+}
+
+
 double OS::nan_value() {
 #ifdef _MSC_VER
-  static const __int64 nanval = 0xfff8000000000000;
+  // Positive Quiet NaN with no payload (aka. Indeterminate) has all bits
+  // in mask set, so value equals mask.
+  static const __int64 nanval = kQuietNaNMask;
   return *reinterpret_cast<const double*>(&nanval);
 #else  // _MSC_VER
   return NAN;
@@ -1374,7 +1366,7 @@ bool VirtualMemory::Commit(void* address, size_t size, bool is_executable) {
     return false;
   }
 
-  UpdateAllocatedSpaceLimits(address, size);
+  UpdateAllocatedSpaceLimits(address, static_cast<int>(size));
   return true;
 }
 
@@ -1702,7 +1694,9 @@ bool Win32Socket::Connect(const char* host, const char* port) {
   }
 
   // Connect.
-  status = connect(socket_, result->ai_addr, result->ai_addrlen);
+  status = connect(socket_,
+                   result->ai_addr,
+                   static_cast<int>(result->ai_addrlen));
   freeaddrinfo(result);
   return status == 0;
 }

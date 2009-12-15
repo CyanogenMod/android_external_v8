@@ -547,54 +547,18 @@ static const char* TypeToString(InstanceType type) {
     case INVALID_TYPE: return "INVALID";
     case MAP_TYPE: return "MAP";
     case HEAP_NUMBER_TYPE: return "HEAP_NUMBER";
-    case SHORT_SYMBOL_TYPE:
-    case MEDIUM_SYMBOL_TYPE:
-    case LONG_SYMBOL_TYPE: return "SYMBOL";
-    case SHORT_ASCII_SYMBOL_TYPE:
-    case MEDIUM_ASCII_SYMBOL_TYPE:
-    case LONG_ASCII_SYMBOL_TYPE: return "ASCII_SYMBOL";
-    case SHORT_SLICED_SYMBOL_TYPE:
-    case MEDIUM_SLICED_SYMBOL_TYPE:
-    case LONG_SLICED_SYMBOL_TYPE: return "SLICED_SYMBOL";
-    case SHORT_SLICED_ASCII_SYMBOL_TYPE:
-    case MEDIUM_SLICED_ASCII_SYMBOL_TYPE:
-    case LONG_SLICED_ASCII_SYMBOL_TYPE: return "SLICED_ASCII_SYMBOL";
-    case SHORT_CONS_SYMBOL_TYPE:
-    case MEDIUM_CONS_SYMBOL_TYPE:
-    case LONG_CONS_SYMBOL_TYPE: return "CONS_SYMBOL";
-    case SHORT_CONS_ASCII_SYMBOL_TYPE:
-    case MEDIUM_CONS_ASCII_SYMBOL_TYPE:
-    case LONG_CONS_ASCII_SYMBOL_TYPE: return "CONS_ASCII_SYMBOL";
-    case SHORT_EXTERNAL_ASCII_SYMBOL_TYPE:
-    case MEDIUM_EXTERNAL_ASCII_SYMBOL_TYPE:
-    case LONG_EXTERNAL_ASCII_SYMBOL_TYPE:
-    case SHORT_EXTERNAL_SYMBOL_TYPE:
-    case MEDIUM_EXTERNAL_SYMBOL_TYPE:
-    case LONG_EXTERNAL_SYMBOL_TYPE: return "EXTERNAL_SYMBOL";
-    case SHORT_ASCII_STRING_TYPE:
-    case MEDIUM_ASCII_STRING_TYPE:
-    case LONG_ASCII_STRING_TYPE: return "ASCII_STRING";
-    case SHORT_STRING_TYPE:
-    case MEDIUM_STRING_TYPE:
-    case LONG_STRING_TYPE: return "TWO_BYTE_STRING";
-    case SHORT_CONS_STRING_TYPE:
-    case MEDIUM_CONS_STRING_TYPE:
-    case LONG_CONS_STRING_TYPE:
-    case SHORT_CONS_ASCII_STRING_TYPE:
-    case MEDIUM_CONS_ASCII_STRING_TYPE:
-    case LONG_CONS_ASCII_STRING_TYPE: return "CONS_STRING";
-    case SHORT_SLICED_STRING_TYPE:
-    case MEDIUM_SLICED_STRING_TYPE:
-    case LONG_SLICED_STRING_TYPE:
-    case SHORT_SLICED_ASCII_STRING_TYPE:
-    case MEDIUM_SLICED_ASCII_STRING_TYPE:
-    case LONG_SLICED_ASCII_STRING_TYPE: return "SLICED_STRING";
-    case SHORT_EXTERNAL_ASCII_STRING_TYPE:
-    case MEDIUM_EXTERNAL_ASCII_STRING_TYPE:
-    case LONG_EXTERNAL_ASCII_STRING_TYPE:
-    case SHORT_EXTERNAL_STRING_TYPE:
-    case MEDIUM_EXTERNAL_STRING_TYPE:
-    case LONG_EXTERNAL_STRING_TYPE: return "EXTERNAL_STRING";
+    case SYMBOL_TYPE: return "SYMBOL";
+    case ASCII_SYMBOL_TYPE: return "ASCII_SYMBOL";
+    case CONS_SYMBOL_TYPE: return "CONS_SYMBOL";
+    case CONS_ASCII_SYMBOL_TYPE: return "CONS_ASCII_SYMBOL";
+    case EXTERNAL_ASCII_SYMBOL_TYPE:
+    case EXTERNAL_SYMBOL_TYPE: return "EXTERNAL_SYMBOL";
+    case ASCII_STRING_TYPE: return "ASCII_STRING";
+    case STRING_TYPE: return "TWO_BYTE_STRING";
+    case CONS_STRING_TYPE:
+    case CONS_ASCII_STRING_TYPE: return "CONS_STRING";
+    case EXTERNAL_ASCII_STRING_TYPE:
+    case EXTERNAL_STRING_TYPE: return "EXTERNAL_STRING";
     case FIXED_ARRAY_TYPE: return "FIXED_ARRAY";
     case BYTE_ARRAY_TYPE: return "BYTE_ARRAY";
     case PIXEL_ARRAY_TYPE: return "PIXEL_ARRAY";
@@ -796,8 +760,6 @@ void SharedFunctionInfo::SharedFunctionInfoPrint() {
   PrintF("\n - debug info = ");
   debug_info()->ShortPrint();
   PrintF("\n - length = %d", length());
-  PrintF("\n - has_only_this_property_assignments = %d",
-         has_only_this_property_assignments());
   PrintF("\n - has_only_simple_this_property_assignments = %d",
          has_only_simple_this_property_assignments());
   PrintF("\n - this_property_assignments = ");
@@ -979,6 +941,7 @@ void AccessorInfo::AccessorInfoVerify() {
   VerifyPointer(name());
   VerifyPointer(data());
   VerifyPointer(flag());
+  VerifyPointer(load_stub_cache());
 }
 
 void AccessorInfo::AccessorInfoPrint() {
@@ -1172,6 +1135,20 @@ void Script::ScriptPrint() {
   type()->ShortPrint();
   PrintF("\n - id: ");
   id()->ShortPrint();
+  PrintF("\n - data: ");
+  data()->ShortPrint();
+  PrintF("\n - context data: ");
+  context_data()->ShortPrint();
+  PrintF("\n - wrapper: ");
+  wrapper()->ShortPrint();
+  PrintF("\n - compilation type: ");
+  compilation_type()->ShortPrint();
+  PrintF("\n - line ends: ");
+  line_ends()->ShortPrint();
+  PrintF("\n - eval from shared: ");
+  eval_from_shared()->ShortPrint();
+  PrintF("\n - eval from instructions offset: ");
+  eval_from_instructions_offset()->ShortPrint();
   PrintF("\n");
 }
 

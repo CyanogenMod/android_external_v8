@@ -102,7 +102,9 @@ class BreakLocationIterator {
   void ClearAllDebugBreak();
 
 
-  inline int code_position() { return pc() - debug_info_->code()->entry(); }
+  inline int code_position() {
+    return static_cast<int>(pc() - debug_info_->code()->entry());
+  }
   inline int break_point() { return break_point_; }
   inline int position() { return position_; }
   inline int statement_position() { return statement_position_; }
@@ -368,15 +370,6 @@ class Debug {
   // Garbage collection notifications.
   static void AfterGarbageCollection();
 
-  // Code generation assumptions.
-  static const int kIa32CallInstructionLength = 5;
-  static const int kIa32JSReturnSequenceLength = 6;
-
-  // The x64 JS return sequence is padded with int3 to make it large
-  // enough to hold a call instruction when the debugger patches it.
-  static const int kX64CallInstructionLength = 13;
-  static const int kX64JSReturnSequenceLength = 13;
-
   // Code generator routines.
   static void GenerateLoadICDebugBreak(MacroAssembler* masm);
   static void GenerateStoreICDebugBreak(MacroAssembler* masm);
@@ -625,6 +618,8 @@ class Debugger {
   static void SetMessageHandler(v8::Debug::MessageHandler2 handler);
   static void SetHostDispatchHandler(v8::Debug::HostDispatchHandler handler,
                                      int period);
+  static void SetDebugMessageDispatchHandler(
+      v8::Debug::DebugMessageDispatchHandler handler);
 
   // Invoke the message handler function.
   static void InvokeMessageHandler(MessageImpl message);
@@ -685,6 +680,7 @@ class Debugger {
   static v8::Debug::MessageHandler2 message_handler_;
   static bool debugger_unload_pending_;  // Was message handler cleared?
   static v8::Debug::HostDispatchHandler host_dispatch_handler_;
+  static v8::Debug::DebugMessageDispatchHandler debug_message_dispatch_handler_;
   static int host_dispatch_micros_;
 
   static DebuggerAgent* agent_;

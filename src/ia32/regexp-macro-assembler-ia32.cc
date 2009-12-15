@@ -598,10 +598,10 @@ Handle<Object> RegExpMacroAssemblerIA32::GetCode(Handle<String> source) {
   Label stack_limit_hit;
   Label stack_ok;
 
-  ExternalReference stack_guard_limit =
-      ExternalReference::address_of_stack_guard_limit();
+  ExternalReference stack_limit =
+      ExternalReference::address_of_stack_limit();
   __ mov(ecx, esp);
-  __ sub(ecx, Operand::StaticVariable(stack_guard_limit));
+  __ sub(ecx, Operand::StaticVariable(stack_limit));
   // Handle it if the stack pointer is already below the stack limit.
   __ j(below_equal, &stack_limit_hit, not_taken);
   // Check if there is room for the variable number of registers above
@@ -1081,9 +1081,9 @@ void RegExpMacroAssemblerIA32::Pop(Register target) {
 void RegExpMacroAssemblerIA32::CheckPreemption() {
   // Check for preemption.
   Label no_preempt;
-  ExternalReference stack_guard_limit =
-      ExternalReference::address_of_stack_guard_limit();
-  __ cmp(esp, Operand::StaticVariable(stack_guard_limit));
+  ExternalReference stack_limit =
+      ExternalReference::address_of_stack_limit();
+  __ cmp(esp, Operand::StaticVariable(stack_limit));
   __ j(above, &no_preempt, taken);
 
   SafeCall(&check_preempt_label_);
@@ -1093,17 +1093,15 @@ void RegExpMacroAssemblerIA32::CheckPreemption() {
 
 
 void RegExpMacroAssemblerIA32::CheckStackLimit() {
-  if (FLAG_check_stack) {
-    Label no_stack_overflow;
-    ExternalReference stack_limit =
-        ExternalReference::address_of_regexp_stack_limit();
-    __ cmp(backtrack_stackpointer(), Operand::StaticVariable(stack_limit));
-    __ j(above, &no_stack_overflow);
+  Label no_stack_overflow;
+  ExternalReference stack_limit =
+      ExternalReference::address_of_regexp_stack_limit();
+  __ cmp(backtrack_stackpointer(), Operand::StaticVariable(stack_limit));
+  __ j(above, &no_stack_overflow);
 
-    SafeCall(&stack_overflow_label_);
+  SafeCall(&stack_overflow_label_);
 
-    __ bind(&no_stack_overflow);
-  }
+  __ bind(&no_stack_overflow);
 }
 
 
@@ -1162,10 +1160,6 @@ void RegExpMacroAssemblerIA32::LoadCurrentCharacterUnchecked(int cp_offset,
   }
 }
 
-
-void RegExpCEntryStub::Generate(MacroAssembler* masm_) {
-  __ int3();  // Unused on ia32.
-}
 
 #undef __
 

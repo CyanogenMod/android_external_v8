@@ -114,6 +114,8 @@ DEFINE_bool(enable_rdtsc, true,
             "enable use of RDTSC instruction if available")
 DEFINE_bool(enable_sahf, true,
             "enable use of SAHF instruction if available (X64 only)")
+DEFINE_bool(enable_vfp3, true,
+            "enable use of VFP3 instructions if available (ARM only)")
 
 // bootstrapper.cc
 DEFINE_string(expose_natives_as, NULL, "expose natives in global object")
@@ -132,8 +134,6 @@ DEFINE_bool(stack_trace_on_abort, true,
 // codegen-ia32.cc / codegen-arm.cc
 DEFINE_bool(trace, false, "trace function calls")
 DEFINE_bool(defer_negation, true, "defer negation operation")
-DEFINE_bool(check_stack, true,
-            "check stack for overflow, interrupt, breakpoint")
 
 // codegen.cc
 DEFINE_bool(lazy, true, "use lazy compilation")
@@ -147,6 +147,8 @@ DEFINE_bool(fast_compiler, true,
             "use the fast-mode compiler for some top-level code")
 DEFINE_bool(trace_bailout, false,
             "print reasons for failing to use fast compilation")
+DEFINE_bool(always_fast_compiler, false,
+            "always try using the fast compiler")
 
 // compilation-cache.cc
 DEFINE_bool(compilation_cache, true, "enable compilation cache")
@@ -154,9 +156,9 @@ DEFINE_bool(compilation_cache, true, "enable compilation cache")
 // debug.cc
 DEFINE_bool(remote_debugging, false, "enable remote debugging")
 DEFINE_bool(trace_debug_json, false, "trace debugging JSON request/response")
-DEFINE_bool(debugger_auto_break, false,
+DEFINE_bool(debugger_auto_break, true,
             "automatically set the debug break flag when debugger commands are "
-            "in the queue (experimental)")
+            "in the queue")
 
 // frames.cc
 DEFINE_int(max_stack_trace_source_length, 300,
@@ -198,6 +200,7 @@ DEFINE_bool(canonicalize_object_literal_maps, true,
 
 // mksnapshot.cc
 DEFINE_bool(h, false, "print this message")
+DEFINE_bool(new_snapshot, true, "use new snapshot implementation")
 
 // parser.cc
 DEFINE_bool(allow_natives_syntax, false, "allow natives syntax")

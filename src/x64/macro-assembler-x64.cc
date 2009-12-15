@@ -67,6 +67,12 @@ void MacroAssembler::CompareRoot(Operand with, Heap::RootListIndex index) {
 }
 
 
+void MacroAssembler::StackLimitCheck(Label* on_stack_overflow) {
+  CompareRoot(rsp, Heap::kStackLimitRootIndex);
+  j(below, on_stack_overflow);
+}
+
+
 static void RecordWriteHelper(MacroAssembler* masm,
                               Register object,
                               Register addr,
@@ -282,15 +288,19 @@ void MacroAssembler::Abort(const char* msg) {
     RecordComment(msg);
   }
 #endif
+  // Disable stub call restrictions to always allow calls to abort.
+  set_allow_stub_calls(true);
+
   push(rax);
   movq(kScratchRegister, p0, RelocInfo::NONE);
   push(kScratchRegister);
   movq(kScratchRegister,
-       reinterpret_cast<intptr_t>(Smi::FromInt(p1 - p0)),
+       reinterpret_cast<intptr_t>(Smi::FromInt(static_cast<int>(p1 - p0))),
        RelocInfo::NONE);
   push(kScratchRegister);
   CallRuntime(Runtime::kAbort, 2);
   // will not return here
+  int3();
 }
 
 
@@ -402,9 +412,9 @@ void MacroAssembler::Set(Register dst, int64_t x) {
   if (x == 0) {
     xor_(dst, dst);
   } else if (is_int32(x)) {
-    movq(dst, Immediate(x));
+    movq(dst, Immediate(static_cast<int32_t>(x)));
   } else if (is_uint32(x)) {
-    movl(dst, Immediate(x));
+    movl(dst, Immediate(static_cast<uint32_t>(x)));
   } else {
     movq(dst, x, RelocInfo::NONE);
   }
@@ -416,9 +426,9 @@ void MacroAssembler::Set(const Operand& dst, int64_t x) {
     xor_(kScratchRegister, kScratchRegister);
     movq(dst, kScratchRegister);
   } else if (is_int32(x)) {
-    movq(dst, Immediate(x));
+    movq(dst, Immediate(static_cast<int32_t>(x)));
   } else if (is_uint32(x)) {
-    movl(dst, Immediate(x));
+    movl(dst, Immediate(static_cast<uint32_t>(x)));
   } else {
     movq(kScratchRegister, x, RelocInfo::NONE);
     movq(dst, kScratchRegister);
@@ -1078,7 +1088,7 @@ void MacroAssembler::SmiShiftLeft(Register dst,
   SmiToInteger32(rcx, src2);
   // Shift amount specified by lower 5 bits, not six as the shl opcode.
   and_(rcx, Immediate(0x1f));
-  shl(dst);
+  shl_cl(dst);
 }
 
 
@@ -1099,7 +1109,7 @@ void MacroAssembler::SmiShiftLogicalRight(Register dst,
   }
   SmiToInteger32(rcx, src2);
   orl(rcx, Immediate(kSmiShift));
-  shr(dst);  // Shift is rcx modulo 0x1f + 32.
+  shr_cl(dst);  // Shift is rcx modulo 0x1f + 32.
   shl(dst, Immediate(kSmiShift));
   testq(dst, dst);
   if (src1.is(rcx) || src2.is(rcx)) {
@@ -1135,7 +1145,7 @@ void MacroAssembler::SmiShiftArithmeticRight(Register dst,
   }
   SmiToInteger32(rcx, src2);
   orl(rcx, Immediate(kSmiShift));
-  sar(dst);  // Shift 32 + original rcx & 0x1f.
+  sar_cl(dst);  // Shift 32 + original rcx & 0x1f.
   shl(dst, Immediate(kSmiShift));
   if (src1.is(rcx)) {
     movq(src1, kScratchRegister);
@@ -1787,9 +1797,7 @@ void MacroAssembler::LeaveFrame(StackFrame::Type type) {
 }
 
 
-void MacroAssembler::EnterExitFrame(StackFrame::Type type, int result_size) {
-  ASSERT(type == StackFrame::EXIT || type == StackFrame::EXIT_DEBUG);
-
+void MacroAssembler::EnterExitFrame(ExitFrame::Mode mode, int result_size) {
   // Setup the frame structure on the stack.
   // All constants are relative to the frame pointer of the exit frame.
   ASSERT(ExitFrameConstants::kCallerSPDisplacement == +2 * kPointerSize);
@@ -1801,7 +1809,12 @@ void MacroAssembler::EnterExitFrame(StackFrame::Type type, int result_size) {
   // Reserve room for entry stack pointer and push the debug marker.
   ASSERT(ExitFrameConstants::kSPOffset == -1 * kPointerSize);
   push(Immediate(0));  // saved entry sp, patched before call
-  push(Immediate(type == StackFrame::EXIT_DEBUG ? 1 : 0));
+  if (mode == ExitFrame::MODE_DEBUG) {
+    push(Immediate(0));
+  } else {
+    movq(kScratchRegister, CodeObject(), RelocInfo::EMBEDDED_OBJECT);
+    push(kScratchRegister);
+  }
 
   // Save the frame pointer and the context in top.
   ExternalReference c_entry_fp_address(Top::k_c_entry_fp_address);
@@ -1821,7 +1834,7 @@ void MacroAssembler::EnterExitFrame(StackFrame::Type type, int result_size) {
 #ifdef ENABLE_DEBUGGER_SUPPORT
   // Save the state of all registers to the stack from the memory
   // location. This is needed to allow nested break points.
-  if (type == StackFrame::EXIT_DEBUG) {
+  if (mode == ExitFrame::MODE_DEBUG) {
     // TODO(1243899): This should be symmetric to
     // CopyRegistersFromStackToMemory() but it isn't! esp is assumed
     // correct here, but computed for the other call. Very error
@@ -1860,17 +1873,17 @@ void MacroAssembler::EnterExitFrame(StackFrame::Type type, int result_size) {
 }
 
 
-void MacroAssembler::LeaveExitFrame(StackFrame::Type type, int result_size) {
+void MacroAssembler::LeaveExitFrame(ExitFrame::Mode mode, int result_size) {
   // Registers:
   // r15 : argv
 #ifdef ENABLE_DEBUGGER_SUPPORT
   // Restore the memory copy of the registers by digging them out from
   // the stack. This is needed to allow nested break points.
-  if (type == StackFrame::EXIT_DEBUG) {
+  if (mode == ExitFrame::MODE_DEBUG) {
     // It's okay to clobber register rbx below because we don't need
     // the function pointer after this.
     const int kCallerSavedSize = kNumJSCallerSaved * kPointerSize;
-    int kOffset = ExitFrameConstants::kDebugMarkOffset - kCallerSavedSize;
+    int kOffset = ExitFrameConstants::kCodeOffset - kCallerSavedSize;
     lea(rbx, Operand(rbp, kOffset));
     CopyRegistersFromStackToMemory(rbx, rcx, kJSCallerSaved);
   }
@@ -2085,6 +2098,11 @@ void MacroAssembler::LoadAllocationTopHelper(Register result,
 
 void MacroAssembler::UpdateAllocationTopHelper(Register result_end,
                                                Register scratch) {
+  if (FLAG_debug_code) {
+    testq(result_end, Immediate(kObjectAlignmentMask));
+    Check(zero, "Unaligned allocation in new space");
+  }
+
   ExternalReference new_space_allocation_top =
       ExternalReference::new_space_allocation_top_address();
 
@@ -2223,6 +2241,25 @@ void MacroAssembler::AllocateHeapNumber(Register result,
   // Set the map.
   LoadRoot(kScratchRegister, Heap::kHeapNumberMapRootIndex);
   movq(FieldOperand(result, HeapObject::kMapOffset), kScratchRegister);
+}
+
+
+void MacroAssembler::LoadContext(Register dst, int context_chain_length) {
+  if (context_chain_length > 0) {
+    // Move up the chain of contexts to the context containing the slot.
+    movq(dst, Operand(rsi, Context::SlotOffset(Context::CLOSURE_INDEX)));
+    // Load the function context (which is the incoming, outer context).
+    movq(rax, FieldOperand(rax, JSFunction::kContextOffset));
+    for (int i = 1; i < context_chain_length; i++) {
+      movq(dst, Operand(dst, Context::SlotOffset(Context::CLOSURE_INDEX)));
+      movq(dst, FieldOperand(dst, JSFunction::kContextOffset));
+    }
+    // The context may be an intermediate context, not a function context.
+    movq(dst, Operand(dst, Context::SlotOffset(Context::FCONTEXT_INDEX)));
+  } else {  // context is the current function context.
+    // The context may be an intermediate context, not a function context.
+    movq(dst, Operand(rsi, Context::SlotOffset(Context::FCONTEXT_INDEX)));
+  }
 }
 
 

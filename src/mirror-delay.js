@@ -849,6 +849,33 @@ FunctionMirror.prototype.script = function() {
 
 
 /**
+ * Returns the script source position for the function. Only makes sense
+ * for functions which has a script defined.
+ * @return {Number or undefined} in-script position for the function
+ */
+FunctionMirror.prototype.sourcePosition_ = function() {
+  // Return script if function is resolved. Otherwise just fall through
+  // to return undefined.
+  if (this.resolved()) {
+    return %FunctionGetScriptSourcePosition(this.value_);
+  }
+};
+
+
+/**
+ * Returns the script source location object for the function. Only makes sense
+ * for functions which has a script defined.
+ * @return {Location or undefined} in-script location for the function begin
+ */
+FunctionMirror.prototype.sourceLocation = function() {
+  if (this.resolved() && this.script()) {
+    return this.script().locationFromPosition(this.sourcePosition_(),
+                                              true);
+  }
+};
+
+
+/**
  * Returns objects constructed by this function.
  * @param {number} opt_max_instances Optional parameter specifying the maximum
  *     number of instances to return.
@@ -1766,16 +1793,21 @@ ScriptMirror.prototype.context = function() {
 };
 
 
-ScriptMirror.prototype.evalFromFunction = function() {
-  return MakeMirror(this.script_.eval_from_function);
+ScriptMirror.prototype.evalFromScript = function() {
+  return MakeMirror(this.script_.eval_from_script);
+};
+
+
+ScriptMirror.prototype.evalFromFunctionName = function() {
+  return MakeMirror(this.script_.eval_from_function_name);
 };
 
 
 ScriptMirror.prototype.evalFromLocation = function() {
-  var eval_from_function = this.evalFromFunction();
-  if (!eval_from_function.isUndefined()) {
-    var position = this.script_.eval_from_position;
-    return eval_from_function.script().locationFromPosition(position, true);
+  var eval_from_script = this.evalFromScript();
+  if (!eval_from_script.isUndefined()) {
+    var position = this.script_.eval_from_script_position;
+    return eval_from_script.locationFromPosition(position, true);
   }
 };
 
@@ -2053,12 +2085,15 @@ JSONProtocolSerializer.prototype.serialize_ = function(mirror, reference,
       // For compilation type eval emit information on the script from which
       // eval was called if a script is present.
       if (mirror.compilationType() == 1 &&
-          mirror.evalFromFunction().script()) {
+          mirror.evalFromScript()) {
         content.evalFromScript =
-            this.serializeReference(mirror.evalFromFunction().script());
+            this.serializeReference(mirror.evalFromScript());
         var evalFromLocation = mirror.evalFromLocation()
         content.evalFromLocation = { line: evalFromLocation.line,
                                      column: evalFromLocation.column}
+        if (mirror.evalFromFunctionName()) {
+          content.evalFromFunctionName = mirror.evalFromFunctionName();
+        }
       }
       if (mirror.context()) {
         content.context = this.serializeReference(mirror.context());
@@ -2119,6 +2154,9 @@ JSONProtocolSerializer.prototype.serializeObject_ = function(mirror, content,
     }
     if (mirror.script()) {
       content.script = this.serializeReference(mirror.script());
+      content.scriptId = mirror.script().id();
+      
+      serializeLocationFields(mirror.sourceLocation(), content);
     }
   }
 
@@ -2147,6 +2185,31 @@ JSONProtocolSerializer.prototype.serializeObject_ = function(mirror, content,
     }
   }
   content.properties = p;
+}
+
+
+/**
+ * Serialize location information to the following JSON format:
+ *
+ *   "position":"<position>",
+ *   "line":"<line>",
+ *   "column":"<column>",
+ * 
+ * @param {SourceLocation} location The location to serialize, may be undefined.
+ */
+function serializeLocationFields (location, content) {
+  if (!location) {
+    return;
+  }                                                                     
+  content.position = location.position;
+  var line = location.line;
+  if (!IS_UNDEFINED(line)) {
+    content.line = line;
+  }
+  var column = location.column;
+  if (!IS_UNDEFINED(column)) {
+    content.column = column;
+  }
 }
 
 
@@ -2218,15 +2281,7 @@ JSONProtocolSerializer.prototype.serializeFrame_ = function(mirror, content) {
     x[i] = local;
   }
   content.locals = x;
-  content.position = mirror.sourcePosition();
-  var line = mirror.sourceLine();
-  if (!IS_UNDEFINED(line)) {
-    content.line = line;
-  }
-  var column = mirror.sourceColumn();
-  if (!IS_UNDEFINED(column)) {
-    content.column = column;
-  }
+  serializeLocationFields(mirror.sourceLocation(), content);
   var source_line_text = mirror.sourceLineText();
   if (!IS_UNDEFINED(source_line_text)) {
     content.sourceLineText = source_line_text;

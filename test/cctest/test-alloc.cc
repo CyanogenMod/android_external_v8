@@ -65,9 +65,9 @@ static Object* AllocateAfterFailures() {
 
   // Old data space.
   OldSpace* old_data_space = Heap::old_data_space();
-  static const int kOldDataSpaceFillerSize = SeqAsciiString::SizeFor(0);
+  static const int kOldDataSpaceFillerSize = ByteArray::SizeFor(0);
   while (old_data_space->Available() > kOldDataSpaceFillerSize) {
-    CHECK(!Heap::AllocateRawAsciiString(0, TENURED)->IsFailure());
+    CHECK(!Heap::AllocateByteArray(0, TENURED)->IsFailure());
   }
   CHECK(!Heap::AllocateRawAsciiString(100, TENURED)->IsFailure());
 
@@ -195,9 +195,9 @@ TEST(CodeRange) {
            Pseudorandom() % 5000 + 1;
       size_t allocated = 0;
       void* base = CodeRange::AllocateRawMemory(requested, &allocated);
-      blocks.Add(Block(base, allocated));
-      current_allocated += allocated;
-      total_allocated += allocated;
+      blocks.Add(Block(base, static_cast<int>(allocated)));
+      current_allocated += static_cast<int>(allocated);
+      total_allocated += static_cast<int>(allocated);
     } else {
       // Free a block.
       int index = Pseudorandom() % blocks.length();

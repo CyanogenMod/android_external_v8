@@ -246,6 +246,8 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
     const int kGlobalIndex =
         Context::kHeaderSize + Context::GLOBAL_INDEX * kPointerSize;
     __ movq(rbx, FieldOperand(rsi, kGlobalIndex));
+    __ movq(rbx, FieldOperand(rbx, GlobalObject::kGlobalContextOffset));
+    __ movq(rbx, FieldOperand(rbx, kGlobalIndex));
     __ movq(rbx, FieldOperand(rbx, GlobalObject::kGlobalReceiverOffset));
 
     __ bind(&patch_receiver);
@@ -318,47 +320,28 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
   __ push(Operand(rbp, kArgumentsOffset));
   __ InvokeBuiltin(Builtins::APPLY_PREPARE, CALL_FUNCTION);
 
-  if (FLAG_check_stack) {
-    // We need to catch preemptions right here, otherwise an unlucky preemption
-    // could show up as a failed apply.
-    Label retry_preemption;
-    Label no_preemption;
-    __ bind(&retry_preemption);
-    ExternalReference stack_guard_limit =
-        ExternalReference::address_of_stack_guard_limit();
-    __ movq(kScratchRegister, stack_guard_limit);
-    __ movq(rcx, rsp);
-    __ subq(rcx, Operand(kScratchRegister, 0));
-    // rcx contains the difference between the stack limit and the stack top.
-    // We use it below to check that there is enough room for the arguments.
-    __ j(above, &no_preemption);
+  // Check the stack for overflow. We are not trying need to catch
+  // interruptions (e.g. debug break and preemption) here, so the "real stack
+  // limit" is checked.
+  Label okay;
+  __ LoadRoot(kScratchRegister, Heap::kRealStackLimitRootIndex);
+  __ movq(rcx, rsp);
+  // Make rcx the space we have left. The stack might already be overflowed
+  // here which will cause rcx to become negative.
+  __ subq(rcx, kScratchRegister);
+  // Make rdx the space we need for the array when it is unrolled onto the
+  // stack.
+  __ PositiveSmiTimesPowerOfTwoToInteger64(rdx, rax, kPointerSizeLog2);
+  // Check if the arguments will overflow the stack.
+  __ cmpq(rcx, rdx);
+  __ j(greater, &okay);  // Signed comparison.
 
-    // Preemption!
-    // Because runtime functions always remove the receiver from the stack, we
-    // have to fake one to avoid underflowing the stack.
-    __ push(rax);
-    __ Push(Smi::FromInt(0));
-
-    // Do call to runtime routine.
-    __ CallRuntime(Runtime::kStackGuard, 1);
-    __ pop(rax);
-    __ jmp(&retry_preemption);
-
-    __ bind(&no_preemption);
-
-    Label okay;
-    // Make rdx the space we need for the array when it is unrolled onto the
-    // stack.
-    __ PositiveSmiTimesPowerOfTwoToInteger64(rdx, rax, kPointerSizeLog2);
-    __ cmpq(rcx, rdx);
-    __ j(greater, &okay);
-
-    // Too bad: Out of stack space.
-    __ push(Operand(rbp, kFunctionOffset));
-    __ push(rax);
-    __ InvokeBuiltin(Builtins::APPLY_OVERFLOW, CALL_FUNCTION);
-    __ bind(&okay);
-  }
+  // Out of stack space.
+  __ push(Operand(rbp, kFunctionOffset));
+  __ push(rax);
+  __ InvokeBuiltin(Builtins::APPLY_OVERFLOW, CALL_FUNCTION);
+  __ bind(&okay);
+  // End of stack check.
 
   // Push current index and limit.
   const int kLimitOffset =
@@ -400,6 +383,8 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
   const int kGlobalOffset =
       Context::kHeaderSize + Context::GLOBAL_INDEX * kPointerSize;
   __ movq(rbx, FieldOperand(rsi, kGlobalOffset));
+  __ movq(rbx, FieldOperand(rbx, GlobalObject::kGlobalContextOffset));
+  __ movq(rbx, FieldOperand(rbx, kGlobalOffset));
   __ movq(rbx, FieldOperand(rbx, GlobalObject::kGlobalReceiverOffset));
 
   // Push the receiver.

@@ -63,6 +63,21 @@ class Resource: public v8::String::ExternalStringResource,
 };
 
 
+class AsciiResource: public v8::String::ExternalAsciiStringResource,
+                public ZoneObject {
+ public:
+  explicit AsciiResource(Vector<const char> string): data_(string.start()) {
+    length_ = string.length();
+  }
+  virtual const char* data() const { return data_; }
+  virtual size_t length() const { return length_; }
+
+ private:
+  const char* data_;
+  size_t length_;
+};
+
+
 static void InitializeBuildingBlocks(
     Handle<String> building_blocks[NUMBER_OF_BUILDING_BLOCKS]) {
   // A list of pointers that we don't have any interest in cleaning up.
@@ -241,17 +256,6 @@ TEST(Traverse) {
   printf("6\n");
   TraverseFirst(left_asymmetric, right_deep_asymmetric, 65536);
   printf("7\n");
-  Handle<String> right_deep_slice =
-      Factory::NewStringSlice(left_deep_asymmetric,
-                              left_deep_asymmetric->length() - 1050,
-                              left_deep_asymmetric->length() - 50);
-  Handle<String> left_deep_slice =
-      Factory::NewStringSlice(right_deep_asymmetric,
-                              right_deep_asymmetric->length() - 1050,
-                              right_deep_asymmetric->length() - 50);
-  printf("8\n");
-  Traverse(right_deep_slice, left_deep_slice);
-  printf("9\n");
   FlattenString(left_asymmetric);
   printf("10\n");
   Traverse(flat, left_asymmetric);
@@ -268,60 +272,6 @@ TEST(Traverse) {
   printf("18\n");
 }
 
-
-static Handle<String> SliceOf(Handle<String> underlying) {
-  int start = gen() % underlying->length();
-  int end = start + gen() % (underlying->length() - start);
-  return Factory::NewStringSlice(underlying,
-                                 start,
-                                 end);
-}
-
-
-static Handle<String> ConstructSliceTree(
-    Handle<String> building_blocks[NUMBER_OF_BUILDING_BLOCKS],
-    int from,
-    int to) {
-  CHECK(to > from);
-  if (to - from <= 1)
-    return SliceOf(building_blocks[from % NUMBER_OF_BUILDING_BLOCKS]);
-  if (to - from == 2) {
-    Handle<String> lhs = building_blocks[from % NUMBER_OF_BUILDING_BLOCKS];
-    if (gen() % 2 == 0)
-      lhs = SliceOf(lhs);
-    Handle<String> rhs = building_blocks[(from+1) % NUMBER_OF_BUILDING_BLOCKS];
-    if (gen() % 2 == 0)
-      rhs = SliceOf(rhs);
-    return Factory::NewConsString(lhs, rhs);
-  }
-  Handle<String> part1 =
-    ConstructBalancedHelper(building_blocks, from, from + ((to - from) / 2));
-  Handle<String> part2 =
-    ConstructBalancedHelper(building_blocks, from + ((to - from) / 2), to);
-  Handle<String> branch = Factory::NewConsString(part1, part2);
-  if (gen() % 2 == 0)
-    return branch;
-  return(SliceOf(branch));
-}
-
-
-TEST(Slice) {
-  printf("TestSlice\n");
-  InitializeVM();
-  v8::HandleScope scope;
-  Handle<String> building_blocks[NUMBER_OF_BUILDING_BLOCKS];
-  ZoneScope zone(DELETE_ON_EXIT);
-  InitializeBuildingBlocks(building_blocks);
-
-  seed = 42;
-  Handle<String> slice_tree =
-      ConstructSliceTree(building_blocks, 0, DEEP_DEPTH);
-  seed = 42;
-  Handle<String> flat_slice_tree =
-      ConstructSliceTree(building_blocks, 0, DEEP_DEPTH);
-  FlattenString(flat_slice_tree);
-  Traverse(flat_slice_tree, slice_tree);
-}
 
 static const int DEEP_ASCII_DEPTH = 100000;
 
@@ -357,8 +307,10 @@ TEST(Utf8Conversion) {
   v8::HandleScope handle_scope;
   // A simple ascii string
   const char* ascii_string = "abcdef12345";
-  int len = v8::String::New(ascii_string, strlen(ascii_string))->Utf8Length();
-  CHECK_EQ(strlen(ascii_string), len);
+  int len =
+      v8::String::New(ascii_string,
+                      StrLength(ascii_string))->Utf8Length();
+  CHECK_EQ(StrLength(ascii_string), len);
   // A mixed ascii and non-ascii string
   // U+02E4 -> CB A4
   // U+0064 -> 64
@@ -392,127 +344,89 @@ TEST(Utf8Conversion) {
 }
 
 
-class TwoByteResource: public v8::String::ExternalStringResource {
- public:
-  TwoByteResource(const uint16_t* data, size_t length, bool* destructed)
-      : data_(data), length_(length), destructed_(destructed) {
-    CHECK_NE(destructed, NULL);
-    *destructed_ = false;
-  }
+TEST(ExternalShortStringAdd) {
+  ZoneScope zone(DELETE_ON_EXIT);
 
-  virtual ~TwoByteResource() {
-    CHECK_NE(destructed_, NULL);
-    CHECK(!*destructed_);
-    *destructed_ = true;
-  }
-
-  const uint16_t* data() const { return data_; }
-  size_t length() const { return length_; }
-
- private:
-  const uint16_t* data_;
-  size_t length_;
-  bool* destructed_;
-};
-
-
-// Regression test case for http://crbug.com/9746. The problem was
-// that when we marked objects reachable only through weak pointers,
-// we ended up keeping a sliced symbol alive, even though we already
-// invoked the weak callback on the underlying external string thus
-// deleting its resource.
-TEST(Regress9746) {
   InitializeVM();
+  v8::HandleScope handle_scope;
 
-  // Setup lengths that guarantee we'll get slices instead of simple
-  // flat strings.
-  static const int kFullStringLength = String::kMinNonFlatLength * 2;
-  static const int kSliceStringLength = String::kMinNonFlatLength + 1;
+  // Make sure we cover all always-flat lengths and at least one above.
+  static const int kMaxLength = 20;
+  CHECK_GT(kMaxLength, i::String::kMinNonFlatLength);
 
-  uint16_t* source = new uint16_t[kFullStringLength];
-  for (int i = 0; i < kFullStringLength; i++) source[i] = '1';
-  char* key = new char[kSliceStringLength];
-  for (int i = 0; i < kSliceStringLength; i++) key[i] = '1';
-  Vector<const char> key_vector(key, kSliceStringLength);
+  // Allocate two JavaScript arrays for holding short strings.
+  v8::Handle<v8::Array> ascii_external_strings =
+      v8::Array::New(kMaxLength + 1);
+  v8::Handle<v8::Array> non_ascii_external_strings =
+      v8::Array::New(kMaxLength + 1);
 
-  // Allocate an external string resource that keeps track of when it
-  // is destructed.
-  bool resource_destructed = false;
-  TwoByteResource* resource =
-      new TwoByteResource(source, kFullStringLength, &resource_destructed);
-
-  {
-    v8::HandleScope scope;
-
-    // Allocate an external string resource and external string. We
-    // have to go through the API to get the weak handle and the
-    // automatic destruction going.
-    Handle<String> string =
-        v8::Utils::OpenHandle(*v8::String::NewExternal(resource));
-
-    // Create a slice of the external string.
-    Handle<String> slice =
-        Factory::NewStringSlice(string, 0, kSliceStringLength);
-    CHECK_EQ(kSliceStringLength, slice->length());
-    CHECK(StringShape(*slice).IsSliced());
-
-    // Make sure the slice ends up in old space so we can morph it
-    // into a symbol.
-    while (Heap::InNewSpace(*slice)) {
-      Heap::PerformScavenge();
+  // Generate short ascii and non-ascii external strings.
+  for (int i = 0; i <= kMaxLength; i++) {
+    char* ascii = Zone::NewArray<char>(i + 1);
+    for (int j = 0; j < i; j++) {
+      ascii[j] = 'a';
     }
+    // Terminating '\0' is left out on purpose. It is not required for external
+    // string data.
+    AsciiResource* ascii_resource =
+        new AsciiResource(Vector<const char>(ascii, i));
+    v8::Local<v8::String> ascii_external_string =
+        v8::String::NewExternal(ascii_resource);
 
-    // Force the slice into the symbol table.
-    slice = Factory::SymbolFromString(slice);
-    CHECK(slice->IsSymbol());
-    CHECK(StringShape(*slice).IsSliced());
-
-    Handle<String> buffer(Handle<SlicedString>::cast(slice)->buffer());
-    CHECK(StringShape(*buffer).IsExternal());
-    CHECK(buffer->IsTwoByteRepresentation());
-
-    // Finally, base a script on the slice of the external string and
-    // get its wrapper. This allocates yet another weak handle that
-    // indirectly refers to the external string.
-    Handle<Script> script = Factory::NewScript(slice);
-    Handle<JSObject> wrapper = GetScriptWrapper(script);
+    ascii_external_strings->Set(v8::Integer::New(i), ascii_external_string);
+    uc16* non_ascii = Zone::NewArray<uc16>(i + 1);
+    for (int j = 0; j < i; j++) {
+      non_ascii[j] = 0x1234;
+    }
+    // Terminating '\0' is left out on purpose. It is not required for external
+    // string data.
+    Resource* resource = new Resource(Vector<const uc16>(non_ascii, i));
+    v8::Local<v8::String> non_ascii_external_string =
+      v8::String::NewExternal(resource);
+    non_ascii_external_strings->Set(v8::Integer::New(i),
+                                    non_ascii_external_string);
   }
 
-  // When we collect all garbage, we cannot get rid of the sliced
-  // symbol entry in the symbol table because it is used by the script
-  // kept alive by the weak wrapper. Make sure we don't destruct the
-  // external string.
-  Heap::CollectAllGarbage(false);
-  CHECK(!resource_destructed);
+  // Add the arrays with the short external strings in the global object.
+  v8::Handle<v8::Object> global = env->Global();
+  global->Set(v8_str("external_ascii"), ascii_external_strings);
+  global->Set(v8_str("external_non_ascii"), non_ascii_external_strings);
+  global->Set(v8_str("max_length"), v8::Integer::New(kMaxLength));
 
-  {
-    v8::HandleScope scope;
-
-    // Make sure the sliced symbol is still in the table.
-    Handle<String> symbol = Factory::LookupSymbol(key_vector);
-    CHECK(StringShape(*symbol).IsSliced());
-
-    // Make sure the buffer is still a two-byte external string.
-    Handle<String> buffer(Handle<SlicedString>::cast(symbol)->buffer());
-    CHECK(StringShape(*buffer).IsExternal());
-    CHECK(buffer->IsTwoByteRepresentation());
-  }
-
-  // Forcing another garbage collection should let us get rid of the
-  // slice from the symbol table. The external string remains in the
-  // heap until the next GC.
-  Heap::CollectAllGarbage(false);
-  CHECK(!resource_destructed);
-  v8::HandleScope scope;
-  Handle<String> key_string = Factory::NewStringFromAscii(key_vector);
-  String* out;
-  CHECK(!Heap::LookupSymbolIfExists(*key_string, &out));
-
-  // Forcing yet another garbage collection must allow us to finally
-  // get rid of the external string.
-  Heap::CollectAllGarbage(false);
-  CHECK(resource_destructed);
-
-  delete[] source;
-  delete[] key;
+  // Add short external ascii and non-ascii strings checking the result.
+  static const char* source =
+    "function test() {"
+    "  var ascii_chars = 'aaaaaaaaaaaaaaaaaaaa';"
+    "  var non_ascii_chars = '\\u1234\\u1234\\u1234\\u1234\\u1234\\u1234\\u1234\\u1234\\u1234\\u1234\\u1234\\u1234\\u1234\\u1234\\u1234\\u1234\\u1234\\u1234\\u1234\\u1234';"  //NOLINT
+    "  if (ascii_chars.length != max_length) return 1;"
+    "  if (non_ascii_chars.length != max_length) return 2;"
+    "  var ascii = Array(max_length + 1);"
+    "  var non_ascii = Array(max_length + 1);"
+    "  for (var i = 0; i <= max_length; i++) {"
+    "    ascii[i] = ascii_chars.substring(0, i);"
+    "    non_ascii[i] = non_ascii_chars.substring(0, i);"
+    "  };"
+    "  for (var i = 0; i <= max_length; i++) {"
+    "    if (ascii[i] != external_ascii[i]) return 3;"
+    "    if (non_ascii[i] != external_non_ascii[i]) return 4;"
+    "    for (var j = 0; j < i; j++) {"
+    "      if (external_ascii[i] !="
+    "          (external_ascii[j] + external_ascii[i - j])) return 5;"
+    "      if (external_non_ascii[i] !="
+    "          (external_non_ascii[j] + external_non_ascii[i - j])) return 6;"
+    "      if (non_ascii[i] != (non_ascii[j] + non_ascii[i - j])) return 7;"
+    "      if (ascii[i] != (ascii[j] + ascii[i - j])) return 8;"
+    "      if (ascii[i] != (external_ascii[j] + ascii[i - j])) return 9;"
+    "      if (ascii[i] != (ascii[j] + external_ascii[i - j])) return 10;"
+    "      if (non_ascii[i] !="
+    "          (external_non_ascii[j] + non_ascii[i - j])) return 11;"
+    "      if (non_ascii[i] !="
+    "          (non_ascii[j] + external_non_ascii[i - j])) return 12;"
+    "    }"
+    "  }"
+    "  return 0;"
+    "};"
+    "test()";
+  CHECK_EQ(0,
+           v8::Script::Compile(v8::String::New(source))->Run()->Int32Value());
 }

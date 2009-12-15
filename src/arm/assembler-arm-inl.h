@@ -85,7 +85,7 @@ Object* RelocInfo::target_object() {
 }
 
 
-Handle<Object> RelocInfo::target_object_handle(Assembler *origin) {
+Handle<Object> RelocInfo::target_object_handle(Assembler* origin) {
   ASSERT(IsCodeTarget(rmode_) || rmode_ == EMBEDDED_OBJECT);
   return Memory::Object_Handle_at(Assembler::target_address_address_at(pc_));
 }
@@ -242,6 +242,12 @@ Address Assembler::target_address_address_at(Address pc) {
 
 Address Assembler::target_address_at(Address pc) {
   return Memory::Address_at(target_address_address_at(pc));
+}
+
+
+void Assembler::set_target_at(Address constant_pool_entry,
+                              Address target) {
+  Memory::Address_at(constant_pool_entry) = target;
 }
 
 

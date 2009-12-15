@@ -77,12 +77,12 @@ class Reference BASE_EMBEDDED {
   // Generate code to push the value of the reference on top of the
   // expression stack.  The reference is expected to be already on top of
   // the expression stack, and it is left in place with its value above it.
-  void GetValue(TypeofState typeof_state);
+  void GetValue();
 
   // Like GetValue except that the slot is expected to be written to before
   // being read from again.  Thae value of the reference may be invalidated,
   // causing subsequent attempts to read it to fail.
-  void TakeValue(TypeofState typeof_state);
+  void TakeValue();
 
   // Generate code to store the value on top of the expression stack in the
   // reference.  The reference is expected to be immediately below the value
@@ -241,27 +241,19 @@ class CodeGenState BASE_EMBEDDED {
   explicit CodeGenState(CodeGenerator* owner);
 
   // Create a code generator state based on a code generator's current
-  // state.  The new state may or may not be inside a typeof, and has its
-  // own control destination.
-  CodeGenState(CodeGenerator* owner,
-               TypeofState typeof_state,
-               ControlDestination* destination);
+  // state.  The new state has its own control destination.
+  CodeGenState(CodeGenerator* owner, ControlDestination* destination);
 
   // Destroy a code generator state and restore the owning code generator's
   // previous state.
   ~CodeGenState();
 
   // Accessors for the state.
-  TypeofState typeof_state() const { return typeof_state_; }
   ControlDestination* destination() const { return destination_; }
 
  private:
   // The owning code generator.
   CodeGenerator* owner_;
-
-  // A flag indicating whether we are compiling the immediate subexpression
-  // of a typeof expression.
-  TypeofState typeof_state_;
 
   // A control destination in case the expression has a control-flow
   // effect.
@@ -307,17 +299,12 @@ class CodeGenerator: public AstVisitor {
   static bool ShouldGenerateLog(Expression* type);
 #endif
 
-  static void SetFunctionInfo(Handle<JSFunction> fun,
-                              FunctionLiteral* lit,
-                              bool is_toplevel,
-                              Handle<Script> script);
-
   static void RecordPositions(MacroAssembler* masm, int pos);
 
   // Accessors
   MacroAssembler* masm() { return masm_; }
-
   VirtualFrame* frame() const { return frame_; }
+  Handle<Script> script() { return script_; }
 
   bool has_valid_frame() const { return frame_ != NULL; }
 
@@ -353,7 +340,6 @@ class CodeGenerator: public AstVisitor {
   bool is_eval() { return is_eval_; }
 
   // State
-  TypeofState typeof_state() const { return state_->typeof_state(); }
   ControlDestination* destination() const { return state_->destination(); }
 
   // Track loop nesting level.
@@ -414,18 +400,16 @@ class CodeGenerator: public AstVisitor {
   }
 
   void LoadCondition(Expression* x,
-                     TypeofState typeof_state,
                      ControlDestination* destination,
                      bool force_control);
-  void Load(Expression* x, TypeofState typeof_state = NOT_INSIDE_TYPEOF);
+  void Load(Expression* expr);
   void LoadGlobal();
   void LoadGlobalReceiver();
 
   // Generate code to push the value of an expression on top of the frame
   // and then spill the frame fully to memory.  This function is used
   // temporarily while the code generator is being transformed.
-  void LoadAndSpill(Expression* expression,
-                    TypeofState typeof_state = NOT_INSIDE_TYPEOF);
+  void LoadAndSpill(Expression* expression);
 
   // Read a value from a slot and leave it on top of the expression stack.
   void LoadFromSlot(Slot* slot, TypeofState typeof_state);
@@ -511,8 +495,6 @@ class CodeGenerator: public AstVisitor {
   static bool PatchInlineRuntimeEntry(Handle<String> name,
                                       const InlineRuntimeLUT& new_entry,
                                       InlineRuntimeLUT* old_entry);
-  static Handle<Code> ComputeLazyCompile(int argc);
-  Handle<JSFunction> BuildBoilerplate(FunctionLiteral* node);
   void ProcessDeclarations(ZoneList<Declaration*>* declarations);
 
   static Handle<Code> ComputeCallInitialize(int argc, InLoopFlag in_loop);
@@ -528,6 +510,8 @@ class CodeGenerator: public AstVisitor {
   void GenerateIsSmi(ZoneList<Expression*>* args);
   void GenerateIsNonNegativeSmi(ZoneList<Expression*>* args);
   void GenerateIsArray(ZoneList<Expression*>* args);
+  void GenerateIsObject(ZoneList<Expression*>* args);
+  void GenerateIsFunction(ZoneList<Expression*>* args);
 
   // Support for construct call checks.
   void GenerateIsConstructCall(ZoneList<Expression*>* args);
@@ -560,6 +544,9 @@ class CodeGenerator: public AstVisitor {
   inline void GenerateMathSin(ZoneList<Expression*>* args);
   inline void GenerateMathCos(ZoneList<Expression*>* args);
 
+  // Fast support for StringAdd.
+  void GenerateStringAdd(ZoneList<Expression*>* args);
+
   // Simple condition analysis.
   enum ConditionAnalysis {
     ALWAYS_TRUE,
@@ -574,6 +561,7 @@ class CodeGenerator: public AstVisitor {
   void CodeForFunctionPosition(FunctionLiteral* fun);
   void CodeForReturnPosition(FunctionLiteral* fun);
   void CodeForStatementPosition(Statement* node);
+  void CodeForDoWhileConditionPosition(DoWhileStatement* stmt);
   void CodeForSourcePosition(int pos);
 
 #ifdef DEBUG
@@ -633,6 +621,25 @@ class CodeGenerator: public AstVisitor {
 // times by generated code to perform common tasks, often the slow
 // case of a JavaScript operation.  They are all subclasses of CodeStub,
 // which is declared in code-stubs.h.
+class CallFunctionStub: public CodeStub {
+ public:
+  CallFunctionStub(int argc, InLoopFlag in_loop)
+      : argc_(argc), in_loop_(in_loop) { }
+
+  void Generate(MacroAssembler* masm);
+
+ private:
+  int argc_;
+  InLoopFlag in_loop_;
+
+#ifdef DEBUG
+  void Print() { PrintF("CallFunctionStub (args %d)\n", argc_); }
+#endif
+
+  Major MajorKey() { return CallFunction; }
+  int MinorKey() { return argc_; }
+  InLoopFlag InLoop() { return in_loop_; }
+};
 
 
 class ToBooleanStub: public CodeStub {
@@ -647,11 +654,10 @@ class ToBooleanStub: public CodeStub {
 };
 
 
-// Flag that indicates whether or not the code that handles smi arguments
-// should be placed in the stub, inlined, or omitted entirely.
+// Flag that indicates how to generate code for the stub GenericBinaryOpStub.
 enum GenericBinaryFlags {
-  SMI_CODE_IN_STUB,
-  SMI_CODE_INLINED
+  NO_GENERIC_BINARY_FLAGS = 0,
+  NO_SMI_CODE_IN_STUB = 1 << 0  // Omit smi code in stub.
 };
 
 
@@ -660,45 +666,82 @@ class GenericBinaryOpStub: public CodeStub {
   GenericBinaryOpStub(Token::Value op,
                       OverwriteMode mode,
                       GenericBinaryFlags flags)
-      : op_(op), mode_(mode), flags_(flags) {
-    use_sse3_ = CpuFeatures::IsSupported(CpuFeatures::SSE3);
+      : op_(op),
+        mode_(mode),
+        flags_(flags),
+        args_in_registers_(false),
+        args_reversed_(false) {
+    use_sse3_ = CpuFeatures::IsSupported(SSE3);
     ASSERT(OpBits::is_valid(Token::NUM_TOKENS));
   }
 
-  void GenerateSmiCode(MacroAssembler* masm, Label* slow);
+  // Generate code to call the stub with the supplied arguments. This will add
+  // code at the call site to prepare arguments either in registers or on the
+  // stack together with the actual call.
+  void GenerateCall(MacroAssembler* masm, Register left, Register right);
+  void GenerateCall(MacroAssembler* masm, Register left, Smi* right);
+  void GenerateCall(MacroAssembler* masm, Smi* left, Register right);
 
  private:
   Token::Value op_;
   OverwriteMode mode_;
   GenericBinaryFlags flags_;
+  bool args_in_registers_;  // Arguments passed in registers not on the stack.
+  bool args_reversed_;  // Left and right argument are swapped.
   bool use_sse3_;
 
   const char* GetName();
 
 #ifdef DEBUG
   void Print() {
-    PrintF("GenericBinaryOpStub (op %s), (mode %d, flags %d)\n",
+    PrintF("GenericBinaryOpStub (op %s), "
+           "(mode %d, flags %d, registers %d, reversed %d)\n",
            Token::String(op_),
            static_cast<int>(mode_),
-           static_cast<int>(flags_));
+           static_cast<int>(flags_),
+           static_cast<int>(args_in_registers_),
+           static_cast<int>(args_reversed_));
   }
 #endif
 
-  // Minor key encoding in 16 bits FSOOOOOOOOOOOOMM.
+  // Minor key encoding in 16 bits FRASOOOOOOOOOOMM.
   class ModeBits: public BitField<OverwriteMode, 0, 2> {};
-  class OpBits: public BitField<Token::Value, 2, 12> {};
-  class SSE3Bits: public BitField<bool, 14, 1> {};
+  class OpBits: public BitField<Token::Value, 2, 10> {};
+  class SSE3Bits: public BitField<bool, 12, 1> {};
+  class ArgsInRegistersBits: public BitField<bool, 13, 1> {};
+  class ArgsReversedBits: public BitField<bool, 14, 1> {};
   class FlagBits: public BitField<GenericBinaryFlags, 15, 1> {};
 
   Major MajorKey() { return GenericBinaryOp; }
   int MinorKey() {
     // Encode the parameters in a unique 16 bit value.
     return OpBits::encode(op_)
-        | ModeBits::encode(mode_)
-        | FlagBits::encode(flags_)
-        | SSE3Bits::encode(use_sse3_);
+           | ModeBits::encode(mode_)
+           | FlagBits::encode(flags_)
+           | SSE3Bits::encode(use_sse3_)
+           | ArgsInRegistersBits::encode(args_in_registers_)
+           | ArgsReversedBits::encode(args_reversed_);
   }
+
   void Generate(MacroAssembler* masm);
+  void GenerateSmiCode(MacroAssembler* masm, Label* slow);
+  void GenerateLoadArguments(MacroAssembler* masm);
+  void GenerateReturn(MacroAssembler* masm);
+
+  bool ArgsInRegistersSupported() {
+    return ((op_ == Token::ADD) || (op_ == Token::SUB)
+             || (op_ == Token::MUL) || (op_ == Token::DIV))
+            && flags_ != NO_SMI_CODE_IN_STUB;
+  }
+  bool IsOperationCommutative() {
+    return (op_ == Token::ADD) || (op_ == Token::MUL);
+  }
+
+  void SetArgsInRegisters() { args_in_registers_ = true; }
+  void SetArgsReversed() { args_reversed_ = true; }
+  bool HasSmiCodeInStub() { return (flags_ & NO_SMI_CODE_IN_STUB) == 0; }
+  bool HasArgumentsInRegisters() { return args_in_registers_; }
+  bool HasArgumentsReversed() { return args_reversed_; }
 };
 
 

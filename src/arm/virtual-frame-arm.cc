@@ -146,27 +146,25 @@ void VirtualFrame::AllocateStackSlots() {
       // Initialize stack slots with 'undefined' value.
     __ LoadRoot(ip, Heap::kUndefinedValueRootIndex);
   }
-  if (FLAG_check_stack) {
-    __ LoadRoot(r2, Heap::kStackLimitRootIndex);
-  }
+  __ LoadRoot(r2, Heap::kStackLimitRootIndex);
   for (int i = 0; i < count; i++) {
     __ push(ip);
   }
-  if (FLAG_check_stack) {
-    // Put the lr setup instruction in the delay slot.  The kInstrSize is added
-    // to the implicit 8 byte offset that always applies to operations with pc
-    // and gives a return address 12 bytes down.
-    masm()->add(lr, pc, Operand(Assembler::kInstrSize));
-    masm()->cmp(sp, Operand(r2));
-    StackCheckStub stub;
-    // Call the stub if lower.
-    masm()->mov(pc,
-                Operand(reinterpret_cast<intptr_t>(stub.GetCode().location()),
-                        RelocInfo::CODE_TARGET),
-                LeaveCC,
-                lo);
-  }
+  // Check the stack for overflow or a break request.
+  // Put the lr setup instruction in the delay slot.  The kInstrSize is added
+  // to the implicit 8 byte offset that always applies to operations with pc
+  // and gives a return address 12 bytes down.
+  masm()->add(lr, pc, Operand(Assembler::kInstrSize));
+  masm()->cmp(sp, Operand(r2));
+  StackCheckStub stub;
+  // Call the stub if lower.
+  masm()->mov(pc,
+              Operand(reinterpret_cast<intptr_t>(stub.GetCode().location()),
+                      RelocInfo::CODE_TARGET),
+              LeaveCC,
+              lo);
 }
+
 
 
 void VirtualFrame::SaveContextRegister() {
@@ -245,11 +243,8 @@ void VirtualFrame::CallRuntime(Runtime::FunctionId id, int arg_count) {
 
 void VirtualFrame::InvokeBuiltin(Builtins::JavaScript id,
                                  InvokeJSFlags flags,
-                                 Result* arg_count_register,
                                  int arg_count) {
-  ASSERT(arg_count_register->reg().is(r0));
   PrepareForCall(arg_count, arg_count);
-  arg_count_register->Unuse();
   __ InvokeBuiltin(id, flags);
 }
 

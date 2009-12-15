@@ -98,6 +98,12 @@ class MacroAssembler: public Assembler {
 #endif
 
   // ---------------------------------------------------------------------------
+  // Stack limit support
+
+  // Do simple test for stack overflow. This doesn't handle an overflow.
+  void StackLimitCheck(Label* on_stack_limit_hit);
+
+  // ---------------------------------------------------------------------------
   // Activation frames
 
   void EnterInternalFrame() { EnterFrame(StackFrame::INTERNAL); }
@@ -106,16 +112,16 @@ class MacroAssembler: public Assembler {
   void EnterConstructFrame() { EnterFrame(StackFrame::CONSTRUCT); }
   void LeaveConstructFrame() { LeaveFrame(StackFrame::CONSTRUCT); }
 
-  // Enter specific kind of exit frame; either EXIT or
-  // EXIT_DEBUG. Expects the number of arguments in register rax and
+  // Enter specific kind of exit frame; either in normal or
+  // debug mode. Expects the number of arguments in register rax and
   // sets up the number of arguments in register rdi and the pointer
   // to the first argument in register rsi.
-  void EnterExitFrame(StackFrame::Type type, int result_size = 1);
+  void EnterExitFrame(ExitFrame::Mode mode, int result_size = 1);
 
   // Leave the current exit frame. Expects/provides the return value in
   // register rax:rdx (untouched) and the pointer to the first
   // argument in register rsi.
-  void LeaveExitFrame(StackFrame::Type type, int result_size = 1);
+  void LeaveExitFrame(ExitFrame::Mode mode, int result_size = 1);
 
 
   // ---------------------------------------------------------------------------
@@ -541,6 +547,9 @@ class MacroAssembler: public Assembler {
   // Generates code for reporting that an illegal operation has
   // occurred.
   void IllegalOperation(int num_arguments);
+
+  // Find the function context up the context chain.
+  void LoadContext(Register dst, int context_chain_length);
 
   // ---------------------------------------------------------------------------
   // Runtime calls

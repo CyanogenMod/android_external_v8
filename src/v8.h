@@ -72,6 +72,8 @@
 namespace v8 {
 namespace internal {
 
+class Deserializer;
+
 class V8 : public AllStatic {
  public:
   // Global actions.

@@ -126,7 +126,7 @@ void StubCache::GenerateProbe(MacroAssembler* masm,
   __ j(zero, &miss, not_taken);
 
   // Get the map of the receiver and compute the hash.
-  __ mov(scratch, FieldOperand(name, String::kLengthOffset));
+  __ mov(scratch, FieldOperand(name, String::kHashFieldOffset));
   __ add(scratch, FieldOperand(receiver, HeapObject::kMapOffset));
   __ xor_(scratch, flags);
   __ and_(scratch, (kPrimaryTableSize - 1) << kHeapObjectTagSize);
@@ -135,7 +135,7 @@ void StubCache::GenerateProbe(MacroAssembler* masm,
   ProbeTable(masm, flags, kPrimary, name, scratch, extra);
 
   // Primary miss: Compute hash for secondary probe.
-  __ mov(scratch, FieldOperand(name, String::kLengthOffset));
+  __ mov(scratch, FieldOperand(name, String::kHashFieldOffset));
   __ add(scratch, FieldOperand(receiver, HeapObject::kMapOffset));
   __ xor_(scratch, flags);
   __ and_(scratch, (kPrimaryTableSize - 1) << kHeapObjectTagSize);
@@ -234,13 +234,9 @@ void StubCompiler::GenerateLoadStringLength(MacroAssembler* masm,
   // scratch register.
   GenerateStringCheck(masm, receiver, scratch, miss, &check_wrapper);
 
-  // Load length directly from the string.
+  // Load length from the string and convert to a smi.
   __ bind(&load_length);
-  __ and_(scratch, kStringSizeMask);
   __ mov(eax, FieldOperand(receiver, String::kLengthOffset));
-  // ecx is also the receiver.
-  __ lea(ecx, Operand(scratch, String::kLongLengthShift));
-  __ shr(eax);  // ecx is implicit shift register.
   __ shl(eax, kSmiTagSize);
   __ ret(0);
 
@@ -776,20 +772,40 @@ void StubCompiler::GenerateLoadCallback(JSObject* object,
       CheckPrototypes(object, receiver, holder,
                       scratch1, scratch2, name, miss);
 
-  // Push the arguments on the JS stack of the caller.
-  __ pop(scratch2);  // remove return address
+  Handle<AccessorInfo> callback_handle(callback);
+
+  Register other = reg.is(scratch1) ? scratch2 : scratch1;
+  __ EnterInternalFrame();
+  __ PushHandleScope(other);
+  // Push the stack address where the list of arguments ends
+  __ mov(other, esp);
+  __ sub(Operand(other), Immediate(2 * kPointerSize));
+  __ push(other);
   __ push(receiver);  // receiver
   __ push(reg);  // holder
-  __ mov(reg, Immediate(Handle<AccessorInfo>(callback)));  // callback data
-  __ push(reg);
-  __ push(FieldOperand(reg, AccessorInfo::kDataOffset));
+  __ mov(other, Immediate(callback_handle));
+  __ push(other);
+  __ push(FieldOperand(other, AccessorInfo::kDataOffset));  // data
   __ push(name_reg);  // name
-  __ push(scratch2);  // restore return address
+  // Save a pointer to where we pushed the arguments pointer.
+  // This will be passed as the const Arguments& to the C++ callback.
+  __ mov(eax, esp);
+  __ add(Operand(eax), Immediate(5 * kPointerSize));
+  __ mov(ebx, esp);
 
-  // Do tail-call to the runtime system.
-  ExternalReference load_callback_property =
-      ExternalReference(IC_Utility(IC::kLoadCallbackProperty));
-  __ TailCallRuntime(load_callback_property, 5, 1);
+  // Do call through the api.
+  ASSERT_EQ(6, ApiGetterEntryStub::kStackSpace);
+  Address getter_address = v8::ToCData<Address>(callback->getter());
+  ApiFunction fun(getter_address);
+  ApiGetterEntryStub stub(callback_handle, &fun);
+  __ CallStub(&stub);
+
+  // We need to avoid using eax since that now holds the result.
+  Register tmp = other.is(eax) ? reg : other;
+  __ PopHandleScope(eax, tmp);
+  __ LeaveInternalFrame();
+
+  __ ret(0);
 }
 
 
