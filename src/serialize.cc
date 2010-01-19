@@ -55,9 +55,8 @@ class SerializationAddressMapper {
 
   static int MappedTo(HeapObject* obj) {
     ASSERT(IsMapped(obj));
-    return reinterpret_cast<intptr_t>(serialization_map_->Lookup(Key(obj),
-                                      Hash(obj),
-                                      false)->value);
+    return static_cast<int>(reinterpret_cast<intptr_t>(
+        serialization_map_->Lookup(Key(obj), Hash(obj), false)->value));
   }
 
   static void Map(HeapObject* obj, int to) {
@@ -81,7 +80,7 @@ class SerializationAddressMapper {
   }
 
   static uint32_t Hash(HeapObject* obj) {
-    return reinterpret_cast<intptr_t>(obj->address());
+    return static_cast<int32_t>(reinterpret_cast<intptr_t>(obj->address()));
   }
 
   static void* Key(HeapObject* obj) {
@@ -242,7 +241,7 @@ void ExternalReferenceTable::PopulateTable() {
 
   static const RefTableEntry ref_table[] = {
   // Builtins
-#define DEF_ENTRY_C(name) \
+#define DEF_ENTRY_C(name, ignored) \
   { C_BUILTIN, \
     Builtins::c_##name, \
     "Builtins::" #name },
@@ -250,11 +249,11 @@ void ExternalReferenceTable::PopulateTable() {
   BUILTIN_LIST_C(DEF_ENTRY_C)
 #undef DEF_ENTRY_C
 
-#define DEF_ENTRY_C(name) \
+#define DEF_ENTRY_C(name, ignored) \
   { BUILTIN, \
     Builtins::name, \
     "Builtins::" #name },
-#define DEF_ENTRY_A(name, kind, state) DEF_ENTRY_C(name)
+#define DEF_ENTRY_A(name, kind, state) DEF_ENTRY_C(name, ignored)
 
   BUILTIN_LIST_C(DEF_ENTRY_C)
   BUILTIN_LIST_A(DEF_ENTRY_A)
@@ -397,10 +396,6 @@ void ExternalReferenceTable::PopulateTable() {
       "V8::RandomPositiveSmi");
 
   // Miscellaneous
-  Add(ExternalReference::builtin_passed_function().address(),
-      UNCLASSIFIED,
-      1,
-      "Builtins::builtin_passed_function");
   Add(ExternalReference::the_hole_value_location().address(),
       UNCLASSIFIED,
       2,
@@ -484,7 +479,20 @@ void ExternalReferenceTable::PopulateTable() {
       UNCLASSIFIED,
       21,
       "NativeRegExpMacroAssembler::GrowStack()");
+  Add(ExternalReference::re_word_character_map().address(),
+      UNCLASSIFIED,
+      22,
+      "NativeRegExpMacroAssembler::word_character_map");
 #endif
+  // Keyed lookup cache.
+  Add(ExternalReference::keyed_lookup_cache_keys().address(),
+      UNCLASSIFIED,
+      23,
+      "KeyedLookupCache::keys()");
+  Add(ExternalReference::keyed_lookup_cache_field_offsets().address(),
+      UNCLASSIFIED,
+      24,
+      "KeyedLookupCache::field_offsets()");
 }
 
 
@@ -550,11 +558,10 @@ ExternalReferenceDecoder::~ExternalReferenceDecoder() {
 
 bool Serializer::serialization_enabled_ = false;
 bool Serializer::too_late_to_enable_now_ = false;
+ExternalReferenceDecoder* Deserializer::external_reference_decoder_ = NULL;
 
 
-Deserializer::Deserializer(SnapshotByteSource* source)
-    : source_(source),
-      external_reference_decoder_(NULL) {
+Deserializer::Deserializer(SnapshotByteSource* source) : source_(source) {
 }
 
 
@@ -624,7 +631,7 @@ HeapObject* Deserializer::GetAddressFromStart(int space) {
     return HeapObject::FromAddress(pages_[space][0] + offset);
   }
   ASSERT(SpaceIsPaged(space));
-  int page_of_pointee = offset >> Page::kPageSizeBits;
+  int page_of_pointee = offset >> kPageSizeBits;
   Address object_address = pages_[space][page_of_pointee] +
                            (offset & Page::kPageAlignmentMask);
   return HeapObject::FromAddress(object_address);
@@ -644,8 +651,26 @@ void Deserializer::Deserialize() {
   external_reference_decoder_ = new ExternalReferenceDecoder();
   Heap::IterateRoots(this, VISIT_ONLY_STRONG);
   ASSERT(source_->AtEOF());
-  delete external_reference_decoder_;
-  external_reference_decoder_ = NULL;
+}
+
+
+void Deserializer::DeserializePartial(Object** root) {
+  // Don't GC while deserializing - just expand the heap.
+  AlwaysAllocateScope always_allocate;
+  // Don't use the free lists while deserializing.
+  LinearAllocationScope allocate_linearly;
+  if (external_reference_decoder_ == NULL) {
+    external_reference_decoder_ = new ExternalReferenceDecoder();
+  }
+  VisitPointer(root);
+}
+
+
+void Deserializer::TearDown() {
+  if (external_reference_decoder_ != NULL) {
+    delete external_reference_decoder_;
+    external_reference_decoder_ = NULL;
+  }
 }
 
 
@@ -672,6 +697,9 @@ void Deserializer::ReadObject(int space_number,
   *write_back = HeapObject::FromAddress(address);
   Object** current = reinterpret_cast<Object**>(address);
   Object** limit = current + (size >> kPointerSizeLog2);
+  if (FLAG_log_snapshot_positions) {
+    LOG(SnapshotPositionEvent(address, source_->position()));
+  }
   ReadChunk(current, limit, space_number, address);
 }
 
@@ -858,6 +886,11 @@ void Deserializer::ReadChunk(Object** current,
         *current++ = reinterpret_cast<Object*>(resource);
         break;
       }
+      case ROOT_SERIALIZATION: {
+        int root_id = source_->GetInt();
+        *current++ = Heap::roots_address()[root_id];
+        break;
+      }
       default:
         UNREACHABLE();
     }
@@ -910,7 +943,9 @@ void Serializer::Synchronize(const char* tag) {
 Serializer::Serializer(SnapshotByteSink* sink)
     : sink_(sink),
       current_root_index_(0),
-      external_reference_encoder_(NULL) {
+      external_reference_encoder_(NULL),
+      partial_(false),
+      large_object_total_(0) {
   for (int i = 0; i <= LAST_SPACE; i++) {
     fullness_[i] = 0;
   }
@@ -938,6 +973,16 @@ void Serializer::Serialize() {
 }
 
 
+void Serializer::SerializePartial(Object** object) {
+  partial_ = true;
+  external_reference_encoder_ = new ExternalReferenceEncoder();
+  this->VisitPointer(object);
+  delete external_reference_encoder_;
+  external_reference_encoder_ = NULL;
+  SerializationAddressMapper::Zap();
+}
+
+
 void Serializer::VisitPointers(Object** start, Object** end) {
   for (Object** current = start; current < end; current++) {
     if ((*current)->IsSmi()) {
@@ -953,19 +998,38 @@ void Serializer::VisitPointers(Object** start, Object** end) {
 }
 
 
+int Serializer::RootIndex(HeapObject* heap_object) {
+  for (int i = 0; i < Heap::kRootListLength; i++) {
+    Object* root = Heap::roots_address()[i];
+    if (root == heap_object) return i;
+  }
+  return kInvalidRootIndex;
+}
+
+
 void Serializer::SerializeObject(
     Object* o,
     ReferenceRepresentation reference_representation) {
   CHECK(o->IsHeapObject());
   HeapObject* heap_object = HeapObject::cast(o);
+  if (partial_) {
+    int root_index = RootIndex(heap_object);
+    if (root_index != kInvalidRootIndex) {
+      sink_->Put(ROOT_SERIALIZATION, "RootSerialization");
+      sink_->PutInt(root_index, "root_index");
+      return;
+    }
+    // All the symbols that the snapshot needs should be in the root table.
+    ASSERT(!heap_object->IsSymbol());
+  }
   if (SerializationAddressMapper::IsMapped(heap_object)) {
     int space = SpaceOfAlreadySerializedObject(heap_object);
     int address = SerializationAddressMapper::MappedTo(heap_object);
     int offset = CurrentAllocationAddress(space) - address;
     bool from_start = true;
     if (SpaceIsPaged(space)) {
-      if ((CurrentAllocationAddress(space) >> Page::kPageSizeBits) ==
-          (address >> Page::kPageSizeBits)) {
+      if ((CurrentAllocationAddress(space) >> kPageSizeBits) ==
+          (address >> kPageSizeBits)) {
         from_start = false;
         address = offset;
       }
@@ -1027,6 +1091,8 @@ void Serializer::ObjectSerializer::Serialize() {
     sink_->Put(CODE_OBJECT_SERIALIZATION + space, "ObjectSerialization");
   }
   sink_->PutInt(size >> kObjectAlignmentBits, "Size in words");
+
+  LOG(SnapshotPositionEvent(object_->address(), sink_->Position()));
 
   // Mark this object as already serialized.
   bool start_new_page;
@@ -1192,6 +1258,7 @@ int Serializer::Allocate(int space, int size, bool* new_page) {
     // In large object space we merely number the objects instead of trying to
     // determine some sort of address.
     *new_page = true;
+    large_object_total_ += size;
     return fullness_[LO_SPACE]++;
   }
   *new_page = false;

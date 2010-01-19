@@ -44,6 +44,7 @@
 #include "regexp-stack.h"
 #include "ast.h"
 #include "regexp-macro-assembler.h"
+#include "platform.h"
 // Include native regexp-macro-assembler.
 #ifdef V8_NATIVE_REGEXP
 #if V8_TARGET_ARCH_IA32
@@ -563,13 +564,18 @@ ExternalReference ExternalReference::perform_gc_function() {
 }
 
 
-ExternalReference ExternalReference::builtin_passed_function() {
-  return ExternalReference(&Builtins::builtin_passed_function);
+ExternalReference ExternalReference::random_positive_smi_function() {
+  return ExternalReference(Redirect(FUNCTION_ADDR(V8::RandomPositiveSmi)));
 }
 
 
-ExternalReference ExternalReference::random_positive_smi_function() {
-  return ExternalReference(Redirect(FUNCTION_ADDR(V8::RandomPositiveSmi)));
+ExternalReference ExternalReference::keyed_lookup_cache_keys() {
+  return ExternalReference(KeyedLookupCache::keys_address());
+}
+
+
+ExternalReference ExternalReference::keyed_lookup_cache_field_offsets() {
+  return ExternalReference(KeyedLookupCache::field_offsets_address());
 }
 
 
@@ -664,6 +670,23 @@ ExternalReference ExternalReference::re_case_insensitive_compare_uc16() {
       FUNCTION_ADDR(NativeRegExpMacroAssembler::CaseInsensitiveCompareUC16)));
 }
 
+ExternalReference ExternalReference::re_word_character_map() {
+  return ExternalReference(
+      NativeRegExpMacroAssembler::word_character_map_address());
+}
+
+ExternalReference ExternalReference::address_of_static_offsets_vector() {
+  return ExternalReference(OffsetsVector::static_offsets_vector_address());
+}
+
+ExternalReference ExternalReference::address_of_regexp_stack_memory_address() {
+  return ExternalReference(RegExpStack::memory_address());
+}
+
+ExternalReference ExternalReference::address_of_regexp_stack_memory_size() {
+  return ExternalReference(RegExpStack::memory_size_address());
+}
+
 #endif
 
 
@@ -688,13 +711,13 @@ static double div_two_doubles(double x, double y) {
 
 
 static double mod_two_doubles(double x, double y) {
-  return fmod(x, y);
+  return modulo(x, y);
 }
 
 
-static int native_compare_doubles(double x, double y) {
-  if (x == y) return 0;
-  return x < y ? 1 : -1;
+static int native_compare_doubles(double y, double x) {
+  if (x == y) return EQUAL;
+  return x < y ? LESS : GREATER;
 }
 
 

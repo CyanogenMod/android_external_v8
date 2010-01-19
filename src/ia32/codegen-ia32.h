@@ -266,7 +266,7 @@ class CodeGenState BASE_EMBEDDED {
 
 
 // -------------------------------------------------------------------------
-// Arguments allocation mode
+// Arguments allocation mode.
 
 enum ArgumentsAllocationMode {
   NO_ARGUMENTS_ALLOCATION,
@@ -434,7 +434,7 @@ class CodeGenerator: public AstVisitor {
 
   void GenericBinaryOperation(
       Token::Value op,
-      SmiAnalysis* type,
+      StaticType* type,
       OverwriteMode overwrite_mode);
 
   // If possible, combine two constant smi values using op to produce
@@ -447,7 +447,7 @@ class CodeGenerator: public AstVisitor {
   void ConstantSmiBinaryOperation(Token::Value op,
                                   Result* operand,
                                   Handle<Object> constant_operand,
-                                  SmiAnalysis* type,
+                                  StaticType* type,
                                   bool reversed,
                                   OverwriteMode overwrite_mode);
 
@@ -459,7 +459,8 @@ class CodeGenerator: public AstVisitor {
                                 Result* right,
                                 OverwriteMode overwrite_mode);
 
-  void Comparison(Condition cc,
+  void Comparison(AstNode* node,
+                  Condition cc,
                   bool strict,
                   ControlDestination* destination);
 
@@ -474,7 +475,9 @@ class CodeGenerator: public AstVisitor {
   void StoreUnsafeSmiToLocal(int offset, Handle<Object> value);
   void PushUnsafeSmi(Handle<Object> value);
 
-  void CallWithArguments(ZoneList<Expression*>* arguments, int position);
+  void CallWithArguments(ZoneList<Expression*>* arguments,
+                         CallFunctionFlags flags,
+                         int position);
 
   // Use an optimized version of Function.prototype.apply that avoid
   // allocating the arguments object and just copies the arguments
@@ -540,14 +543,17 @@ class CodeGenerator: public AstVisitor {
   // Fast support for Math.random().
   void GenerateRandomPositiveSmi(ZoneList<Expression*>* args);
 
-  // Fast support for Math.sin and Math.cos.
-  enum MathOp { SIN, COS };
-  void GenerateFastMathOp(MathOp op, ZoneList<Expression*>* args);
-  inline void GenerateMathSin(ZoneList<Expression*>* args);
-  inline void GenerateMathCos(ZoneList<Expression*>* args);
-
   // Fast support for StringAdd.
   void GenerateStringAdd(ZoneList<Expression*>* args);
+
+  // Fast support for SubString.
+  void GenerateSubString(ZoneList<Expression*>* args);
+
+  // Fast support for StringCompare.
+  void GenerateStringCompare(ZoneList<Expression*>* args);
+
+  // Support for direct calls from JavaScript to native RegExp code.
+  void GenerateRegExpExec(ZoneList<Expression*>* args);
 
   // Simple condition analysis.
   enum ConditionAnalysis {
@@ -616,39 +622,6 @@ class CodeGenerator: public AstVisitor {
 };
 
 
-class CallFunctionStub: public CodeStub {
- public:
-  CallFunctionStub(int argc, InLoopFlag in_loop)
-      : argc_(argc), in_loop_(in_loop) { }
-
-  void Generate(MacroAssembler* masm);
-
- private:
-  int argc_;
-  InLoopFlag in_loop_;
-
-#ifdef DEBUG
-  void Print() { PrintF("CallFunctionStub (args %d)\n", argc_); }
-#endif
-
-  Major MajorKey() { return CallFunction; }
-  int MinorKey() { return argc_; }
-  InLoopFlag InLoop() { return in_loop_; }
-};
-
-
-class ToBooleanStub: public CodeStub {
- public:
-  ToBooleanStub() { }
-
-  void Generate(MacroAssembler* masm);
-
- private:
-  Major MajorKey() { return ToBoolean; }
-  int MinorKey() { return 0; }
-};
-
-
 // Flag that indicates how to generate code for the stub GenericBinaryOpStub.
 enum GenericBinaryFlags {
   NO_GENERIC_BINARY_FLAGS = 0,
@@ -665,7 +638,8 @@ class GenericBinaryOpStub: public CodeStub {
         mode_(mode),
         flags_(flags),
         args_in_registers_(false),
-        args_reversed_(false) {
+        args_reversed_(false),
+        name_(NULL) {
     use_sse3_ = CpuFeatures::IsSupported(SSE3);
     ASSERT(OpBits::is_valid(Token::NUM_TOKENS));
   }
@@ -684,6 +658,7 @@ class GenericBinaryOpStub: public CodeStub {
   bool args_in_registers_;  // Arguments passed in registers not on the stack.
   bool args_reversed_;  // Left and right argument are swapped.
   bool use_sse3_;
+  char* name_;
 
   const char* GetName();
 
@@ -725,8 +700,8 @@ class GenericBinaryOpStub: public CodeStub {
 
   bool ArgsInRegistersSupported() {
     return ((op_ == Token::ADD) || (op_ == Token::SUB)
-             || (op_ == Token::MUL) || (op_ == Token::DIV))
-            && flags_ != NO_SMI_CODE_IN_STUB;
+            || (op_ == Token::MUL) || (op_ == Token::DIV))
+        && flags_ != NO_SMI_CODE_IN_STUB;
   }
   bool IsOperationCommutative() {
     return (op_ == Token::ADD) || (op_ == Token::MUL);
@@ -747,7 +722,32 @@ enum StringAddFlags {
 };
 
 
-class StringAddStub: public CodeStub {
+class StringStubBase: public CodeStub {
+ public:
+  // Generate code for copying characters using a simple loop. This should only
+  // be used in places where the number of characters is small and the
+  // additional setup and checking in GenerateCopyCharactersREP adds too much
+  // overhead. Copying of overlapping regions is not supported.
+  void GenerateCopyCharacters(MacroAssembler* masm,
+                              Register dest,
+                              Register src,
+                              Register count,
+                              Register scratch,
+                              bool ascii);
+
+  // Generate code for copying characters using the rep movs instruction.
+  // Copies ecx characters from esi to edi. Copying of overlapping regions is
+  // not supported.
+  void GenerateCopyCharactersREP(MacroAssembler* masm,
+                                 Register dest,     // Must be edi.
+                                 Register src,      // Must be esi.
+                                 Register count,    // Must be ecx.
+                                 Register scratch,  // Neither of the above.
+                                 bool ascii);
+};
+
+
+class StringAddStub: public StringStubBase {
  public:
   explicit StringAddStub(StringAddFlags flags) {
     string_check_ = ((flags & NO_STRING_CHECK_IN_STUB) == 0);
@@ -759,15 +759,42 @@ class StringAddStub: public CodeStub {
 
   void Generate(MacroAssembler* masm);
 
-  void GenerateCopyCharacters(MacroAssembler* masm,
-                                   Register desc,
-                                   Register src,
-                                   Register count,
-                                   Register scratch,
-                                   bool ascii);
-
   // Should the stub check whether arguments are strings?
   bool string_check_;
+};
+
+
+class SubStringStub: public StringStubBase {
+ public:
+  SubStringStub() {}
+
+ private:
+  Major MajorKey() { return SubString; }
+  int MinorKey() { return 0; }
+
+  void Generate(MacroAssembler* masm);
+};
+
+
+class StringCompareStub: public StringStubBase {
+ public:
+  explicit StringCompareStub() {
+  }
+
+  // Compare two flat ascii strings and returns result in eax after popping two
+  // arguments from the stack.
+  static void GenerateCompareFlatAsciiStrings(MacroAssembler* masm,
+                                              Register left,
+                                              Register right,
+                                              Register scratch1,
+                                              Register scratch2,
+                                              Register scratch3);
+
+ private:
+  Major MajorKey() { return StringCompare; }
+  int MinorKey() { return 0; }
+
+  void Generate(MacroAssembler* masm);
 };
 
 

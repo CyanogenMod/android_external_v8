@@ -95,6 +95,8 @@ static SourceCodeCache natives_cache(Script::TYPE_NATIVE);
 static SourceCodeCache extensions_cache(Script::TYPE_EXTENSION);
 // This is for delete, not delete[].
 static List<char*>* delete_these_non_arrays_on_tear_down = NULL;
+// This is for delete[]
+static List<char*>* delete_these_arrays_on_tear_down = NULL;
 
 
 NativesExternalStringResource::NativesExternalStringResource(const char* source)
@@ -150,15 +152,39 @@ void Bootstrapper::Initialize(bool create_heap_objects) {
 }
 
 
+char* Bootstrapper::AllocateAutoDeletedArray(int bytes) {
+  char* memory = new char[bytes];
+  if (memory != NULL) {
+    if (delete_these_arrays_on_tear_down == NULL) {
+      delete_these_arrays_on_tear_down = new List<char*>(2);
+    }
+    delete_these_arrays_on_tear_down->Add(memory);
+  }
+  return memory;
+}
+
+
 void Bootstrapper::TearDown() {
   if (delete_these_non_arrays_on_tear_down != NULL) {
     int len = delete_these_non_arrays_on_tear_down->length();
     ASSERT(len < 20);  // Don't use this mechanism for unbounded allocations.
     for (int i = 0; i < len; i++) {
       delete delete_these_non_arrays_on_tear_down->at(i);
+      delete_these_non_arrays_on_tear_down->at(i) = NULL;
     }
     delete delete_these_non_arrays_on_tear_down;
     delete_these_non_arrays_on_tear_down = NULL;
+  }
+
+  if (delete_these_arrays_on_tear_down != NULL) {
+    int len = delete_these_arrays_on_tear_down->length();
+    ASSERT(len < 1000);  // Don't use this mechanism for unbounded allocations.
+    for (int i = 0; i < len; i++) {
+      delete[] delete_these_arrays_on_tear_down->at(i);
+      delete_these_arrays_on_tear_down->at(i) = NULL;
+    }
+    delete delete_these_arrays_on_tear_down;
+    delete_these_arrays_on_tear_down = NULL;
   }
 
   natives_cache.Initialize(false);  // Yes, symmetrical
@@ -966,6 +992,7 @@ void Genesis::InstallNativeFunctions() {
   INSTALL_NATIVE(JSFunction, "ToUint32", to_uint32_fun);
   INSTALL_NATIVE(JSFunction, "ToInt32", to_int32_fun);
   INSTALL_NATIVE(JSFunction, "ToBoolean", to_boolean_fun);
+  INSTALL_NATIVE(JSFunction, "GlobalEval", global_eval_fun);
   INSTALL_NATIVE(JSFunction, "Instantiate", instantiate_fun);
   INSTALL_NATIVE(JSFunction, "ConfigureTemplateInstance",
                  configure_instance_fun);

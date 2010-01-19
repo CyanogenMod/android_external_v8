@@ -310,6 +310,12 @@ void MacroAssembler::CallStub(CodeStub* stub) {
 }
 
 
+void MacroAssembler::TailCallStub(CodeStub* stub) {
+  ASSERT(allow_stub_calls());  // calls are not allowed in some stubs
+  Jump(stub->GetCode(), RelocInfo::CODE_TARGET);
+}
+
+
 void MacroAssembler::StubReturn(int argc) {
   ASSERT(argc >= 1 && generating_stub());
   ret((argc - 1) * kPointerSize);
@@ -570,6 +576,17 @@ Condition MacroAssembler::CheckBothSmi(Register first, Register second) {
   }
   movl(kScratchRegister, first);
   orl(kScratchRegister, second);
+  testb(kScratchRegister, Immediate(kSmiTagMask));
+  return zero;
+}
+
+
+Condition MacroAssembler::CheckEitherSmi(Register first, Register second) {
+  if (first.is(second)) {
+    return CheckSmi(first);
+  }
+  movl(kScratchRegister, first);
+  andl(kScratchRegister, second);
   testb(kScratchRegister, Immediate(kSmiTagMask));
   return zero;
 }
@@ -1275,6 +1292,39 @@ void MacroAssembler::JumpIfNotBothSmi(Register src1, Register src2,
 }
 
 
+void MacroAssembler::JumpIfNotBothSequentialAsciiStrings(Register first_object,
+                                                         Register second_object,
+                                                         Register scratch1,
+                                                         Register scratch2,
+                                                         Label* on_fail) {
+  // Check that both objects are not smis.
+  Condition either_smi = CheckEitherSmi(first_object, second_object);
+  j(either_smi, on_fail);
+
+  // Load instance type for both strings.
+  movq(scratch1, FieldOperand(first_object, HeapObject::kMapOffset));
+  movq(scratch2, FieldOperand(second_object, HeapObject::kMapOffset));
+  movzxbl(scratch1, FieldOperand(scratch1, Map::kInstanceTypeOffset));
+  movzxbl(scratch2, FieldOperand(scratch2, Map::kInstanceTypeOffset));
+
+  // Check that both are flat ascii strings.
+  ASSERT(kNotStringTag != 0);
+  const int kFlatAsciiStringMask =
+      kIsNotStringMask | kStringRepresentationMask | kStringEncodingMask;
+  const int kFlatAsciiStringBits =
+      kNotStringTag | kSeqStringTag | kAsciiStringTag;
+
+  andl(scratch1, Immediate(kFlatAsciiStringMask));
+  andl(scratch2, Immediate(kFlatAsciiStringMask));
+  // Interleave the bits to check both scratch1 and scratch2 in one test.
+  ASSERT_EQ(0, kFlatAsciiStringMask & (kFlatAsciiStringMask << 3));
+  lea(scratch1, Operand(scratch1, scratch2, times_8, 0));
+  cmpl(scratch1,
+       Immediate(kFlatAsciiStringBits + (kFlatAsciiStringBits << 3)));
+  j(not_equal, on_fail);
+}
+
+
 void MacroAssembler::Move(Register dst, Handle<Object> source) {
   ASSERT(!source->IsFailure());
   if (source->IsSmi()) {
@@ -1335,6 +1385,13 @@ void MacroAssembler::Push(Smi* source) {
   } else {
     Set(kScratchRegister, smi);
     push(kScratchRegister);
+  }
+}
+
+
+void MacroAssembler::Drop(int stack_elements) {
+  if (stack_elements > 0) {
+    addq(rsp, Immediate(stack_elements * kPointerSize));
   }
 }
 
@@ -1422,6 +1479,16 @@ void MacroAssembler::PushTryHandler(CodeLocation try_location,
   push(Operand(kScratchRegister, 0));
   // Link this handler.
   movq(Operand(kScratchRegister, 0), rsp);
+}
+
+
+void MacroAssembler::PopTryHandler() {
+  ASSERT_EQ(0, StackHandlerConstants::kNextOffset);
+  // Unlink this handler.
+  movq(kScratchRegister, ExternalReference(Top::k_handler_address));
+  pop(Operand(kScratchRegister, 0));
+  // Remove the remaining fields.
+  addq(rsp, Immediate(StackHandlerConstants::kSize - kPointerSize));
 }
 
 
@@ -2244,12 +2311,114 @@ void MacroAssembler::AllocateHeapNumber(Register result,
 }
 
 
+void MacroAssembler::AllocateTwoByteString(Register result,
+                                           Register length,
+                                           Register scratch1,
+                                           Register scratch2,
+                                           Register scratch3,
+                                           Label* gc_required) {
+  // Calculate the number of bytes needed for the characters in the string while
+  // observing object alignment.
+  ASSERT((SeqTwoByteString::kHeaderSize & kObjectAlignmentMask) == 0);
+  ASSERT(kShortSize == 2);
+  // scratch1 = length * 2 + kObjectAlignmentMask.
+  lea(scratch1, Operand(length, length, times_1, kObjectAlignmentMask));
+  and_(scratch1, Immediate(~kObjectAlignmentMask));
+
+  // Allocate two byte string in new space.
+  AllocateInNewSpace(SeqTwoByteString::kHeaderSize,
+                     times_1,
+                     scratch1,
+                     result,
+                     scratch2,
+                     scratch3,
+                     gc_required,
+                     TAG_OBJECT);
+
+  // Set the map, length and hash field.
+  LoadRoot(kScratchRegister, Heap::kStringMapRootIndex);
+  movq(FieldOperand(result, HeapObject::kMapOffset), kScratchRegister);
+  movl(FieldOperand(result, String::kLengthOffset), length);
+  movl(FieldOperand(result, String::kHashFieldOffset),
+       Immediate(String::kEmptyHashField));
+}
+
+
+void MacroAssembler::AllocateAsciiString(Register result,
+                                         Register length,
+                                         Register scratch1,
+                                         Register scratch2,
+                                         Register scratch3,
+                                         Label* gc_required) {
+  // Calculate the number of bytes needed for the characters in the string while
+  // observing object alignment.
+  ASSERT((SeqAsciiString::kHeaderSize & kObjectAlignmentMask) == 0);
+  movl(scratch1, length);
+  ASSERT(kCharSize == 1);
+  addq(scratch1, Immediate(kObjectAlignmentMask));
+  and_(scratch1, Immediate(~kObjectAlignmentMask));
+
+  // Allocate ascii string in new space.
+  AllocateInNewSpace(SeqAsciiString::kHeaderSize,
+                     times_1,
+                     scratch1,
+                     result,
+                     scratch2,
+                     scratch3,
+                     gc_required,
+                     TAG_OBJECT);
+
+  // Set the map, length and hash field.
+  LoadRoot(kScratchRegister, Heap::kAsciiStringMapRootIndex);
+  movq(FieldOperand(result, HeapObject::kMapOffset), kScratchRegister);
+  movl(FieldOperand(result, String::kLengthOffset), length);
+  movl(FieldOperand(result, String::kHashFieldOffset),
+       Immediate(String::kEmptyHashField));
+}
+
+
+void MacroAssembler::AllocateConsString(Register result,
+                                        Register scratch1,
+                                        Register scratch2,
+                                        Label* gc_required) {
+  // Allocate heap number in new space.
+  AllocateInNewSpace(ConsString::kSize,
+                     result,
+                     scratch1,
+                     scratch2,
+                     gc_required,
+                     TAG_OBJECT);
+
+  // Set the map. The other fields are left uninitialized.
+  LoadRoot(kScratchRegister, Heap::kConsStringMapRootIndex);
+  movq(FieldOperand(result, HeapObject::kMapOffset), kScratchRegister);
+}
+
+
+void MacroAssembler::AllocateAsciiConsString(Register result,
+                                             Register scratch1,
+                                             Register scratch2,
+                                             Label* gc_required) {
+  // Allocate heap number in new space.
+  AllocateInNewSpace(ConsString::kSize,
+                     result,
+                     scratch1,
+                     scratch2,
+                     gc_required,
+                     TAG_OBJECT);
+
+  // Set the map. The other fields are left uninitialized.
+  LoadRoot(kScratchRegister, Heap::kConsAsciiStringMapRootIndex);
+  movq(FieldOperand(result, HeapObject::kMapOffset), kScratchRegister);
+}
+
+
 void MacroAssembler::LoadContext(Register dst, int context_chain_length) {
   if (context_chain_length > 0) {
     // Move up the chain of contexts to the context containing the slot.
     movq(dst, Operand(rsi, Context::SlotOffset(Context::CLOSURE_INDEX)));
     // Load the function context (which is the incoming, outer context).
-    movq(rax, FieldOperand(rax, JSFunction::kContextOffset));
+    movq(dst, FieldOperand(dst, JSFunction::kContextOffset));
     for (int i = 1; i < context_chain_length; i++) {
       movq(dst, Operand(dst, Context::SlotOffset(Context::CLOSURE_INDEX)));
       movq(dst, FieldOperand(dst, JSFunction::kContextOffset));

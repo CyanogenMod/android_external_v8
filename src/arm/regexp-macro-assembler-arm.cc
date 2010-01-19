@@ -59,15 +59,19 @@ namespace internal {
  *
  * Each call to a public method should retain this convention.
  * The stack will have the following structure:
+ *       - direct_call        (if 1, direct call from JavaScript code, if 0 call
+ *                             through the runtime system)
  *       - stack_area_base    (High end of the memory area to use as
  *                             backtracking stack)
- *       - at_start           (if 1, start at start of string, if 0, don't)
+ *       - at_start           (if 1, we are starting at the start of the
+ *                             string, otherwise 0)
+ *       - int* capture_array (int[num_saved_registers_], for output).
  *       --- sp when called ---
  *       - link address
  *       - backup of registers r4..r11
- *       - int* capture_array (int[num_saved_registers_], for output).
  *       - end of input       (Address of end of string)
  *       - start of input     (Address of first character in string)
+ *       - start index        (character index of start)
  *       --- frame pointer ----
  *       - void* input_string (location of a handle containing the string)
  *       - Offset of location before start of input (effectively character
@@ -85,11 +89,13 @@ namespace internal {
  * The data up to the return address must be placed there by the calling
  * code, by calling the code entry as cast to a function with the signature:
  * int (*match)(String* input_string,
+ *              int start_index,
  *              Address start,
  *              Address end,
  *              int* capture_output_array,
  *              bool at_start,
- *              byte* stack_area_base)
+ *              byte* stack_area_base,
+ *              bool direct_call)
  * The call is performed by NativeRegExpMacroAssembler::Execute()
  * (in regexp-macro-assembler.cc).
  */
@@ -459,8 +465,6 @@ void RegExpMacroAssemblerARM::CheckNotCharacterAfterMinusAnd(
 
 
 bool RegExpMacroAssemblerARM::CheckSpecialCharacterClass(uc16 type,
-                                                         int cp_offset,
-                                                         bool check_offset,
                                                          Label* on_no_match) {
   // Range checks (c in min..max) are generally implemented by an unsigned
   // (c - min) <= (max - min) check
@@ -469,11 +473,6 @@ bool RegExpMacroAssemblerARM::CheckSpecialCharacterClass(uc16 type,
     // Match space-characters
     if (mode_ == ASCII) {
       // ASCII space characters are '\t'..'\r' and ' '.
-      if (check_offset) {
-        LoadCurrentCharacter(cp_offset, on_no_match);
-      } else {
-        LoadCurrentCharacterUnchecked(cp_offset, 1);
-      }
       Label success;
       __ cmp(current_character(), Operand(' '));
       __ b(eq, &success);
@@ -487,11 +486,6 @@ bool RegExpMacroAssemblerARM::CheckSpecialCharacterClass(uc16 type,
     return false;
   case 'S':
     // Match non-space characters.
-    if (check_offset) {
-      LoadCurrentCharacter(cp_offset, on_no_match, 1);
-    } else {
-      LoadCurrentCharacterUnchecked(cp_offset, 1);
-    }
     if (mode_ == ASCII) {
       // ASCII space characters are '\t'..'\r' and ' '.
       __ cmp(current_character(), Operand(' '));
@@ -504,33 +498,18 @@ bool RegExpMacroAssemblerARM::CheckSpecialCharacterClass(uc16 type,
     return false;
   case 'd':
     // Match ASCII digits ('0'..'9')
-    if (check_offset) {
-      LoadCurrentCharacter(cp_offset, on_no_match, 1);
-    } else {
-      LoadCurrentCharacterUnchecked(cp_offset, 1);
-    }
     __ sub(r0, current_character(), Operand('0'));
     __ cmp(current_character(), Operand('9' - '0'));
     BranchOrBacktrack(hi, on_no_match);
     return true;
   case 'D':
     // Match non ASCII-digits
-    if (check_offset) {
-      LoadCurrentCharacter(cp_offset, on_no_match, 1);
-    } else {
-      LoadCurrentCharacterUnchecked(cp_offset, 1);
-    }
     __ sub(r0, current_character(), Operand('0'));
     __ cmp(r0, Operand('9' - '0'));
     BranchOrBacktrack(ls, on_no_match);
     return true;
   case '.': {
     // Match non-newlines (not 0x0a('\n'), 0x0d('\r'), 0x2028 and 0x2029)
-    if (check_offset) {
-      LoadCurrentCharacter(cp_offset, on_no_match, 1);
-    } else {
-      LoadCurrentCharacterUnchecked(cp_offset, 1);
-    }
     __ eor(r0, current_character(), Operand(0x01));
     // See if current character is '\n'^1 or '\r'^1, i.e., 0x0b or 0x0c
     __ sub(r0, r0, Operand(0x0b));
@@ -546,13 +525,61 @@ bool RegExpMacroAssemblerARM::CheckSpecialCharacterClass(uc16 type,
     }
     return true;
   }
-  case '*':
-    // Match any character.
-    if (check_offset) {
-      CheckPosition(cp_offset, on_no_match);
+  case 'n': {
+    // Match newlines (0x0a('\n'), 0x0d('\r'), 0x2028 and 0x2029)
+    __ eor(r0, current_character(), Operand(0x01));
+    // See if current character is '\n'^1 or '\r'^1, i.e., 0x0b or 0x0c
+    __ sub(r0, r0, Operand(0x0b));
+    __ cmp(r0, Operand(0x0c - 0x0b));
+    if (mode_ == ASCII) {
+      BranchOrBacktrack(hi, on_no_match);
+    } else {
+      Label done;
+      __ b(ls, &done);
+      // Compare original value to 0x2028 and 0x2029, using the already
+      // computed (current_char ^ 0x01 - 0x0b). I.e., check for
+      // 0x201d (0x2028 - 0x0b) or 0x201e.
+      __ sub(r0, r0, Operand(0x2028 - 0x0b));
+      __ cmp(r0, Operand(1));
+      BranchOrBacktrack(hi, on_no_match);
+      __ bind(&done);
     }
     return true;
-  // No custom implementation (yet): w, W, s(UC16), S(UC16).
+  }
+  case 'w': {
+    if (mode_ != ASCII) {
+      // Table is 128 entries, so all ASCII characters can be tested.
+      __ cmp(current_character(), Operand('z'));
+      BranchOrBacktrack(hi, on_no_match);
+    }
+    ExternalReference map = ExternalReference::re_word_character_map();
+    __ mov(r0, Operand(map));
+    __ ldrb(r0, MemOperand(r0, current_character()));
+    __ tst(r0, Operand(r0));
+    BranchOrBacktrack(eq, on_no_match);
+    return true;
+  }
+  case 'W': {
+    Label done;
+    if (mode_ != ASCII) {
+      // Table is 128 entries, so all ASCII characters can be tested.
+      __ cmp(current_character(), Operand('z'));
+      __ b(hi, &done);
+    }
+    ExternalReference map = ExternalReference::re_word_character_map();
+    __ mov(r0, Operand(map));
+    __ ldrb(r0, MemOperand(r0, current_character()));
+    __ tst(r0, Operand(r0));
+    BranchOrBacktrack(ne, on_no_match);
+    if (mode_ != ASCII) {
+      __ bind(&done);
+    }
+    return true;
+  }
+  case '*':
+    // Match any character.
+    return true;
+  // No custom implementation (yet): s(UC16), S(UC16).
   default:
     return false;
   }

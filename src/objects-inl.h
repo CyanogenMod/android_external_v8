@@ -150,8 +150,12 @@ bool Object::IsString() {
 bool Object::IsSymbol() {
   if (!this->IsHeapObject()) return false;
   uint32_t type = HeapObject::cast(this)->map()->instance_type();
-  return (type & (kIsNotStringMask | kIsSymbolMask)) ==
-         (kStringTag | kSymbolTag);
+  // Because the symbol tag is non-zero and no non-string types have the
+  // symbol bit set we can test for symbols with a very simple test
+  // operation.
+  ASSERT(kSymbolTag != 0);
+  ASSERT(kNotStringTag + kIsSymbolMask > LAST_TYPE);
+  return (type & kIsSymbolMask) != 0;
 }
 
 
@@ -226,7 +230,8 @@ StringShape::StringShape(InstanceType t)
 
 bool StringShape::IsSymbol() {
   ASSERT(valid());
-  return (type_ & kIsSymbolMask) == kSymbolTag;
+  ASSERT(kSymbolTag != 0);
+  return (type_ & kIsSymbolMask) != 0;
 }
 
 
@@ -336,8 +341,8 @@ bool Object::IsExternalArray() {
     return false;
   InstanceType instance_type =
       HeapObject::cast(this)->map()->instance_type();
-  return (instance_type >= EXTERNAL_BYTE_ARRAY_TYPE &&
-          instance_type <= EXTERNAL_FLOAT_ARRAY_TYPE);
+  return (instance_type >= FIRST_EXTERNAL_ARRAY_TYPE &&
+          instance_type <= LAST_EXTERNAL_ARRAY_TYPE);
 }
 
 
@@ -952,14 +957,14 @@ MapWord MapWord::EncodeAddress(Address map_address, int offset) {
   // exceed the object area size of a page.
   ASSERT(0 <= offset && offset < Page::kObjectAreaSize);
 
-  int compact_offset = offset >> kObjectAlignmentBits;
+  uintptr_t compact_offset = offset >> kObjectAlignmentBits;
   ASSERT(compact_offset < (1 << kForwardingOffsetBits));
 
   Page* map_page = Page::FromAddress(map_address);
   ASSERT_MAP_PAGE_INDEX(map_page->mc_page_index);
 
-  int map_page_offset =
-      map_page->Offset(map_address) >> kObjectAlignmentBits;
+  uintptr_t map_page_offset =
+      map_page->Offset(map_address) >> kMapAlignmentBits;
 
   uintptr_t encoding =
       (compact_offset << kForwardingOffsetShift) |
@@ -975,8 +980,8 @@ Address MapWord::DecodeMapAddress(MapSpace* map_space) {
   ASSERT_MAP_PAGE_INDEX(map_page_index);
 
   int map_page_offset = static_cast<int>(
-      ((value_ & kMapPageOffsetMask) >> kMapPageOffsetShift)
-      << kObjectAlignmentBits);
+      ((value_ & kMapPageOffsetMask) >> kMapPageOffsetShift) <<
+      kMapAlignmentBits);
 
   return (map_space->PageAddress(map_page_index) + map_page_offset);
 }
@@ -1499,7 +1504,7 @@ void DescriptorArray::Set(int descriptor_number, Descriptor* desc) {
   // Range check.
   ASSERT(descriptor_number < number_of_descriptors());
 
-  // Make sure non of the elements in desc are in new space.
+  // Make sure none of the elements in desc are in new space.
   ASSERT(!Heap::InNewSpace(desc->GetKey()));
   ASSERT(!Heap::InNewSpace(desc->GetValue()));
 

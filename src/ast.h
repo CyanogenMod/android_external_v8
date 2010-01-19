@@ -139,6 +139,7 @@ class AstNode: public ZoneObject {
   virtual MaterializedLiteral* AsMaterializedLiteral() { return NULL; }
   virtual ObjectLiteral* AsObjectLiteral() { return NULL; }
   virtual ArrayLiteral* AsArrayLiteral() { return NULL; }
+  virtual CompareOperation* AsCompareOperation() { return NULL; }
 };
 
 
@@ -179,12 +180,15 @@ class Expression: public AstNode {
     kTestValue
   };
 
-  Expression() : context_(kUninitialized) {}
-
   virtual Expression* AsExpression()  { return this; }
 
   virtual bool IsValidJSON() { return false; }
   virtual bool IsValidLeftHandSide() { return false; }
+
+  // Symbols that cannot be parsed as array indices are considered property
+  // names.  We do not treat symbols that can be array indexes as property
+  // names because [] for string objects is handled only by keyed ICs.
+  virtual bool IsPropertyName() { return false; }
 
   // Mark the expression as being compiled as an expression
   // statement. This is used to transform postfix increments to
@@ -192,14 +196,10 @@ class Expression: public AstNode {
   virtual void MarkAsStatement() { /* do nothing */ }
 
   // Static type information for this expression.
-  SmiAnalysis* type() { return &type_; }
-
-  Context context() { return context_; }
-  void set_context(Context context) { context_ = context; }
+  StaticType* type() { return &type_; }
 
  private:
-  SmiAnalysis type_;
-  Context context_;
+  StaticType type_;
 };
 
 
@@ -641,21 +641,20 @@ class TryStatement: public Statement {
 class TryCatchStatement: public TryStatement {
  public:
   TryCatchStatement(Block* try_block,
-                    Expression* catch_var,
+                    VariableProxy* catch_var,
                     Block* catch_block)
       : TryStatement(try_block),
         catch_var_(catch_var),
         catch_block_(catch_block) {
-    ASSERT(catch_var->AsVariableProxy() != NULL);
   }
 
   virtual void Accept(AstVisitor* v);
 
-  Expression* catch_var() const  { return catch_var_; }
+  VariableProxy* catch_var() const  { return catch_var_; }
   Block* catch_block() const  { return catch_block_; }
 
  private:
-  Expression* catch_var_;
+  VariableProxy* catch_var_;
   Block* catch_block_;
 };
 
@@ -705,6 +704,14 @@ class Literal: public Expression {
   }
 
   virtual bool IsValidJSON() { return true; }
+
+  virtual bool IsPropertyName() {
+    if (handle_->IsSymbol()) {
+      uint32_t ignored;
+      return !String::cast(*handle_)->AsArrayIndex(&ignored);
+    }
+    return false;
+  }
 
   // Identity testers.
   bool IsNull() const { return handle_.is_identical_to(Factory::null_value()); }
@@ -826,24 +833,24 @@ class RegExpLiteral: public MaterializedLiteral {
 // for minimizing the work when constructing it at runtime.
 class ArrayLiteral: public MaterializedLiteral {
  public:
-  ArrayLiteral(Handle<FixedArray> literals,
+  ArrayLiteral(Handle<FixedArray> constant_elements,
                ZoneList<Expression*>* values,
                int literal_index,
                bool is_simple,
                int depth)
       : MaterializedLiteral(literal_index, is_simple, depth),
-        literals_(literals),
+        constant_elements_(constant_elements),
         values_(values) {}
 
   virtual void Accept(AstVisitor* v);
   virtual ArrayLiteral* AsArrayLiteral() { return this; }
   virtual bool IsValidJSON();
 
-  Handle<FixedArray> literals() const { return literals_; }
+  Handle<FixedArray> constant_elements() const { return constant_elements_; }
   ZoneList<Expression*>* values() const { return values_; }
 
  private:
-  Handle<FixedArray> literals_;
+  Handle<FixedArray> constant_elements_;
   ZoneList<Expression*>* values_;
 };
 
@@ -1171,6 +1178,9 @@ class CountOperation: public Expression {
   bool is_prefix() const { return is_prefix_; }
   bool is_postfix() const { return !is_prefix_; }
   Token::Value op() const { return op_; }
+  Token::Value binary_op() {
+    return op_ == Token::INC ? Token::ADD : Token::SUB;
+  }
   Expression* expression() const { return expression_; }
 
   virtual void MarkAsStatement() { is_prefix_ = true; }
@@ -1185,7 +1195,7 @@ class CountOperation: public Expression {
 class CompareOperation: public Expression {
  public:
   CompareOperation(Token::Value op, Expression* left, Expression* right)
-      : op_(op), left_(left), right_(right) {
+      : op_(op), left_(left), right_(right), is_for_loop_condition_(false) {
     ASSERT(Token::IsCompareOp(op));
   }
 
@@ -1195,10 +1205,18 @@ class CompareOperation: public Expression {
   Expression* left() const { return left_; }
   Expression* right() const { return right_; }
 
+  // Accessors for flag whether this compare operation is hanging of a for loop.
+  bool is_for_loop_condition() const { return is_for_loop_condition_; }
+  void set_is_for_loop_condition() { is_for_loop_condition_ = true; }
+
+  // Type testing & conversion
+  virtual CompareOperation* AsCompareOperation() { return this; }
+
  private:
   Token::Value op_;
   Expression* left_;
   Expression* right_;
+  bool is_for_loop_condition_;
 };
 
 
@@ -1241,6 +1259,8 @@ class Assignment: public Expression {
   Expression* target() const { return target_; }
   Expression* value() const { return value_; }
   int position() { return pos_; }
+  // This check relies on the definition order of token in token.h.
+  bool is_compound() const { return op() > Token::ASSIGN; }
 
   // An initialization block is a series of statments of the form
   // x.y.z.a = ...; x.y.z.b = ...; etc. The parser marks the beginning and
@@ -1515,6 +1535,7 @@ class CharacterSet BASE_EMBEDDED {
     standard_set_type_ = special_set_type;
   }
   bool is_standard() { return standard_set_type_ != 0; }
+  void Canonicalize();
  private:
   ZoneList<CharacterRange>* ranges_;
   // If non-zero, the value represents a standard set (e.g., all whitespace
@@ -1608,12 +1629,13 @@ class RegExpText: public RegExpTree {
 
 class RegExpQuantifier: public RegExpTree {
  public:
-  RegExpQuantifier(int min, int max, bool is_greedy, RegExpTree* body)
-      : min_(min),
+  enum Type { GREEDY, NON_GREEDY, POSSESSIVE };
+  RegExpQuantifier(int min, int max, Type type, RegExpTree* body)
+      : body_(body),
+        min_(min),
         max_(max),
-        is_greedy_(is_greedy),
-        body_(body),
-        min_match_(min * body->min_match()) {
+        min_match_(min * body->min_match()),
+        type_(type) {
     if (max > 0 && body->max_match() > kInfinity / max) {
       max_match_ = kInfinity;
     } else {
@@ -1637,15 +1659,17 @@ class RegExpQuantifier: public RegExpTree {
   virtual int max_match() { return max_match_; }
   int min() { return min_; }
   int max() { return max_; }
-  bool is_greedy() { return is_greedy_; }
+  bool is_possessive() { return type_ == POSSESSIVE; }
+  bool is_non_greedy() { return type_ == NON_GREEDY; }
+  bool is_greedy() { return type_ == GREEDY; }
   RegExpTree* body() { return body_; }
  private:
+  RegExpTree* body_;
   int min_;
   int max_;
-  bool is_greedy_;
-  RegExpTree* body_;
   int min_match_;
   int max_match_;
+  Type type_;
 };
 
 

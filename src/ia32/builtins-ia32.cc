@@ -36,15 +36,36 @@ namespace internal {
 #define __ ACCESS_MASM(masm)
 
 
-void Builtins::Generate_Adaptor(MacroAssembler* masm, CFunctionId id) {
-  // TODO(428): Don't pass the function in a static variable.
-  ExternalReference passed = ExternalReference::builtin_passed_function();
-  __ mov(Operand::StaticVariable(passed), edi);
+void Builtins::Generate_Adaptor(MacroAssembler* masm,
+                                CFunctionId id,
+                                BuiltinExtraArguments extra_args) {
+  // ----------- S t a t e -------------
+  //  -- eax                : number of arguments excluding receiver
+  //  -- edi                : called function (only guaranteed when
+  //                          extra_args requires it)
+  //  -- esi                : context
+  //  -- esp[0]             : return address
+  //  -- esp[4]             : last argument
+  //  -- ...
+  //  -- esp[4 * argc]      : first argument (argc == eax)
+  //  -- esp[4 * (argc +1)] : receiver
+  // -----------------------------------
 
-  // The actual argument count has already been loaded into register
-  // eax, but JumpToRuntime expects eax to contain the number of
-  // arguments including the receiver.
-  __ inc(eax);
+  // Insert extra arguments.
+  int num_extra_args = 0;
+  if (extra_args == NEEDS_CALLED_FUNCTION) {
+    num_extra_args = 1;
+    Register scratch = ebx;
+    __ pop(scratch);  // Save return address.
+    __ push(edi);
+    __ push(scratch);  // Restore return address.
+  } else {
+    ASSERT(extra_args == NO_EXTRA_ARGUMENTS);
+  }
+
+  // JumpToRuntime expects eax to contain the number of arguments
+  // including the receiver and the extra arguments.
+  __ add(Operand(eax), Immediate(num_extra_args + 1));
   __ JumpToRuntime(ExternalReference(id));
 }
 
@@ -81,12 +102,13 @@ void Builtins::Generate_JSConstructCall(MacroAssembler* masm) {
 }
 
 
-void Builtins::Generate_JSConstructStubGeneric(MacroAssembler* masm) {
+static void Generate_JSConstructStubHelper(MacroAssembler* masm,
+                                           bool is_api_function) {
   // Enter a construct frame.
   __ EnterConstructFrame();
 
   // Store a smi-tagged arguments count on the stack.
-  __ shl(eax, kSmiTagSize);
+  __ SmiTag(eax);
   __ push(eax);
 
   // Push the function to invoke on the stack.
@@ -255,7 +277,7 @@ void Builtins::Generate_JSConstructStubGeneric(MacroAssembler* masm) {
 
   // Retrieve smi-tagged arguments count from the stack.
   __ mov(eax, Operand(esp, 0));
-  __ shr(eax, kSmiTagSize);
+  __ SmiUntag(eax);
 
   // Push the allocated receiver to the stack. We need two copies
   // because we may have to return the original one and the calling
@@ -277,8 +299,17 @@ void Builtins::Generate_JSConstructStubGeneric(MacroAssembler* masm) {
   __ j(greater_equal, &loop);
 
   // Call the function.
-  ParameterCount actual(eax);
-  __ InvokeFunction(edi, actual, CALL_FUNCTION);
+  if (is_api_function) {
+    __ mov(esi, FieldOperand(edi, JSFunction::kContextOffset));
+    Handle<Code> code = Handle<Code>(
+        Builtins::builtin(Builtins::HandleApiCallConstruct));
+    ParameterCount expected(0);
+    __ InvokeCode(code, expected, expected,
+                  RelocInfo::CODE_TARGET, CALL_FUNCTION);
+  } else {
+    ParameterCount actual(eax);
+    __ InvokeFunction(edi, actual, CALL_FUNCTION);
+  }
 
   // Restore context from the frame.
   __ mov(esi, Operand(ebp, StandardFrameConstants::kContextOffset));
@@ -316,6 +347,16 @@ void Builtins::Generate_JSConstructStubGeneric(MacroAssembler* masm) {
   __ push(ecx);
   __ IncrementCounter(&Counters::constructed_objects, 1);
   __ ret(0);
+}
+
+
+void Builtins::Generate_JSConstructStubGeneric(MacroAssembler* masm) {
+  Generate_JSConstructStubHelper(masm, false);
+}
+
+
+void Builtins::Generate_JSConstructStubApi(MacroAssembler* masm) {
+  Generate_JSConstructStubHelper(masm, true);
 }
 
 
@@ -440,8 +481,7 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
     __ EnterInternalFrame();  // preserves eax, ebx, edi
 
     // Store the arguments count on the stack (smi tagged).
-    ASSERT(kSmiTag == 0);
-    __ shl(eax, kSmiTagSize);
+    __ SmiTag(eax);
     __ push(eax);
 
     __ push(edi);  // save edi across the call
@@ -452,7 +492,7 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
 
     // Get the arguments count and untag it.
     __ pop(eax);
-    __ shr(eax, kSmiTagSize);
+    __ SmiUntag(eax);
 
     __ LeaveInternalFrame();
     __ jmp(&patch_receiver);
@@ -472,35 +512,38 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
     __ bind(&done);
   }
 
-  // 4. Shift stuff one slot down the stack.
+  // 4. Check that the function really is a function.
+  { Label done;
+    __ test(edi, Operand(edi));
+    __ j(not_zero, &done, taken);
+    __ xor_(ebx, Operand(ebx));
+    // CALL_NON_FUNCTION will expect to find the non-function callee on the
+    // expression stack of the caller.  Transfer it from receiver to the
+    // caller's expression stack (and make the first argument the receiver
+    // for CALL_NON_FUNCTION) by decrementing the argument count.
+    __ dec(eax);
+    __ GetBuiltinEntry(edx, Builtins::CALL_NON_FUNCTION);
+    __ jmp(Handle<Code>(builtin(ArgumentsAdaptorTrampoline)),
+           RelocInfo::CODE_TARGET);
+    __ bind(&done);
+  }
+
+  // 5. Shift arguments and return address one slot down on the stack
+  //    (overwriting the receiver).
   { Label loop;
-    __ lea(ecx, Operand(eax, +1));  // +1 ~ copy receiver too
+    __ mov(ecx, eax);
     __ bind(&loop);
     __ mov(ebx, Operand(esp, ecx, times_4, 0));
     __ mov(Operand(esp, ecx, times_4, kPointerSize), ebx);
     __ dec(ecx);
-    __ j(not_zero, &loop);
+    __ j(not_sign, &loop);
+    __ pop(ebx);  // Discard copy of return address.
+    __ dec(eax);  // One fewer argument (first argument is new receiver).
   }
 
-  // 5. Remove TOS (copy of last arguments), but keep return address.
-  __ pop(ebx);
-  __ pop(ecx);
-  __ push(ebx);
-  __ dec(eax);
-
-  // 6. Check that function really was a function and get the code to
-  //    call from the function and check that the number of expected
-  //    arguments matches what we're providing.
-  { Label invoke;
-    __ test(edi, Operand(edi));
-    __ j(not_zero, &invoke, taken);
-    __ xor_(ebx, Operand(ebx));
-    __ GetBuiltinEntry(edx, Builtins::CALL_NON_FUNCTION);
-    __ jmp(Handle<Code>(builtin(ArgumentsAdaptorTrampoline)),
-           RelocInfo::CODE_TARGET);
-
-    __ bind(&invoke);
-    __ mov(edx, FieldOperand(edi, JSFunction::kSharedFunctionInfoOffset));
+  // 6. Get the code to call from the function and check that the number of
+  //    expected arguments matches what we're providing.
+  { __ mov(edx, FieldOperand(edi, JSFunction::kSharedFunctionInfoOffset));
     __ mov(ebx,
            FieldOperand(edx, SharedFunctionInfo::kFormalParameterCountOffset));
     __ mov(edx, FieldOperand(edx, SharedFunctionInfo::kCodeOffset));
@@ -631,7 +674,7 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
 
   // Invoke the function.
   ParameterCount actual(eax);
-  __ shr(eax, kSmiTagSize);
+  __ SmiUntag(eax);
   __ mov(edi, Operand(ebp, 4 * kPointerSize));
   __ InvokeFunction(edi, actual, CALL_FUNCTION);
 
@@ -828,7 +871,7 @@ static void AllocateJSArray(MacroAssembler* masm,
   // elements_array_end: start of next object
   // array_size: size of array (smi)
   ASSERT(kSmiTag == 0);
-  __ shr(array_size, kSmiTagSize);  // Convert from smi to value.
+  __ SmiUntag(array_size);  // Convert from smi to value.
   __ mov(FieldOperand(elements_array, JSObject::kMapOffset),
          Factory::fixed_array_map());
   Label not_empty_2, fill_array;
@@ -957,7 +1000,7 @@ static void ArrayNativeCode(MacroAssembler* masm,
   // Handle construction of an array from a list of arguments.
   __ bind(&argc_two_or_more);
   ASSERT(kSmiTag == 0);
-  __ shl(eax, kSmiTagSize);  // Convet argc to a smi.
+  __ SmiTag(eax);  // Convet argc to a smi.
   // eax: array_size (smi)
   // edi: constructor
   // esp[0] : argc

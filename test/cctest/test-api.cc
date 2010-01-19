@@ -447,6 +447,40 @@ THREADED_TEST(UsingExternalAsciiString) {
 }
 
 
+THREADED_TEST(ScavengeExternalString) {
+  TestResource::dispose_count = 0;
+  {
+    v8::HandleScope scope;
+    uint16_t* two_byte_string = AsciiToTwoByteString("test string");
+    Local<String> string =
+        String::NewExternal(new TestResource(two_byte_string));
+    i::Handle<i::String> istring = v8::Utils::OpenHandle(*string);
+    i::Heap::CollectGarbage(0, i::NEW_SPACE);
+    CHECK(i::Heap::InNewSpace(*istring));
+    CHECK_EQ(0, TestResource::dispose_count);
+  }
+  i::Heap::CollectGarbage(0, i::NEW_SPACE);
+  CHECK_EQ(1, TestResource::dispose_count);
+}
+
+
+THREADED_TEST(ScavengeExternalAsciiString) {
+  TestAsciiResource::dispose_count = 0;
+  {
+    v8::HandleScope scope;
+    const char* one_byte_string = "test string";
+    Local<String> string = String::NewExternal(
+        new TestAsciiResource(i::StrDup(one_byte_string)));
+    i::Handle<i::String> istring = v8::Utils::OpenHandle(*string);
+    i::Heap::CollectGarbage(0, i::NEW_SPACE);
+    CHECK(i::Heap::InNewSpace(*istring));
+    CHECK_EQ(0, TestAsciiResource::dispose_count);
+  }
+  i::Heap::CollectGarbage(0, i::NEW_SPACE);
+  CHECK_EQ(1, TestAsciiResource::dispose_count);
+}
+
+
 THREADED_TEST(StringConcat) {
   {
     v8::HandleScope scope;
@@ -2754,6 +2788,10 @@ static const char* kExtensionTestScript =
 
 static v8::Handle<Value> CallFun(const v8::Arguments& args) {
   ApiTestFuzzer::Fuzz();
+  if (args.IsConstructCall()) {
+    args.This()->Set(v8_str("data"), args.Data());
+    return v8::Null();
+  }
   return args.Data();
 }
 
@@ -2792,6 +2830,21 @@ THREADED_TEST(FunctionLookup) {
   CHECK_EQ(v8::Integer::New(8), Script::Compile(v8_str("Foo(0)"))->Run());
   CHECK_EQ(v8::Integer::New(7), Script::Compile(v8_str("Foo(1)"))->Run());
   CHECK_EQ(v8::Integer::New(6), Script::Compile(v8_str("Foo(2)"))->Run());
+}
+
+
+THREADED_TEST(NativeFunctionConstructCall) {
+  v8::RegisterExtension(new FunctionExtension());
+  v8::HandleScope handle_scope;
+  static const char* exts[1] = { "functiontest" };
+  v8::ExtensionConfiguration config(1, exts);
+  LocalContext context(&config);
+  CHECK_EQ(v8::Integer::New(8),
+           Script::Compile(v8_str("(new A()).data"))->Run());
+  CHECK_EQ(v8::Integer::New(7),
+           Script::Compile(v8_str("(new B()).data"))->Run());
+  CHECK_EQ(v8::Integer::New(6),
+           Script::Compile(v8_str("(new C()).data"))->Run());
 }
 
 
@@ -4861,8 +4914,7 @@ THREADED_TEST(CallAsFunction) {
   CHECK_EQ(17, value->Int32Value());
 
   // Check that the call-as-function handler can be called through
-  // new.  Currently, there is no way to check in the call-as-function
-  // handler if it has been called through new or not.
+  // new.
   value = CompileRun("new obj(43)");
   CHECK(!try_catch.HasCaught());
   CHECK_EQ(-43, value->Int32Value());
@@ -6708,6 +6760,27 @@ TEST(PreCompile) {
       v8::ScriptData::PreCompile(script, i::StrLength(script));
   CHECK_NE(sd->Length(), 0);
   CHECK_NE(sd->Data(), NULL);
+  CHECK(!sd->HasError());
+  delete sd;
+}
+
+
+TEST(PreCompileWithError) {
+  v8::V8::Initialize();
+  const char *script = "function foo(a) { return 1 * * 2; }";
+  v8::ScriptData *sd =
+      v8::ScriptData::PreCompile(script, i::StrLength(script));
+  CHECK(sd->HasError());
+  delete sd;
+}
+
+
+TEST(Regress31661) {
+  v8::V8::Initialize();
+  const char *script = " The Definintive Guide";
+  v8::ScriptData *sd =
+      v8::ScriptData::PreCompile(script, i::StrLength(script));
+  CHECK(sd->HasError());
   delete sd;
 }
 

@@ -355,6 +355,10 @@ void Debugger::Debug() {
         } else {
           PrintF("Not at debugger stop.");
         }
+      } else if ((strcmp(cmd, "t") == 0) || strcmp(cmd, "trace") == 0) {
+        ::v8::internal::FLAG_trace_sim = !::v8::internal::FLAG_trace_sim;
+        PrintF("Trace of executed instructions is %s\n",
+               ::v8::internal::FLAG_trace_sim ? "on" : "off");
       } else if ((strcmp(cmd, "h") == 0) || (strcmp(cmd, "help") == 0)) {
         PrintF("cont\n");
         PrintF("  continue execution (alias 'c')\n");
@@ -378,7 +382,9 @@ void Debugger::Debug() {
         PrintF("  delete the breakpoint\n");
         PrintF("unstop\n");
         PrintF("  ignore the stop instruction at the current location");
-        PrintF(" from now on\n");
+        PrintF("  from now on\n");
+        PrintF("trace (alias 't')\n");
+        PrintF("  toogle the tracing of all executed statements");
       } else {
         PrintF("Unknown command: %s\n", cmd);
       }
@@ -890,8 +896,13 @@ bool Simulator::OverflowFrom(int32_t alu_out,
 
 // Support for VFP comparisons.
 void Simulator::Compute_FPSCR_Flags(double val1, double val2) {
+  if (isnan(val1) || isnan(val2)) {
+    n_flag_FPSCR_ = false;
+    z_flag_FPSCR_ = false;
+    c_flag_FPSCR_ = true;
+    v_flag_FPSCR_ = true;
   // All non-NaN cases.
-  if (val1 == val2) {
+  } else if (val1 == val2) {
     n_flag_FPSCR_ = false;
     z_flag_FPSCR_ = true;
     c_flag_FPSCR_ = true;
@@ -1893,14 +1904,14 @@ void Simulator::DecodeUnconditional(Instr* instr) {
 
 // void Simulator::DecodeTypeVFP(Instr* instr)
 // The Following ARMv7 VFPv instructions are currently supported.
-// fmsr :Sn = Rt
-// fmrs :Rt = Sn
-// fsitod: Dd = Sm
-// ftosid: Sd = Dm
-// Dd = faddd(Dn, Dm)
-// Dd = fsubd(Dn, Dm)
-// Dd = fmuld(Dn, Dm)
-// Dd = fdivd(Dn, Dm)
+// vmov :Sn = Rt
+// vmov :Rt = Sn
+// vcvt: Dd = Sm
+// vcvt: Sd = Dm
+// Dd = vadd(Dn, Dm)
+// Dd = vsub(Dn, Dm)
+// Dd = vmul(Dn, Dm)
+// Dd = vdiv(Dn, Dm)
 // vcmp(Dd, Dm)
 // VMRS
 void Simulator::DecodeTypeVFP(Instr* instr) {
@@ -2020,8 +2031,8 @@ void Simulator::DecodeTypeVFP(Instr* instr) {
 
 // void Simulator::DecodeType6CoprocessorIns(Instr* instr)
 // Decode Type 6 coprocessor instructions.
-// Dm = fmdrr(Rt, Rt2)
-// <Rt, Rt2> = fmrrd(Dm)
+// Dm = vmov(Rt, Rt2)
+// <Rt, Rt2> = vmov(Dm)
 void Simulator::DecodeType6CoprocessorIns(Instr* instr) {
   ASSERT((instr->TypeField() == 6));
 

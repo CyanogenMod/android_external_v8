@@ -143,6 +143,9 @@ LIBRARY_FLAGS = {
     },
     'os:macos': {
       'CCFLAGS':      ['-ansi', '-mmacosx-version-min=10.4'],
+      'library:shared': {
+        'CPPDEFINES': ['V8_SHARED']
+      }
     },
     'os:freebsd': {
       'CPPPATH' : ['/usr/local/include'],
@@ -177,6 +180,12 @@ LIBRARY_FLAGS = {
     'simulator:arm': {
       'CCFLAGS':      ['-m32'],
       'LINKFLAGS':    ['-m32']
+    },
+    'armvariant:thumb2': {
+      'CPPDEFINES':   ['V8_ARM_VARIANT_THUMB']
+    },
+    'armvariant:arm': {
+      'CPPDEFINES':   ['V8_ARM_VARIANT_ARM']
     },
     'arch:x64': {
       'CPPDEFINES':   ['V8_TARGET_ARCH_X64'],
@@ -656,6 +665,11 @@ SIMPLE_OPTIONS = {
     'values': ['default', 'hidden'],
     'default': 'hidden',
     'help': 'shared library symbol visibility'
+  },
+  'armvariant': {
+    'values': ['arm', 'thumb2', 'none'],
+    'default': 'none',
+    'help': 'generate thumb2 instructions instead of arm instructions (default)'
   }
 }
 
@@ -663,7 +677,7 @@ SIMPLE_OPTIONS = {
 def GetOptions():
   result = Options()
   result.Add('mode', 'compilation mode (debug, release)', 'release')
-  result.Add('sample', 'build sample (shell, process)', '')
+  result.Add('sample', 'build sample (shell, process, lineprocessor)', '')
   result.Add('env', 'override environment settings (NAME0:value0,NAME1:value1,...)', '')
   result.Add('importenv', 'import environment settings (NAME0,NAME1,...)', '')
   for (name, option) in SIMPLE_OPTIONS.iteritems():
@@ -731,7 +745,7 @@ def IsLegal(env, option, values):
 def VerifyOptions(env):
   if not IsLegal(env, 'mode', ['debug', 'release']):
     return False
-  if not IsLegal(env, 'sample', ["shell", "process"]):
+  if not IsLegal(env, 'sample', ["shell", "process", "lineprocessor"]):
     return False
   if not IsLegal(env, 'regexp', ["native", "interpreted"]):
     return False
@@ -839,6 +853,10 @@ def PostprocessOptions(options):
     # Print a warning if profiling is enabled without profiling support
     print "Warning: forcing profilingsupport on when prof is on"
     options['profilingsupport'] = 'on'
+  if (options['armvariant'] == 'none' and options['arch'] == 'arm'):
+    options['armvariant'] = 'arm'
+  if (options['armvariant'] != 'none' and options['arch'] != 'arm'):
+    options['armvariant'] = 'none'
 
 
 def ParseEnvOverrides(arg, imports):
@@ -931,6 +949,7 @@ def BuildSpecific(env, mode, env_overrides):
 
   d8_env = Environment()
   d8_env.Replace(**context.flags['d8'])
+  context.ApplyEnvOverrides(d8_env)
   shell = d8_env.Program('d8' + suffix, object_files + shell_files)
   context.d8_targets.append(shell)
 

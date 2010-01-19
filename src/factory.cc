@@ -284,7 +284,8 @@ Handle<FixedArray> Factory::CopyFixedArray(Handle<FixedArray> array) {
 
 Handle<JSFunction> Factory::BaseNewFunctionFromBoilerplate(
     Handle<JSFunction> boilerplate,
-    Handle<Map> function_map) {
+    Handle<Map> function_map,
+    PretenureFlag pretenure) {
   ASSERT(boilerplate->IsBoilerplate());
   ASSERT(!boilerplate->has_initial_map());
   ASSERT(!boilerplate->has_prototype());
@@ -292,20 +293,22 @@ Handle<JSFunction> Factory::BaseNewFunctionFromBoilerplate(
   ASSERT(boilerplate->elements() == Heap::empty_fixed_array());
   CALL_HEAP_FUNCTION(Heap::AllocateFunction(*function_map,
                                             boilerplate->shared(),
-                                            Heap::the_hole_value()),
+                                            Heap::the_hole_value(),
+                                            pretenure),
                      JSFunction);
 }
 
 
 Handle<JSFunction> Factory::NewFunctionFromBoilerplate(
     Handle<JSFunction> boilerplate,
-    Handle<Context> context) {
-  Handle<JSFunction> result =
-      BaseNewFunctionFromBoilerplate(boilerplate, Top::function_map());
+    Handle<Context> context,
+    PretenureFlag pretenure) {
+  Handle<JSFunction> result = BaseNewFunctionFromBoilerplate(
+      boilerplate, Top::function_map(), pretenure);
   result->set_context(*context);
   int number_of_literals = boilerplate->NumberOfLiterals();
   Handle<FixedArray> literals =
-      Factory::NewFixedArray(number_of_literals, TENURED);
+      Factory::NewFixedArray(number_of_literals, pretenure);
   if (number_of_literals > 0) {
     // Store the object, regexp and array functions in the literals
     // array prefix.  These functions will be used when creating
@@ -715,6 +718,11 @@ Handle<JSFunction> Factory::NewFunction(Handle<String> name,
 }
 
 
+Handle<Object> Factory::ToObject(Handle<Object> object) {
+  CALL_HEAP_FUNCTION(object->ToObject(), Object);
+}
+
+
 Handle<Object> Factory::ToObject(Handle<Object> object,
                                  Handle<Context> global_context) {
   CALL_HEAP_FUNCTION(object->ToObject(*global_context), Object);
@@ -763,6 +771,8 @@ Handle<JSObject> Factory::NewArgumentsObject(Handle<Object> callee,
 Handle<JSFunction> Factory::CreateApiFunction(
     Handle<FunctionTemplateInfo> obj, ApiInstanceType instance_type) {
   Handle<Code> code = Handle<Code>(Builtins::builtin(Builtins::HandleApiCall));
+  Handle<Code> construct_stub =
+      Handle<Code>(Builtins::builtin(Builtins::JSConstructStubApi));
 
   int internal_field_count = 0;
   if (!obj->instance_template()->IsUndefined()) {
@@ -837,6 +847,7 @@ Handle<JSFunction> Factory::CreateApiFunction(
   }
 
   result->shared()->set_function_data(*obj);
+  result->shared()->set_construct_stub(*construct_stub);
   result->shared()->DontAdaptArguments();
 
   // Recursively copy parent templates' accessors, 'data' may be modified.

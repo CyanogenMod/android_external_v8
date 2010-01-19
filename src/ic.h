@@ -33,6 +33,11 @@
 namespace v8 {
 namespace internal {
 
+// Flag indicating whether an IC stub needs to check that a backing
+// store is in dictionary case.
+enum DictionaryCheck { CHECK_DICTIONARY, DICTIONARY_CHECK_DONE };
+
+
 // IC_UTIL_LIST defines all utility functions called from generated
 // inline caching code. The argument for the macro, ICU, is the function name.
 #define IC_UTIL_LIST(ICU)                             \
@@ -99,7 +104,16 @@ class IC {
 
   // Returns if this IC is for contextual (no explicit receiver)
   // access to properties.
-  bool is_contextual() {
+  bool IsContextual(Handle<Object> receiver) {
+    if (receiver->IsGlobalObject()) {
+      return SlowIsContextual();
+    } else {
+      ASSERT(!SlowIsContextual());
+      return false;
+    }
+  }
+
+  bool SlowIsContextual() {
     return ComputeMode() == RelocInfo::CODE_TARGET_CONTEXT;
   }
 
@@ -175,16 +189,14 @@ class CallIC: public IC {
 
 
   // Code generator routines.
-  static void GenerateInitialize(MacroAssembler* masm, int argc);
+  static void GenerateInitialize(MacroAssembler* masm, int argc) {
+    GenerateMiss(masm, argc);
+  }
   static void GenerateMiss(MacroAssembler* masm, int argc);
   static void GenerateMegamorphic(MacroAssembler* masm, int argc);
   static void GenerateNormal(MacroAssembler* masm, int argc);
 
  private:
-  static void Generate(MacroAssembler* masm,
-                       int argc,
-                       const ExternalReference& f);
-
   // Update the inline cache and the global stub cache based on the
   // lookup result.
   void UpdateCaches(LookupResult* lookup,
@@ -196,6 +208,8 @@ class CallIC: public IC {
   // and patches the stack to be ready for the call.
   // Otherwise, it returns the undefined value.
   Object* TryCallAsFunction(Object* object);
+
+  void ReceiverToObject(Handle<Object> object);
 
   static void Clear(Address address, Code* target);
   friend class IC;
@@ -268,6 +282,7 @@ class KeyedLoadIC: public IC {
   static void GenerateInitialize(MacroAssembler* masm);
   static void GeneratePreMonomorphic(MacroAssembler* masm);
   static void GenerateGeneric(MacroAssembler* masm);
+  static void GenerateString(MacroAssembler* masm);
 
   // Generators for external array types. See objects.h.
   // These are similar to the generic IC; they optimize the case of
@@ -300,6 +315,9 @@ class KeyedLoadIC: public IC {
   }
   static Code* pre_monomorphic_stub() {
     return Builtins::builtin(Builtins::KeyedLoadIC_PreMonomorphic);
+  }
+  static Code* string_stub() {
+    return Builtins::builtin(Builtins::KeyedLoadIC_String);
   }
   static Code* external_array_stub(JSObject::ElementsKind elements_kind);
 

@@ -272,6 +272,9 @@ class CodeGenerator: public AstVisitor {
 
   // Read a value from a slot and leave it on top of the expression stack.
   void LoadFromSlot(Slot* slot, TypeofState typeof_state);
+  // Store the value on top of the stack to a slot.
+  void StoreToSlot(Slot* slot, InitState init_state);
+
   void LoadFromGlobalSlotCheckExtensions(Slot* slot,
                                          TypeofState typeof_state,
                                          Register tmp,
@@ -301,7 +304,9 @@ class CodeGenerator: public AstVisitor {
                     bool reversed,
                     OverwriteMode mode);
 
-  void CallWithArguments(ZoneList<Expression*>* arguments, int position);
+  void CallWithArguments(ZoneList<Expression*>* arguments,
+                         CallFunctionFlags flags,
+                         int position);
 
   // Control flow
   void Branch(bool if_true, JumpTarget* target);
@@ -360,14 +365,17 @@ class CodeGenerator: public AstVisitor {
   // Fast support for Math.random().
   void GenerateRandomPositiveSmi(ZoneList<Expression*>* args);
 
-  // Fast support for Math.sin and Math.cos.
-  enum MathOp { SIN, COS };
-  void GenerateFastMathOp(MathOp op, ZoneList<Expression*>* args);
-  inline void GenerateMathSin(ZoneList<Expression*>* args);
-  inline void GenerateMathCos(ZoneList<Expression*>* args);
-
   // Fast support for StringAdd.
   void GenerateStringAdd(ZoneList<Expression*>* args);
+
+  // Fast support for SubString.
+  void GenerateSubString(ZoneList<Expression*>* args);
+
+  // Fast support for StringCompare.
+  void GenerateStringCompare(ZoneList<Expression*>* args);
+
+  // Support for direct calls from JavaScript to native RegExp code.
+  void GenerateRegExpExec(ZoneList<Expression*>* args);
 
   // Simple condition analysis.
   enum ConditionAnalysis {
@@ -426,27 +434,6 @@ class CodeGenerator: public AstVisitor {
 };
 
 
-class CallFunctionStub: public CodeStub {
- public:
-  CallFunctionStub(int argc, InLoopFlag in_loop)
-      : argc_(argc), in_loop_(in_loop) {}
-
-  void Generate(MacroAssembler* masm);
-
- private:
-  int argc_;
-  InLoopFlag in_loop_;
-
-#if defined(DEBUG)
-  void Print() { PrintF("CallFunctionStub (argc %d)\n", argc_); }
-#endif  // defined(DEBUG)
-
-  Major MajorKey() { return CallFunction; }
-  int MinorKey() { return argc_; }
-  InLoopFlag InLoop() { return in_loop_; }
-};
-
-
 class GenericBinaryOpStub : public CodeStub {
  public:
   GenericBinaryOpStub(Token::Value op,
@@ -455,13 +442,15 @@ class GenericBinaryOpStub : public CodeStub {
       : op_(op),
         mode_(mode),
         constant_rhs_(constant_rhs),
-        specialized_on_rhs_(RhsIsOneWeWantToOptimizeFor(op, constant_rhs)) { }
+        specialized_on_rhs_(RhsIsOneWeWantToOptimizeFor(op, constant_rhs)),
+        name_(NULL) { }
 
  private:
   Token::Value op_;
   OverwriteMode mode_;
   int constant_rhs_;
   bool specialized_on_rhs_;
+  char* name_;
 
   static const int kMaxKnownRhs = 0x40000000;
 
@@ -506,22 +495,7 @@ class GenericBinaryOpStub : public CodeStub {
     return key;
   }
 
-  const char* GetName() {
-    switch (op_) {
-      case Token::ADD: return "GenericBinaryOpStub_ADD";
-      case Token::SUB: return "GenericBinaryOpStub_SUB";
-      case Token::MUL: return "GenericBinaryOpStub_MUL";
-      case Token::DIV: return "GenericBinaryOpStub_DIV";
-      case Token::MOD: return "GenericBinaryOpStub_MOD";
-      case Token::BIT_OR: return "GenericBinaryOpStub_BIT_OR";
-      case Token::BIT_AND: return "GenericBinaryOpStub_BIT_AND";
-      case Token::BIT_XOR: return "GenericBinaryOpStub_BIT_XOR";
-      case Token::SAR: return "GenericBinaryOpStub_SAR";
-      case Token::SHL: return "GenericBinaryOpStub_SHL";
-      case Token::SHR: return "GenericBinaryOpStub_SHR";
-      default:         return "GenericBinaryOpStub";
-    }
-  }
+  const char* GetName();
 
 #ifdef DEBUG
   void Print() {

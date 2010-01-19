@@ -446,7 +446,7 @@ void StubCompiler::GenerateLoadConstant(JSObject* object,
 }
 
 
-void StubCompiler::GenerateLoadCallback(JSObject* object,
+bool StubCompiler::GenerateLoadCallback(JSObject* object,
                                         JSObject* holder,
                                         Register receiver,
                                         Register name_reg,
@@ -454,7 +454,8 @@ void StubCompiler::GenerateLoadCallback(JSObject* object,
                                         Register scratch2,
                                         AccessorInfo* callback,
                                         String* name,
-                                        Label* miss) {
+                                        Label* miss,
+                                        Failure** failure) {
   // Check that the receiver isn't a smi.
   __ tst(receiver, Operand(kSmiTagMask));
   __ b(eq, miss);
@@ -476,6 +477,8 @@ void StubCompiler::GenerateLoadCallback(JSObject* object,
   ExternalReference load_callback_property =
       ExternalReference(IC_Utility(IC::kLoadCallbackProperty));
   __ TailCallRuntime(load_callback_property, 5, 1);
+
+  return true;
 }
 
 
@@ -634,50 +637,65 @@ Object* CallStubCompiler::CompileCallConstant(Object* object,
       break;
 
     case STRING_CHECK:
-      // Check that the object is a two-byte string or a symbol.
-      __ CompareObjectType(r1, r2, r2, FIRST_NONSTRING_TYPE);
-      __ b(hs, &miss);
-      // Check that the maps starting from the prototype haven't changed.
-      GenerateLoadGlobalFunctionPrototype(masm(),
-                                          Context::STRING_FUNCTION_INDEX,
-                                          r2);
-      CheckPrototypes(JSObject::cast(object->GetPrototype()), r2, holder, r3,
-                      r1, name, &miss);
+      if (!function->IsBuiltin()) {
+        // Calling non-builtins with a value as receiver requires boxing.
+        __ jmp(&miss);
+      } else {
+        // Check that the object is a two-byte string or a symbol.
+        __ CompareObjectType(r1, r2, r2, FIRST_NONSTRING_TYPE);
+        __ b(hs, &miss);
+        // Check that the maps starting from the prototype haven't changed.
+        GenerateLoadGlobalFunctionPrototype(masm(),
+                                            Context::STRING_FUNCTION_INDEX,
+                                            r2);
+        CheckPrototypes(JSObject::cast(object->GetPrototype()), r2, holder, r3,
+                        r1, name, &miss);
+      }
       break;
 
     case NUMBER_CHECK: {
-      Label fast;
-      // Check that the object is a smi or a heap number.
-      __ tst(r1, Operand(kSmiTagMask));
-      __ b(eq, &fast);
-      __ CompareObjectType(r1, r2, r2, HEAP_NUMBER_TYPE);
-      __ b(ne, &miss);
-      __ bind(&fast);
-      // Check that the maps starting from the prototype haven't changed.
-      GenerateLoadGlobalFunctionPrototype(masm(),
-                                          Context::NUMBER_FUNCTION_INDEX,
-                                          r2);
-      CheckPrototypes(JSObject::cast(object->GetPrototype()), r2, holder, r3,
-                      r1, name, &miss);
+      if (!function->IsBuiltin()) {
+        // Calling non-builtins with a value as receiver requires boxing.
+        __ jmp(&miss);
+      } else {
+        Label fast;
+        // Check that the object is a smi or a heap number.
+        __ tst(r1, Operand(kSmiTagMask));
+        __ b(eq, &fast);
+        __ CompareObjectType(r1, r2, r2, HEAP_NUMBER_TYPE);
+        __ b(ne, &miss);
+        __ bind(&fast);
+        // Check that the maps starting from the prototype haven't changed.
+        GenerateLoadGlobalFunctionPrototype(masm(),
+                                            Context::NUMBER_FUNCTION_INDEX,
+                                            r2);
+        CheckPrototypes(JSObject::cast(object->GetPrototype()), r2, holder, r3,
+                        r1, name, &miss);
+      }
       break;
     }
 
     case BOOLEAN_CHECK: {
-      Label fast;
-      // Check that the object is a boolean.
-      __ LoadRoot(ip, Heap::kTrueValueRootIndex);
-      __ cmp(r1, ip);
-      __ b(eq, &fast);
-      __ LoadRoot(ip, Heap::kFalseValueRootIndex);
-      __ cmp(r1, ip);
-      __ b(ne, &miss);
-      __ bind(&fast);
-      // Check that the maps starting from the prototype haven't changed.
-      GenerateLoadGlobalFunctionPrototype(masm(),
-                                          Context::BOOLEAN_FUNCTION_INDEX,
-                                          r2);
-      CheckPrototypes(JSObject::cast(object->GetPrototype()), r2, holder, r3,
-                      r1, name, &miss);
+      if (!function->IsBuiltin()) {
+        // Calling non-builtins with a value as receiver requires boxing.
+        __ jmp(&miss);
+      } else {
+        Label fast;
+        // Check that the object is a boolean.
+        __ LoadRoot(ip, Heap::kTrueValueRootIndex);
+        __ cmp(r1, ip);
+        __ b(eq, &fast);
+        __ LoadRoot(ip, Heap::kFalseValueRootIndex);
+        __ cmp(r1, ip);
+        __ b(ne, &miss);
+        __ bind(&fast);
+        // Check that the maps starting from the prototype haven't changed.
+        GenerateLoadGlobalFunctionPrototype(masm(),
+                                            Context::BOOLEAN_FUNCTION_INDEX,
+                                            r2);
+        CheckPrototypes(JSObject::cast(object->GetPrototype()), r2, holder, r3,
+                        r1, name, &miss);
+      }
       break;
     }
 
@@ -774,8 +792,26 @@ Object* CallStubCompiler::CompileCallGlobal(JSObject* object,
   __ ldr(r1, FieldMemOperand(r3, JSGlobalPropertyCell::kValueOffset));
 
   // Check that the cell contains the same function.
-  __ cmp(r1, Operand(Handle<JSFunction>(function)));
-  __ b(ne, &miss);
+  if (Heap::InNewSpace(function)) {
+    // We can't embed a pointer to a function in new space so we have
+    // to verify that the shared function info is unchanged. This has
+    // the nice side effect that multiple closures based on the same
+    // function can all use this call IC. Before we load through the
+    // function, we have to verify that it still is a function.
+    __ tst(r1, Operand(kSmiTagMask));
+    __ b(eq, &miss);
+    __ CompareObjectType(r1, r3, r3, JS_FUNCTION_TYPE);
+    __ b(ne, &miss);
+
+    // Check the shared function info. Make sure it hasn't changed.
+    __ mov(r3, Operand(Handle<SharedFunctionInfo>(function->shared())));
+    __ ldr(r2, FieldMemOperand(r1, JSFunction::kSharedFunctionInfoOffset));
+    __ cmp(r2, r3);
+    __ b(ne, &miss);
+  } else {
+    __ cmp(r1, Operand(Handle<JSFunction>(function)));
+    __ b(ne, &miss);
+  }
 
   // Patch the receiver on the stack with the global proxy if
   // necessary.
@@ -1003,10 +1039,10 @@ Object* LoadStubCompiler::CompileLoadField(JSObject* object,
 }
 
 
-Object* LoadStubCompiler::CompileLoadCallback(JSObject* object,
+Object* LoadStubCompiler::CompileLoadCallback(String* name,
+                                              JSObject* object,
                                               JSObject* holder,
-                                              AccessorInfo* callback,
-                                              String* name) {
+                                              AccessorInfo* callback) {
   // ----------- S t a t e -------------
   //  -- r2    : name
   //  -- lr    : return address
@@ -1015,7 +1051,11 @@ Object* LoadStubCompiler::CompileLoadCallback(JSObject* object,
   Label miss;
 
   __ ldr(r0, MemOperand(sp, 0));
-  GenerateLoadCallback(object, holder, r0, r2, r3, r1, callback, name, &miss);
+  Failure* failure = Failure::InternalError();
+  bool success = GenerateLoadCallback(object, holder, r0, r2, r3, r1,
+                                      callback, name, &miss, &failure);
+  if (!success) return failure;
+
   __ bind(&miss);
   GenerateLoadMiss(masm(), Code::LOAD_IC);
 
@@ -1168,7 +1208,11 @@ Object* KeyedLoadStubCompiler::CompileLoadCallback(String* name,
   __ cmp(r2, Operand(Handle<String>(name)));
   __ b(ne, &miss);
 
-  GenerateLoadCallback(receiver, holder, r0, r2, r3, r1, callback, name, &miss);
+  Failure* failure = Failure::InternalError();
+  bool success = GenerateLoadCallback(receiver, holder, r0, r2, r3, r1,
+                                      callback, name, &miss, &failure);
+  if (!success) return failure;
+
   __ bind(&miss);
   GenerateLoadMiss(masm(), Code::KEYED_LOAD_IC);
 

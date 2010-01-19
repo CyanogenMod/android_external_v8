@@ -147,6 +147,8 @@ class SnapshotByteSource {
     return position_ == length_;
   }
 
+  const int position() { return position_; }
+
  private:
   const byte* data_;
   int length_;
@@ -199,7 +201,8 @@ class SerDes: public ObjectVisitor {
     SYNCHRONIZE = 36,
     START_NEW_PAGE_SERIALIZATION = 37,
     NATIVES_STRING_RESOURCE = 38,
-    // Free: 39-47.
+    ROOT_SERIALIZATION = 39,
+    // Free: 40-47.
     BACKREF_SERIALIZATION = 48,
     // One per space, must be kSpaceMask aligned.
     // Free: 57-63.
@@ -238,9 +241,15 @@ class Deserializer: public SerDes {
 
   // Deserialize the snapshot into an empty heap.
   void Deserialize();
+
+  // Deserialize a single object and the objects reachable from it.
+  void DeserializePartial(Object** root);
+
 #ifdef DEBUG
   virtual void Synchronize(const char* tag);
 #endif
+
+  static void TearDown();
 
  private:
   virtual void VisitPointers(Object** start, Object** end);
@@ -266,7 +275,7 @@ class Deserializer: public SerDes {
   List<Address> pages_[SerDes::kNumberOfSpaces];
 
   SnapshotByteSource* source_;
-  ExternalReferenceDecoder* external_reference_decoder_;
+  static ExternalReferenceDecoder* external_reference_decoder_;
   // This is the address of the next object that will be allocated in each
   // space.  It is used to calculate the addresses of back-references.
   Address high_water_[LAST_SPACE + 1];
@@ -287,16 +296,24 @@ class SnapshotByteSink {
     Put(byte, description);
   }
   void PutInt(uintptr_t integer, const char* description);
+  virtual int Position() = 0;
 };
 
 
 class Serializer : public SerDes {
  public:
   explicit Serializer(SnapshotByteSink* sink);
-  // Serialize the current state of the heap. This operation destroys the
-  // heap contents.
+  // Serialize the current state of the heap.
   void Serialize();
+  // Serialize a single object and the objects reachable from it.
+  void SerializePartial(Object** obj);
   void VisitPointers(Object** start, Object** end);
+  // You can call this after serialization to find out how much space was used
+  // in each space.
+  int CurrentAllocationAddress(int space) {
+    if (SpaceIsLarge(space)) return large_object_total_;
+    return fullness_[space];
+  }
 
   static void Enable() {
     if (!serialization_enabled_) {
@@ -366,13 +383,11 @@ class Serializer : public SerDes {
   // once the map has been used for the serialization address.
   static int SpaceOfAlreadySerializedObject(HeapObject* object);
   int Allocate(int space, int size, bool* new_page_started);
-  int CurrentAllocationAddress(int space) {
-    if (SpaceIsLarge(space)) space = LO_SPACE;
-    return fullness_[space];
-  }
   int EncodeExternalReference(Address addr) {
     return external_reference_encoder_->Encode(addr);
   }
+  int RootIndex(HeapObject* heap_object);
+  static const int kInvalidRootIndex = -1;
 
   // Keep track of the fullness of each space in order to generate
   // relative addresses for back references.  Large objects are
@@ -382,9 +397,11 @@ class Serializer : public SerDes {
   SnapshotByteSink* sink_;
   int current_root_index_;
   ExternalReferenceEncoder* external_reference_encoder_;
+  bool partial_;
   static bool serialization_enabled_;
   // Did we already make use of the fact that serialization was not enabled?
   static bool too_late_to_enable_now_;
+  int large_object_total_;
 
   friend class ObjectSerializer;
   friend class Deserializer;

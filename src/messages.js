@@ -157,6 +157,11 @@ function FormatMessage(message) {
       instanceof_nonobject_proto:   "Function has non-object prototype '%0' in instanceof check",
       null_to_object:               "Cannot convert null to object",
       reduce_no_initial:            "Reduce of empty array with no initial value",
+      getter_must_be_callable:      "Getter must be a function: %0",
+      setter_must_be_callable:      "Setter must be a function: %0",
+      value_and_accessor:           "Invalid property.  A property cannot both have accessors and be writable or have a value: %0",
+      proto_object_or_null:         "Object prototype may only be an Object or null",
+      property_desc_object:         "Property description must be an object: %0",
       // RangeError
       invalid_array_length:         "Invalid array length",
       stack_overflow:               "Maximum call stack size exceeded",
@@ -173,7 +178,8 @@ function FormatMessage(message) {
       result_not_primitive:         "Result of %0 must be a primitive, was %1",
       invalid_json:                 "String '%0' is not valid JSON",
       circular_structure:           "Converting circular structure to JSON",
-      object_keys_non_object:       "Object.keys called on non-object"
+      obj_ctor_property_non_object: "Object.%0 called on non-object",
+      array_indexof_not_defined:    "Array.getIndexOf: Argument undefined"
     };
   }
   var format = kMessages[message.type];

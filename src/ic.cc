@@ -378,6 +378,18 @@ Object* CallIC::TryCallAsFunction(Object* object) {
   return *delegate;
 }
 
+void CallIC::ReceiverToObject(Handle<Object> object) {
+  HandleScope scope;
+  Handle<Object> receiver(object);
+
+  // Change the receiver to the result of calling ToObject on it.
+  const int argc = this->target()->arguments_count();
+  StackFrameLocator locator;
+  JavaScriptFrame* frame = locator.FindJavaScriptFrame(0);
+  int index = frame->ComputeExpressionsCount() - (argc + 1);
+  frame->SetExpression(index, *Factory::ToObject(object));
+}
+
 
 Object* CallIC::LoadFunction(State state,
                              Handle<Object> object,
@@ -386,6 +398,10 @@ Object* CallIC::LoadFunction(State state,
   // of its properties; throw a TypeError in that case.
   if (object->IsUndefined() || object->IsNull()) {
     return TypeError("non_object_property_call", object, name);
+  }
+
+  if (object->IsString() || object->IsNumber() || object->IsBoolean()) {
+    ReceiverToObject(object);
   }
 
   // Check if the name is trivially convertible to an index and get
@@ -409,7 +425,7 @@ Object* CallIC::LoadFunction(State state,
   if (!lookup.IsValid()) {
     // If the object does not have the requested property, check which
     // exception we need to throw.
-    if (is_contextual()) {
+    if (IsContextual(object)) {
       return ReferenceError("not_defined", name);
     }
     return TypeError("undefined_method", object, name);
@@ -428,7 +444,7 @@ Object* CallIC::LoadFunction(State state,
     // If the object does not have the requested property, check which
     // exception we need to throw.
     if (attr == ABSENT) {
-      if (is_contextual()) {
+      if (IsContextual(object)) {
         return ReferenceError("not_defined", name);
       }
       return TypeError("undefined_method", object, name);
@@ -628,7 +644,7 @@ Object* LoadIC::Load(State state, Handle<Object> object, Handle<String> name) {
 
   // If lookup is invalid, check if we need to throw an exception.
   if (!lookup.IsValid()) {
-    if (FLAG_strict || is_contextual()) {
+    if (FLAG_strict || IsContextual(object)) {
       return ReferenceError("not_defined", name);
     }
     LOG(SuspectReadEvent(*name, *object));
@@ -671,7 +687,7 @@ Object* LoadIC::Load(State state, Handle<Object> object, Handle<String> name) {
     if (result->IsFailure()) return result;
     // If the property is not present, check if we need to throw an
     // exception.
-    if (attr == ABSENT && is_contextual()) {
+    if (attr == ABSENT && IsContextual(object)) {
       return ReferenceError("not_defined", name);
     }
     return result;
@@ -843,7 +859,7 @@ Object* KeyedLoadIC::Load(State state,
 
     // If lookup is invalid, check if we need to throw an exception.
     if (!lookup.IsValid()) {
-      if (FLAG_strict || is_contextual()) {
+      if (FLAG_strict || IsContextual(object)) {
         return ReferenceError("not_defined", name);
       }
     }
@@ -859,7 +875,7 @@ Object* KeyedLoadIC::Load(State state,
       if (result->IsFailure()) return result;
       // If the property is not present, check if we need to throw an
       // exception.
-      if (attr == ABSENT && is_contextual()) {
+      if (attr == ABSENT && IsContextual(object)) {
         return ReferenceError("not_defined", name);
       }
       return result;
@@ -874,7 +890,9 @@ Object* KeyedLoadIC::Load(State state,
 
   if (use_ic) {
     Code* stub = generic_stub();
-    if (object->IsJSObject()) {
+    if (object->IsString() && key->IsNumber()) {
+      stub = string_stub();
+    } else if (object->IsJSObject()) {
       Handle<JSObject> receiver = Handle<JSObject>::cast(object);
       if (receiver->HasExternalArrayElements()) {
         stub = external_array_stub(receiver->GetElementsKind());
@@ -1289,16 +1307,6 @@ Object* CallIC_Miss(Arguments args) {
     CompileLazy(function, CLEAR_EXCEPTION);
   }
   return *function;
-}
-
-
-void CallIC::GenerateInitialize(MacroAssembler* masm, int argc) {
-  Generate(masm, argc, ExternalReference(IC_Utility(kCallIC_Miss)));
-}
-
-
-void CallIC::GenerateMiss(MacroAssembler* masm, int argc) {
-  Generate(masm, argc, ExternalReference(IC_Utility(kCallIC_Miss)));
 }
 
 

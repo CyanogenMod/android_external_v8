@@ -30,6 +30,7 @@
 #include "v8.h"
 
 #include "api.h"
+#include "bootstrapper.h"
 #include "codegen-inl.h"
 #include "debug.h"
 #include "simulator.h"
@@ -77,6 +78,10 @@ static Handle<Object> Invoke(bool construct,
     Handle<GlobalObject> global = Handle<GlobalObject>::cast(receiver);
     receiver = Handle<JSObject>(global->global_receiver());
   }
+
+  // Make sure that the global object of the context we're about to
+  // make the current one is indeed a global object.
+  ASSERT(func->context()->global()->IsGlobalObject());
 
   {
     // Save and restore context around invocation and block the
@@ -607,6 +612,11 @@ Object* Execution::DebugBreakHelper() {
     return Heap::undefined_value();
   }
 
+  // Ignore debug break during bootstrapping.
+  if (Bootstrapper::IsActive()) {
+    return Heap::undefined_value();
+  }
+
   {
     JavaScriptFrameIterator it;
     ASSERT(!it.done());
@@ -628,24 +638,32 @@ Object* Execution::DebugBreakHelper() {
   bool debug_command_only =
       StackGuard::IsDebugCommand() && !StackGuard::IsDebugBreak();
 
-  // Clear the debug request flags.
+  // Clear the debug break request flag.
   StackGuard::Continue(DEBUGBREAK);
+
+  ProcessDebugMesssages(debug_command_only);
+
+  // Return to continue execution.
+  return Heap::undefined_value();
+}
+
+void Execution::ProcessDebugMesssages(bool debug_command_only) {
+  // Clear the debug command request flag.
   StackGuard::Continue(DEBUGCOMMAND);
 
   HandleScope scope;
   // Enter the debugger. Just continue if we fail to enter the debugger.
   EnterDebugger debugger;
   if (debugger.FailedToEnter()) {
-    return Heap::undefined_value();
+    return;
   }
 
   // Notify the debug event listeners. Indicate auto continue if the break was
   // a debug command break.
   Debugger::OnDebugBreak(Factory::undefined_value(), debug_command_only);
-
-  // Return to continue execution.
-  return Heap::undefined_value();
 }
+
+
 #endif
 
 Object* Execution::HandleStackGuardInterrupt() {

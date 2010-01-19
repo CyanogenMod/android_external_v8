@@ -52,6 +52,11 @@ namespace internal {
   F(IsPropertyEnumerable, 2, 1) \
   F(GetPropertyNames, 1, 1) \
   F(GetPropertyNamesFast, 1, 1) \
+  F(GetLocalPropertyNames, 1, 1) \
+  F(GetLocalElementNames, 1, 1) \
+  F(GetInterceptorInfo, 1, 1) \
+  F(GetNamedInterceptorPropertyNames, 1, 1) \
+  F(GetIndexedInterceptorElementNames, 1, 1) \
   F(GetArgumentsProperty, 1, 1) \
   F(ToFastProperties, 1, 1) \
   F(ToSlowProperties, 1, 1) \
@@ -60,6 +65,10 @@ namespace internal {
   F(SetHiddenPrototype, 2, 1) \
   \
   F(IsConstructCall, 0, 1) \
+  \
+  F(GetOwnProperty, 2, 1) \
+  \
+  F(IsExtensible, 1, 1) \
   \
   /* Utilities */ \
   F(GetCalledFunction, 0, 1) \
@@ -103,7 +112,7 @@ namespace internal {
   F(NumberUnaryMinus, 1, 1) \
   \
   F(StringAdd, 2, 1) \
-  F(StringBuilderConcat, 2, 1) \
+  F(StringBuilderConcat, 3, 1) \
   \
   /* Bit operations */ \
   F(NumberOr, 2, 1) \
@@ -146,6 +155,7 @@ namespace internal {
   \
   /* Strings */ \
   F(StringCharCodeAt, 2, 1) \
+  F(StringCharAt, 2, 1) \
   F(StringIndexOf, 3, 1) \
   F(StringLastIndexOf, 3, 1) \
   F(StringLocaleCompare, 2, 1) \
@@ -202,7 +212,7 @@ namespace internal {
   \
   /* Eval */ \
   F(GlobalReceiver, 1, 1) \
-  F(ResolvePossiblyDirectEval, 2, 1) \
+  F(ResolvePossiblyDirectEval, 3, 2) \
   \
   F(SetProperty, -1 /* 3 or 4 */, 1) \
   F(IgnoreAttributesAndSetProperty, -1 /* 3 or 4 */, 1) \
@@ -223,6 +233,10 @@ namespace internal {
   F(CreateObjectLiteralBoilerplate, 3, 1) \
   F(CloneLiteralBoilerplate, 1, 1) \
   F(CloneShallowLiteralBoilerplate, 1, 1) \
+  F(CreateObjectLiteral, 3, 1) \
+  F(CreateObjectLiteralShallow, 3, 1) \
+  F(CreateArrayLiteral, 3, 1) \
+  F(CreateArrayLiteralShallow, 3, 1) \
   \
   /* Catch context extension objects */ \
   F(CreateCatchExtensionObject, 2, 1) \
@@ -278,14 +292,9 @@ namespace internal {
   F(Break, 0, 1) \
   F(DebugGetPropertyDetails, 2, 1) \
   F(DebugGetProperty, 2, 1) \
-  F(DebugLocalPropertyNames, 1, 1) \
-  F(DebugLocalElementNames, 1, 1) \
   F(DebugPropertyTypeFromDetails, 1, 1) \
   F(DebugPropertyAttributesFromDetails, 1, 1) \
   F(DebugPropertyIndexFromDetails, 1, 1) \
-  F(DebugInterceptorInfo, 1, 1) \
-  F(DebugNamedInterceptorPropertyNames, 1, 1) \
-  F(DebugIndexedInterceptorElementNames, 1, 1) \
   F(DebugNamedInterceptorPropertyValue, 2, 1) \
   F(DebugIndexedInterceptorElementValue, 2, 1) \
   F(CheckExecutionState, 1, 1) \

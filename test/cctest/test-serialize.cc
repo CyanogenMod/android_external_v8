@@ -1,4 +1,4 @@
-// Copyright 2007-2008 the V8 project authors. All rights reserved.
+// Copyright 2007-2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -37,6 +37,8 @@
 #include "scopeinfo.h"
 #include "snapshot.h"
 #include "cctest.h"
+#include "spaces.h"
+#include "objects.h"
 
 using namespace v8::internal;
 
@@ -115,10 +117,6 @@ TEST(ExternalReferenceEncoder) {
       ExternalReference(&Counters::keyed_load_function_prototype);
   CHECK_EQ(make_code(STATS_COUNTER, Counters::k_keyed_load_function_prototype),
            encoder.Encode(keyed_load_function_prototype.address()));
-  ExternalReference passed_function =
-      ExternalReference::builtin_passed_function();
-  CHECK_EQ(make_code(UNCLASSIFIED, 1),
-           encoder.Encode(passed_function.address()));
   ExternalReference the_hole_value_location =
       ExternalReference::the_hole_value_location();
   CHECK_EQ(make_code(UNCLASSIFIED, 2),
@@ -158,8 +156,6 @@ TEST(ExternalReferenceDecoder) {
            decoder.Decode(
                make_code(STATS_COUNTER,
                          Counters::k_keyed_load_function_prototype)));
-  CHECK_EQ(ExternalReference::builtin_passed_function().address(),
-           decoder.Decode(make_code(UNCLASSIFIED, 1)));
   CHECK_EQ(ExternalReference::the_hole_value_location().address(),
            decoder.Decode(make_code(UNCLASSIFIED, 2)));
   CHECK_EQ(ExternalReference::address_of_stack_limit().address(),
@@ -274,6 +270,234 @@ DEPENDENT_TEST(DeserializeFromSecondSerializationAndRunScript2,
   v8::Local<v8::String> source = v8::String::New(c_source);
   v8::Local<v8::Script> script = v8::Script::Compile(source);
   CHECK_EQ(4, script->Run()->Int32Value());
+}
+
+
+class FileByteSink : public SnapshotByteSink {
+ public:
+  explicit FileByteSink(const char* snapshot_file) {
+    fp_ = OS::FOpen(snapshot_file, "wb");
+    file_name_ = snapshot_file;
+    if (fp_ == NULL) {
+      PrintF("Unable to write to snapshot file \"%s\"\n", snapshot_file);
+      exit(1);
+    }
+  }
+  virtual ~FileByteSink() {
+    if (fp_ != NULL) {
+      fclose(fp_);
+    }
+  }
+  virtual void Put(int byte, const char* description) {
+    if (fp_ != NULL) {
+      fputc(byte, fp_);
+    }
+  }
+  virtual int Position() {
+    return ftell(fp_);
+  }
+  void WriteSpaceUsed(
+      int new_space_used,
+      int pointer_space_used,
+      int data_space_used,
+      int code_space_used,
+      int map_space_used,
+      int cell_space_used,
+      int large_space_used);
+
+ private:
+  FILE* fp_;
+  const char* file_name_;
+};
+
+
+void FileByteSink::WriteSpaceUsed(
+      int new_space_used,
+      int pointer_space_used,
+      int data_space_used,
+      int code_space_used,
+      int map_space_used,
+      int cell_space_used,
+      int large_space_used) {
+  int file_name_length = strlen(file_name_) + 10;
+  Vector<char> name = Vector<char>::New(file_name_length + 1);
+  OS::SNPrintF(name, "%s.size", file_name_);
+  FILE* fp = OS::FOpen(name.start(), "w");
+  fprintf(fp, "new %d\n", new_space_used);
+  fprintf(fp, "pointer %d\n", pointer_space_used);
+  fprintf(fp, "data %d\n", data_space_used);
+  fprintf(fp, "code %d\n", code_space_used);
+  fprintf(fp, "map %d\n", map_space_used);
+  fprintf(fp, "cell %d\n", cell_space_used);
+  fprintf(fp, "large %d\n", large_space_used);
+  fclose(fp);
+}
+
+
+TEST(PartialSerialization) {
+  Serializer::Enable();
+  v8::V8::Initialize();
+  v8::Persistent<v8::Context> env = v8::Context::New();
+  env->Enter();
+
+  v8::HandleScope handle_scope;
+  v8::Local<v8::String> foo = v8::String::New("foo");
+
+  FileByteSink file(FLAG_testing_serialization_file);
+  Serializer ser(&file);
+  i::Handle<i::String> internal_foo = v8::Utils::OpenHandle(*foo);
+  Object* raw_foo = *internal_foo;
+  ser.SerializePartial(&raw_foo);
+  file.WriteSpaceUsed(ser.CurrentAllocationAddress(NEW_SPACE),
+                      ser.CurrentAllocationAddress(OLD_POINTER_SPACE),
+                      ser.CurrentAllocationAddress(OLD_DATA_SPACE),
+                      ser.CurrentAllocationAddress(CODE_SPACE),
+                      ser.CurrentAllocationAddress(MAP_SPACE),
+                      ser.CurrentAllocationAddress(CELL_SPACE),
+                      ser.CurrentAllocationAddress(LO_SPACE));
+}
+
+
+DEPENDENT_TEST(PartialDeserialization, PartialSerialization) {
+  v8::V8::Initialize();
+  const char* file_name = FLAG_testing_serialization_file;
+  int file_name_length = strlen(file_name) + 10;
+  Vector<char> name = Vector<char>::New(file_name_length + 1);
+  OS::SNPrintF(name, "%s.size", file_name);
+  FILE* fp = OS::FOpen(name.start(), "r");
+  int new_size, pointer_size, data_size, code_size, map_size, cell_size;
+  int large_size;
+#ifdef _MSC_VER
+  // Avoid warning about unsafe fscanf from MSVC.
+  // Please note that this is only fine if %c and %s are not being used.
+#define fscanf fscanf_s
+#endif
+  CHECK_EQ(1, fscanf(fp, "new %d\n", &new_size));
+  CHECK_EQ(1, fscanf(fp, "pointer %d\n", &pointer_size));
+  CHECK_EQ(1, fscanf(fp, "data %d\n", &data_size));
+  CHECK_EQ(1, fscanf(fp, "code %d\n", &code_size));
+  CHECK_EQ(1, fscanf(fp, "map %d\n", &map_size));
+  CHECK_EQ(1, fscanf(fp, "cell %d\n", &cell_size));
+  CHECK_EQ(1, fscanf(fp, "large %d\n", &large_size));
+#ifdef _MSC_VER
+#undef fscanf
+#endif
+  fclose(fp);
+  Heap::ReserveSpace(new_size,
+                     pointer_size,
+                     data_size,
+                     code_size,
+                     map_size,
+                     cell_size,
+                     large_size);
+  int snapshot_size = 0;
+  byte* snapshot = ReadBytes(file_name, &snapshot_size);
+  SnapshotByteSource source(snapshot, snapshot_size);
+  Deserializer deserializer(&source);
+  Object* root;
+  deserializer.DeserializePartial(&root);
+  CHECK(root->IsString());
+}
+
+
+TEST(LinearAllocation) {
+  v8::V8::Initialize();
+  int new_space_max = 512 * KB;
+  for (int size = 1000; size < 5 * MB; size += size >> 1) {
+    int new_space_size = (size < new_space_max) ? size : new_space_max;
+    Heap::ReserveSpace(
+        new_space_size,
+        size,              // Old pointer space.
+        size,              // Old data space.
+        size,              // Code space.
+        size,              // Map space.
+        size,              // Cell space.
+        size);             // Large object space.
+    LinearAllocationScope linear_allocation_scope;
+    const int kSmallFixedArrayLength = 4;
+    const int kSmallFixedArraySize =
+        FixedArray::kHeaderSize + kSmallFixedArrayLength * kPointerSize;
+    const int kSmallStringLength = 16;
+    const int kSmallStringSize =
+        SeqAsciiString::kHeaderSize + kSmallStringLength;
+    const int kMapSize = Map::kSize;
+
+    Object* new_last = NULL;
+    for (int i = 0;
+         i + kSmallFixedArraySize <= new_space_size;
+         i += kSmallFixedArraySize) {
+      Object* obj = Heap::AllocateFixedArray(kSmallFixedArrayLength);
+      if (new_last != NULL) {
+        CHECK_EQ(reinterpret_cast<char*>(obj),
+                 reinterpret_cast<char*>(new_last) + kSmallFixedArraySize);
+      }
+      new_last = obj;
+    }
+
+    Object* pointer_last = NULL;
+    for (int i = 0;
+         i + kSmallFixedArraySize <= size;
+         i += kSmallFixedArraySize) {
+      Object* obj = Heap::AllocateFixedArray(kSmallFixedArrayLength, TENURED);
+      int old_page_fullness = i % Page::kPageSize;
+      int page_fullness = (i + kSmallFixedArraySize) % Page::kPageSize;
+      if (page_fullness < old_page_fullness ||
+          page_fullness > Page::kObjectAreaSize) {
+        i = RoundUp(i, Page::kPageSize);
+        pointer_last = NULL;
+      }
+      if (pointer_last != NULL) {
+        CHECK_EQ(reinterpret_cast<char*>(obj),
+                 reinterpret_cast<char*>(pointer_last) + kSmallFixedArraySize);
+      }
+      pointer_last = obj;
+    }
+
+    Object* data_last = NULL;
+    for (int i = 0; i + kSmallStringSize <= size; i += kSmallStringSize) {
+      Object* obj = Heap::AllocateRawAsciiString(kSmallStringLength, TENURED);
+      int old_page_fullness = i % Page::kPageSize;
+      int page_fullness = (i + kSmallStringSize) % Page::kPageSize;
+      if (page_fullness < old_page_fullness ||
+          page_fullness > Page::kObjectAreaSize) {
+        i = RoundUp(i, Page::kPageSize);
+        data_last = NULL;
+      }
+      if (data_last != NULL) {
+        CHECK_EQ(reinterpret_cast<char*>(obj),
+                 reinterpret_cast<char*>(data_last) + kSmallStringSize);
+      }
+      data_last = obj;
+    }
+
+    Object* map_last = NULL;
+    for (int i = 0; i + kMapSize <= size; i += kMapSize) {
+      Object* obj = Heap::AllocateMap(JS_OBJECT_TYPE, 42 * kPointerSize);
+      int old_page_fullness = i % Page::kPageSize;
+      int page_fullness = (i + kMapSize) % Page::kPageSize;
+      if (page_fullness < old_page_fullness ||
+          page_fullness > Page::kObjectAreaSize) {
+        i = RoundUp(i, Page::kPageSize);
+        map_last = NULL;
+      }
+      if (map_last != NULL) {
+        CHECK_EQ(reinterpret_cast<char*>(obj),
+                 reinterpret_cast<char*>(map_last) + kMapSize);
+      }
+      map_last = obj;
+    }
+
+    if (size > Page::kObjectAreaSize) {
+      // Support for reserving space in large object space is not there yet,
+      // but using an always-allocate scope is fine for now.
+      AlwaysAllocateScope always;
+      int large_object_array_length =
+          (size - FixedArray::kHeaderSize) / kPointerSize;
+      Object* obj = Heap::AllocateFixedArray(large_object_array_length,
+                                             TENURED);
+      CHECK(!obj->IsFailure());
+    }
+  }
 }
 
 

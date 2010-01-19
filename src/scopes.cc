@@ -189,8 +189,7 @@ void Scope::Initialize(bool inside_with) {
       variables_.Declare(this, Factory::this_symbol(), Variable::VAR,
                          false, Variable::THIS);
   var->rewrite_ = new Slot(var, Slot::PARAMETER, -1);
-  receiver_ = new VariableProxy(Factory::this_symbol(), true, false);
-  receiver_->BindTo(var);
+  receiver_ = var;
 
   if (is_function_scope()) {
     // Declare 'arguments' variable which exists in all functions.
@@ -237,7 +236,7 @@ Variable* Scope::DeclareLocal(Handle<String> name, Variable::Mode mode) {
 
 Variable* Scope::DeclareGlobal(Handle<String> name) {
   ASSERT(is_global_scope());
-  return variables_.Declare(this, name, Variable::DYNAMIC, true,
+  return variables_.Declare(this, name, Variable::DYNAMIC_GLOBAL, true,
                             Variable::NORMAL);
 }
 

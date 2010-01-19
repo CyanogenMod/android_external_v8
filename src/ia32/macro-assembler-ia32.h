@@ -33,9 +33,12 @@
 namespace v8 {
 namespace internal {
 
+// Convenience for platform-independent signatures.  We do not normally
+// distinguish memory operands from other operands on ia32.
+typedef Operand MemOperand;
+
 // Forward declaration.
 class JumpTarget;
-
 
 // MacroAssembler implements a collection of frequently used macros.
 class MacroAssembler: public Assembler {
@@ -138,9 +141,27 @@ class MacroAssembler: public Assembler {
   // Compare instance type for map.
   void CmpInstanceType(Register map, InstanceType type);
 
+  // Check if the object in register heap_object is a string. Afterwards the
+  // register map contains the object map and the register instance_type
+  // contains the instance_type. The registers map and instance_type can be the
+  // same in which case it contains the instance type afterwards. Either of the
+  // registers map and instance_type can be the same as heap_object.
+  Condition IsObjectStringType(Register heap_object,
+                               Register map,
+                               Register instance_type);
+
   // FCmp is similar to integer cmp, but requires unsigned
   // jcc instructions (je, ja, jae, jb, jbe, je, and jz).
   void FCmp();
+
+  // Smi tagging support.
+  void SmiTag(Register reg) {
+    ASSERT(kSmiTag == 0);
+    shl(reg, kSmiTagSize);
+  }
+  void SmiUntag(Register reg) {
+    sar(reg, kSmiTagSize);
+  }
 
   // ---------------------------------------------------------------------------
   // Exception handling
@@ -149,6 +170,8 @@ class MacroAssembler: public Assembler {
   // address must be pushed before calling this helper.
   void PushTryHandler(CodeLocation try_location, HandlerType type);
 
+  // Unlink the stack handler on top of the stack from the try handler chain.
+  void PopTryHandler();
 
   // ---------------------------------------------------------------------------
   // Inline caching support
@@ -285,11 +308,21 @@ class MacroAssembler: public Assembler {
   // ---------------------------------------------------------------------------
   // Runtime calls
 
-  // Call a code stub.
+  // Call a code stub.  Generate the code if necessary.
   void CallStub(CodeStub* stub);
 
-  // Tail call a code stub (jump).
+  // Call a code stub and return the code object called.  Try to generate
+  // the code if necessary.  Do not perform a GC but instead return a retry
+  // after GC failure.
+  Object* TryCallStub(CodeStub* stub);
+
+  // Tail call a code stub (jump).  Generate the code if necessary.
   void TailCallStub(CodeStub* stub);
+
+  // Tail call a code stub (jump) and return the code object called.  Try to
+  // generate the code if necessary.  Do not perform a GC but instead return
+  // a retry after GC failure.
+  Object* TryTailCallStub(CodeStub* stub);
 
   // Return from a code stub after popping its arguments.
   void StubReturn(int argc);
@@ -298,8 +331,16 @@ class MacroAssembler: public Assembler {
   // Eventually this should be used for all C calls.
   void CallRuntime(Runtime::Function* f, int num_arguments);
 
+  // Call a runtime function, returning the RuntimeStub object called.
+  // Try to generate the stub code if necessary.  Do not perform a GC
+  // but instead return a retry after GC failure.
+  Object* TryCallRuntime(Runtime::Function* f, int num_arguments);
+
   // Convenience function: Same as above, but takes the fid instead.
   void CallRuntime(Runtime::FunctionId id, int num_arguments);
+
+  // Convenience function: Same as above, but takes the fid instead.
+  Object* TryCallRuntime(Runtime::FunctionId id, int num_arguments);
 
   // Tail call of a runtime routine (jump).
   // Like JumpToRuntime, but also takes care of passing the number
@@ -314,6 +355,10 @@ class MacroAssembler: public Assembler {
   // ensuring that saved register, it is not no_reg, is left unchanged.
   void PopHandleScope(Register saved, Register scratch);
 
+  // As PopHandleScope, but does not perform a GC.  Instead, returns a
+  // retry after GC failure object if GC is necessary.
+  Object* TryPopHandleScope(Register saved, Register scratch);
+
   // Jump to a runtime routine.
   void JumpToRuntime(const ExternalReference& ext);
 
@@ -322,6 +367,14 @@ class MacroAssembler: public Assembler {
   // Utilities
 
   void Ret();
+
+  // Emit code to discard a non-negative number of pointer-sized elements
+  // from the stack, clobbering only the esp register.
+  void Drop(int element_count);
+
+  void Call(Label* target) { call(target); }
+
+  void Move(Register target, Handle<Object> value);
 
   struct Unresolved {
     int pc;
@@ -400,6 +453,13 @@ class MacroAssembler: public Assembler {
                                Register scratch,
                                AllocationFlags flags);
   void UpdateAllocationTopHelper(Register result_end, Register scratch);
+
+  // Helper for PopHandleScope.  Allowed to perform a GC and returns
+  // NULL if gc_allowed.  Does not perform a GC if !gc_allowed, and
+  // possibly returns a failure object indicating an allocation failure.
+  Object* PopHandleScopeHelper(Register saved,
+                               Register scratch,
+                               bool gc_allowed);
 };
 
 

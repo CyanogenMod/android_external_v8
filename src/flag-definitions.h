@@ -198,6 +198,9 @@ DEFINE_bool(cleanup_caches_in_maps_at_gc, true,
 DEFINE_bool(canonicalize_object_literal_maps, true,
             "Canonicalize maps for object literals.")
 
+DEFINE_bool(use_big_map_space, true,
+            "Use big map space, but don't compact if it grew too big.")
+
 // mksnapshot.cc
 DEFINE_bool(h, false, "print this message")
 DEFINE_bool(new_snapshot, true, "use new snapshot implementation")
@@ -228,6 +231,7 @@ DEFINE_bool(preemption, false,
 // Regexp
 DEFINE_bool(trace_regexps, false, "trace regexp execution")
 DEFINE_bool(regexp_optimization, true, "generate optimized regexp code")
+DEFINE_bool(regexp_entry_native, true, "use native code to enter regexp")
 
 // Testing flags test/cctest/test-{flags,api,serialization}.cc
 DEFINE_bool(testing_bool_flag, true, "testing_bool_flag")
@@ -325,6 +329,9 @@ DEFINE_bool(collect_heap_spill_statistics, false,
             "(requires heap_stats)")
 
 // Regexp
+DEFINE_bool(regexp_possessive_quantifier,
+            false,
+            "enable possessive quantifier syntax for testing")
 DEFINE_bool(trace_regexp_bytecodes, false, "trace regexp bytecode execution")
 DEFINE_bool(trace_regexp_assembler,
             false,
@@ -351,6 +358,8 @@ DEFINE_bool(log_code, false,
 DEFINE_bool(log_gc, false,
             "Log heap samples on garbage collection for the hp2ps tool.")
 DEFINE_bool(log_handles, false, "Log global handle events.")
+DEFINE_bool(log_snapshot_positions, false,
+            "log positions of (de)serialized objects in the snapshot.")
 DEFINE_bool(log_state_changes, false, "Log state changes.")
 DEFINE_bool(log_suspect, false, "Log suspect operations.")
 DEFINE_bool(log_producers, false, "Log stack traces of JS objects allocations.")

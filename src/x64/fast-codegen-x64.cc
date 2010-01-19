@@ -62,11 +62,9 @@ void FastCodeGenerator::Generate(FunctionLiteral* fun) {
 
   { Comment cmnt(masm_, "[ Allocate locals");
     int locals_count = fun->scope()->num_stack_slots();
-    if (locals_count <= 1) {
-      if (locals_count > 0) {
-        __ PushRoot(Heap::kUndefinedValueRootIndex);
-      }
-    } else {
+    if (locals_count == 1) {
+      __ PushRoot(Heap::kUndefinedValueRootIndex);
+    } else if (locals_count > 1) {
       __ LoadRoot(rdx, Heap::kUndefinedValueRootIndex);
       for (int i = 0; i < locals_count; i++) {
         __ push(rdx);
@@ -132,6 +130,10 @@ void FastCodeGenerator::Generate(FunctionLiteral* fun) {
     Move(dot_arguments_slot, rcx, rbx, rdx);
   }
 
+  { Comment cmnt(masm_, "[ Declarations");
+    VisitDeclarations(fun->scope()->declarations());
+  }
+
   { Comment cmnt(masm_, "[ Stack check");
     Label ok;
     __ CompareRoot(rsp, Heap::kStackLimitRootIndex);
@@ -139,10 +141,6 @@ void FastCodeGenerator::Generate(FunctionLiteral* fun) {
     StackCheckStub stub;
     __ CallStub(&stub);
     __ bind(&ok);
-  }
-
-  { Comment cmnt(masm_, "[ Declarations");
-    VisitDeclarations(fun->scope()->declarations());
   }
 
   if (FLAG_trace) {
@@ -202,109 +200,442 @@ void FastCodeGenerator::EmitReturnSequence(int position) {
 }
 
 
-void FastCodeGenerator::Move(Expression::Context context, Register source) {
+void FastCodeGenerator::Apply(Expression::Context context, Register reg) {
   switch (context) {
     case Expression::kUninitialized:
       UNREACHABLE();
+
     case Expression::kEffect:
+      // Nothing to do.
       break;
+
     case Expression::kValue:
-      __ push(source);
+      // Move value into place.
+      switch (location_) {
+        case kAccumulator:
+          if (!reg.is(result_register())) __ movq(result_register(), reg);
+          break;
+        case kStack:
+          __ push(reg);
+          break;
+      }
       break;
+
     case Expression::kTest:
-      TestAndBranch(source, true_label_, false_label_);
+      // For simplicity we always test the accumulator register.
+      if (!reg.is(result_register())) __ movq(result_register(), reg);
+      DoTest(context);
       break;
-    case Expression::kValueTest: {
-      Label discard;
-      __ push(source);
-      TestAndBranch(source, true_label_, &discard);
-      __ bind(&discard);
-      __ addq(rsp, Immediate(kPointerSize));
-      __ jmp(false_label_);
+
+    case Expression::kValueTest:
+    case Expression::kTestValue:
+      if (!reg.is(result_register())) __ movq(result_register(), reg);
+      switch (location_) {
+        case kAccumulator:
+          break;
+        case kStack:
+          __ push(result_register());
+          break;
+      }
+      DoTest(context);
       break;
-    }
-    case Expression::kTestValue: {
-      Label discard;
-      __ push(source);
-      TestAndBranch(source, &discard, false_label_);
-      __ bind(&discard);
-      __ addq(rsp, Immediate(kPointerSize));
-      __ jmp(true_label_);
-      break;
-    }
   }
 }
 
 
-template <>
-Operand FastCodeGenerator::CreateSlotOperand<Operand>(Slot* source,
-                                                      Register scratch) {
-  switch (source->type()) {
-    case Slot::PARAMETER:
-    case Slot::LOCAL:
-      return Operand(rbp, SlotOffset(source));
-    case Slot::CONTEXT: {
-      int context_chain_length =
-          function_->scope()->ContextChainLength(source->var()->scope());
-      __ LoadContext(scratch, context_chain_length);
-      return CodeGenerator::ContextOperand(scratch, source->index());
-      break;
-    }
-    case Slot::LOOKUP:
-      UNIMPLEMENTED();
-      // Fall-through.
-    default:
-      UNREACHABLE();
-      return Operand(rax, 0);  // Dead code to make the compiler happy.
-  }
-}
-
-
-void FastCodeGenerator::Move(Register dst, Slot* source) {
-  Operand location = CreateSlotOperand<Operand>(source, dst);
-  __ movq(dst, location);
-}
-
-
-void FastCodeGenerator::Move(Expression::Context context,
-                             Slot* source,
-                             Register scratch) {
+void FastCodeGenerator::Apply(Expression::Context context, Slot* slot) {
   switch (context) {
     case Expression::kUninitialized:
       UNREACHABLE();
     case Expression::kEffect:
+      // Nothing to do.
       break;
     case Expression::kValue: {
-      Operand location = CreateSlotOperand<Operand>(source, scratch);
-      __ push(location);
+      MemOperand slot_operand = EmitSlotSearch(slot, result_register());
+      switch (location_) {
+        case kAccumulator:
+          __ movq(result_register(), slot_operand);
+          break;
+        case kStack:
+          // Memory operands can be pushed directly.
+          __ push(slot_operand);
+          break;
+      }
       break;
     }
-    case Expression::kTest:  // Fall through.
-    case Expression::kValueTest:  // Fall through.
+
+    case Expression::kTest:
+      Move(result_register(), slot);
+      DoTest(context);
+      break;
+
+    case Expression::kValueTest:
     case Expression::kTestValue:
-      Move(scratch, source);
-      Move(context, scratch);
+      Move(result_register(), slot);
+      switch (location_) {
+        case kAccumulator:
+          break;
+        case kStack:
+          __ push(result_register());
+          break;
+      }
+      DoTest(context);
       break;
   }
 }
 
 
-void FastCodeGenerator::Move(Expression::Context context, Literal* expr) {
+void FastCodeGenerator::Apply(Expression::Context context, Literal* lit) {
   switch (context) {
     case Expression::kUninitialized:
       UNREACHABLE();
     case Expression::kEffect:
+      // Nothing to do.
       break;
     case Expression::kValue:
-      __ Push(expr->handle());
+      switch (location_) {
+        case kAccumulator:
+          __ Move(result_register(), lit->handle());
+          break;
+        case kStack:
+          __ Push(lit->handle());
+          break;
+      }
       break;
-    case Expression::kTest:  // Fall through.
-    case Expression::kValueTest:  // Fall through.
+
+    case Expression::kTest:
+      __ Move(result_register(), lit->handle());
+      DoTest(context);
+      break;
+
+    case Expression::kValueTest:
     case Expression::kTestValue:
-      __ Move(rax, expr->handle());
-      Move(context, rax);
+      __ Move(result_register(), lit->handle());
+      switch (location_) {
+        case kAccumulator:
+          break;
+        case kStack:
+          __ push(result_register());
+          break;
+      }
+      DoTest(context);
       break;
   }
+}
+
+
+void FastCodeGenerator::ApplyTOS(Expression::Context context) {
+  switch (context) {
+    case Expression::kUninitialized:
+      UNREACHABLE();
+
+    case Expression::kEffect:
+      __ Drop(1);
+      break;
+
+    case Expression::kValue:
+      switch (location_) {
+        case kAccumulator:
+          __ pop(result_register());
+          break;
+        case kStack:
+          break;
+      }
+      break;
+
+    case Expression::kTest:
+      __ pop(result_register());
+      DoTest(context);
+      break;
+
+    case Expression::kValueTest:
+    case Expression::kTestValue:
+      switch (location_) {
+        case kAccumulator:
+          __ pop(result_register());
+          break;
+        case kStack:
+          __ movq(result_register(), Operand(rsp, 0));
+          break;
+      }
+      DoTest(context);
+      break;
+  }
+}
+
+
+void FastCodeGenerator::DropAndApply(int count,
+                                     Expression::Context context,
+                                     Register reg) {
+  ASSERT(count > 0);
+  ASSERT(!reg.is(rsp));
+  switch (context) {
+    case Expression::kUninitialized:
+      UNREACHABLE();
+
+    case Expression::kEffect:
+      __ Drop(count);
+      break;
+
+    case Expression::kValue:
+      switch (location_) {
+        case kAccumulator:
+          __ Drop(count);
+          if (!reg.is(result_register())) __ movq(result_register(), reg);
+          break;
+        case kStack:
+          if (count > 1) __ Drop(count - 1);
+          __ movq(Operand(rsp, 0), reg);
+          break;
+      }
+      break;
+
+    case Expression::kTest:
+      __ Drop(count);
+      if (!reg.is(result_register())) __ movq(result_register(), reg);
+      DoTest(context);
+      break;
+
+    case Expression::kValueTest:
+    case Expression::kTestValue:
+      switch (location_) {
+        case kAccumulator:
+          __ Drop(count);
+          if (!reg.is(result_register())) __ movq(result_register(), reg);
+          break;
+        case kStack:
+          if (count > 1) __ Drop(count - 1);
+          __ movq(result_register(), reg);
+          __ movq(Operand(rsp, 0), result_register());
+          break;
+      }
+      DoTest(context);
+      break;
+  }
+}
+
+
+void FastCodeGenerator::Apply(Expression::Context context,
+                              Label* materialize_true,
+                              Label* materialize_false) {
+  switch (context) {
+    case Expression::kUninitialized:
+
+    case Expression::kEffect:
+      ASSERT_EQ(materialize_true, materialize_false);
+      __ bind(materialize_true);
+      break;
+
+    case Expression::kValue: {
+      Label done;
+      switch (location_) {
+        case kAccumulator:
+          __ bind(materialize_true);
+          __ Move(result_register(), Factory::true_value());
+          __ jmp(&done);
+          __ bind(materialize_false);
+          __ Move(result_register(), Factory::false_value());
+          break;
+        case kStack:
+          __ bind(materialize_true);
+          __ Push(Factory::true_value());
+          __ jmp(&done);
+          __ bind(materialize_false);
+          __ Push(Factory::false_value());
+          break;
+      }
+      __ bind(&done);
+      break;
+    }
+
+    case Expression::kTest:
+      break;
+
+    case Expression::kValueTest:
+      __ bind(materialize_true);
+      switch (location_) {
+        case kAccumulator:
+          __ Move(result_register(), Factory::true_value());
+          break;
+        case kStack:
+          __ Push(Factory::true_value());
+          break;
+      }
+      __ jmp(true_label_);
+      break;
+
+    case Expression::kTestValue:
+      __ bind(materialize_false);
+      switch (location_) {
+        case kAccumulator:
+          __ Move(result_register(), Factory::false_value());
+          break;
+        case kStack:
+          __ Push(Factory::false_value());
+          break;
+      }
+      __ jmp(false_label_);
+      break;
+  }
+}
+
+
+void FastCodeGenerator::DoTest(Expression::Context context) {
+  // The value to test is in the accumulator.  If the value might be needed
+  // on the stack (value/test and test/value contexts with a stack location
+  // desired), then the value is already duplicated on the stack.
+  ASSERT_NE(NULL, true_label_);
+  ASSERT_NE(NULL, false_label_);
+
+  // In value/test and test/value expression contexts with stack as the
+  // desired location, there is already an extra value on the stack.  Use a
+  // label to discard it if unneeded.
+  Label discard;
+  Label* if_true = true_label_;
+  Label* if_false = false_label_;
+  switch (context) {
+    case Expression::kUninitialized:
+    case Expression::kEffect:
+    case Expression::kValue:
+      UNREACHABLE();
+    case Expression::kTest:
+      break;
+    case Expression::kValueTest:
+      switch (location_) {
+        case kAccumulator:
+          break;
+        case kStack:
+          if_false = &discard;
+          break;
+      }
+      break;
+    case Expression::kTestValue:
+      switch (location_) {
+        case kAccumulator:
+          break;
+        case kStack:
+          if_true = &discard;
+          break;
+      }
+      break;
+  }
+
+  // Emit the inlined tests assumed by the stub.
+  __ CompareRoot(result_register(), Heap::kUndefinedValueRootIndex);
+  __ j(equal, if_false);
+  __ CompareRoot(result_register(), Heap::kTrueValueRootIndex);
+  __ j(equal, if_true);
+  __ CompareRoot(result_register(), Heap::kFalseValueRootIndex);
+  __ j(equal, if_false);
+  ASSERT_EQ(0, kSmiTag);
+  __ SmiCompare(result_register(), Smi::FromInt(0));
+  __ j(equal, if_false);
+  Condition is_smi = masm_->CheckSmi(result_register());
+  __ j(is_smi, if_true);
+
+  // Save a copy of the value if it may be needed and isn't already saved.
+  switch (context) {
+    case Expression::kUninitialized:
+    case Expression::kEffect:
+    case Expression::kValue:
+      UNREACHABLE();
+    case Expression::kTest:
+      break;
+    case Expression::kValueTest:
+      switch (location_) {
+        case kAccumulator:
+          __ push(result_register());
+          break;
+        case kStack:
+          break;
+      }
+      break;
+    case Expression::kTestValue:
+      switch (location_) {
+        case kAccumulator:
+          __ push(result_register());
+          break;
+        case kStack:
+          break;
+      }
+      break;
+  }
+
+  // Call the ToBoolean stub for all other cases.
+  ToBooleanStub stub;
+  __ push(result_register());
+  __ CallStub(&stub);
+  __ testq(rax, rax);
+
+  // The stub returns nonzero for true.  Complete based on the context.
+  switch (context) {
+    case Expression::kUninitialized:
+    case Expression::kEffect:
+    case Expression::kValue:
+      UNREACHABLE();
+
+    case Expression::kTest:
+      __ j(not_zero, true_label_);
+      __ jmp(false_label_);
+      break;
+
+    case Expression::kValueTest:
+      switch (location_) {
+        case kAccumulator:
+          __ j(zero, &discard);
+          __ pop(result_register());
+          __ jmp(true_label_);
+          break;
+        case kStack:
+          __ j(not_zero, true_label_);
+          break;
+      }
+      __ bind(&discard);
+      __ Drop(1);
+      __ jmp(false_label_);
+      break;
+
+    case Expression::kTestValue:
+      switch (location_) {
+        case kAccumulator:
+          __ j(not_zero, &discard);
+          __ pop(result_register());
+          __ jmp(false_label_);
+          break;
+        case kStack:
+          __ j(zero, false_label_);
+          break;
+      }
+      __ bind(&discard);
+      __ Drop(1);
+      __ jmp(true_label_);
+      break;
+  }
+}
+
+
+MemOperand FastCodeGenerator::EmitSlotSearch(Slot* slot, Register scratch) {
+  switch (slot->type()) {
+    case Slot::PARAMETER:
+    case Slot::LOCAL:
+      return Operand(rbp, SlotOffset(slot));
+    case Slot::CONTEXT: {
+      int context_chain_length =
+          function_->scope()->ContextChainLength(slot->var()->scope());
+      __ LoadContext(scratch, context_chain_length);
+      return CodeGenerator::ContextOperand(scratch, slot->index());
+    }
+    case Slot::LOOKUP:
+      UNREACHABLE();
+  }
+  UNREACHABLE();
+  return Operand(rax, 0);
+}
+
+
+void FastCodeGenerator::Move(Register destination, Slot* source) {
+  MemOperand location = EmitSlotSearch(source, destination);
+  __ movq(destination, location);
 }
 
 
@@ -312,106 +643,15 @@ void FastCodeGenerator::Move(Slot* dst,
                              Register src,
                              Register scratch1,
                              Register scratch2) {
-  switch (dst->type()) {
-    case Slot::PARAMETER:
-    case Slot::LOCAL:
-      __ movq(Operand(rbp, SlotOffset(dst)), src);
-      break;
-    case Slot::CONTEXT: {
-      ASSERT(!src.is(scratch1));
-      ASSERT(!src.is(scratch2));
-      ASSERT(!scratch1.is(scratch2));
-      int context_chain_length =
-          function_->scope()->ContextChainLength(dst->var()->scope());
-      __ LoadContext(scratch1, context_chain_length);
-      __ movq(Operand(scratch1, Context::SlotOffset(dst->index())), src);
-      int offset = FixedArray::kHeaderSize + dst->index() * kPointerSize;
-      __ RecordWrite(scratch1, offset, src, scratch2);
-      break;
-    }
-    case Slot::LOOKUP:
-      UNIMPLEMENTED();
-    default:
-      UNREACHABLE();
+  ASSERT(dst->type() != Slot::LOOKUP);  // Not yet implemented.
+  ASSERT(!scratch1.is(src) && !scratch2.is(src));
+  MemOperand location = EmitSlotSearch(dst, scratch1);
+  __ movq(location, src);
+  // Emit the write barrier code if the location is in the heap.
+  if (dst->type() == Slot::CONTEXT) {
+    int offset = FixedArray::kHeaderSize + dst->index() * kPointerSize;
+    __ RecordWrite(scratch1, offset, src, scratch2);
   }
-}
-
-
-void FastCodeGenerator::DropAndMove(Expression::Context context,
-                                    Register source,
-                                    int drop_count) {
-  ASSERT(drop_count > 0);
-  switch (context) {
-    case Expression::kUninitialized:
-      UNREACHABLE();
-    case Expression::kEffect:
-      __ addq(rsp, Immediate(drop_count * kPointerSize));
-      break;
-    case Expression::kValue:
-      if (drop_count > 1) {
-        __ addq(rsp, Immediate((drop_count - 1) * kPointerSize));
-      }
-      __ movq(Operand(rsp, 0), source);
-      break;
-    case Expression::kTest:
-      ASSERT(!source.is(rsp));
-      __ addq(rsp, Immediate(drop_count * kPointerSize));
-      TestAndBranch(source, true_label_, false_label_);
-      break;
-    case Expression::kValueTest: {
-      Label discard;
-      if (drop_count > 1) {
-        __ addq(rsp, Immediate((drop_count - 1) * kPointerSize));
-      }
-      __ movq(Operand(rsp, 0), source);
-      TestAndBranch(source, true_label_, &discard);
-      __ bind(&discard);
-      __ addq(rsp, Immediate(kPointerSize));
-      __ jmp(false_label_);
-      break;
-    }
-    case Expression::kTestValue: {
-      Label discard;
-      __ movq(Operand(rsp, 0), source);
-      TestAndBranch(source, &discard, false_label_);
-      __ bind(&discard);
-      __ addq(rsp, Immediate(kPointerSize));
-      __ jmp(true_label_);
-      break;
-    }
-  }
-}
-
-
-void FastCodeGenerator::TestAndBranch(Register source,
-                                      Label* true_label,
-                                      Label* false_label) {
-  ASSERT_NE(NULL, true_label);
-  ASSERT_NE(NULL, false_label);
-  // Use the shared ToBoolean stub to compile the value in the register into
-  // control flow to the code generator's true and false labels.  Perform
-  // the fast checks assumed by the stub.
-
-  // The undefined value is false.
-  __ CompareRoot(source, Heap::kUndefinedValueRootIndex);
-  __ j(equal, false_label);
-  __ CompareRoot(source, Heap::kTrueValueRootIndex);  // True is true.
-  __ j(equal, true_label);
-  __ CompareRoot(source, Heap::kFalseValueRootIndex);  // False is false.
-  __ j(equal, false_label);
-  ASSERT_EQ(0, kSmiTag);
-  __ SmiCompare(source, Smi::FromInt(0));  // The smi zero is false.
-  __ j(equal, false_label);
-  Condition is_smi = masm_->CheckSmi(source);  // All other smis are true.
-  __ j(is_smi, true_label);
-
-  // Call the stub for all other cases.
-  __ push(source);
-  ToBooleanStub stub;
-  __ CallStub(&stub);
-  __ testq(rax, rax);  // The stub returns nonzero for true.
-  __ j(not_zero, true_label);
-  __ jmp(false_label);
 }
 
 
@@ -424,18 +664,21 @@ void FastCodeGenerator::VisitDeclaration(Declaration* decl) {
 
   if (slot != NULL) {
     switch (slot->type()) {
-      case Slot::PARAMETER:  // Fall through.
+      case Slot::PARAMETER:
       case Slot::LOCAL:
         if (decl->mode() == Variable::CONST) {
           __ LoadRoot(kScratchRegister, Heap::kTheHoleValueRootIndex);
-          __ movq(Operand(rbp, SlotOffset(var->slot())), kScratchRegister);
+          __ movq(Operand(rbp, SlotOffset(slot)), kScratchRegister);
         } else if (decl->fun() != NULL) {
-          Visit(decl->fun());
-          __ pop(Operand(rbp, SlotOffset(var->slot())));
+          VisitForValue(decl->fun(), kAccumulator);
+          __ movq(Operand(rbp, SlotOffset(slot)), result_register());
         }
         break;
 
       case Slot::CONTEXT:
+        // We bypass the general EmitSlotSearch because we know more about
+        // this specific context.
+
         // The variable in the decl always resides in the current context.
         ASSERT_EQ(0, function_->scope()->ContextChainLength(var->scope()));
         if (FLAG_debug_code) {
@@ -451,11 +694,11 @@ void FastCodeGenerator::VisitDeclaration(Declaration* decl) {
                   kScratchRegister);
           // No write barrier since the hole value is in old space.
         } else if (decl->fun() != NULL) {
-          Visit(decl->fun());
-          __ pop(rax);
-          __ movq(CodeGenerator::ContextOperand(rsi, slot->index()), rax);
+          VisitForValue(decl->fun(), kAccumulator);
+          __ movq(CodeGenerator::ContextOperand(rsi, slot->index()),
+                  result_register());
           int offset = Context::SlotOffset(slot->index());
-          __ RecordWrite(rsi, offset, rax, rcx);
+          __ RecordWrite(rsi, offset, result_register(), rcx);
         }
         break;
 
@@ -475,7 +718,7 @@ void FastCodeGenerator::VisitDeclaration(Declaration* decl) {
         if (decl->mode() == Variable::CONST) {
           __ PushRoot(Heap::kTheHoleValueRootIndex);
         } else if (decl->fun() != NULL) {
-          Visit(decl->fun());
+          VisitForValue(decl->fun(), kStack);
         } else {
           __ Push(Smi::FromInt(0));  // no initial value!
         }
@@ -488,28 +731,24 @@ void FastCodeGenerator::VisitDeclaration(Declaration* decl) {
     if (decl->fun() != NULL || decl->mode() == Variable::CONST) {
       // We are declaring a function or constant that rewrites to a
       // property.  Use (keyed) IC to set the initial value.
-      ASSERT_EQ(Expression::kValue, prop->obj()->context());
-      Visit(prop->obj());
-      ASSERT_EQ(Expression::kValue, prop->key()->context());
-      Visit(prop->key());
+      VisitForValue(prop->obj(), kStack);
+      VisitForValue(prop->key(), kStack);
 
       if (decl->fun() != NULL) {
-        ASSERT_EQ(Expression::kValue, decl->fun()->context());
-        Visit(decl->fun());
-        __ pop(rax);
+        VisitForValue(decl->fun(), kAccumulator);
       } else {
-        __ LoadRoot(rax, Heap::kTheHoleValueRootIndex);
+        __ LoadRoot(result_register(), Heap::kTheHoleValueRootIndex);
       }
 
       Handle<Code> ic(Builtins::builtin(Builtins::KeyedStoreIC_Initialize));
       __ call(ic, RelocInfo::CODE_TARGET);
-
       // Absence of a test rax instruction following the call
       // indicates that none of the load was inlined.
+      __ nop();
 
       // Value in rax is ignored (declarations are statements).  Receiver
       // and key on stack are discarded.
-      __ addq(rsp, Immediate(2 * kPointerSize));
+      __ Drop(2);
     }
   }
 }
@@ -522,20 +761,6 @@ void FastCodeGenerator::DeclareGlobals(Handle<FixedArray> pairs) {
   __ Push(Smi::FromInt(is_eval_ ? 1 : 0));
   __ CallRuntime(Runtime::kDeclareGlobals, 3);
   // Return value is ignored.
-}
-
-
-void FastCodeGenerator::VisitReturnStatement(ReturnStatement* stmt) {
-  Comment cmnt(masm_, "[ ReturnStatement");
-  Expression* expr = stmt->expression();
-  if (expr->AsLiteral() != NULL) {
-    __ Move(rax, expr->AsLiteral()->handle());
-  } else {
-    Visit(expr);
-    ASSERT_EQ(Expression::kValue, expr->context());
-    __ pop(rax);
-  }
-  EmitReturnSequence(stmt->statement_pos());
 }
 
 
@@ -553,34 +778,39 @@ void FastCodeGenerator::VisitFunctionLiteral(FunctionLiteral* expr) {
   __ push(rsi);
   __ Push(boilerplate);
   __ CallRuntime(Runtime::kNewClosure, 2);
-  Move(expr->context(), rax);
+  Apply(context_, rax);
 }
 
 
 void FastCodeGenerator::VisitVariableProxy(VariableProxy* expr) {
   Comment cmnt(masm_, "[ VariableProxy");
-  Expression* rewrite = expr->var()->rewrite();
+  EmitVariableLoad(expr->var(), context_);
+}
+
+
+void FastCodeGenerator::EmitVariableLoad(Variable* var,
+                                         Expression::Context context) {
+  Expression* rewrite = var->rewrite();
   if (rewrite == NULL) {
-    ASSERT(expr->var()->is_global());
+    ASSERT(var->is_global());
     Comment cmnt(masm_, "Global variable");
     // Use inline caching. Variable name is passed in rcx and the global
     // object on the stack.
     __ push(CodeGenerator::GlobalObject());
-    __ Move(rcx, expr->name());
+    __ Move(rcx, var->name());
     Handle<Code> ic(Builtins::builtin(Builtins::LoadIC_Initialize));
     __ Call(ic, RelocInfo::CODE_TARGET_CONTEXT);
     // A test rax instruction following the call is used by the IC to
     // indicate that the inobject property case was inlined.  Ensure there
     // is no test rax instruction here.
     __ nop();
-
-    DropAndMove(expr->context(), rax);
+    DropAndApply(1, context, rax);
   } else if (rewrite->AsSlot() != NULL) {
     Slot* slot = rewrite->AsSlot();
     if (FLAG_debug_code) {
       switch (slot->type()) {
-        case Slot::LOCAL:
-        case Slot::PARAMETER: {
+        case Slot::PARAMETER:
+        case Slot::LOCAL: {
           Comment cmnt(masm_, "Stack slot");
           break;
         }
@@ -591,45 +821,45 @@ void FastCodeGenerator::VisitVariableProxy(VariableProxy* expr) {
         case Slot::LOOKUP:
           UNIMPLEMENTED();
           break;
-        default:
-          UNREACHABLE();
       }
     }
-    Move(expr->context(), slot, rax);
+    Apply(context, slot);
   } else {
-    // A variable has been rewritten into an explicit access to
-    // an object property.
+    Comment cmnt(masm_, "Variable rewritten to property");
+    // A variable has been rewritten into an explicit access to an object
+    // property.
     Property* property = rewrite->AsProperty();
     ASSERT_NOT_NULL(property);
 
-    // Currently the only parameter expressions that can occur are
-    // on the form "slot[literal]".
+    // The only property expressions that can occur are of the form
+    // "slot[literal]".
 
-    // Check that the object is in a slot.
-    Variable* object = property->obj()->AsVariableProxy()->AsVariable();
-    ASSERT_NOT_NULL(object);
-    Slot* object_slot = object->slot();
+    // Assert that the object is in a slot.
+    Variable* object_var = property->obj()->AsVariableProxy()->AsVariable();
+    ASSERT_NOT_NULL(object_var);
+    Slot* object_slot = object_var->slot();
     ASSERT_NOT_NULL(object_slot);
 
     // Load the object.
-    Move(Expression::kValue, object_slot, rax);
+    MemOperand object_loc = EmitSlotSearch(object_slot, rax);
+    __ push(object_loc);
 
-    // Check that the key is a smi.
+    // Assert that the key is a smi.
     Literal* key_literal = property->key()->AsLiteral();
     ASSERT_NOT_NULL(key_literal);
     ASSERT(key_literal->handle()->IsSmi());
 
     // Load the key.
-    Move(Expression::kValue, key_literal);
+    __ Push(key_literal->handle());
 
-    // Do a KEYED property load.
+    // Do a keyed property load.
     Handle<Code> ic(Builtins::builtin(Builtins::KeyedLoadIC_Initialize));
     __ call(ic, RelocInfo::CODE_TARGET);
-    // Notice: We must not have a "test rax, ..." instruction after
-    // the call. It is treated specially by the LoadIC code.
-
+    // Notice: We must not have a "test rax, ..." instruction after the
+    // call. It is treated specially by the LoadIC code.
+    __ nop();
     // Drop key and object left on the stack by IC, and push the result.
-    DropAndMove(expr->context(), rax, 2);
+    DropAndApply(2, context, rax);
   }
 }
 
@@ -655,44 +885,25 @@ void FastCodeGenerator::VisitRegExpLiteral(RegExpLiteral* expr) {
   __ Push(expr->pattern());
   __ Push(expr->flags());
   __ CallRuntime(Runtime::kMaterializeRegExpLiteral, 4);
-  // Label done:
   __ bind(&done);
-  Move(expr->context(), rax);
+  Apply(context_, rax);
 }
 
 
 void FastCodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
   Comment cmnt(masm_, "[ ObjectLiteral");
-  Label boilerplate_exists;
-
   __ movq(rdi, Operand(rbp, JavaScriptFrameConstants::kFunctionOffset));
-  __ movq(rbx, FieldOperand(rdi, JSFunction::kLiteralsOffset));
-  int literal_offset =
-    FixedArray::kHeaderSize + expr->literal_index() * kPointerSize;
-  __ movq(rax, FieldOperand(rbx, literal_offset));
-  __ CompareRoot(rax, Heap::kUndefinedValueRootIndex);
-  __ j(not_equal, &boilerplate_exists);
-  // Create boilerplate if it does not exist.
-  // Literal array (0).
-  __ push(rbx);
-  // Literal index (1).
+  __ push(FieldOperand(rdi, JSFunction::kLiteralsOffset));
   __ Push(Smi::FromInt(expr->literal_index()));
-  // Constant properties (2).
   __ Push(expr->constant_properties());
-  __ CallRuntime(Runtime::kCreateObjectLiteralBoilerplate, 3);
-  __ bind(&boilerplate_exists);
-  // rax contains boilerplate.
-  // Clone boilerplate.
-  __ push(rax);
-  if (expr->depth() == 1) {
-    __ CallRuntime(Runtime::kCloneShallowLiteralBoilerplate, 1);
+  if (expr->depth() > 1) {
+    __ CallRuntime(Runtime::kCreateObjectLiteral, 3);
   } else {
-    __ CallRuntime(Runtime::kCloneLiteralBoilerplate, 1);
+    __ CallRuntime(Runtime::kCreateObjectLiteralShallow, 3);
   }
 
-  // If result_saved == true: The result is saved on top of the
-  //  stack and in rax.
-  // If result_saved == false: The result not on the stack, just in rax.
+  // If result_saved is true the result is on top of the stack.  If
+  // result_saved is false the result is in rax.
   bool result_saved = false;
 
   for (int i = 0; i < expr->properties()->length(); i++) {
@@ -706,108 +917,59 @@ void FastCodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
       result_saved = true;
     }
     switch (property->kind()) {
-      case ObjectLiteral::Property::MATERIALIZED_LITERAL:  // fall through
+      case ObjectLiteral::Property::CONSTANT:
+        UNREACHABLE();
+      case ObjectLiteral::Property::MATERIALIZED_LITERAL:
         ASSERT(!CompileTimeValue::IsCompileTimeValue(value));
+        // Fall through.
       case ObjectLiteral::Property::COMPUTED:
         if (key->handle()->IsSymbol()) {
-          Visit(value);
-          ASSERT_EQ(Expression::kValue, value->context());
-          __ pop(rax);
+          VisitForValue(value, kAccumulator);
           __ Move(rcx, key->handle());
           Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Initialize));
           __ call(ic, RelocInfo::CODE_TARGET);
+          __ nop();
           // StoreIC leaves the receiver on the stack.
-          __ movq(rax, Operand(rsp, 0));  // Restore result back into rax.
           break;
         }
-        // fall through
+        // Fall through.
       case ObjectLiteral::Property::PROTOTYPE:
-        __ push(rax);
-        Visit(key);
-        ASSERT_EQ(Expression::kValue, key->context());
-        Visit(value);
-        ASSERT_EQ(Expression::kValue, value->context());
+        __ push(Operand(rsp, 0));  // Duplicate receiver.
+        VisitForValue(key, kStack);
+        VisitForValue(value, kStack);
         __ CallRuntime(Runtime::kSetProperty, 3);
-        __ movq(rax, Operand(rsp, 0));  // Restore result into rax.
         break;
-      case ObjectLiteral::Property::SETTER:  // fall through
+      case ObjectLiteral::Property::SETTER:
       case ObjectLiteral::Property::GETTER:
-        __ push(rax);
-        Visit(key);
-        ASSERT_EQ(Expression::kValue, key->context());
+        __ push(Operand(rsp, 0));  // Duplicate receiver.
+        VisitForValue(key, kStack);
         __ Push(property->kind() == ObjectLiteral::Property::SETTER ?
                 Smi::FromInt(1) :
                 Smi::FromInt(0));
-        Visit(value);
-        ASSERT_EQ(Expression::kValue, value->context());
+        VisitForValue(value, kStack);
         __ CallRuntime(Runtime::kDefineAccessor, 4);
-        __ movq(rax, Operand(rsp, 0));  // Restore result into rax.
         break;
-      default: UNREACHABLE();
     }
   }
-  switch (expr->context()) {
-    case Expression::kUninitialized:
-      UNREACHABLE();
-    case Expression::kEffect:
-      if (result_saved) __ addq(rsp, Immediate(kPointerSize));
-      break;
-    case Expression::kValue:
-      if (!result_saved) __ push(rax);
-      break;
-    case Expression::kTest:
-      if (result_saved) __ pop(rax);
-      TestAndBranch(rax, true_label_, false_label_);
-      break;
-    case Expression::kValueTest: {
-      Label discard;
-      if (!result_saved) __ push(rax);
-      TestAndBranch(rax, true_label_, &discard);
-      __ bind(&discard);
-      __ addq(rsp, Immediate(kPointerSize));
-      __ jmp(false_label_);
-      break;
-    }
-    case Expression::kTestValue: {
-      Label discard;
-      if (!result_saved) __ push(rax);
-      TestAndBranch(rax, &discard, false_label_);
-      __ bind(&discard);
-      __ addq(rsp, Immediate(kPointerSize));
-      __ jmp(true_label_);
-      break;
-    }
+
+  if (result_saved) {
+    ApplyTOS(context_);
+  } else {
+    Apply(context_, rax);
   }
 }
 
 
 void FastCodeGenerator::VisitArrayLiteral(ArrayLiteral* expr) {
   Comment cmnt(masm_, "[ ArrayLiteral");
-  Label make_clone;
-
-  // Fetch the function's literals array.
   __ movq(rbx, Operand(rbp, JavaScriptFrameConstants::kFunctionOffset));
-  __ movq(rbx, FieldOperand(rbx, JSFunction::kLiteralsOffset));
-  // Check if the literal's boilerplate has been instantiated.
-  int offset =
-      FixedArray::kHeaderSize + (expr->literal_index() * kPointerSize);
-  __ movq(rax, FieldOperand(rbx, offset));
-  __ CompareRoot(rax, Heap::kUndefinedValueRootIndex);
-  __ j(not_equal, &make_clone);
-
-  // Instantiate the boilerplate.
-  __ push(rbx);
+  __ push(FieldOperand(rbx, JSFunction::kLiteralsOffset));
   __ Push(Smi::FromInt(expr->literal_index()));
-  __ Push(expr->literals());
-  __ CallRuntime(Runtime::kCreateArrayLiteralBoilerplate, 3);
-
-  __ bind(&make_clone);
-  // Clone the boilerplate.
-  __ push(rax);
+  __ Push(expr->constant_elements());
   if (expr->depth() > 1) {
-    __ CallRuntime(Runtime::kCloneLiteralBoilerplate, 1);
+    __ CallRuntime(Runtime::kCreateArrayLiteral, 3);
   } else {
-    __ CallRuntime(Runtime::kCloneShallowLiteralBoilerplate, 1);
+    __ CallRuntime(Runtime::kCreateArrayLiteralShallow, 3);
   }
 
   bool result_saved = false;  // Is the result saved to the stack?
@@ -828,156 +990,86 @@ void FastCodeGenerator::VisitArrayLiteral(ArrayLiteral* expr) {
       __ push(rax);
       result_saved = true;
     }
-    Visit(subexpr);
-    ASSERT_EQ(Expression::kValue, subexpr->context());
+    VisitForValue(subexpr, kAccumulator);
 
     // Store the subexpression value in the array's elements.
-    __ pop(rax);  // Subexpression value.
     __ movq(rbx, Operand(rsp, 0));  // Copy of array literal.
     __ movq(rbx, FieldOperand(rbx, JSObject::kElementsOffset));
     int offset = FixedArray::kHeaderSize + (i * kPointerSize);
-    __ movq(FieldOperand(rbx, offset), rax);
+    __ movq(FieldOperand(rbx, offset), result_register());
 
     // Update the write barrier for the array store.
-    __ RecordWrite(rbx, offset, rax, rcx);
+    __ RecordWrite(rbx, offset, result_register(), rcx);
   }
 
-  switch (expr->context()) {
-    case Expression::kUninitialized:
-      UNREACHABLE();
-    case Expression::kEffect:
-      if (result_saved) __ addq(rsp, Immediate(kPointerSize));
-      break;
-    case Expression::kValue:
-      if (!result_saved) __ push(rax);
-      break;
-    case Expression::kTest:
-      if (result_saved) __ pop(rax);
-      TestAndBranch(rax, true_label_, false_label_);
-      break;
-    case Expression::kValueTest: {
-      Label discard;
-      if (!result_saved) __ push(rax);
-      TestAndBranch(rax, true_label_, &discard);
-      __ bind(&discard);
-      __ addq(rsp, Immediate(kPointerSize));
-      __ jmp(false_label_);
-      break;
-    }
-    case Expression::kTestValue: {
-      Label discard;
-      if (!result_saved) __ push(rax);
-      TestAndBranch(rax, &discard, false_label_);
-      __ bind(&discard);
-      __ addq(rsp, Immediate(kPointerSize));
-      __ jmp(true_label_);
-      break;
-    }
+  if (result_saved) {
+    ApplyTOS(context_);
+  } else {
+    Apply(context_, rax);
   }
 }
 
 
-void FastCodeGenerator::EmitVariableAssignment(Assignment* expr) {
-  Variable* var = expr->target()->AsVariableProxy()->AsVariable();
+void FastCodeGenerator::EmitNamedPropertyLoad(Property* prop) {
+  SetSourcePosition(prop->position());
+  Literal* key = prop->key()->AsLiteral();
+  __ Move(rcx, key->handle());
+  Handle<Code> ic(Builtins::builtin(Builtins::LoadIC_Initialize));
+  __ Call(ic, RelocInfo::CODE_TARGET);
+  __ nop();
+}
+
+
+void FastCodeGenerator::EmitKeyedPropertyLoad(Property* prop) {
+  SetSourcePosition(prop->position());
+  Handle<Code> ic(Builtins::builtin(Builtins::KeyedLoadIC_Initialize));
+  __ Call(ic, RelocInfo::CODE_TARGET);
+  __ nop();
+}
+
+
+void FastCodeGenerator::EmitBinaryOp(Token::Value op,
+                                     Expression::Context context) {
+  __ push(result_register());
+  GenericBinaryOpStub stub(op,
+                           NO_OVERWRITE,
+                           NO_GENERIC_BINARY_FLAGS);
+  __ CallStub(&stub);
+  Apply(context, rax);
+}
+
+
+void FastCodeGenerator::EmitVariableAssignment(Variable* var,
+                                               Expression::Context context) {
   ASSERT(var != NULL);
   ASSERT(var->is_global() || var->slot() != NULL);
   if (var->is_global()) {
     // Assignment to a global variable.  Use inline caching for the
     // assignment.  Right-hand-side value is passed in rax, variable name in
     // rcx, and the global object on the stack.
-    __ pop(rax);
     __ Move(rcx, var->name());
     __ push(CodeGenerator::GlobalObject());
     Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Initialize));
     __ Call(ic, RelocInfo::CODE_TARGET);
     // Overwrite the global object on the stack with the result if needed.
-    DropAndMove(expr->context(), rax);
+    DropAndApply(1, context, rax);
 
-  } else if (var->slot()) {
+  } else if (var->slot() != NULL) {
     Slot* slot = var->slot();
-    ASSERT_NOT_NULL(slot);  // Variables rewritten as properties not handled.
     switch (slot->type()) {
       case Slot::LOCAL:
-      case Slot::PARAMETER: {
-        switch (expr->context()) {
-          case Expression::kUninitialized:
-            UNREACHABLE();
-          case Expression::kEffect:
-            // Perform assignment and discard value.
-            __ pop(Operand(rbp, SlotOffset(var->slot())));
-            break;
-          case Expression::kValue:
-            // Perform assignment and preserve value.
-            __ movq(rax, Operand(rsp, 0));
-            __ movq(Operand(rbp, SlotOffset(var->slot())), rax);
-            break;
-          case Expression::kTest:
-            // Perform assignment and test (and discard) value.
-            __ pop(rax);
-            __ movq(Operand(rbp, SlotOffset(var->slot())), rax);
-            TestAndBranch(rax, true_label_, false_label_);
-            break;
-          case Expression::kValueTest: {
-            Label discard;
-            __ movq(rax, Operand(rsp, 0));
-            __ movq(Operand(rbp, SlotOffset(var->slot())), rax);
-            TestAndBranch(rax, true_label_, &discard);
-            __ bind(&discard);
-            __ addq(rsp, Immediate(kPointerSize));
-            __ jmp(false_label_);
-            break;
-          }
-          case Expression::kTestValue: {
-            Label discard;
-            __ movq(rax, Operand(rsp, 0));
-            __ movq(Operand(rbp, SlotOffset(var->slot())), rax);
-            TestAndBranch(rax, &discard, false_label_);
-            __ bind(&discard);
-            __ addq(rsp, Immediate(kPointerSize));
-            __ jmp(true_label_);
-            break;
-          }
-        }
+      case Slot::PARAMETER:
+        __ movq(Operand(rbp, SlotOffset(slot)), result_register());
         break;
-      }
 
       case Slot::CONTEXT: {
-        int chain_length =
-            function_->scope()->ContextChainLength(slot->var()->scope());
-        if (chain_length > 0) {
-          // Move up the context chain to the context containing the slot.
-          __ movq(rax,
-                  Operand(rsi, Context::SlotOffset(Context::CLOSURE_INDEX)));
-          // Load the function context (which is the incoming, outer context).
-          __ movq(rax, FieldOperand(rax, JSFunction::kContextOffset));
-          for (int i = 1; i < chain_length; i++) {
-            __ movq(rax,
-                    Operand(rax, Context::SlotOffset(Context::CLOSURE_INDEX)));
-            __ movq(rax, FieldOperand(rax, JSFunction::kContextOffset));
-          }
-        } else {  // Slot is in the current context.  Generate optimized code.
-          __ movq(rax, rsi);  // RecordWrite destroys the object register.
-        }
-        if (FLAG_debug_code) {
-          __ cmpq(rax,
-                  Operand(rax, Context::SlotOffset(Context::FCONTEXT_INDEX)));
-          __ Check(equal, "Context Slot chain length wrong.");
-        }
-        __ pop(rcx);
-        __ movq(Operand(rax, Context::SlotOffset(slot->index())), rcx);
+        MemOperand target = EmitSlotSearch(slot, rcx);
+        __ movq(target, result_register());
 
         // RecordWrite may destroy all its register arguments.
-        if (expr->context() == Expression::kValue) {
-          __ push(rcx);
-        } else if (expr->context() != Expression::kEffect) {
-          __ movq(rdx, rcx);
-        }
+        __ movq(rdx, result_register());
         int offset = FixedArray::kHeaderSize + slot->index() * kPointerSize;
-        __ RecordWrite(rax, offset, rcx, rbx);
-        if (expr->context() != Expression::kEffect &&
-            expr->context() != Expression::kValue) {
-          Move(expr->context(), rdx);
-        }
+        __ RecordWrite(rcx, offset, rdx, rbx);
         break;
       }
 
@@ -985,6 +1077,11 @@ void FastCodeGenerator::EmitVariableAssignment(Assignment* expr) {
         UNREACHABLE();
         break;
     }
+    Apply(context, result_register());
+  } else {
+    // Variables rewritten as properties are not treated as variables in
+    // assignments.
+    UNREACHABLE();
   }
 }
 
@@ -999,14 +1096,18 @@ void FastCodeGenerator::EmitNamedPropertyAssignment(Assignment* expr) {
   // change to slow case to avoid the quadratic behavior of repeatedly
   // adding fast properties.
   if (expr->starts_initialization_block()) {
-    __ push(Operand(rsp, kPointerSize));  // Receiver is under value.
+    __ push(result_register());
+    __ push(Operand(rsp, kPointerSize));  // Receiver is now under value.
     __ CallRuntime(Runtime::kToSlowProperties, 1);
+    __ pop(result_register());
   }
 
-  __ pop(rax);
+  // Record source code position before IC call.
+  SetSourcePosition(expr->position());
   __ Move(rcx, prop->key()->AsLiteral()->handle());
   Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Initialize));
   __ Call(ic, RelocInfo::CODE_TARGET);
+  __ nop();
 
   // If the assignment ends an initialization block, revert to fast case.
   if (expr->ends_initialization_block()) {
@@ -1016,7 +1117,7 @@ void FastCodeGenerator::EmitNamedPropertyAssignment(Assignment* expr) {
     __ pop(rax);
   }
 
-  DropAndMove(expr->context(), rax);
+  DropAndApply(1, context_, rax);
 }
 
 
@@ -1027,12 +1128,15 @@ void FastCodeGenerator::EmitKeyedPropertyAssignment(Assignment* expr) {
   // change to slow case to avoid the quadratic behavior of repeatedly
   // adding fast properties.
   if (expr->starts_initialization_block()) {
-    // Reciever is under the key and value.
+    __ push(result_register());
+    // Receiver is now under the key and value.
     __ push(Operand(rsp, 2 * kPointerSize));
     __ CallRuntime(Runtime::kToSlowProperties, 1);
+    __ pop(result_register());
   }
 
-  __ pop(rax);
+  // Record source code position before IC call.
+  SetSourcePosition(expr->position());
   Handle<Code> ic(Builtins::builtin(Builtins::KeyedStoreIC_Initialize));
   __ Call(ic, RelocInfo::CODE_TARGET);
   // This nop signals to the IC that there is no inlined code at the call
@@ -1042,73 +1146,57 @@ void FastCodeGenerator::EmitKeyedPropertyAssignment(Assignment* expr) {
   // If the assignment ends an initialization block, revert to fast case.
   if (expr->ends_initialization_block()) {
     __ push(rax);  // Result of assignment, saved even if not needed.
-    // Reciever is under the key and value.
+    // Receiver is under the key and value.
     __ push(Operand(rsp, 2 * kPointerSize));
     __ CallRuntime(Runtime::kToFastProperties, 1);
     __ pop(rax);
   }
 
   // Receiver and key are still on stack.
-  __ addq(rsp, Immediate(2 * kPointerSize));
-  Move(expr->context(), rax);
+  DropAndApply(2, context_, rax);
 }
 
 
 void FastCodeGenerator::VisitProperty(Property* expr) {
   Comment cmnt(masm_, "[ Property");
   Expression* key = expr->key();
-  uint32_t dummy;
-
-  // Record the source position for the property load.
-  SetSourcePosition(expr->position());
 
   // Evaluate receiver.
-  Visit(expr->obj());
+  VisitForValue(expr->obj(), kStack);
 
-
-  if (key->AsLiteral() != NULL && key->AsLiteral()->handle()->IsSymbol() &&
-      !String::cast(*(key->AsLiteral()->handle()))->AsArrayIndex(&dummy)) {
-    // Do a NAMED property load.
-    // The IC expects the property name in rcx and the receiver on the stack.
-    __ Move(rcx, key->AsLiteral()->handle());
-    Handle<Code> ic(Builtins::builtin(Builtins::LoadIC_Initialize));
-    __ call(ic, RelocInfo::CODE_TARGET);
-    // By emitting a nop we make sure that we do not have a "test rax,..."
-    // instruction after the call it is treated specially by the LoadIC code.
-    __ nop();
+  if (key->IsPropertyName()) {
+    EmitNamedPropertyLoad(expr);
+    // Drop receiver left on the stack by IC.
+    DropAndApply(1, context_, rax);
   } else {
-    // Do a KEYED property load.
-    Visit(expr->key());
-    Handle<Code> ic(Builtins::builtin(Builtins::KeyedLoadIC_Initialize));
-    __ call(ic, RelocInfo::CODE_TARGET);
-    // Notice: We must not have a "test rax, ..." instruction after
-    // the call. It is treated specially by the LoadIC code.
-
-    // Drop key left on the stack by IC.
-    __ addq(rsp, Immediate(kPointerSize));
+    VisitForValue(expr->key(), kStack);
+    EmitKeyedPropertyLoad(expr);
+    // Drop key and receiver left on the stack by IC.
+    DropAndApply(2, context_, rax);
   }
-  DropAndMove(expr->context(), rax);
 }
 
 
-void FastCodeGenerator::EmitCallWithIC(Call* expr, RelocInfo::Mode reloc_info) {
+void FastCodeGenerator::EmitCallWithIC(Call* expr,
+                                       Handle<Object> ignored,
+                                       RelocInfo::Mode mode) {
   // Code common for calls using the IC.
   ZoneList<Expression*>* args = expr->arguments();
   int arg_count = args->length();
   for (int i = 0; i < arg_count; i++) {
-    Visit(args->at(i));
-    ASSERT_EQ(Expression::kValue, args->at(i)->context());
+    VisitForValue(args->at(i), kStack);
   }
   // Record source position for debugger.
   SetSourcePosition(expr->position());
   // Call the IC initialization code.
+  InLoopFlag in_loop = (loop_depth() > 0) ? IN_LOOP : NOT_IN_LOOP;
   Handle<Code> ic = CodeGenerator::ComputeCallInitialize(arg_count,
-                                                         NOT_IN_LOOP);
-  __ call(ic, reloc_info);
+                                                         in_loop);
+  __ Call(ic, mode);
   // Restore context register.
   __ movq(rsi, Operand(rbp, StandardFrameConstants::kContextOffset));
   // Discard the function left on TOS.
-  DropAndMove(expr->context(), rax);
+  DropAndApply(1, context_, rax);
 }
 
 
@@ -1117,16 +1205,16 @@ void FastCodeGenerator::EmitCallWithStub(Call* expr) {
   ZoneList<Expression*>* args = expr->arguments();
   int arg_count = args->length();
   for (int i = 0; i < arg_count; i++) {
-    Visit(args->at(i));
+    VisitForValue(args->at(i), kStack);
   }
   // Record source position for debugger.
   SetSourcePosition(expr->position());
-  CallFunctionStub stub(arg_count, NOT_IN_LOOP);
+  CallFunctionStub stub(arg_count, NOT_IN_LOOP, RECEIVER_MIGHT_BE_VALUE);
   __ CallStub(&stub);
   // Restore context register.
   __ movq(rsi, Operand(rbp, StandardFrameConstants::kContextOffset));
   // Discard the function left on TOS.
-  DropAndMove(expr->context(), rax);
+  DropAndApply(1, context_, rax);
 }
 
 
@@ -1143,7 +1231,7 @@ void FastCodeGenerator::VisitCall(Call* expr) {
     __ Push(var->name());
     // Push global object as receiver for the call IC lookup.
     __ push(CodeGenerator::GlobalObject());
-    EmitCallWithIC(expr, RelocInfo::CODE_TARGET_CONTEXT);
+    EmitCallWithIC(expr, var->name(), RelocInfo::CODE_TARGET_CONTEXT);
   } else if (var != NULL && var->slot() != NULL &&
              var->slot()->type() == Slot::LOOKUP) {
     // Call to a lookup slot.
@@ -1155,13 +1243,13 @@ void FastCodeGenerator::VisitCall(Call* expr) {
     if (key != NULL && key->handle()->IsSymbol()) {
       // Call to a named property, use call IC.
       __ Push(key->handle());
-      Visit(prop->obj());
-      EmitCallWithIC(expr, RelocInfo::CODE_TARGET);
+      VisitForValue(prop->obj(), kStack);
+      EmitCallWithIC(expr, key->handle(), RelocInfo::CODE_TARGET);
     } else {
       // Call to a keyed property, use keyed load IC followed by function
       // call.
-      Visit(prop->obj());
-      Visit(prop->key());
+      VisitForValue(prop->obj(), kStack);
+      VisitForValue(prop->key(), kStack);
       // Record source code position for IC call.
       SetSourcePosition(prop->position());
       Handle<Code> ic(Builtins::builtin(Builtins::KeyedLoadIC_Initialize));
@@ -1170,14 +1258,15 @@ void FastCodeGenerator::VisitCall(Call* expr) {
       // instruction after the call it is treated specially by the LoadIC code.
       __ nop();
       // Drop key left on the stack by IC.
-      __ addq(rsp, Immediate(kPointerSize));
+      __ Drop(1);
       // Pop receiver.
       __ pop(rbx);
       // Push result (function).
       __ push(rax);
       // Push receiver object on stack.
       if (prop->is_synthetic()) {
-        __ push(CodeGenerator::GlobalObject());
+        __ movq(rcx, CodeGenerator::GlobalObject());
+        __ push(FieldOperand(rcx, GlobalObject::kGlobalReceiverOffset));
       } else {
         __ push(rbx);
       }
@@ -1193,7 +1282,7 @@ void FastCodeGenerator::VisitCall(Call* expr) {
         loop_depth() == 0) {
       lit->set_try_fast_codegen(true);
     }
-    Visit(fun);
+    VisitForValue(fun, kStack);
     // Load global receiver object.
     __ movq(rbx, CodeGenerator::GlobalObject());
     __ push(FieldOperand(rbx, GlobalObject::kGlobalReceiverOffset));
@@ -1209,9 +1298,7 @@ void FastCodeGenerator::VisitCallNew(CallNew* expr) {
   // expression in new calls must be evaluated before the
   // arguments.
   // Push function on the stack.
-  Visit(expr->expression());
-  ASSERT_EQ(Expression::kValue, expr->expression()->context());
-  // If location is value, already on the stack,
+  VisitForValue(expr->expression(), kStack);
 
   // Push global object (receiver).
   __ push(CodeGenerator::GlobalObject());
@@ -1220,10 +1307,7 @@ void FastCodeGenerator::VisitCallNew(CallNew* expr) {
   ZoneList<Expression*>* args = expr->arguments();
   int arg_count = args->length();
   for (int i = 0; i < arg_count; i++) {
-    Visit(args->at(i));
-    ASSERT_EQ(Expression::kValue, args->at(i)->context());
-    // If location is value, it is already on the stack,
-    // so nothing to do here.
+    VisitForValue(args->at(i), kStack);
   }
 
   // Call the construct call builtin that handles allocation and
@@ -1239,7 +1323,7 @@ void FastCodeGenerator::VisitCallNew(CallNew* expr) {
   __ Call(construct_builtin, RelocInfo::CONSTRUCT_CALL);
 
   // Replace function on TOS with result in rax, or pop it.
-  DropAndMove(expr->context(), rax);
+  DropAndApply(1, context_, rax);
 }
 
 
@@ -1257,8 +1341,7 @@ void FastCodeGenerator::VisitCallRuntime(CallRuntime* expr) {
   // Push the arguments ("left-to-right").
   int arg_count = args->length();
   for (int i = 0; i < arg_count; i++) {
-    Visit(args->at(i));
-    ASSERT_EQ(Expression::kValue, args->at(i)->context());
+    VisitForValue(args->at(i), kStack);
   }
 
   if (expr->is_jsruntime()) {
@@ -1269,82 +1352,10 @@ void FastCodeGenerator::VisitCallRuntime(CallRuntime* expr) {
     // Restore context register.
     __ movq(rsi, Operand(rbp, StandardFrameConstants::kContextOffset));
     // Discard the function left on TOS.
-    DropAndMove(expr->context(), rax);
+    DropAndApply(1, context_, rax);
   } else {
     __ CallRuntime(expr->function(), arg_count);
-    Move(expr->context(), rax);
-  }
-}
-
-void FastCodeGenerator::VisitCountOperation(CountOperation* expr) {
-  Comment cmnt(masm_, "[ CountOperation");
-  VariableProxy* proxy = expr->expression()->AsVariableProxy();
-  ASSERT(proxy->AsVariable() != NULL);
-  ASSERT(proxy->AsVariable()->is_global());
-
-  Visit(proxy);
-  __ InvokeBuiltin(Builtins::TO_NUMBER, CALL_FUNCTION);
-
-  switch (expr->context()) {
-    case Expression::kUninitialized:
-      UNREACHABLE();
-    case Expression::kValue:  // Fall through
-    case Expression::kTest:  // Fall through
-    case Expression::kTestValue:  // Fall through
-    case Expression::kValueTest:
-      // Duplicate the result on the stack.
-      __ push(rax);
-      break;
-    case Expression::kEffect:
-      // Do not save result.
-      break;
-  }
-  // Call runtime for +1/-1.
-  __ push(rax);
-  __ Push(Smi::FromInt(1));
-  if (expr->op() == Token::INC) {
-    __ CallRuntime(Runtime::kNumberAdd, 2);
-  } else {
-    __ CallRuntime(Runtime::kNumberSub, 2);
-  }
-  // Call Store IC.
-  __ Move(rcx, proxy->AsVariable()->name());
-  __ push(CodeGenerator::GlobalObject());
-  Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Initialize));
-  __ call(ic, RelocInfo::CODE_TARGET);
-  // Restore up stack after store IC
-  __ addq(rsp, Immediate(kPointerSize));
-
-  switch (expr->context()) {
-    case Expression::kUninitialized:
-      UNREACHABLE();
-    case Expression::kEffect:  // Fall through
-    case Expression::kValue:
-      // Do nothing. Result in either on the stack for value context
-      // or discarded for effect context.
-      break;
-    case Expression::kTest:
-      __ pop(rax);
-      TestAndBranch(rax, true_label_, false_label_);
-      break;
-    case Expression::kValueTest: {
-      Label discard;
-      __ movq(rax, Operand(rsp, 0));
-      TestAndBranch(rax, true_label_, &discard);
-      __ bind(&discard);
-      __ addq(rsp, Immediate(kPointerSize));
-      __ jmp(false_label_);
-      break;
-    }
-    case Expression::kTestValue: {
-      Label discard;
-      __ movq(rax, Operand(rsp, 0));
-      TestAndBranch(rax, &discard, false_label_);
-      __ bind(&discard);
-      __ addq(rsp, Immediate(kPointerSize));
-      __ jmp(true_label_);
-      break;
-    }
+    Apply(context_, rax);
   }
 }
 
@@ -1353,22 +1364,35 @@ void FastCodeGenerator::VisitUnaryOperation(UnaryOperation* expr) {
   switch (expr->op()) {
     case Token::VOID: {
       Comment cmnt(masm_, "[ UnaryOperation (VOID)");
-      Visit(expr->expression());
-      ASSERT_EQ(Expression::kEffect, expr->expression()->context());
-      switch (expr->context()) {
+      VisitForEffect(expr->expression());
+      switch (context_) {
         case Expression::kUninitialized:
           UNREACHABLE();
           break;
         case Expression::kEffect:
           break;
         case Expression::kValue:
-          __ PushRoot(Heap::kUndefinedValueRootIndex);
+          switch (location_) {
+            case kAccumulator:
+              __ LoadRoot(result_register(), Heap::kUndefinedValueRootIndex);
+              break;
+            case kStack:
+              __ PushRoot(Heap::kUndefinedValueRootIndex);
+              break;
+          }
           break;
         case Expression::kTestValue:
           // Value is false so it's needed.
-          __ PushRoot(Heap::kUndefinedValueRootIndex);
+          switch (location_) {
+            case kAccumulator:
+              __ LoadRoot(result_register(), Heap::kUndefinedValueRootIndex);
+              break;
+            case kStack:
+              __ PushRoot(Heap::kUndefinedValueRootIndex);
+              break;
+          }
           // Fall through.
-        case Expression::kTest:  // Fall through.
+        case Expression::kTest:
         case Expression::kValueTest:
           __ jmp(false_label_);
           break;
@@ -1378,70 +1402,39 @@ void FastCodeGenerator::VisitUnaryOperation(UnaryOperation* expr) {
 
     case Token::NOT: {
       Comment cmnt(masm_, "[ UnaryOperation (NOT)");
-      ASSERT_EQ(Expression::kTest, expr->expression()->context());
-
-      Label push_true;
-      Label push_false;
-      Label done;
-      Label* saved_true = true_label_;
-      Label* saved_false = false_label_;
-      switch (expr->context()) {
+      Label materialize_true, materialize_false, done;
+      // Initially assume a pure test context.  Notice that the labels are
+      // swapped.
+      Label* if_true = false_label_;
+      Label* if_false = true_label_;
+      switch (context_) {
         case Expression::kUninitialized:
           UNREACHABLE();
           break;
-
-        case Expression::kValue:
-          true_label_ = &push_false;
-          false_label_ = &push_true;
-          Visit(expr->expression());
-          __ bind(&push_true);
-          __ PushRoot(Heap::kTrueValueRootIndex);
-          __ jmp(&done);
-          __ bind(&push_false);
-          __ PushRoot(Heap::kFalseValueRootIndex);
-          __ bind(&done);
-          break;
-
         case Expression::kEffect:
-          true_label_ = &done;
-          false_label_ = &done;
-          Visit(expr->expression());
-          __ bind(&done);
+          if_true = &done;
+          if_false = &done;
           break;
-
+        case Expression::kValue:
+          if_true = &materialize_false;
+          if_false = &materialize_true;
+          break;
         case Expression::kTest:
-          true_label_ = saved_false;
-          false_label_ = saved_true;
-          Visit(expr->expression());
           break;
-
         case Expression::kValueTest:
-          true_label_ = saved_false;
-          false_label_ = &push_true;
-          Visit(expr->expression());
-          __ bind(&push_true);
-          __ PushRoot(Heap::kTrueValueRootIndex);
-          __ jmp(saved_true);
+          if_false = &materialize_true;
           break;
-
         case Expression::kTestValue:
-          true_label_ = &push_false;
-          false_label_ = saved_true;
-          Visit(expr->expression());
-          __ bind(&push_false);
-          __ PushRoot(Heap::kFalseValueRootIndex);
-          __ jmp(saved_false);
+          if_true = &materialize_false;
           break;
       }
-      true_label_ = saved_true;
-      false_label_ = saved_false;
+      VisitForControl(expr->expression(), if_true, if_false);
+      Apply(context_, if_false, if_true);  // Labels swapped.
       break;
     }
 
     case Token::TYPEOF: {
       Comment cmnt(masm_, "[ UnaryOperation (TYPEOF)");
-      ASSERT_EQ(Expression::kValue, expr->expression()->context());
-
       VariableProxy* proxy = expr->expression()->AsVariableProxy();
       if (proxy != NULL &&
           !proxy->var()->is_this() &&
@@ -1463,11 +1456,11 @@ void FastCodeGenerator::VisitUnaryOperation(UnaryOperation* expr) {
         __ push(rax);
       } else {
         // This expression cannot throw a reference error at the top level.
-        Visit(expr->expression());
+        VisitForValue(expr->expression(), kStack);
       }
 
       __ CallRuntime(Runtime::kTypeof, 1);
-      Move(expr->context(), rax);
+      Apply(context_, rax);
       break;
     }
 
@@ -1477,13 +1470,142 @@ void FastCodeGenerator::VisitUnaryOperation(UnaryOperation* expr) {
 }
 
 
+void FastCodeGenerator::VisitCountOperation(CountOperation* expr) {
+  Comment cmnt(masm_, "[ CountOperation");
+
+  // Expression can only be a property, a global or a (parameter or local)
+  // slot. Variables with rewrite to .arguments are treated as KEYED_PROPERTY.
+  enum LhsKind { VARIABLE, NAMED_PROPERTY, KEYED_PROPERTY };
+  LhsKind assign_type = VARIABLE;
+  Property* prop = expr->expression()->AsProperty();
+  // In case of a property we use the uninitialized expression context
+  // of the key to detect a named property.
+  if (prop != NULL) {
+    assign_type =
+        (prop->key()->IsPropertyName()) ? NAMED_PROPERTY : KEYED_PROPERTY;
+  }
+
+  // Evaluate expression and get value.
+  if (assign_type == VARIABLE) {
+    ASSERT(expr->expression()->AsVariableProxy()->var() != NULL);
+    Location saved_location = location_;
+    location_ = kStack;
+    EmitVariableLoad(expr->expression()->AsVariableProxy()->var(),
+                     Expression::kValue);
+    location_ = saved_location;
+  } else  {
+    // Reserve space for result of postfix operation.
+    if (expr->is_postfix() && context_ != Expression::kEffect) {
+      __ Push(Smi::FromInt(0));
+    }
+    VisitForValue(prop->obj(), kStack);
+    if (assign_type == NAMED_PROPERTY) {
+      EmitNamedPropertyLoad(prop);
+    } else {
+      VisitForValue(prop->key(), kStack);
+      EmitKeyedPropertyLoad(prop);
+    }
+    __ push(rax);
+  }
+
+  // Convert to number.
+  __ InvokeBuiltin(Builtins::TO_NUMBER, CALL_FUNCTION);
+
+  // Save result for postfix expressions.
+  if (expr->is_postfix()) {
+    switch (context_) {
+      case Expression::kUninitialized:
+        UNREACHABLE();
+      case Expression::kEffect:
+        // Do not save result.
+        break;
+      case Expression::kValue:
+      case Expression::kTest:
+      case Expression::kValueTest:
+      case Expression::kTestValue:
+        // Save the result on the stack. If we have a named or keyed property
+        // we store the result under the receiver that is currently on top
+        // of the stack.
+        switch (assign_type) {
+          case VARIABLE:
+            __ push(rax);
+            break;
+          case NAMED_PROPERTY:
+            __ movq(Operand(rsp, kPointerSize), rax);
+            break;
+          case KEYED_PROPERTY:
+            __ movq(Operand(rsp, 2 * kPointerSize), rax);
+            break;
+        }
+        break;
+    }
+  }
+
+  // Call stub for +1/-1.
+  __ push(rax);
+  __ Push(Smi::FromInt(1));
+  GenericBinaryOpStub stub(expr->binary_op(),
+                           NO_OVERWRITE,
+                           NO_GENERIC_BINARY_FLAGS);
+  __ CallStub(&stub);
+
+  // Store the value returned in rax.
+  switch (assign_type) {
+    case VARIABLE:
+      if (expr->is_postfix()) {
+        EmitVariableAssignment(expr->expression()->AsVariableProxy()->var(),
+                               Expression::kEffect);
+        // For all contexts except kEffect: We have the result on
+        // top of the stack.
+        if (context_ != Expression::kEffect) {
+          ApplyTOS(context_);
+        }
+      } else {
+        EmitVariableAssignment(expr->expression()->AsVariableProxy()->var(),
+                               context_);
+      }
+      break;
+    case NAMED_PROPERTY: {
+      __ Move(rcx, prop->key()->AsLiteral()->handle());
+      Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Initialize));
+      __ call(ic, RelocInfo::CODE_TARGET);
+      // This nop signals to the IC that there is no inlined code at the call
+      // site for it to patch.
+      __ nop();
+      if (expr->is_postfix()) {
+        __ Drop(1);  // Result is on the stack under the receiver.
+        if (context_ != Expression::kEffect) {
+          ApplyTOS(context_);
+        }
+      } else {
+        DropAndApply(1, context_, rax);
+      }
+      break;
+    }
+    case KEYED_PROPERTY: {
+      Handle<Code> ic(Builtins::builtin(Builtins::KeyedStoreIC_Initialize));
+      __ call(ic, RelocInfo::CODE_TARGET);
+      // This nop signals to the IC that there is no inlined code at the call
+      // site for it to patch.
+      __ nop();
+      if (expr->is_postfix()) {
+        __ Drop(2);  // Result is on the stack under the key and the receiver.
+        if (context_ != Expression::kEffect) {
+          ApplyTOS(context_);
+        }
+      } else {
+        DropAndApply(2, context_, rax);
+      }
+      break;
+    }
+  }
+}
+
 void FastCodeGenerator::VisitBinaryOperation(BinaryOperation* expr) {
   Comment cmnt(masm_, "[ BinaryOperation");
   switch (expr->op()) {
     case Token::COMMA:
-      ASSERT_EQ(Expression::kEffect, expr->left()->context());
-      ASSERT_EQ(expr->context(), expr->right()->context());
-      Visit(expr->left());
+      VisitForEffect(expr->left());
       Visit(expr->right());
       break;
 
@@ -1502,20 +1624,12 @@ void FastCodeGenerator::VisitBinaryOperation(BinaryOperation* expr) {
     case Token::BIT_XOR:
     case Token::SHL:
     case Token::SHR:
-    case Token::SAR: {
-      ASSERT_EQ(Expression::kValue, expr->left()->context());
-      ASSERT_EQ(Expression::kValue, expr->right()->context());
-
-      Visit(expr->left());
-      Visit(expr->right());
-      GenericBinaryOpStub stub(expr->op(),
-                               NO_OVERWRITE,
-                               NO_GENERIC_BINARY_FLAGS);
-      __ CallStub(&stub);
-      Move(expr->context(), rax);
-
+    case Token::SAR:
+      VisitForValue(expr->left(), kStack);
+      VisitForValue(expr->right(), kAccumulator);
+      EmitBinaryOp(expr->op(), context_);
       break;
-    }
+
     default:
       UNREACHABLE();
   }
@@ -1524,95 +1638,85 @@ void FastCodeGenerator::VisitBinaryOperation(BinaryOperation* expr) {
 
 void FastCodeGenerator::VisitCompareOperation(CompareOperation* expr) {
   Comment cmnt(masm_, "[ CompareOperation");
-  ASSERT_EQ(Expression::kValue, expr->left()->context());
-  ASSERT_EQ(Expression::kValue, expr->right()->context());
-  Visit(expr->left());
-  Visit(expr->right());
 
-  // Convert current context to test context: Pre-test code.
-  Label push_true;
-  Label push_false;
-  Label done;
-  Label* saved_true = true_label_;
-  Label* saved_false = false_label_;
-  switch (expr->context()) {
+  // Always perform the comparison for its control flow.  Pack the result
+  // into the expression's context after the comparison is performed.
+  Label materialize_true, materialize_false, done;
+  // Initially assume we are in a test context.
+  Label* if_true = true_label_;
+  Label* if_false = false_label_;
+  switch (context_) {
     case Expression::kUninitialized:
       UNREACHABLE();
       break;
-
-    case Expression::kValue:
-      true_label_ = &push_true;
-      false_label_ = &push_false;
-      break;
-
     case Expression::kEffect:
-      true_label_ = &done;
-      false_label_ = &done;
+      if_true = &done;
+      if_false = &done;
       break;
-
+    case Expression::kValue:
+      if_true = &materialize_true;
+      if_false = &materialize_false;
+      break;
     case Expression::kTest:
       break;
-
     case Expression::kValueTest:
-      true_label_ = &push_true;
+      if_true = &materialize_true;
       break;
-
     case Expression::kTestValue:
-      false_label_ = &push_false;
+      if_false = &materialize_false;
       break;
   }
-  // Convert current context to test context: End pre-test code.
 
+  VisitForValue(expr->left(), kStack);
   switch (expr->op()) {
-    case Token::IN: {
+    case Token::IN:
+      VisitForValue(expr->right(), kStack);
       __ InvokeBuiltin(Builtins::IN, CALL_FUNCTION);
       __ CompareRoot(rax, Heap::kTrueValueRootIndex);
-      __ j(equal, true_label_);
-      __ jmp(false_label_);
+      __ j(equal, if_true);
+      __ jmp(if_false);
       break;
-    }
 
     case Token::INSTANCEOF: {
+      VisitForValue(expr->right(), kStack);
       InstanceofStub stub;
       __ CallStub(&stub);
       __ testq(rax, rax);
-      __ j(zero, true_label_);  // The stub returns 0 for true.
-      __ jmp(false_label_);
+      __ j(zero, if_true);  // The stub returns 0 for true.
+      __ jmp(if_false);
       break;
     }
 
     default: {
+      VisitForValue(expr->right(), kAccumulator);
       Condition cc = no_condition;
       bool strict = false;
       switch (expr->op()) {
         case Token::EQ_STRICT:
           strict = true;
-          // Fall through
+          // Fall through.
         case Token::EQ:
           cc = equal;
-          __ pop(rax);
           __ pop(rdx);
           break;
         case Token::LT:
           cc = less;
-          __ pop(rax);
           __ pop(rdx);
           break;
         case Token::GT:
           // Reverse left and right sizes to obtain ECMA-262 conversion order.
           cc = less;
-          __ pop(rdx);
+          __ movq(rdx, result_register());
           __ pop(rax);
          break;
         case Token::LTE:
           // Reverse left and right sizes to obtain ECMA-262 conversion order.
           cc = greater_equal;
-          __ pop(rdx);
+          __ movq(rdx, result_register());
           __ pop(rax);
           break;
         case Token::GTE:
           cc = greater_equal;
-          __ pop(rax);
           __ pop(rdx);
           break;
         case Token::IN:
@@ -1626,61 +1730,78 @@ void FastCodeGenerator::VisitCompareOperation(CompareOperation* expr) {
       Label slow_case;
       __ JumpIfNotBothSmi(rax, rdx, &slow_case);
       __ SmiCompare(rdx, rax);
-      __ j(cc, true_label_);
-      __ jmp(false_label_);
+      __ j(cc, if_true);
+      __ jmp(if_false);
 
       __ bind(&slow_case);
       CompareStub stub(cc, strict);
       __ CallStub(&stub);
       __ testq(rax, rax);
-      __ j(cc, true_label_);
-      __ jmp(false_label_);
+      __ j(cc, if_true);
+      __ jmp(if_false);
     }
   }
 
-  // Convert current context to test context: Post-test code.
-  switch (expr->context()) {
-    case Expression::kUninitialized:
-      UNREACHABLE();
-      break;
-
-    case Expression::kValue:
-      __ bind(&push_true);
-      __ PushRoot(Heap::kTrueValueRootIndex);
-      __ jmp(&done);
-      __ bind(&push_false);
-      __ PushRoot(Heap::kFalseValueRootIndex);
-      __ bind(&done);
-      break;
-
-    case Expression::kEffect:
-      __ bind(&done);
-      break;
-
-    case Expression::kTest:
-      break;
-
-    case Expression::kValueTest:
-      __ bind(&push_true);
-      __ PushRoot(Heap::kTrueValueRootIndex);
-      __ jmp(saved_true);
-      break;
-
-    case Expression::kTestValue:
-      __ bind(&push_false);
-      __ PushRoot(Heap::kFalseValueRootIndex);
-      __ jmp(saved_false);
-      break;
-  }
-  true_label_ = saved_true;
-  false_label_ = saved_false;
-  // Convert current context to test context: End post-test code.
+  // Convert the result of the comparison into one expected for this
+  // expression's context.
+  Apply(context_, if_true, if_false);
 }
 
 
 void FastCodeGenerator::VisitThisFunction(ThisFunction* expr) {
   __ movq(rax, Operand(rbp, JavaScriptFrameConstants::kFunctionOffset));
-  Move(expr->context(), rax);
+  Apply(context_, rax);
+}
+
+
+Register FastCodeGenerator::result_register() { return rax; }
+
+
+Register FastCodeGenerator::context_register() { return rsi; }
+
+
+void FastCodeGenerator::StoreToFrameField(int frame_offset, Register value) {
+  ASSERT(IsAligned(frame_offset, kPointerSize));
+  __ movq(Operand(rbp, frame_offset), value);
+}
+
+
+void FastCodeGenerator::LoadContextField(Register dst, int context_index) {
+  __ movq(dst, CodeGenerator::ContextOperand(rsi, context_index));
+}
+
+
+// ----------------------------------------------------------------------------
+// Non-local control flow support.
+
+
+void FastCodeGenerator::EnterFinallyBlock() {
+  ASSERT(!result_register().is(rdx));
+  ASSERT(!result_register().is(rcx));
+  // Cook return address on top of stack (smi encoded Code* delta)
+  __ movq(rdx, Operand(rsp, 0));
+  __ Move(rcx, masm_->CodeObject());
+  __ subq(rdx, rcx);
+  __ Integer32ToSmi(rdx, rdx);
+  __ movq(Operand(rsp, 0), rdx);
+  // Store result register while executing finally block.
+  __ push(result_register());
+}
+
+
+void FastCodeGenerator::ExitFinallyBlock() {
+  ASSERT(!result_register().is(rdx));
+  ASSERT(!result_register().is(rcx));
+  // Restore result register from stack.
+  __ pop(result_register());
+  // Uncook return address.
+  __ movq(rdx, Operand(rsp, 0));
+  __ SmiToInteger32(rdx, rdx);
+  __ Move(rcx, masm_->CodeObject());
+  __ addq(rdx, rcx);
+  __ movq(Operand(rsp, 0), rdx);
+  // And return.
+  __ ret(0);
 }
 
 
