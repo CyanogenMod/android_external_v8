@@ -37,7 +37,9 @@ namespace internal {
 static const int kSubCacheCount = 4;
 
 // The number of generations for each sub cache.
-#if defined(ANDROID)
+// TODO(andreip): remove this #ifdef if the page cycler confirms that all is
+// well and we can cache up to 5 script generations.
+#if 0 // defined(ANDROID)
 static const int kScriptGenerations = 1;
 static const int kEvalGlobalGenerations = 1;
 static const int kEvalContextualGenerations = 1;
