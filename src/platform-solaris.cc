@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2006-2009 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,46 +25,40 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Platform specific code for Linux goes here. For the POSIX comaptible parts
-// the implementation is in platform-posix.cc.
+// Platform specific code for Solaris 10 goes here. For the POSIX comaptible
+// parts the implementation is in platform-posix.cc.
 
+#ifdef __sparc
+# error "V8 does not support the SPARC CPU architecture."
+#endif
+
+#include <sys/stack.h>  // for stack alignment
+#include <unistd.h>  // getpagesize(), usleep()
+#include <sys/mman.h>  // mmap()
+#include <execinfo.h>  // backtrace(), backtrace_symbols()
 #include <pthread.h>
+#include <sched.h>  // for sched_yield
 #include <semaphore.h>
-#include <signal.h>
-#include <sys/time.h>
-#include <sys/resource.h>
-#include <sys/types.h>
-#include <stdlib.h>
-
-// Ubuntu Dapper requires memory pages to be marked as
-// executable. Otherwise, OS raises an exception when executing code
-// in that page.
-#include <sys/types.h>  // mmap & munmap
-#include <sys/mman.h>   // mmap & munmap
-#include <sys/stat.h>   // open
-#include <fcntl.h>      // open
-#include <unistd.h>     // sysconf
-#ifdef __GLIBC__
-#include <execinfo.h>   // backtrace, backtrace_symbols
-#endif  // def __GLIBC__
-#include <strings.h>    // index
+#include <time.h>
+#include <sys/time.h>  // gettimeofday(), timeradd()
 #include <errno.h>
-#include <stdarg.h>
+#include <ieeefp.h>  // finite()
+#include <signal.h>  // sigemptyset(), etc
+
 
 #undef MAP_TYPE
 
 #include "v8.h"
 
 #include "platform.h"
-#include "top.h"
-#include "v8threads.h"
 
 
 namespace v8 {
 namespace internal {
 
-// 0 is never a valid thread id on Linux since tids and pids share a
-// name space and pid 0 is reserved (see man 2 kill).
+
+// 0 is never a valid thread id on Solaris since the main thread is 1 and
+// subsequent have their ids incremented from there
 static const pthread_t kNoThread = (pthread_t) 0;
 
 
@@ -76,7 +70,7 @@ double ceiling(double x) {
 void OS::Setup() {
   // Seed the random number generator.
   // Convert the current time to a 64-bit integer first, before converting it
-  // to an unsigned. Going directly can cause an overflow and the seed to be
+  // to an unsigned. Going directly will cause an overflow and the seed to be
   // set to all ones. The seed will be identical for different instances that
   // call this setup code within the same millisecond.
   uint64_t seed = static_cast<uint64_t>(TimeCurrentMillis());
@@ -85,77 +79,12 @@ void OS::Setup() {
 
 
 uint64_t OS::CpuFeaturesImpliedByPlatform() {
-#if (defined(__VFP_FP__) && !defined(__SOFTFP__))
-  // Here gcc is telling us that we are on an ARM and gcc is assuming that we
-  // have VFP3 instructions.  If gcc can assume it then so can we.
-  return 1u << VFP3;
-#else
-  return 0;  // Linux runs on anything.
-#endif
+  return 0;  // Solaris runs on a lot of things.
 }
-
-
-#ifdef __arm__
-bool OS::ArmCpuHasFeature(CpuFeature feature) {
-  const char* search_string = NULL;
-  const char* file_name = "/proc/cpuinfo";
-  // Simple detection of VFP at runtime for Linux.
-  // It is based on /proc/cpuinfo, which reveals hardware configuration
-  // to user-space applications.  According to ARM (mid 2009), no similar
-  // facility is universally available on the ARM architectures,
-  // so it's up to individual OSes to provide such.
-  //
-  // This is written as a straight shot one pass parser
-  // and not using STL string and ifstream because,
-  // on Linux, it's reading from a (non-mmap-able)
-  // character special device.
-  switch (feature) {
-    case VFP3:
-      search_string = "vfp";
-      break;
-    default:
-      UNREACHABLE();
-  }
-
-  FILE* f = NULL;
-  const char* what = search_string;
-
-  if (NULL == (f = fopen(file_name, "r")))
-    return false;
-
-  int k;
-  while (EOF != (k = fgetc(f))) {
-    if (k == *what) {
-      ++what;
-      while ((*what != '\0') && (*what == fgetc(f))) {
-        ++what;
-      }
-      if (*what == '\0') {
-        fclose(f);
-        return true;
-      } else {
-        what = search_string;
-      }
-    }
-  }
-  fclose(f);
-
-  // Did not find string in the proc file.
-  return false;
-}
-#endif  // def __arm__
 
 
 int OS::ActivationFrameAlignment() {
-#ifdef V8_TARGET_ARCH_ARM
-  // On EABI ARM targets this is required for fp correctness in the
-  // runtime system.
-  return 8;
-#else
-  // With gcc 4.4 the tree vectorization optimiser can generate code
-  // that requires 16 byte alignment such as movdqa on x86.
-  return 16;
-#endif
+  return STACK_ALIGN;
 }
 
 
@@ -164,16 +93,17 @@ const char* OS::LocalTimezone(double time) {
   time_t tv = static_cast<time_t>(floor(time/msPerSecond));
   struct tm* t = localtime(&tv);
   if (NULL == t) return "";
-  return t->tm_zone;
+  return tzname[0];  // The location of the timezone string on Solaris.
 }
 
 
 double OS::LocalTimeOffset() {
-  time_t tv = time(NULL);
-  struct tm* t = localtime(&tv);
-  // tm_gmtoff includes any daylight savings offset, so subtract it.
-  return static_cast<double>(t->tm_gmtoff * msPerSecond -
-                             (t->tm_isdst > 0 ? 3600 * msPerSecond : 0));
+  // On Solaris, struct tm does not contain a tm_gmtoff field.
+  time_t utc = time(NULL);
+  ASSERT(utc != -1);
+  struct tm* loc = localtime(&utc);
+  ASSERT(loc != NULL);
+  return static_cast<double>((mktime(loc) - utc) * msPerSecond);
 }
 
 
@@ -200,16 +130,17 @@ bool OS::IsOutsideAllocatedSpace(void* address) {
 
 
 size_t OS::AllocateAlignment() {
-  return sysconf(_SC_PAGESIZE);
+  return static_cast<size_t>(getpagesize());
 }
 
 
 void* OS::Allocate(const size_t requested,
                    size_t* allocated,
                    bool is_executable) {
-  const size_t msize = RoundUp(requested, sysconf(_SC_PAGESIZE));
+  const size_t msize = RoundUp(requested, getpagesize());
   int prot = PROT_READ | PROT_WRITE | (is_executable ? PROT_EXEC : 0);
-  void* mbase = mmap(NULL, msize, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  void* mbase = mmap(NULL, msize, prot, MAP_PRIVATE | MAP_ANON, -1, 0);
+
   if (mbase == MAP_FAILED) {
     LOG(StringEvent("OS::Allocate", "mmap failed"));
     return NULL;
@@ -246,7 +177,7 @@ void OS::Unprotect(void* address, size_t size, bool is_executable) {
 
 
 void OS::Sleep(int milliseconds) {
-  unsigned int ms = static_cast<unsigned int>(milliseconds);
+  useconds_t ms = static_cast<useconds_t>(milliseconds);
   usleep(1000 * ms);
 }
 
@@ -258,13 +189,7 @@ void OS::Abort() {
 
 
 void OS::DebugBreak() {
-// TODO(lrn): Introduce processor define for runtime system (!= V8_ARCH_x,
-//  which is the architecture of generated code).
-#if defined(__arm__) || defined(__thumb__)
-  asm("bkpt 0");
-#else
   asm("int $3");
-#endif
 }
 
 
@@ -303,69 +228,10 @@ PosixMemoryMappedFile::~PosixMemoryMappedFile() {
 
 
 void OS::LogSharedLibraryAddresses() {
-#ifdef ENABLE_LOGGING_AND_PROFILING
-  // This function assumes that the layout of the file is as follows:
-  // hex_start_addr-hex_end_addr rwxp <unused data> [binary_file_name]
-  // If we encounter an unexpected situation we abort scanning further entries.
-  FILE* fp = fopen("/proc/self/maps", "r");
-  if (fp == NULL) return;
-
-  // Allocate enough room to be able to store a full file name.
-  const int kLibNameLen = FILENAME_MAX + 1;
-  char* lib_name = reinterpret_cast<char*>(malloc(kLibNameLen));
-
-  // This loop will terminate once the scanning hits an EOF.
-  while (true) {
-    uintptr_t start, end;
-    char attr_r, attr_w, attr_x, attr_p;
-    // Parse the addresses and permission bits at the beginning of the line.
-    if (fscanf(fp, "%" V8PRIxPTR "-%" V8PRIxPTR, &start, &end) != 2) break;
-    if (fscanf(fp, " %c%c%c%c", &attr_r, &attr_w, &attr_x, &attr_p) != 4) break;
-
-    int c;
-    if (attr_r == 'r' && attr_x == 'x') {
-      // Found a readable and executable entry. Skip characters until we reach
-      // the beginning of the filename or the end of the line.
-      do {
-        c = getc(fp);
-      } while ((c != EOF) && (c != '\n') && (c != '/'));
-      if (c == EOF) break;  // EOF: Was unexpected, just exit.
-
-      // Process the filename if found.
-      if (c == '/') {
-        ungetc(c, fp);  // Push the '/' back into the stream to be read below.
-
-        // Read to the end of the line. Exit if the read fails.
-        if (fgets(lib_name, kLibNameLen, fp) == NULL) break;
-
-        // Drop the newline character read by fgets. We do not need to check
-        // for a zero-length string because we know that we at least read the
-        // '/' character.
-        lib_name[strlen(lib_name) - 1] = '\0';
-      } else {
-        // No library name found, just record the raw address range.
-        snprintf(lib_name, kLibNameLen,
-                 "%08" V8PRIxPTR "-%08" V8PRIxPTR, start, end);
-      }
-      LOG(SharedLibraryEvent(lib_name, start, end));
-    } else {
-      // Entry not describing executable data. Skip to end of line to setup
-      // reading the next entry.
-      do {
-        c = getc(fp);
-      } while ((c != EOF) && (c != '\n'));
-      if (c == EOF) break;
-    }
-  }
-  free(lib_name);
-  fclose(fp);
-#endif
 }
 
 
 int OS::StackWalk(Vector<OS::StackFrame> frames) {
-  // backtrace is a glibc extension.
-#ifdef __GLIBC__
   int frames_size = frames.length();
   void** addresses = NewArray<void*>(frames_size);
 
@@ -393,9 +259,6 @@ int OS::StackWalk(Vector<OS::StackFrame> frames) {
   free(symbols);
 
   return frames_count;
-#else  // ndef __GLIBC__
-  return 0;
-#endif  // ndef __GLIBC__
 }
 
 
@@ -406,7 +269,7 @@ static const int kMmapFdOffset = 0;
 
 VirtualMemory::VirtualMemory(size_t size) {
   address_ = mmap(NULL, size, PROT_NONE,
-                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                  MAP_PRIVATE | MAP_ANON | MAP_NORESERVE,
                   kMmapFd, kMmapFdOffset);
   size_ = size;
 }
@@ -424,10 +287,10 @@ bool VirtualMemory::IsReserved() {
 }
 
 
-bool VirtualMemory::Commit(void* address, size_t size, bool is_executable) {
-  int prot = PROT_READ | PROT_WRITE | (is_executable ? PROT_EXEC : 0);
+bool VirtualMemory::Commit(void* address, size_t size, bool executable) {
+  int prot = PROT_READ | PROT_WRITE | (executable ? PROT_EXEC : 0);
   if (MAP_FAILED == mmap(address, size, prot,
-                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+                         MAP_PRIVATE | MAP_ANON | MAP_FIXED,
                          kMmapFd, kMmapFdOffset)) {
     return false;
   }
@@ -439,7 +302,7 @@ bool VirtualMemory::Commit(void* address, size_t size, bool is_executable) {
 
 bool VirtualMemory::Uncommit(void* address, size_t size) {
   return mmap(address, size, PROT_NONE,
-              MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED,
+              MAP_PRIVATE | MAP_ANON | MAP_NORESERVE | MAP_FIXED,
               kMmapFd, kMmapFdOffset) != MAP_FAILED;
 }
 
@@ -551,45 +414,36 @@ void Thread::YieldCPU() {
 }
 
 
-class LinuxMutex : public Mutex {
+class SolarisMutex : public Mutex {
  public:
 
-  LinuxMutex() {
-    pthread_mutexattr_t attrs;
-    int result = pthread_mutexattr_init(&attrs);
-    ASSERT(result == 0);
-    result = pthread_mutexattr_settype(&attrs, PTHREAD_MUTEX_RECURSIVE);
-    ASSERT(result == 0);
-    result = pthread_mutex_init(&mutex_, &attrs);
-    ASSERT(result == 0);
+  SolarisMutex() {
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&mutex_, &attr);
   }
 
-  virtual ~LinuxMutex() { pthread_mutex_destroy(&mutex_); }
+  ~SolarisMutex() { pthread_mutex_destroy(&mutex_); }
 
-  virtual int Lock() {
-    int result = pthread_mutex_lock(&mutex_);
-    return result;
-  }
+  int Lock() { return pthread_mutex_lock(&mutex_); }
 
-  virtual int Unlock() {
-    int result = pthread_mutex_unlock(&mutex_);
-    return result;
-  }
+  int Unlock() { return pthread_mutex_unlock(&mutex_); }
 
  private:
-  pthread_mutex_t mutex_;   // Pthread mutex for POSIX platforms.
+  pthread_mutex_t mutex_;
 };
 
 
 Mutex* OS::CreateMutex() {
-  return new LinuxMutex();
+  return new SolarisMutex();
 }
 
 
-class LinuxSemaphore : public Semaphore {
+class SolarisSemaphore : public Semaphore {
  public:
-  explicit LinuxSemaphore(int count) {  sem_init(&sem_, 0, count); }
-  virtual ~LinuxSemaphore() { sem_destroy(&sem_); }
+  explicit SolarisSemaphore(int count) {  sem_init(&sem_, 0, count); }
+  virtual ~SolarisSemaphore() { sem_destroy(&sem_); }
 
   virtual void Wait();
   virtual bool Wait(int timeout);
@@ -599,7 +453,7 @@ class LinuxSemaphore : public Semaphore {
 };
 
 
-void LinuxSemaphore::Wait() {
+void SolarisSemaphore::Wait() {
   while (true) {
     int result = sem_wait(&sem_);
     if (result == 0) return;  // Successfully got semaphore.
@@ -616,7 +470,20 @@ void LinuxSemaphore::Wait() {
 #endif
 
 
-bool LinuxSemaphore::Wait(int timeout) {
+#ifndef timeradd
+#define timeradd(a, b, result) \
+  do { \
+    (result)->tv_sec = (a)->tv_sec + (b)->tv_sec; \
+    (result)->tv_usec = (a)->tv_usec + (b)->tv_usec; \
+    if ((result)->tv_usec >= 1000000) { \
+      ++(result)->tv_sec; \
+      (result)->tv_usec -= 1000000; \
+    } \
+  } while (0)
+#endif
+
+
+bool SolarisSemaphore::Wait(int timeout) {
   const long kOneSecondMicros = 1000000;  // NOLINT
 
   // Split timeout into second and nanosecond parts.
@@ -640,11 +507,6 @@ bool LinuxSemaphore::Wait(int timeout) {
   while (true) {
     int result = sem_timedwait(&sem_, &ts);
     if (result == 0) return true;  // Successfully got semaphore.
-    if (result > 0) {
-      // For glibc prior to 2.3.4 sem_timedwait returns the error instead of -1.
-      errno = result;
-      result = -1;
-    }
     if (result == -1 && errno == ETIMEDOUT) return false;  // Timeout.
     CHECK(result == -1 && errno == EINTR);  // Signal caused spurious wakeup.
   }
@@ -652,65 +514,13 @@ bool LinuxSemaphore::Wait(int timeout) {
 
 
 Semaphore* OS::CreateSemaphore(int count) {
-  return new LinuxSemaphore(count);
+  return new SolarisSemaphore(count);
 }
 
 
 #ifdef ENABLE_LOGGING_AND_PROFILING
 
 static Sampler* active_sampler_ = NULL;
-static pthread_t vm_thread_ = 0;
-
-
-#if !defined(__GLIBC__) && (defined(__arm__) || defined(__thumb__))
-// Android runs a fairly new Linux kernel, so signal info is there,
-// but the C library doesn't have the structs defined.
-
-struct sigcontext {
-  uint32_t trap_no;
-  uint32_t error_code;
-  uint32_t oldmask;
-  uint32_t gregs[16];
-  uint32_t arm_cpsr;
-  uint32_t fault_address;
-};
-typedef uint32_t __sigset_t;
-typedef struct sigcontext mcontext_t;
-typedef struct ucontext {
-  uint32_t uc_flags;
-  struct ucontext* uc_link;
-  stack_t uc_stack;
-  mcontext_t uc_mcontext;
-  __sigset_t uc_sigmask;
-} ucontext_t;
-enum ArmRegisters {R15 = 15, R13 = 13, R11 = 11};
-
-#endif
-
-
-// A function that determines if a signal handler is called in the context
-// of a VM thread.
-//
-// The problem is that SIGPROF signal can be delivered to an arbitrary thread
-// (see http://code.google.com/p/google-perftools/issues/detail?id=106#c2)
-// So, if the signal is being handled in the context of a non-VM thread,
-// it means that the VM thread is running, and trying to sample its stack can
-// cause a crash.
-static inline bool IsVmThread() {
-  // In the case of a single VM thread, this check is enough.
-  if (pthread_equal(pthread_self(), vm_thread_)) return true;
-  // If there are multiple threads that use VM, they must have a thread id
-  // stored in TLS. To verify that the thread is really executing VM,
-  // we check Top's data. Having that ThreadManager::RestoreThread first
-  // restores ThreadLocalTop from TLS, and only then erases the TLS value,
-  // reading Top::thread_id() should not be affected by races.
-  if (ThreadManager::HasId() && !ThreadManager::IsArchived() &&
-      ThreadManager::CurrentId() == Top::thread_id()) {
-    return true;
-  }
-  return false;
-}
-
 
 static void ProfilerSignalHandler(int signal, siginfo_t* info, void* context) {
   USE(info);
@@ -718,35 +528,9 @@ static void ProfilerSignalHandler(int signal, siginfo_t* info, void* context) {
   if (active_sampler_ == NULL) return;
 
   TickSample sample;
-
-  // If profiling, we extract the current pc and sp.
-  if (active_sampler_->IsProfiling()) {
-    // Extracting the sample from the context is extremely machine dependent.
-    ucontext_t* ucontext = reinterpret_cast<ucontext_t*>(context);
-    mcontext_t& mcontext = ucontext->uc_mcontext;
-#if V8_HOST_ARCH_IA32
-    sample.pc = reinterpret_cast<Address>(mcontext.gregs[REG_EIP]);
-    sample.sp = reinterpret_cast<Address>(mcontext.gregs[REG_ESP]);
-    sample.fp = reinterpret_cast<Address>(mcontext.gregs[REG_EBP]);
-#elif V8_HOST_ARCH_X64
-    sample.pc = reinterpret_cast<Address>(mcontext.gregs[REG_RIP]);
-    sample.sp = reinterpret_cast<Address>(mcontext.gregs[REG_RSP]);
-    sample.fp = reinterpret_cast<Address>(mcontext.gregs[REG_RBP]);
-#elif V8_HOST_ARCH_ARM
-// An undefined macro evaluates to 0, so this applies to Android's Bionic also.
-#if (__GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ <= 3))
-    sample.pc = reinterpret_cast<Address>(mcontext.gregs[R15]);
-    sample.sp = reinterpret_cast<Address>(mcontext.gregs[R13]);
-    sample.fp = reinterpret_cast<Address>(mcontext.gregs[R11]);
-#else
-    sample.pc = reinterpret_cast<Address>(mcontext.arm_pc);
-    sample.sp = reinterpret_cast<Address>(mcontext.arm_sp);
-    sample.fp = reinterpret_cast<Address>(mcontext.arm_fp);
-#endif
-#endif
-    if (IsVmThread())
-      active_sampler_->SampleStack(&sample);
-  }
+  sample.pc = 0;
+  sample.sp = 0;
+  sample.fp = 0;
 
   // We always sample the VM state.
   sample.state = Logger::state();
@@ -783,8 +567,6 @@ void Sampler::Start() {
   // platforms.
   if (active_sampler_ != NULL) return;
 
-  vm_thread_ = pthread_self();
-
   // Request profiling signals.
   struct sigaction sa;
   sa.sa_sigaction = ProfilerSignalHandler;
@@ -819,7 +601,6 @@ void Sampler::Stop() {
   active_sampler_ = NULL;
   active_ = false;
 }
-
 
 #endif  // ENABLE_LOGGING_AND_PROFILING
 

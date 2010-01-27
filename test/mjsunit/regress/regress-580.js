@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,38 +25,31 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// The common functionality when building with or without snapshots.
+// Test constant folding of smi operations that overflow a 32-bit int
+// See http://code.google.com/p/v8/issues/detail?id=580
 
-#include "v8.h"
+function num_ops() {
+  var x;
+  var tmp = 0;
+  x = (tmp = 1578221999, tmp)+(tmp = 572285336, tmp);
+  assertEquals(2150507335, x);
+  x = 1578221999 + 572285336;
+  assertEquals(2150507335, x);
 
-#include "api.h"
-#include "serialize.h"
-#include "snapshot.h"
-#include "platform.h"
+  x = (tmp = -1500000000, tmp)+(tmp = -2000000000, tmp);
+  assertEquals(-3500000000, x);
+  x = -1500000000 + -2000000000;
+  assertEquals(-3500000000, x);
 
-namespace v8 {
-namespace internal {
+  x = (tmp = 1578221999, tmp)-(tmp = -572285336, tmp);
+  assertEquals(2150507335, x);
+  x = 1578221999 - -572285336;
+  assertEquals(2150507335, x);
 
-bool Snapshot::Deserialize(const byte* content, int len) {
-  SnapshotByteSource source(content, len);
-  Deserializer deserializer(&source);
-  return V8::Initialize(&deserializer);
+  x = (tmp = -1500000000, tmp)-(tmp = 2000000000, tmp);
+  assertEquals(-3500000000, x);
+  x = -1500000000 - 2000000000;
+  assertEquals(-3500000000, x);
 }
 
-
-bool Snapshot::Initialize(const char* snapshot_file) {
-  if (snapshot_file) {
-    int len;
-    byte* str = ReadBytes(snapshot_file, &len);
-    if (!str) return false;
-    Deserialize(str, len);
-    DeleteArray(str);
-    return true;
-  } else if (size_ > 0) {
-    Deserialize(data_, size_);
-    return true;
-  }
-  return false;
-}
-
-} }  // namespace v8::internal
+num_ops();

@@ -392,6 +392,8 @@ class MacroAssembler: public Assembler {
   void SetCounter(StatsCounter* counter, int value);
   void IncrementCounter(StatsCounter* counter, int value);
   void DecrementCounter(StatsCounter* counter, int value);
+  void IncrementCounter(Condition cc, StatsCounter* counter, int value);
+  void DecrementCounter(Condition cc, StatsCounter* counter, int value);
 
 
   // ---------------------------------------------------------------------------
@@ -412,6 +414,17 @@ class MacroAssembler: public Assembler {
   bool generating_stub() { return generating_stub_; }
   void set_allow_stub_calls(bool value) { allow_stub_calls_ = value; }
   bool allow_stub_calls() { return allow_stub_calls_; }
+
+  // ---------------------------------------------------------------------------
+  // String utilities.
+
+  // Checks if both objects are sequential ASCII strings, and jumps to label
+  // if either is not.
+  void JumpIfNotBothSequentialAsciiStrings(Register object1,
+                                           Register object2,
+                                           Register scratch1,
+                                           Register scratch2,
+                                           Label *on_not_flat_ascii_strings);
 
  private:
   List<Unresolved> unresolved_;
