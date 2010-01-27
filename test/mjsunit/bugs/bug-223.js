@@ -1,4 +1,4 @@
-// Copyright 2009 the V8 project authors. All rights reserved.
+// Copyright 2008 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,43 +25,15 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Test unary addition in various contexts.
+// When calling user-defined functions on strings, booleans or
+// numbers, we should create a wrapper object.
 
-// Test value context.
-assertEquals(1, +'1');
-assertEquals(1, +1);
-assertEquals(1.12, +1.12);
-assertEquals(NaN, +undefined);
-assertEquals(NaN, +{});
+function TypeOfThis() { return typeof this; }
 
-// Test effect context.
-assertEquals(1, eval("+'1'; 1"));
-assertEquals(1, eval("+1; 1"));
-assertEquals(1, eval("+1.12; 1"));
-assertEquals(1, eval("+undefined; 1"));
-assertEquals(1, eval("+{}; 1"));
+String.prototype.TypeOfThis = TypeOfThis;
+Boolean.prototype.TypeOfThis = TypeOfThis;
+Number.prototype.TypeOfThis = TypeOfThis;
 
-// Test test context.
-assertEquals(1, (+'1') ? 1 : 2);
-assertEquals(1, (+1) ? 1 : 2);
-assertEquals(1, (+'0') ? 2 : 1);
-assertEquals(1, (+0) ? 2 : 1);
-assertEquals(1, (+1.12) ? 1 : 2);
-assertEquals(1, (+undefined) ? 2 : 1);
-assertEquals(1, (+{}) ? 2 : 1);
-
-// Test value/test context.
-assertEquals(1, +'1' || 2);
-assertEquals(1, +1 || 2);
-assertEquals(1.12, +1.12 || 2);
-assertEquals(2, +undefined || 2);
-assertEquals(2, +{} || 2);
-
-// Test test/value context.
-assertEquals(2, +'1' && 2);
-assertEquals(2, +1 && 2);
-assertEquals(0, +'0' && 2);
-assertEquals(0, +0 && 2);
-assertEquals(2, +1.12 && 2);
-assertEquals(NaN, +undefined && 2);
-assertEquals(NaN, +{} && 2);
+assertEquals('object', 'xxx'.TypeOfThis());
+assertEquals('object', true.TypeOfThis());
+assertEquals('object', (42).TypeOfThis());

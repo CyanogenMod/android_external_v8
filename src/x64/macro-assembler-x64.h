@@ -207,9 +207,6 @@ class MacroAssembler: public Assembler {
   // Are both values tagged smis.
   Condition CheckBothSmi(Register first, Register second);
 
-  // Are both values tagged smis.
-  Condition CheckBothPositiveSmi(Register first, Register second);
-
   // Are either value a tagged smi.
   Condition CheckEitherSmi(Register first, Register second);
 
@@ -250,10 +247,6 @@ class MacroAssembler: public Assembler {
 
   // Jump if either or both register are not smi values.
   void JumpIfNotBothSmi(Register src1, Register src2, Label* on_not_both_smi);
-
-  // Jump if either or both register are not positive smi values.
-  void JumpIfNotBothPositiveSmi(Register src1, Register src2,
-                                Label* on_not_both_smi);
 
   // Operations on tagged smi values.
 
@@ -458,15 +451,6 @@ class MacroAssembler: public Assembler {
   // Compare instance type for map.
   // Always use unsigned comparisons: above and below, not less and greater.
   void CmpInstanceType(Register map, InstanceType type);
-
-  // Check if the object in register heap_object is a string. Afterwards the
-  // register map contains the object map and the register instance_type
-  // contains the instance_type. The registers map and instance_type can be the
-  // same in which case it contains the instance type afterwards. Either of the
-  // registers map and instance_type can be the same as heap_object.
-  Condition IsObjectStringType(Register heap_object,
-                               Register map,
-                               Register instance_type);
 
   // FCmp is similar to integer cmp, but requires unsigned
   // jcc instructions (je, ja, jae, jb, jbe, je, and jz).

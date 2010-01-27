@@ -76,8 +76,8 @@ int Heap::amount_of_external_allocated_memory_at_last_global_gc_ = 0;
 // semispace_size_ should be a power of 2 and old_generation_size_ should be
 // a multiple of Page::kPageSize.
 #if defined(ANDROID)
-int Heap::max_semispace_size_  = 2*MB;
-int Heap::max_old_generation_size_ = 192*MB;
+int Heap::max_semispace_size_  = 512*KB;
+int Heap::max_old_generation_size_ = 128*MB;
 int Heap::initial_semispace_size_ = 128*KB;
 size_t Heap::code_range_size_ = 0;
 #elif defined(V8_TARGET_ARCH_X64)
@@ -327,7 +327,7 @@ void Heap::GarbageCollectionPrologue() {
 int Heap::SizeOfObjects() {
   int total = 0;
   AllSpaces spaces;
-  for (Space* space = spaces.next(); space != NULL; space = spaces.next()) {
+  while (Space* space = spaces.next()) {
     total += space->Size();
   }
   return total;
@@ -732,14 +732,13 @@ static void VerifyNonPointerSpacePointers() {
   // do not expect them.
   VerifyNonPointerSpacePointersVisitor v;
   HeapObjectIterator code_it(Heap::code_space());
-  for (HeapObject* object = code_it.next();
-       object != NULL; object = code_it.next())
+  while (code_it.has_next()) {
+    HeapObject* object = code_it.next();
     object->Iterate(&v);
+  }
 
   HeapObjectIterator data_it(Heap::old_data_space());
-  for (HeapObject* object = data_it.next();
-       object != NULL; object = data_it.next())
-    object->Iterate(&v);
+  while (data_it.has_next()) data_it.next()->Iterate(&v);
 }
 #endif
 
@@ -805,8 +804,8 @@ void Heap::Scavenge() {
 
   // Copy objects reachable from cells by scavenging cell values directly.
   HeapObjectIterator cell_iterator(cell_space_);
-  for (HeapObject* cell = cell_iterator.next();
-       cell != NULL; cell = cell_iterator.next()) {
+  while (cell_iterator.has_next()) {
+    HeapObject* cell = cell_iterator.next();
     if (cell->IsJSGlobalPropertyCell()) {
       Address value_address =
           reinterpret_cast<Address>(cell) +
@@ -1014,15 +1013,13 @@ void Heap::RebuildRSets() {
 
 void Heap::RebuildRSets(PagedSpace* space) {
   HeapObjectIterator it(space);
-  for (HeapObject* obj = it.next(); obj != NULL; obj = it.next())
-    Heap::UpdateRSet(obj);
+  while (it.has_next()) Heap::UpdateRSet(it.next());
 }
 
 
 void Heap::RebuildRSets(LargeObjectSpace* space) {
   LargeObjectIterator it(space);
-  for (HeapObject* obj = it.next(); obj != NULL; obj = it.next())
-    Heap::UpdateRSet(obj);
+  while (it.has_next()) Heap::UpdateRSet(it.next());
 }
 
 
@@ -1206,7 +1203,7 @@ Object* Heap::AllocateMap(InstanceType instance_type, int instance_size) {
   map->set_code_cache(empty_fixed_array());
   map->set_unused_property_fields(0);
   map->set_bit_field(0);
-  map->set_bit_field2(1 << Map::kIsExtensible);
+  map->set_bit_field2(0);
 
   // If the map object is aligned fill the padding area with Smi 0 objects.
   if (Map::kPadStart < Map::kSize) {
@@ -3109,8 +3106,7 @@ void Heap::Print() {
   if (!HasBeenSetup()) return;
   Top::PrintStack();
   AllSpaces spaces;
-  for (Space* space = spaces.next(); space != NULL; space = spaces.next())
-    space->Print();
+  while (Space* space = spaces.next()) space->Print();
 }
 
 
@@ -3344,11 +3340,6 @@ void Heap::IterateRSet(PagedSpace* space, ObjectSlotCallback copy_object_func) {
 
 void Heap::IterateRoots(ObjectVisitor* v, VisitMode mode) {
   IterateStrongRoots(v, mode);
-  IterateWeakRoots(v, mode);
-}
-
-
-void Heap::IterateWeakRoots(ObjectVisitor* v, VisitMode mode) {
   v->VisitPointer(reinterpret_cast<Object**>(&roots_[kSymbolTableRootIndex]));
   v->Synchronize("symbol_table");
   if (mode != VISIT_ALL_IN_SCAVENGE) {
@@ -3403,20 +3394,6 @@ void Heap::IterateStrongRoots(ObjectVisitor* v, VisitMode mode) {
   // Iterate over pointers being held by inactive threads.
   ThreadManager::Iterate(v);
   v->Synchronize("threadmanager");
-
-  // Iterate over the pointers the Serialization/Deserialization code is
-  // holding.
-  // During garbage collection this keeps the partial snapshot cache alive.
-  // During deserialization of the startup snapshot this creates the partial
-  // snapshot cache and deserializes the objects it refers to.  During
-  // serialization this does nothing, since the partial snapshot cache is
-  // empty.  However the next thing we do is create the partial snapshot,
-  // filling up the partial snapshot cache with objects it needs as we go.
-  SerializerDeserializer::Iterate(v);
-  // We don't do a v->Synchronize call here, because in debug mode that will
-  // output a flag to the snapshot.  However at this point the serializer and
-  // deserializer are deliberately a little unsynchronized (see above) so the
-  // checking of the sync flag in the snapshot would fail.
 }
 
 
@@ -3567,8 +3544,7 @@ bool Heap::Setup(bool create_heap_objects) {
   // Initialize map space.
   map_space_ = new MapSpace(FLAG_use_big_map_space
       ? max_old_generation_size_
-      : MapSpace::kMaxMapPageIndex * Page::kPageSize,
-      FLAG_max_map_space_pages,
+      : (MapSpace::kMaxMapPageIndex + 1) * Page::kPageSize,
       MAP_SPACE);
   if (map_space_ == NULL) return false;
   if (!map_space_->Setup(NULL, 0)) return false;
@@ -3671,8 +3647,7 @@ void Heap::TearDown() {
 void Heap::Shrink() {
   // Try to shrink all paged spaces.
   PagedSpaces spaces;
-  for (PagedSpace* space = spaces.next(); space != NULL; space = spaces.next())
-    space->Shrink();
+  while (PagedSpace* space = spaces.next()) space->Shrink();
 }
 
 
@@ -3681,8 +3656,7 @@ void Heap::Shrink() {
 void Heap::Protect() {
   if (HasBeenSetup()) {
     AllSpaces spaces;
-    for (Space* space = spaces.next(); space != NULL; space = spaces.next())
-      space->Protect();
+    while (Space* space = spaces.next()) space->Protect();
   }
 }
 
@@ -3690,8 +3664,7 @@ void Heap::Protect() {
 void Heap::Unprotect() {
   if (HasBeenSetup()) {
     AllSpaces spaces;
-    for (Space* space = spaces.next(); space != NULL; space = spaces.next())
-      space->Unprotect();
+    while (Space* space = spaces.next()) space->Unprotect();
   }
 }
 
@@ -3863,25 +3836,34 @@ void HeapIterator::Shutdown() {
 }
 
 
-HeapObject* HeapIterator::next() {
+bool HeapIterator::has_next() {
   // No iterator means we are done.
-  if (object_iterator_ == NULL) return NULL;
+  if (object_iterator_ == NULL) return false;
 
-  if (HeapObject* obj = object_iterator_->next_object()) {
+  if (object_iterator_->has_next_object()) {
     // If the current iterator has more objects we are fine.
-    return obj;
+    return true;
   } else {
     // Go though the spaces looking for one that has objects.
     while (space_iterator_->has_next()) {
       object_iterator_ = space_iterator_->next();
-      if (HeapObject* obj = object_iterator_->next_object()) {
-        return obj;
+      if (object_iterator_->has_next_object()) {
+        return true;
       }
     }
   }
   // Done with the last space.
   object_iterator_ = NULL;
-  return NULL;
+  return false;
+}
+
+
+HeapObject* HeapIterator::next() {
+  if (has_next()) {
+    return object_iterator_->next_object();
+  } else {
+    return NULL;
+  }
 }
 
 

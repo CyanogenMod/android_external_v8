@@ -3649,8 +3649,6 @@ class JSRegExp: public JSObject {
       FixedArray::kHeaderSize + kTagIndex * kPointerSize;
   static const int kDataAsciiCodeOffset =
       FixedArray::kHeaderSize + kIrregexpASCIICodeIndex * kPointerSize;
-  static const int kDataUC16CodeOffset =
-      FixedArray::kHeaderSize + kIrregexpUC16CodeIndex * kPointerSize;
   static const int kIrregexpCaptureCountOffset =
       FixedArray::kHeaderSize + kIrregexpCaptureCountIndex * kPointerSize;
 };

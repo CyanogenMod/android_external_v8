@@ -197,7 +197,7 @@ $Object.prototype.constructor = $Object;
 
 // ECMA-262 - 15.2.4.2
 function ObjectToString() {
-  return "[object " + %_ClassOf(ToObject(this)) + "]";
+  return "[object " + %_ClassOf(this) + "]";
 }
 
 
@@ -209,7 +209,7 @@ function ObjectToLocaleString() {
 
 // ECMA-262 - 15.2.4.4
 function ObjectValueOf() {
-  return ToObject(this);
+  return this;
 }
 
 

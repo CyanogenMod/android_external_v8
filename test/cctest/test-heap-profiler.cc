@@ -64,8 +64,10 @@ TEST(ConstructorProfile) {
   ConstructorHeapProfileTestHelper cons_profile;
   i::AssertNoAllocation no_alloc;
   i::HeapIterator iterator;
-  for (i::HeapObject* obj = iterator.next(); obj != NULL; obj = iterator.next())
+  while (iterator.has_next()) {
+    i::HeapObject* obj = iterator.next();
     cons_profile.CollectStats(obj);
+  }
   CHECK_EQ(0, cons_profile.f_count());
   cons_profile.PrintStats();
   CHECK_EQ(2, cons_profile.f_count());
@@ -373,8 +375,10 @@ TEST(RetainerProfile) {
   RetainerHeapProfile ret_profile;
   i::AssertNoAllocation no_alloc;
   i::HeapIterator iterator;
-  for (i::HeapObject* obj = iterator.next(); obj != NULL; obj = iterator.next())
+  while (iterator.has_next()) {
+    i::HeapObject* obj = iterator.next();
     ret_profile.CollectStats(obj);
+  }
   RetainerProfilePrinter printer;
   ret_profile.DebugPrintStats(&printer);
   const char* retainers_of_a = printer.GetRetainers("A");

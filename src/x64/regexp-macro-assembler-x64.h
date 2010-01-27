@@ -138,7 +138,9 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
   static const int kInputStart = kStartIndex + kPointerSize;
   static const int kInputEnd = kInputStart + kPointerSize;
   static const int kRegisterOutput = kInputEnd + kPointerSize;
-  static const int kStackHighEnd = kRegisterOutput + kPointerSize;
+  // AtStart is passed as 32 bit int (values 0 or 1).
+  static const int kAtStart = kRegisterOutput + kPointerSize;
+  static const int kStackHighEnd = kAtStart + kPointerSize;
   // DirectCall is passed as 32 bit int (values 0 or 1).
   static const int kDirectCall = kStackHighEnd + kPointerSize;
 #else
@@ -150,8 +152,9 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
   static const int kInputStart = kStartIndex - kPointerSize;
   static const int kInputEnd = kInputStart - kPointerSize;
   static const int kRegisterOutput = kInputEnd - kPointerSize;
-  static const int kStackHighEnd = kRegisterOutput - kPointerSize;
-  static const int kDirectCall = kFrameAlign;
+  static const int kAtStart = kRegisterOutput - kPointerSize;
+  static const int kStackHighEnd = kFrameAlign;
+  static const int kDirectCall = kStackHighEnd + kPointerSize;
 #endif
 
 #ifdef _WIN64
@@ -165,7 +168,7 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
   // AMD64 Calling Convention has only one callee-save register that
   // we use. We push this after the frame pointer (and after the
   // parameters).
-  static const int kBackup_rbx = kStackHighEnd - kPointerSize;
+  static const int kBackup_rbx = kAtStart - kPointerSize;
   static const int kLastCalleeSaveRegister = kBackup_rbx;
 #endif
 
@@ -173,10 +176,9 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
   // the frame in GetCode.
   static const int kInputStartMinusOne =
       kLastCalleeSaveRegister - kPointerSize;
-  static const int kAtStart = kInputStartMinusOne - kPointerSize;
 
   // First register address. Following registers are below it on the stack.
-  static const int kRegisterZero = kAtStart - kPointerSize;
+  static const int kRegisterZero = kInputStartMinusOne - kPointerSize;
 
   // Initial size of code buffer.
   static const size_t kRegExpCodeSize = 1024;

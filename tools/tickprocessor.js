@@ -137,19 +137,10 @@ function TickProcessor(
           processor: this.processCodeMove, backrefs: true },
       'code-delete': { parsers: [this.createAddressParser('code')],
           processor: this.processCodeDelete, backrefs: true },
-      'function-creation': { parsers: [this.createAddressParser('code'),
-          this.createAddressParser('function-obj')],
-          processor: this.processFunctionCreation, backrefs: true },
-      'function-move': { parsers: [this.createAddressParser('code'),
-          this.createAddressParser('code-move-to')],
-          processor: this.processFunctionMove, backrefs: true },
-      'function-delete': { parsers: [this.createAddressParser('code')],
-          processor: this.processFunctionDelete, backrefs: true },
       'snapshot-pos': { parsers: [this.createAddressParser('code'), parseInt],
           processor: this.processSnapshotPosition, backrefs: true },
       'tick': { parsers: [this.createAddressParser('code'),
-          this.createAddressParser('stack'),
-          this.createAddressParser('func'), parseInt, 'var-args'],
+          this.createAddressParser('stack'), parseInt, 'var-args'],
           processor: this.processTick, backrefs: true },
       'heap-sample-begin': { parsers: [null, null, parseInt],
           processor: this.processHeapSampleBegin },
@@ -296,22 +287,6 @@ TickProcessor.prototype.processCodeDelete = function(start) {
 };
 
 
-TickProcessor.prototype.processFunctionCreation = function(
-    functionAddr, codeAddr) {
-  this.profile_.addCodeAlias(functionAddr, codeAddr);
-};
-
-
-TickProcessor.prototype.processFunctionMove = function(from, to) {
-  this.profile_.safeMoveDynamicCode(from, to);
-};
-
-
-TickProcessor.prototype.processFunctionDelete = function(start) {
-  this.profile_.safeDeleteDynamicCode(start);
-};
-
-
 TickProcessor.prototype.processSnapshotPosition = function(addr, pos) {
   if (this.snapshotLogProcessor_) {
     this.deserializedEntriesNames_[addr] =
@@ -325,7 +300,7 @@ TickProcessor.prototype.includeTick = function(vmState) {
 };
 
 
-TickProcessor.prototype.processTick = function(pc, sp, func, vmState, stack) {
+TickProcessor.prototype.processTick = function(pc, sp, vmState, stack) {
   this.ticks_.total++;
   if (vmState == TickProcessor.VmStates.GC) this.ticks_.gc++;
   if (!this.includeTick(vmState)) {
@@ -333,19 +308,7 @@ TickProcessor.prototype.processTick = function(pc, sp, func, vmState, stack) {
     return;
   }
 
-  if (func) {
-    var funcEntry = this.profile_.findEntry(func);
-    if (!funcEntry || !funcEntry.isJSFunction || !funcEntry.isJSFunction()) {
-      func = 0;
-    } else {
-      var currEntry = this.profile_.findEntry(pc);
-      if (!currEntry || !currEntry.isJSFunction || currEntry.isJSFunction()) {
-        func = 0;
-      }
-    }
-  }
-
-  this.profile_.recordTick(this.processStack(pc, func, stack));
+  this.profile_.recordTick(this.processStack(pc, stack));
 };
 
 
@@ -378,7 +341,7 @@ TickProcessor.prototype.processJSProducer = function(constructor, stack) {
   if (stack.length == 0) return;
   var first = stack.shift();
   var processedStack =
-      this.profile_.resolveAndFilterFuncs_(this.processStack(first, 0, stack));
+      this.profile_.resolveAndFilterFuncs_(this.processStack(first, stack));
   processedStack.unshift(constructor);
   this.currentProducerProfile_.addPath(processedStack);
 };

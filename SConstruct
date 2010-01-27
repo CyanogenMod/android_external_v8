@@ -35,6 +35,7 @@ root_dir = dirname(File('SConstruct').rfile().abspath)
 sys.path.append(join(root_dir, 'tools'))
 import js2c, utils
 
+
 # ANDROID_TOP is the top of the Android checkout, fetched from the environment
 # variable 'TOP'.   You will also need to set the CXX, CC, AR and RANLIB
 # environment variables to the cross-compiling tools.
@@ -152,11 +153,6 @@ LIBRARY_FLAGS = {
       'CCFLAGS':      ['-ansi'],
     },
     'os:openbsd': {
-      'CPPPATH' : ['/usr/local/include'],
-      'LIBPATH' : ['/usr/local/lib'],
-      'CCFLAGS':      ['-ansi'],
-    },
-    'os:solaris': {
       'CPPPATH' : ['/usr/local/include'],
       'LIBPATH' : ['/usr/local/lib'],
       'CCFLAGS':      ['-ansi'],
@@ -317,10 +313,6 @@ MKSNAPSHOT_EXTRA_FLAGS = {
     'os:freebsd': {
       'LIBS': ['execinfo', 'pthread']
     },
-    'os:solaris': {
-      'LIBS': ['m', 'pthread', 'socket', 'nsl', 'rt'],
-      'LINKFLAGS': ['-mt']
-    },
     'os:openbsd': {
       'LIBS': ['execinfo', 'pthread']
     },
@@ -369,10 +361,6 @@ CCTEST_EXTRA_FLAGS = {
     },
     'os:freebsd': {
       'LIBS':         ['execinfo', 'pthread']
-    },
-    'os:solaris': {
-      'LIBS':         ['m', 'pthread', 'socket', 'nsl', 'rt'],
-      'LINKFLAGS':    ['-mt']
     },
     'os:openbsd': {
       'LIBS':         ['execinfo', 'pthread']
@@ -431,11 +419,6 @@ SAMPLE_FLAGS = {
     'os:freebsd': {
       'LIBPATH' : ['/usr/local/lib'],
       'LIBS':     ['execinfo', 'pthread']
-    },
-    'os:solaris': {
-      'LIBPATH' : ['/usr/local/lib'],
-      'LIBS':     ['m', 'pthread', 'socket', 'nsl', 'rt'],
-      'LINKFLAGS': ['-mt']
     },
     'os:openbsd': {
       'LIBPATH' : ['/usr/local/lib'],
@@ -546,10 +529,6 @@ D8_FLAGS = {
     'os:freebsd': {
       'LIBS': ['pthread'],
     },
-    'os:solaris': {
-      'LIBS': ['m', 'pthread', 'socket', 'nsl', 'rt'],
-      'LINKFLAGS': ['-mt']
-    },
     'os:openbsd': {
       'LIBS': ['pthread'],
     },
@@ -603,7 +582,7 @@ SIMPLE_OPTIONS = {
     'help': 'the toolchain to use (' + TOOLCHAIN_GUESS + ')'
   },
   'os': {
-    'values': ['freebsd', 'linux', 'macos', 'win32', 'android', 'openbsd', 'solaris'],
+    'values': ['freebsd', 'linux', 'macos', 'win32', 'android', 'openbsd'],
     'default': OS_GUESS,
     'help': 'the os to build for (' + OS_GUESS + ')'
   },
@@ -957,7 +936,6 @@ def BuildSpecific(env, mode, env_overrides):
 
   # Link the object files into a library.
   env.Replace(**context.flags['v8'])
-
   context.ApplyEnvOverrides(env)
   if context.options['library'] == 'static':
     library = env.StaticLibrary(library_name, object_files)

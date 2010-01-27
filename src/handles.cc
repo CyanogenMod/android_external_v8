@@ -681,18 +681,14 @@ bool CompileLazyShared(Handle<SharedFunctionInfo> shared,
 bool CompileLazy(Handle<JSFunction> function, ClearExceptionFlag flag) {
   // Compile the source information to a code object.
   Handle<SharedFunctionInfo> shared(function->shared());
-  bool result = CompileLazyShared(shared, flag, 0);
-  LOG(FunctionCreateEvent(*function));
-  return result;
+  return CompileLazyShared(shared, flag, 0);
 }
 
 
 bool CompileLazyInLoop(Handle<JSFunction> function, ClearExceptionFlag flag) {
   // Compile the source information to a code object.
   Handle<SharedFunctionInfo> shared(function->shared());
-  bool result = CompileLazyShared(shared, flag, 1);
-  LOG(FunctionCreateEvent(*function));
-  return result;
+  return CompileLazyShared(shared, flag, 1);
 }
 
 OptimizedObjectForAddingMultipleProperties::

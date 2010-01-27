@@ -123,7 +123,8 @@ class RegExpMacroAssemblerARM: public NativeRegExpMacroAssembler {
   static const int kReturnAddress = kStoredRegisters + 8 * kPointerSize;
   // Stack parameters placed by caller.
   static const int kRegisterOutput = kReturnAddress + kPointerSize;
-  static const int kStackHighEnd = kRegisterOutput + kPointerSize;
+  static const int kAtStart = kRegisterOutput + kPointerSize;
+  static const int kStackHighEnd = kAtStart + kPointerSize;
   static const int kDirectCall = kStackHighEnd + kPointerSize;
 
   // Below the frame pointer.
@@ -135,9 +136,8 @@ class RegExpMacroAssemblerARM: public NativeRegExpMacroAssembler {
   // When adding local variables remember to push space for them in
   // the frame in GetCode.
   static const int kInputStartMinusOne = kInputString - kPointerSize;
-  static const int kAtStart = kInputStartMinusOne - kPointerSize;
   // First register address. Following registers are below it on the stack.
-  static const int kRegisterZero = kAtStart - kPointerSize;
+  static const int kRegisterZero = kInputStartMinusOne - kPointerSize;
 
   // Initial size of code buffer.
   static const size_t kRegExpCodeSize = 1024;

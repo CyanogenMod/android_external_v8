@@ -43,11 +43,6 @@ devtools.profiler.Profile = function() {
   this.bottomUpTree_ = new devtools.profiler.CallTree();
 };
 
-/**
- * Version of profiler log.
- */
-devtools.profiler.Profile.VERSION = 2;
-
 
 /**
  * Returns whether a function with the specified name must be skipped.
@@ -139,21 +134,6 @@ devtools.profiler.Profile.prototype.addCode = function(
 
 
 /**
- * Creates an alias entry for a code entry.
- *
- * @param {number} aliasAddr Alias address.
- * @param {number} addr Code entry address.
- */
-devtools.profiler.Profile.prototype.addCodeAlias = function(
-    aliasAddr, addr) {
-  var entry = this.codeMap_.findDynamicEntryByStartAddress(addr);
-  if (entry) {
-    this.codeMap_.addCode(aliasAddr, entry);
-  }
-};
-
-
-/**
  * Reports about moving of a dynamic code entry.
  *
  * @param {number} from Current code entry address.
@@ -178,31 +158,6 @@ devtools.profiler.Profile.prototype.deleteCode = function(start) {
     this.codeMap_.deleteCode(start);
   } catch (e) {
     this.handleUnknownCode(devtools.profiler.Profile.Operation.DELETE, start);
-  }
-};
-
-
-/**
- * Reports about moving of a dynamic code entry.
- *
- * @param {number} from Current code entry address.
- * @param {number} to New code entry address.
- */
-devtools.profiler.Profile.prototype.safeMoveDynamicCode = function(from, to) {
-  if (this.codeMap_.findDynamicEntryByStartAddress(from)) {
-    this.codeMap_.moveCode(from, to);
-  }
-};
-
-
-/**
- * Reports about deletion of a dynamic code entry.
- *
- * @param {number} start Starting address.
- */
-devtools.profiler.Profile.prototype.safeDeleteDynamicCode = function(start) {
-  if (this.codeMap_.findDynamicEntryByStartAddress(start)) {
-    this.codeMap_.deleteCode(start);
   }
 };
 
@@ -404,13 +359,6 @@ devtools.profiler.Profile.DynamicCodeEntry.prototype.getName = function() {
  */
 devtools.profiler.Profile.DynamicCodeEntry.prototype.getRawName = function() {
   return this.name;
-};
-
-
-devtools.profiler.Profile.DynamicCodeEntry.prototype.isJSFunction = function() {
-  return this.type == "Function" ||
-    this.type == "LazyCompile" ||
-    this.type == "Script";
 };
 
 

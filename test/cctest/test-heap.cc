@@ -746,13 +746,16 @@ static int ObjectsFoundInHeap(Handle<Object> objs[], int size) {
   // Count the number of objects found in the heap.
   int found_count = 0;
   HeapIterator iterator;
-  for (HeapObject* obj = iterator.next(); obj != NULL; obj = iterator.next()) {
+  while (iterator.has_next()) {
+    HeapObject* obj = iterator.next();
+    CHECK(obj != NULL);
     for (int i = 0; i < size; i++) {
       if (*objs[i] == obj) {
         found_count++;
       }
     }
   }
+  CHECK(!iterator.has_next());
   return found_count;
 }
 

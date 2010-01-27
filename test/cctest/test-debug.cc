@@ -413,7 +413,9 @@ void CheckDebuggerUnloaded(bool check_functions) {
 
   // Iterate the head and check that there are no debugger related objects left.
   HeapIterator iterator;
-  for (HeapObject* obj = iterator.next(); obj != NULL; obj = iterator.next()) {
+  while (iterator.has_next()) {
+    HeapObject* obj = iterator.next();
+    CHECK(obj != NULL);
     CHECK(!obj->IsDebugInfo());
     CHECK(!obj->IsBreakPointInfo());
 
@@ -2195,25 +2197,13 @@ int Utf16ToAscii(const uint16_t* input_buffer, int length,
 
 // We match parts of the message to get evaluate result int value.
 bool GetEvaluateStringResult(char *message, char* buffer, int buffer_size) {
-  if (strstr(message, "\"command\":\"evaluate\"") == NULL) {
-    return false;
-  }
-  const char* prefix = "\"text\":\"";
-  char* pos1 = strstr(message, prefix);
-  if (pos1 == NULL) {
-    return false;
-  }
-  pos1 += strlen(prefix);
-  char* pos2 = strchr(pos1, '"');
-  if (pos2 == NULL) {
+  const char* value = "\"value\":";
+  char* pos = strstr(message, value);
+  if (pos == NULL) {
     return false;
   }
   Vector<char> buf(buffer, buffer_size);
-  int len = static_cast<int>(pos2 - pos1);
-  if (len > buffer_size - 1) {
-    len = buffer_size - 1;
-  }
-  OS::StrNCpy(buf, pos1, len);
+  OS::StrNCpy(buf, pos, buffer_size);
   buffer[buffer_size - 1] = '\0';
   return true;
 }
@@ -2313,10 +2303,9 @@ TEST(DebugEvaluateWithoutStack) {
 
   CHECK_EQ(3, process_debug_messages_data.counter);
 
-  CHECK_EQ(strcmp("Pinguin", process_debug_messages_data.results[0].buffer), 0);
-  CHECK_EQ(strcmp("Capybara", process_debug_messages_data.results[1].buffer),
-           0);
-  CHECK_EQ(strcmp("805", process_debug_messages_data.results[2].buffer), 0);
+  CHECK(strcmp("Pinguin", process_debug_messages_data.results[0].buffer));
+  CHECK(strcmp("Captbara", process_debug_messages_data.results[1].buffer));
+  CHECK(strcmp("805", process_debug_messages_data.results[2].buffer));
 
   v8::Debug::SetMessageHandler(NULL);
   v8::Debug::SetDebugEventListener(NULL);
@@ -3883,23 +3872,6 @@ int GetBreakpointIdFromBreakEventMessage(char *message) {
 }
 
 
-// We match parts of the message to get total frames number.
-int GetTotalFramesInt(char *message) {
-  const char* prefix = "\"totalFrames\":";
-  char* pos = strstr(message, prefix);
-  if (pos == NULL) {
-    return -1;
-  }
-  pos += strlen(prefix);
-  char* pos_end = pos;
-  int res = static_cast<int>(strtol(pos, &pos_end, 10));
-  if (pos_end == pos) {
-    return -1;
-  }
-  return res;
-}
-
-
 /* Test MessageQueues */
 /* Tests the message queues that hold debugger commands and
  * response messages to the debugger.  Fills queues and makes
@@ -4263,12 +4235,7 @@ class BreakpointsV8Thread : public v8::internal::Thread {
 
 class BreakpointsDebuggerThread : public v8::internal::Thread {
  public:
-  explicit BreakpointsDebuggerThread(bool global_evaluate)
-      : global_evaluate_(global_evaluate) {}
   void Run();
-
- private:
-  bool global_evaluate_;
 };
 
 
@@ -4336,51 +4303,24 @@ void BreakpointsDebuggerThread::Run() {
       "\"type\":\"request\","
       "\"command\":\"setbreakpoint\","
       "\"arguments\":{\"type\":\"function\",\"target\":\"dog\",\"line\":3}}";
-  const char* command_3;
-  if (this->global_evaluate_) {
-    command_3 = "{\"seq\":103,"
-        "\"type\":\"request\","
-        "\"command\":\"evaluate\","
-        "\"arguments\":{\"expression\":\"dog()\",\"disable_break\":false,"
-        "\"global\":true}}";
-  } else {
-    command_3 = "{\"seq\":103,"
-        "\"type\":\"request\","
-        "\"command\":\"evaluate\","
-        "\"arguments\":{\"expression\":\"dog()\",\"disable_break\":false}}";
-  }
-  const char* command_4;
-  if (this->global_evaluate_) {
-    command_4 = "{\"seq\":104,"
-        "\"type\":\"request\","
-        "\"command\":\"evaluate\","
-        "\"arguments\":{\"expression\":\"100 + 8\",\"disable_break\":true,"
-        "\"global\":true}}";
-  } else {
-    command_4 = "{\"seq\":104,"
-        "\"type\":\"request\","
-        "\"command\":\"evaluate\","
-        "\"arguments\":{\"expression\":\"x + 1\",\"disable_break\":true}}";
-  }
+  const char* command_3 = "{\"seq\":103,"
+      "\"type\":\"request\","
+      "\"command\":\"evaluate\","
+      "\"arguments\":{\"expression\":\"dog()\",\"disable_break\":false}}";
+  const char* command_4 = "{\"seq\":104,"
+      "\"type\":\"request\","
+      "\"command\":\"evaluate\","
+      "\"arguments\":{\"expression\":\"x + 1\",\"disable_break\":true}}";
   const char* command_5 = "{\"seq\":105,"
       "\"type\":\"request\","
       "\"command\":\"continue\"}";
   const char* command_6 = "{\"seq\":106,"
       "\"type\":\"request\","
       "\"command\":\"continue\"}";
-  const char* command_7;
-  if (this->global_evaluate_) {
-    command_7 = "{\"seq\":107,"
-        "\"type\":\"request\","
-        "\"command\":\"evaluate\","
-        "\"arguments\":{\"expression\":\"dog()\",\"disable_break\":true,"
-        "\"global\":true}}";
-  } else {
-    command_7 = "{\"seq\":107,"
-        "\"type\":\"request\","
-        "\"command\":\"evaluate\","
-        "\"arguments\":{\"expression\":\"dog()\",\"disable_break\":true}}";
-  }
+  const char* command_7 = "{\"seq\":107,"
+     "\"type\":\"request\","
+     "\"command\":\"evaluate\","
+     "\"arguments\":{\"expression\":\"dog()\",\"disable_break\":true}}";
   const char* command_8 = "{\"seq\":108,"
       "\"type\":\"request\","
       "\"command\":\"continue\"}";
@@ -4437,11 +4377,11 @@ void BreakpointsDebuggerThread::Run() {
   v8::Debug::SendCommand(buffer, AsciiToUtf16(command_8, buffer));
 }
 
-void TestRecursiveBreakpointsGeneric(bool global_evaluate) {
-  i::FLAG_debugger_auto_break = true;
+BreakpointsDebuggerThread breakpoints_debugger_thread;
+BreakpointsV8Thread breakpoints_v8_thread;
 
-  BreakpointsDebuggerThread breakpoints_debugger_thread(global_evaluate);
-  BreakpointsV8Thread breakpoints_v8_thread;
+TEST(RecursiveBreakpoints) {
+  i::FLAG_debugger_auto_break = true;
 
   // Create a V8 environment
   Barriers stack_allocated_breakpoints_barriers;
@@ -4453,14 +4393,6 @@ void TestRecursiveBreakpointsGeneric(bool global_evaluate) {
 
   breakpoints_v8_thread.Join();
   breakpoints_debugger_thread.Join();
-}
-
-TEST(RecursiveBreakpoints) {
-  TestRecursiveBreakpointsGeneric(false);
-}
-
-TEST(RecursiveBreakpointsGlobal) {
-  TestRecursiveBreakpointsGeneric(true);
 }
 
 
@@ -5888,58 +5820,6 @@ TEST(ProcessDebugMessages) {
   v8::Debug::ProcessDebugMessages();
   // At least two messages should come
   CHECK_GE(counting_message_handler_counter, 2);
-
-  // Get rid of the debug message handler.
-  v8::Debug::SetMessageHandler2(NULL);
-  CheckDebuggerUnloaded();
-}
-
-
-struct BracktraceData {
-  static int frame_counter;
-  static void MessageHandler(const v8::Debug::Message& message) {
-    char print_buffer[1000];
-    v8::String::Value json(message.GetJSON());
-    Utf16ToAscii(*json, json.length(), print_buffer, 1000);
-
-    if (strstr(print_buffer, "backtrace") == NULL) {
-      return;
-    }
-    frame_counter = GetTotalFramesInt(print_buffer);
-  }
-};
-
-int BracktraceData::frame_counter;
-
-
-// Test that debug messages get processed when ProcessDebugMessages is called.
-TEST(Backtrace) {
-  v8::HandleScope scope;
-  DebugLocalContext env;
-
-  v8::Debug::SetMessageHandler2(BracktraceData::MessageHandler);
-
-  const int kBufferSize = 1000;
-  uint16_t buffer[kBufferSize];
-  const char* scripts_command =
-    "{\"seq\":0,"
-     "\"type\":\"request\","
-     "\"command\":\"backtrace\"}";
-
-  // Check backtrace from ProcessDebugMessages.
-  BracktraceData::frame_counter = -10;
-  v8::Debug::SendCommand(buffer, AsciiToUtf16(scripts_command, buffer));
-  v8::Debug::ProcessDebugMessages();
-  CHECK_EQ(BracktraceData::frame_counter, 0);
-
-  v8::Handle<v8::String> void0 = v8::String::New("void(0)");
-  v8::Handle<v8::Script> script = v8::Script::Compile(void0, void0);
-
-  // Check backtrace from "void(0)" script.
-  BracktraceData::frame_counter = -10;
-  v8::Debug::SendCommand(buffer, AsciiToUtf16(scripts_command, buffer));
-  script->Run();
-  CHECK_EQ(BracktraceData::frame_counter, 1);
 
   // Get rid of the debug message handler.
   v8::Debug::SetMessageHandler2(NULL);

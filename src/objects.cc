@@ -2839,11 +2839,7 @@ Object* JSObject::DefineGetterSetter(String* name,
       if (result.IsReadOnly()) return Heap::undefined_value();
       if (result.type() == CALLBACKS) {
         Object* obj = result.GetCallbackObject();
-        if (obj->IsFixedArray()) {
-          PropertyDetails details = PropertyDetails(attributes, CALLBACKS);
-          SetNormalizedProperty(name, obj, details);
-          return obj;
-        }
+        if (obj->IsFixedArray()) return obj;
       }
     }
   }
