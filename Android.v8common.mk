@@ -24,6 +24,7 @@ V8_LOCAL_SRC_FILES := \
 	src/flags.cc \
 	src/frame-element.cc \
 	src/frames.cc \
+	src/full-codegen.cc \
 	src/func-name-inferrer.cc \
 	src/global-handles.cc \
 	src/handles.cc \
@@ -75,8 +76,8 @@ ifeq ($(TARGET_ARCH),arm)
 		src/arm/codegen-arm.cc \
 		src/arm/cpu-arm.cc \
 		src/arm/disasm-arm.cc \
-		src/arm/fast-codegen-arm.cc \
 		src/arm/frames-arm.cc \
+		src/arm/full-codegen-arm.cc \
 		src/arm/ic-arm.cc \
 		src/arm/jump-target-arm.cc \
 		src/arm/macro-assembler-arm.cc \

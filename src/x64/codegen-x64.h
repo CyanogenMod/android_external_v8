@@ -1,4 +1,4 @@
-// Copyright 2009 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -43,57 +43,70 @@ enum TypeofState { INSIDE_TYPEOF, NOT_INSIDE_TYPEOF };
 // -------------------------------------------------------------------------
 // Reference support
 
-// A reference is a C++ stack-allocated object that keeps an ECMA
-// reference on the execution stack while in scope. For variables
-// the reference is empty, indicating that it isn't necessary to
-// store state on the stack for keeping track of references to those.
-// For properties, we keep either one (named) or two (indexed) values
-// on the execution stack to represent the reference.
-
+// A reference is a C++ stack-allocated object that puts a
+// reference on the virtual frame.  The reference may be consumed
+// by GetValue, TakeValue, SetValue, and Codegen::UnloadReference.
+// When the lifetime (scope) of a valid reference ends, it must have
+// been consumed, and be in state UNLOADED.
 class Reference BASE_EMBEDDED {
  public:
   // The values of the types is important, see size().
-  enum Type { ILLEGAL = -1, SLOT = 0, NAMED = 1, KEYED = 2 };
-  Reference(CodeGenerator* cgen, Expression* expression);
+  enum Type { UNLOADED = -2, ILLEGAL = -1, SLOT = 0, NAMED = 1, KEYED = 2 };
+
+  Reference(CodeGenerator* cgen,
+            Expression* expression,
+            bool persist_after_get = false);
   ~Reference();
 
   Expression* expression() const { return expression_; }
   Type type() const { return type_; }
   void set_type(Type value) {
-    ASSERT(type_ == ILLEGAL);
+    ASSERT_EQ(ILLEGAL, type_);
     type_ = value;
   }
 
+  void set_unloaded() {
+    ASSERT_NE(ILLEGAL, type_);
+    ASSERT_NE(UNLOADED, type_);
+    type_ = UNLOADED;
+  }
   // The size the reference takes up on the stack.
-  int size() const { return (type_ == ILLEGAL) ? 0 : type_; }
+  int size() const {
+    return (type_ < SLOT) ? 0 : type_;
+  }
 
   bool is_illegal() const { return type_ == ILLEGAL; }
   bool is_slot() const { return type_ == SLOT; }
   bool is_property() const { return type_ == NAMED || type_ == KEYED; }
+  bool is_unloaded() const { return type_ == UNLOADED; }
 
   // Return the name.  Only valid for named property references.
   Handle<String> GetName();
 
   // Generate code to push the value of the reference on top of the
   // expression stack.  The reference is expected to be already on top of
-  // the expression stack, and it is left in place with its value above it.
+  // the expression stack, and it is consumed by the call unless the
+  // reference is for a compound assignment.
+  // If the reference is not consumed, it is left in place under its value.
   void GetValue();
 
   // Like GetValue except that the slot is expected to be written to before
-  // being read from again.  Thae value of the reference may be invalidated,
+  // being read from again.  The value of the reference may be invalidated,
   // causing subsequent attempts to read it to fail.
   void TakeValue();
 
   // Generate code to store the value on top of the expression stack in the
   // reference.  The reference is expected to be immediately below the value
-  // on the expression stack.  The stored value is left in place (with the
-  // reference intact below it) to support chained assignments.
+  // on the expression stack.  The  value is stored in the location specified
+  // by the reference, and is left on top of the stack, after the reference
+  // is popped from beneath it (unloaded).
   void SetValue(InitState init_state);
 
  private:
   CodeGenerator* cgen_;
   Expression* expression_;
   Type type_;
+  bool persist_after_get_;
 };
 
 
@@ -422,6 +435,11 @@ class CodeGenerator: public AstVisitor {
   // value in place.
   void StoreToSlot(Slot* slot, InitState init_state);
 
+  // Load a property of an object, returning it in a Result.
+  // The object and the property name are passed on the stack, and
+  // not changed.
+  Result EmitKeyedLoad(bool is_global);
+
   // Special code for typeof expressions: Unfortunately, we must
   // be careful when loading the expression in 'typeof'
   // expressions. We are not allowed to throw reference errors for
@@ -446,20 +464,20 @@ class CodeGenerator: public AstVisitor {
 
   // Emit code to perform a binary operation on a constant
   // smi and a likely smi.  Consumes the Result *operand.
-  void ConstantSmiBinaryOperation(Token::Value op,
-                                  Result* operand,
-                                  Handle<Object> constant_operand,
-                                  StaticType* type,
-                                  bool reversed,
-                                  OverwriteMode overwrite_mode);
+  Result ConstantSmiBinaryOperation(Token::Value op,
+                                    Result* operand,
+                                    Handle<Object> constant_operand,
+                                    StaticType* type,
+                                    bool reversed,
+                                    OverwriteMode overwrite_mode);
 
   // Emit code to perform a binary operation on two likely smis.
   // The code to handle smi arguments is produced inline.
   // Consumes the Results *left and *right.
-  void LikelySmiBinaryOperation(Token::Value op,
-                                Result* left,
-                                Result* right,
-                                OverwriteMode overwrite_mode);
+  Result LikelySmiBinaryOperation(Token::Value op,
+                                  Result* left,
+                                  Result* right,
+                                  OverwriteMode overwrite_mode);
 
   void Comparison(Condition cc,
                   bool strict,
@@ -478,10 +496,10 @@ class CodeGenerator: public AstVisitor {
                          CallFunctionFlags flags,
                          int position);
 
-  // Use an optimized version of Function.prototype.apply that avoid
-  // allocating the arguments object and just copies the arguments
-  // from the stack.
-  void CallApplyLazy(Property* apply,
+  // An optimized implementation of expressions of the form
+  // x.apply(y, arguments).  We call x the applicand and y the receiver.
+  // The optimization avoids allocating an arguments object if possible.
+  void CallApplyLazy(Expression* applicand,
                      Expression* receiver,
                      VariableProxy* arguments,
                      int position);
@@ -514,6 +532,7 @@ class CodeGenerator: public AstVisitor {
   void GenerateIsArray(ZoneList<Expression*>* args);
   void GenerateIsObject(ZoneList<Expression*>* args);
   void GenerateIsFunction(ZoneList<Expression*>* args);
+  void GenerateIsUndetectableObject(ZoneList<Expression*>* args);
 
   // Support for construct call checks.
   void GenerateIsConstructCall(ZoneList<Expression*>* args);
@@ -610,8 +629,8 @@ class CodeGenerator: public AstVisitor {
   friend class JumpTarget;
   friend class Reference;
   friend class Result;
-  friend class FastCodeGenerator;
-  friend class CodeGenSelector;
+  friend class FullCodeGenerator;
+  friend class FullCodeGenSyntaxChecker;
 
   friend class CodeGeneratorPatcher;  // Used in test-log-stack-tracer.cc
 
@@ -712,6 +731,29 @@ class GenericBinaryOpStub: public CodeStub {
 };
 
 
+class StringStubBase: public CodeStub {
+ public:
+  // Generate code for copying characters using a simple loop. This should only
+  // be used in places where the number of characters is small and the
+  // additional setup and checking in GenerateCopyCharactersREP adds too much
+  // overhead. Copying of overlapping regions is not supported.
+  void GenerateCopyCharacters(MacroAssembler* masm,
+                              Register dest,
+                              Register src,
+                              Register count,
+                              bool ascii);
+
+  // Generate code for copying characters using the rep movs instruction.
+  // Copies rcx characters from rsi to rdi. Copying of overlapping regions is
+  // not supported.
+  void GenerateCopyCharactersREP(MacroAssembler* masm,
+                                 Register dest,     // Must be rdi.
+                                 Register src,      // Must be rsi.
+                                 Register count,    // Must be rcx.
+                                 bool ascii);
+};
+
+
 // Flag that indicates how to generate code for the stub StringAddStub.
 enum StringAddFlags {
   NO_STRING_ADD_FLAGS = 0,
@@ -719,7 +761,7 @@ enum StringAddFlags {
 };
 
 
-class StringAddStub: public CodeStub {
+class StringAddStub: public StringStubBase {
  public:
   explicit StringAddStub(StringAddFlags flags) {
     string_check_ = ((flags & NO_STRING_CHECK_IN_STUB) == 0);
@@ -731,14 +773,20 @@ class StringAddStub: public CodeStub {
 
   void Generate(MacroAssembler* masm);
 
-  void GenerateCopyCharacters(MacroAssembler* masm,
-                              Register desc,
-                              Register src,
-                              Register count,
-                              bool ascii);
-
   // Should the stub check whether arguments are strings?
   bool string_check_;
+};
+
+
+class SubStringStub: public StringStubBase {
+ public:
+  SubStringStub() {}
+
+ private:
+  Major MajorKey() { return SubString; }
+  int MinorKey() { return 0; }
+
+  void Generate(MacroAssembler* masm);
 };
 
 

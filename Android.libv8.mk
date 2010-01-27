@@ -41,7 +41,6 @@ $(GEN1): $(LOCAL_JS_LIBRARY_FILES) $(JS2C_PY)
 	python $(SCRIPT) $(GEN1) CORE $(LOCAL_JS_LIBRARY_FILES)
 V8_GENERATED_LIBRARIES := $(intermediates)/libraries.cc
 
-
 LOCAL_GENERATED_SOURCES += $(V8_GENERATED_LIBRARIES)
 
 # Generate snapshot.cc

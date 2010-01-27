@@ -61,6 +61,27 @@ using ::v8::Extension;
 namespace i = ::v8::internal;
 
 
+static void ExpectString(const char* code, const char* expected) {
+  Local<Value> result = CompileRun(code);
+  CHECK(result->IsString());
+  String::AsciiValue ascii(result);
+  CHECK_EQ(expected, *ascii);
+}
+
+
+static void ExpectBoolean(const char* code, bool expected) {
+  Local<Value> result = CompileRun(code);
+  CHECK(result->IsBoolean());
+  CHECK_EQ(expected, result->BooleanValue());
+}
+
+
+static void ExpectObject(const char* code, Local<Value> expected) {
+  Local<Value> result = CompileRun(code);
+  CHECK(result->Equals(expected));
+}
+
+
 static int signature_callback_count;
 static v8::Handle<Value> IncrementingSignatureCallback(
     const v8::Arguments& args) {
@@ -2381,6 +2402,36 @@ THREADED_TEST(IndexedInterceptorWithIndexedAccessor) {
 }
 
 
+static v8::Handle<Value> IdentityIndexedPropertyGetter(
+    uint32_t index,
+    const AccessorInfo& info) {
+  return v8::Integer::New(index);
+}
+
+
+THREADED_TEST(IndexedInterceptorWithNoSetter) {
+  v8::HandleScope scope;
+  Local<ObjectTemplate> templ = ObjectTemplate::New();
+  templ->SetIndexedPropertyHandler(IdentityIndexedPropertyGetter);
+
+  LocalContext context;
+  context->Global()->Set(v8_str("obj"), templ->NewInstance());
+
+  const char* code =
+      "try {"
+      "  obj[0] = 239;"
+      "  for (var i = 0; i < 100; i++) {"
+      "    var v = obj[0];"
+      "    if (v != 0) throw 'Wrong value ' + v + ' at iteration ' + i;"
+      "  }"
+      "  'PASSED'"
+      "} catch(e) {"
+      "  e"
+      "}";
+  ExpectString(code, "PASSED");
+}
+
+
 THREADED_TEST(MultiContexts) {
   v8::HandleScope scope;
   v8::Handle<ObjectTemplate> templ = ObjectTemplate::New();
@@ -2464,27 +2515,6 @@ THREADED_TEST(Regress892105) {
   LocalContext env1;
   Local<Script> script1 = Script::Compile(source);
   CHECK_EQ(8901.0, script1->Run()->NumberValue());
-}
-
-
-static void ExpectString(const char* code, const char* expected) {
-  Local<Value> result = CompileRun(code);
-  CHECK(result->IsString());
-  String::AsciiValue ascii(result);
-  CHECK_EQ(0, strcmp(*ascii, expected));
-}
-
-
-static void ExpectBoolean(const char* code, bool expected) {
-  Local<Value> result = CompileRun(code);
-  CHECK(result->IsBoolean());
-  CHECK_EQ(expected, result->BooleanValue());
-}
-
-
-static void ExpectObject(const char* code, Local<Value> expected) {
-  Local<Value> result = CompileRun(code);
-  CHECK(result->Equals(expected));
 }
 
 
@@ -2839,12 +2869,16 @@ THREADED_TEST(NativeFunctionConstructCall) {
   static const char* exts[1] = { "functiontest" };
   v8::ExtensionConfiguration config(1, exts);
   LocalContext context(&config);
-  CHECK_EQ(v8::Integer::New(8),
-           Script::Compile(v8_str("(new A()).data"))->Run());
-  CHECK_EQ(v8::Integer::New(7),
-           Script::Compile(v8_str("(new B()).data"))->Run());
-  CHECK_EQ(v8::Integer::New(6),
-           Script::Compile(v8_str("(new C()).data"))->Run());
+  for (int i = 0; i < 10; i++) {
+    // Run a few times to ensure that allocation of objects doesn't
+    // change behavior of a constructor function.
+    CHECK_EQ(v8::Integer::New(8),
+             Script::Compile(v8_str("(new A()).data"))->Run());
+    CHECK_EQ(v8::Integer::New(7),
+             Script::Compile(v8_str("(new B()).data"))->Run());
+    CHECK_EQ(v8::Integer::New(6),
+             Script::Compile(v8_str("(new C()).data"))->Run());
+  }
 }
 
 
@@ -6202,8 +6236,16 @@ THREADED_TEST(LockUnlockLock) {
 }
 
 
-static int GetSurvivingGlobalObjectsCount() {
+static int GetGlobalObjectsCount() {
   int count = 0;
+  v8::internal::HeapIterator it;
+  for (i::HeapObject* object = it.next(); object != NULL; object = it.next())
+    if (object->IsJSGlobalObject()) count++;
+  return count;
+}
+
+
+static int GetSurvivingGlobalObjectsCount() {
   // We need to collect all garbage twice to be sure that everything
   // has been collected.  This is because inline caches are cleared in
   // the first garbage collection but some of the maps have already
@@ -6211,13 +6253,7 @@ static int GetSurvivingGlobalObjectsCount() {
   // collected until the second garbage collection.
   v8::internal::Heap::CollectAllGarbage(false);
   v8::internal::Heap::CollectAllGarbage(false);
-  v8::internal::HeapIterator it;
-  while (it.has_next()) {
-    v8::internal::HeapObject* object = it.next();
-    if (object->IsJSGlobalObject()) {
-      count++;
-    }
-  }
+  int count = GetGlobalObjectsCount();
 #ifdef DEBUG
   if (count > 0) v8::internal::Heap::TracePathToGlobal();
 #endif
@@ -8584,17 +8620,6 @@ THREADED_TEST(SpaghettiStackReThrow) {
   CHECK(try_catch.HasCaught());
   v8::String::Utf8Value value(try_catch.Exception());
   CHECK_EQ(0, strcmp(*value, "Hey!"));
-}
-
-
-static int GetGlobalObjectsCount() {
-  int count = 0;
-  v8::internal::HeapIterator it;
-  while (it.has_next()) {
-    v8::internal::HeapObject* object = it.next();
-    if (object->IsJSGlobalObject()) count++;
-  }
-  return count;
 }
 
 
