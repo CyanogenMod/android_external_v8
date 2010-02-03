@@ -107,25 +107,23 @@ static Object* DeepCopyBoilerplate(JSObject* boilerplate) {
   // Deep copy local properties.
   if (copy->HasFastProperties()) {
     FixedArray* properties = copy->properties();
-    WriteBarrierMode mode = properties->GetWriteBarrierMode();
     for (int i = 0; i < properties->length(); i++) {
       Object* value = properties->get(i);
       if (value->IsJSObject()) {
-        JSObject* jsObject = JSObject::cast(value);
-        result = DeepCopyBoilerplate(jsObject);
+        JSObject* js_object = JSObject::cast(value);
+        result = DeepCopyBoilerplate(js_object);
         if (result->IsFailure()) return result;
-        properties->set(i, result, mode);
+        properties->set(i, result);
       }
     }
-    mode = copy->GetWriteBarrierMode();
     int nof = copy->map()->inobject_properties();
     for (int i = 0; i < nof; i++) {
       Object* value = copy->InObjectPropertyAt(i);
       if (value->IsJSObject()) {
-        JSObject* jsObject = JSObject::cast(value);
-        result = DeepCopyBoilerplate(jsObject);
+        JSObject* js_object = JSObject::cast(value);
+        result = DeepCopyBoilerplate(js_object);
         if (result->IsFailure()) return result;
-        copy->InObjectPropertyAtPut(i, result, mode);
+        copy->InObjectPropertyAtPut(i, result);
       }
     }
   } else {
@@ -135,20 +133,20 @@ static Object* DeepCopyBoilerplate(JSObject* boilerplate) {
     copy->GetLocalPropertyNames(names, 0);
     for (int i = 0; i < names->length(); i++) {
       ASSERT(names->get(i)->IsString());
-      String* keyString = String::cast(names->get(i));
+      String* key_string = String::cast(names->get(i));
       PropertyAttributes attributes =
-        copy->GetLocalPropertyAttribute(keyString);
+          copy->GetLocalPropertyAttribute(key_string);
       // Only deep copy fields from the object literal expression.
       // In particular, don't try to copy the length attribute of
       // an array.
       if (attributes != NONE) continue;
-      Object* value = copy->GetProperty(keyString, &attributes);
+      Object* value = copy->GetProperty(key_string, &attributes);
       ASSERT(!value->IsFailure());
       if (value->IsJSObject()) {
-        JSObject* jsObject = JSObject::cast(value);
-        result = DeepCopyBoilerplate(jsObject);
+        JSObject* js_object = JSObject::cast(value);
+        result = DeepCopyBoilerplate(js_object);
         if (result->IsFailure()) return result;
-        result = copy->SetProperty(keyString, result, NONE);
+        result = copy->SetProperty(key_string, result, NONE);
         if (result->IsFailure()) return result;
       }
     }
@@ -160,14 +158,13 @@ static Object* DeepCopyBoilerplate(JSObject* boilerplate) {
   switch (copy->GetElementsKind()) {
     case JSObject::FAST_ELEMENTS: {
       FixedArray* elements = FixedArray::cast(copy->elements());
-      WriteBarrierMode mode = elements->GetWriteBarrierMode();
       for (int i = 0; i < elements->length(); i++) {
         Object* value = elements->get(i);
         if (value->IsJSObject()) {
-          JSObject* jsObject = JSObject::cast(value);
-          result = DeepCopyBoilerplate(jsObject);
+          JSObject* js_object = JSObject::cast(value);
+          result = DeepCopyBoilerplate(js_object);
           if (result->IsFailure()) return result;
-          elements->set(i, result, mode);
+          elements->set(i, result);
         }
       }
       break;
@@ -180,8 +177,8 @@ static Object* DeepCopyBoilerplate(JSObject* boilerplate) {
         if (element_dictionary->IsKey(k)) {
           Object* value = element_dictionary->ValueAt(i);
           if (value->IsJSObject()) {
-            JSObject* jsObject = JSObject::cast(value);
-            result = DeepCopyBoilerplate(jsObject);
+            JSObject* js_object = JSObject::cast(value);
+            result = DeepCopyBoilerplate(js_object);
             if (result->IsFailure()) return result;
             element_dictionary->ValueAtPut(i, result);
           }
@@ -1405,16 +1402,18 @@ static Object* Runtime_SetCode(Arguments args) {
   if (!code->IsNull()) {
     RUNTIME_ASSERT(code->IsJSFunction());
     Handle<JSFunction> fun = Handle<JSFunction>::cast(code);
-    SetExpectedNofProperties(target, fun->shared()->expected_nof_properties());
-    if (!fun->is_compiled() && !CompileLazy(fun, KEEP_EXCEPTION)) {
+    Handle<SharedFunctionInfo> shared(fun->shared());
+    SetExpectedNofProperties(target, shared->expected_nof_properties());
+
+    if (!EnsureCompiled(shared, KEEP_EXCEPTION)) {
       return Failure::Exception();
     }
     // Set the code, formal parameter count, and the length of the target
     // function.
     target->set_code(fun->code());
-    target->shared()->set_length(fun->shared()->length());
+    target->shared()->set_length(shared->length());
     target->shared()->set_formal_parameter_count(
-        fun->shared()->formal_parameter_count());
+        shared->formal_parameter_count());
     // Set the source code of the target function to undefined.
     // SetCode is only used for built-in constructors like String,
     // Array, and Object, and some web code
@@ -1437,6 +1436,8 @@ static Object* Runtime_SetCode(Arguments args) {
       literals->set(JSFunction::kLiteralGlobalContextIndex,
                     context->global_context());
     }
+    // It's okay to skip the write barrier here because the literals
+    // are guaranteed to be in old space.
     target->set_literals(*literals, SKIP_WRITE_BARRIER);
   }
 
@@ -3250,6 +3251,12 @@ static Object* Runtime_GetLocalPropertyNames(Arguments args) {
   // Skip the global proxy as it has no properties and always delegates to the
   // real global object.
   if (obj->IsJSGlobalProxy()) {
+    // Only collect names if access is permitted.
+    if (obj->IsAccessCheckNeeded() &&
+        !Top::MayNamedAccess(*obj, Heap::undefined_value(), v8::ACCESS_KEYS)) {
+      Top::ReportFailedAccessCheck(*obj, v8::ACCESS_KEYS);
+      return *Factory::NewJSArray(0);
+    }
     obj = Handle<JSObject>(JSObject::cast(obj->GetPrototype()));
   }
 
@@ -3261,6 +3268,14 @@ static Object* Runtime_GetLocalPropertyNames(Arguments args) {
   int total_property_count = 0;
   Handle<JSObject> jsproto = obj;
   for (int i = 0; i < length; i++) {
+    // Only collect names if access is permitted.
+    if (jsproto->IsAccessCheckNeeded() &&
+        !Top::MayNamedAccess(*jsproto,
+                             Heap::undefined_value(),
+                             v8::ACCESS_KEYS)) {
+      Top::ReportFailedAccessCheck(*jsproto, v8::ACCESS_KEYS);
+      return *Factory::NewJSArray(0);
+    }
     int n;
     n = jsproto->NumberOfLocalProperties(static_cast<PropertyAttributes>(NONE));
     local_property_count[i] = n;
@@ -4661,7 +4676,9 @@ static Object* Runtime_Math_round(Arguments args) {
 
   CONVERT_DOUBLE_CHECKED(x, args[0]);
   if (signbit(x) && x >= -0.5) return Heap::minus_zero_value();
-  return Heap::NumberFromDouble(floor(x + 0.5));
+  double integer = ceil(x);
+  if (integer - x > 0.5) { integer -= 1.0; }
+  return Heap::NumberFromDouble(integer);
 }
 
 
@@ -4715,7 +4732,9 @@ static Object* Runtime_NewArguments(Arguments args) {
     if (obj->IsFailure()) return obj;
     FixedArray* array = FixedArray::cast(obj);
     ASSERT(array->length() == length);
-    WriteBarrierMode mode = array->GetWriteBarrierMode();
+
+    AssertNoAllocation no_gc;
+    WriteBarrierMode mode = array->GetWriteBarrierMode(no_gc);
     for (int i = 0; i < length; i++) {
       array->set(i, frame->GetParameter(i), mode);
     }
@@ -4740,10 +4759,13 @@ static Object* Runtime_NewArgumentsFast(Arguments args) {
     // Allocate the fixed array.
     Object* obj = Heap::AllocateRawFixedArray(length);
     if (obj->IsFailure()) return obj;
+
+    AssertNoAllocation no_gc;
     reinterpret_cast<Array*>(obj)->set_map(Heap::fixed_array_map());
     FixedArray* array = FixedArray::cast(obj);
     array->set_length(length);
-    WriteBarrierMode mode = array->GetWriteBarrierMode();
+
+    WriteBarrierMode mode = array->GetWriteBarrierMode(no_gc);
     for (int i = 0; i < length; i++) {
       array->set(i, *--parameters, mode);
     }
@@ -4826,12 +4848,8 @@ static Object* Runtime_NewObject(Arguments args) {
   }
 
   // The function should be compiled for the optimization hints to be available.
-  if (!function->shared()->is_compiled()) {
-    CompileLazyShared(Handle<SharedFunctionInfo>(function->shared()),
-                                                 CLEAR_EXCEPTION,
-                                                 0);
-    LOG(FunctionCreateEvent(*function));
-  }
+  Handle<SharedFunctionInfo> shared(function->shared());
+  EnsureCompiled(shared, CLEAR_EXCEPTION);
 
   bool first_allocation = !function->has_initial_map();
   Handle<JSObject> result = Factory::NewJSObject(function);
@@ -4870,7 +4888,7 @@ static Object* Runtime_LazyCompile(Arguments args) {
   // this means that things called through constructors are never known to
   // be in loops.  We compile them as if they are in loops here just in case.
   ASSERT(!function->is_compiled());
-  if (!CompileLazyInLoop(function, KEEP_EXCEPTION)) {
+  if (!CompileLazyInLoop(function, Handle<Object>::null(), KEEP_EXCEPTION)) {
     return Failure::Exception();
   }
 
@@ -6032,7 +6050,7 @@ static Object* Runtime_MoveArrayContents(Arguments args) {
   to->SetContent(FixedArray::cast(from->elements()));
   to->set_length(from->length());
   from->SetContent(Heap::empty_fixed_array());
-  from->set_length(0);
+  from->set_length(Smi::FromInt(0));
   return to;
 }
 
@@ -6075,9 +6093,7 @@ static Object* Runtime_GetArrayKeys(Arguments args) {
   } else {
     Handle<FixedArray> single_interval = Factory::NewFixedArray(2);
     // -1 means start of array.
-    single_interval->set(0,
-                         Smi::FromInt(-1),
-                         SKIP_WRITE_BARRIER);
+    single_interval->set(0, Smi::FromInt(-1));
     uint32_t actual_length = static_cast<uint32_t>(array->elements()->length());
     uint32_t min_length = actual_length < length ? actual_length : length;
     Handle<Object> length_object =
@@ -7278,7 +7294,7 @@ Object* Runtime::FindSharedFunctionInfoInScript(Handle<Script> script,
     if (!done) {
       // If the candidate is not compiled compile it to reveal any inner
       // functions which might contain the requested source position.
-      CompileLazyShared(target, KEEP_EXCEPTION, 0);
+      CompileLazyShared(target, KEEP_EXCEPTION);
     }
   }
 
@@ -7450,7 +7466,9 @@ static Handle<Object> GetArgumentsObject(JavaScriptFrame* frame,
   const int length = frame->GetProvidedParametersCount();
   Handle<JSObject> arguments = Factory::NewArgumentsObject(function, length);
   Handle<FixedArray> array = Factory::NewFixedArray(length);
-  WriteBarrierMode mode = array->GetWriteBarrierMode();
+
+  AssertNoAllocation no_gc;
+  WriteBarrierMode mode = array->GetWriteBarrierMode(no_gc);
   for (int i = 0; i < length; i++) {
     array->set(i, frame->GetParameter(i), mode);
   }
@@ -7864,7 +7882,8 @@ static Object* Runtime_DebugDisassembleFunction(Arguments args) {
   ASSERT(args.length() == 1);
   // Get the function and make sure it is compiled.
   CONVERT_ARG_CHECKED(JSFunction, func, 0);
-  if (!func->is_compiled() && !CompileLazy(func, KEEP_EXCEPTION)) {
+  Handle<SharedFunctionInfo> shared(func->shared());
+  if (!EnsureCompiled(shared, KEEP_EXCEPTION)) {
     return Failure::Exception();
   }
   func->code()->PrintLn();
@@ -7879,10 +7898,11 @@ static Object* Runtime_DebugDisassembleConstructor(Arguments args) {
   ASSERT(args.length() == 1);
   // Get the function and make sure it is compiled.
   CONVERT_ARG_CHECKED(JSFunction, func, 0);
-  if (!func->is_compiled() && !CompileLazy(func, KEEP_EXCEPTION)) {
+  Handle<SharedFunctionInfo> shared(func->shared());
+  if (!EnsureCompiled(shared, KEEP_EXCEPTION)) {
     return Failure::Exception();
   }
-  func->shared()->construct_stub()->PrintLn();
+  shared->construct_stub()->PrintLn();
 #endif  // DEBUG
   return Heap::undefined_value();
 }
@@ -8032,7 +8052,7 @@ static Object* Runtime_CollectStackTrace(Arguments args) {
       if (cursor + 2 < elements->length()) {
         elements->set(cursor++, recv);
         elements->set(cursor++, fun);
-        elements->set(cursor++, offset, SKIP_WRITE_BARRIER);
+        elements->set(cursor++, offset);
       } else {
         HandleScope scope;
         Handle<Object> recv_handle(recv);
@@ -8045,8 +8065,7 @@ static Object* Runtime_CollectStackTrace(Arguments args) {
     iter.Advance();
   }
 
-  result->set_length(Smi::FromInt(cursor), SKIP_WRITE_BARRIER);
-
+  result->set_length(Smi::FromInt(cursor));
   return *result;
 }
 
@@ -8127,12 +8146,12 @@ static Object* Runtime_IS_VAR(Arguments args) {
 // Implementation of Runtime
 
 #define F(name, nargs, ressize)                                           \
-  { #name, "RuntimeStub_" #name, FUNCTION_ADDR(Runtime_##name), nargs, \
+  { #name, FUNCTION_ADDR(Runtime_##name), nargs, \
     static_cast<int>(Runtime::k##name), ressize },
 
 static Runtime::Function Runtime_functions[] = {
   RUNTIME_FUNCTION_LIST(F)
-  { NULL, NULL, NULL, 0, -1, 0 }
+  { NULL, NULL, 0, -1, 0 }
 };
 
 #undef F

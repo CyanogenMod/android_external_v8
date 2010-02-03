@@ -1,4 +1,4 @@
-// Copyright 2009 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,11 +25,43 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Flags: --always-full-compiler
+#ifndef V8_DATAFLOW_H_
+#define V8_DATAFLOW_H_
 
-// Test reference to this-function.
+#include "ast.h"
+#include "scopes.h"
 
-var g = (function f(x) {
-    if (x == 1) return 42; else return f(1);
-  })(0);
-assertEquals(42, g);
+namespace v8 {
+namespace internal {
+
+// This class is used to number all expressions in the AST according to
+// their evaluation order (post-order left-to-right traversal).
+class AstLabeler: public AstVisitor {
+ public:
+  AstLabeler() : next_number_(0), has_this_properties_(false) {}
+
+  void Label(FunctionLiteral* fun);
+
+  bool has_this_properties() { return has_this_properties_; }
+
+ private:
+  void VisitDeclarations(ZoneList<Declaration*>* decls);
+  void VisitStatements(ZoneList<Statement*>* stmts);
+
+  // AST node visit functions.
+#define DECLARE_VISIT(type) virtual void Visit##type(type* node);
+  AST_NODE_LIST(DECLARE_VISIT)
+#undef DECLARE_VISIT
+
+  // Traversal number for labelling AST nodes.
+  int next_number_;
+
+  bool has_this_properties_;
+
+  DISALLOW_COPY_AND_ASSIGN(AstLabeler);
+};
+
+
+} }  // namespace v8::internal
+
+#endif  // V8_DATAFLOW_H_

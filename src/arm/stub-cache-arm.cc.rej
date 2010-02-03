@@ -1,0 +1,153 @@
+*************** void StubCompiler::GenerateLoadInterceptor(JSObject* object,
+*** 491,520 ****
+                                             Register scratch2,
+                                             String* name,
+                                             Label* miss) {
+-   // Check that the receiver isn't a smi.
+-   __ tst(receiver, Operand(kSmiTagMask));
+-   __ b(eq, miss);
+- 
+-   // Check that the maps haven't changed.
+-   Register reg =
+-       CheckPrototypes(object, receiver, holder, scratch1, scratch2, name, miss);
+- 
+-   // Push the arguments on the JS stack of the caller.
+-   __ push(receiver);  // receiver
+-   __ push(reg);  // holder
+-   __ push(name_reg);  // name
+- 
+-   InterceptorInfo* interceptor = holder->GetNamedInterceptor();
+-   ASSERT(!Heap::InNewSpace(interceptor));
+-   __ mov(scratch1, Operand(Handle<Object>(interceptor)));
+-   __ push(scratch1);
+-   __ ldr(scratch2, FieldMemOperand(scratch1, InterceptorInfo::kDataOffset));
+-   __ push(scratch2);
+- 
+-   // Do tail-call to the runtime system.
+-   ExternalReference load_ic_property =
+-       ExternalReference(IC_Utility(IC::kLoadPropertyWithInterceptorForLoad));
+-   __ TailCallRuntime(load_ic_property, 5, 1);
+  }
+  
+  
+--- 854,871 ----
+                                             Register scratch2,
+                                             String* name,
+                                             Label* miss) {
++   LoadInterceptorCompiler compiler(name_reg);
++   CompileLoadInterceptor(&compiler,
++                          this,
++                          masm(),
++                          object,
++                          holder,
++                          name,
++                          lookup,
++                          receiver,
++                          scratch1,
++                          scratch2,
++                          miss);
+  }
+  
+  
+*************** Object* CallStubCompiler::CompileCallField(Object* object,
+*** 572,593 ****
+        CheckPrototypes(JSObject::cast(object), r0, holder, r3, r2, name, &miss);
+    GenerateFastPropertyLoad(masm(), r1, reg, holder, index);
+  
+-   // Check that the function really is a function.
+-   __ tst(r1, Operand(kSmiTagMask));
+-   __ b(eq, &miss);
+-   // Get the map.
+-   __ CompareObjectType(r1, r2, r2, JS_FUNCTION_TYPE);
+-   __ b(ne, &miss);
+- 
+-   // Patch the receiver on the stack with the global proxy if
+-   // necessary.
+-   if (object->IsGlobalObject()) {
+-     __ ldr(r3, FieldMemOperand(r0, GlobalObject::kGlobalReceiverOffset));
+-     __ str(r3, MemOperand(sp, argc * kPointerSize));
+-   }
+- 
+-   // Invoke the function.
+-   __ InvokeFunction(r1, arguments(), JUMP_FUNCTION);
+  
+    // Handle call cache miss.
+    __ bind(&miss);
+--- 923,929 ----
+        CheckPrototypes(JSObject::cast(object), r0, holder, r3, r2, name, &miss);
+    GenerateFastPropertyLoad(masm(), r1, reg, holder, index);
+  
++   GenerateCallFunction(masm(), object, arguments(), &miss);
+  
+    // Handle call cache miss.
+    __ bind(&miss);
+*************** Object* CallStubCompiler::CompileCallConstant(Object* object,
+*** 715,730 ****
+        UNREACHABLE();
+    }
+  
+-   // Get the function and setup the context.
+-   __ mov(r1, Operand(Handle<JSFunction>(function)));
+-   __ ldr(cp, FieldMemOperand(r1, JSFunction::kContextOffset));
+- 
+-   // Jump to the cached code (tail call).
+-   ASSERT(function->is_compiled());
+-   Handle<Code> code(function->code());
+-   ParameterCount expected(function->shared()->formal_parameter_count());
+-   __ InvokeCode(code, expected, arguments(),
+-                 RelocInfo::CODE_TARGET, JUMP_FUNCTION);
+  
+    // Handle call cache miss.
+    __ bind(&miss);
+--- 1051,1057 ----
+        UNREACHABLE();
+    }
+  
++   GenerateCallConstFunction(masm(), function, arguments());
+  
+    // Handle call cache miss.
+    __ bind(&miss);
+*************** Object* CallStubCompiler::CompileCallInterceptor(Object* object,
+*** 748,754 ****
+    // -----------------------------------
+    Label miss;
+  
+-   // TODO(1224669): Implement.
+  
+    // Handle call cache miss.
+    __ bind(&miss);
+--- 1075,1108 ----
+    // -----------------------------------
+    Label miss;
+  
++   // Get the number of arguments.
++   const int argc = arguments().immediate();
++ 
++   LookupResult lookup;
++   LookupPostInterceptor(holder, name, &lookup);
++ 
++   // Get the receiver from the stack into r0.
++   __ ldr(r0, MemOperand(sp, argc * kPointerSize));
++   // Load the name from the stack into r1.
++   __ ldr(r1, MemOperand(sp, (argc + 1) * kPointerSize));
++ 
++   CallInterceptorCompiler compiler(arguments(), r1);
++   CompileLoadInterceptor(&compiler,
++                          this,
++                          masm(),
++                          JSObject::cast(object),
++                          holder,
++                          name,
++                          &lookup,
++                          r0,
++                          r2,
++                          r3,
++                          &miss);
++ 
++   // Restore receiver.
++   __ ldr(r0, MemOperand(sp, argc * kPointerSize));
++ 
++   GenerateCallFunction(masm(), object, arguments(), &miss);
+  
+    // Handle call cache miss.
+    __ bind(&miss);

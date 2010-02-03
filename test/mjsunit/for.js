@@ -1,4 +1,4 @@
-// Copyright 2009 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,11 +25,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Flags: --always-full-compiler
-
-// Test reference to this-function.
-
-var g = (function f(x) {
-    if (x == 1) return 42; else return f(1);
-  })(0);
-assertEquals(42, g);
+// Test missing condition in for loop.
+for (var i = 0; ; i++) {
+  if (i > 100) break;
+}
+assertEquals(101, i);

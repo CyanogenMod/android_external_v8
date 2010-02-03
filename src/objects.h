@@ -1023,8 +1023,12 @@ class HeapObject: public Object {
   // Casting.
   static inline HeapObject* cast(Object* obj);
 
-  // Return the write barrier mode for this.
-  inline WriteBarrierMode GetWriteBarrierMode();
+  // Return the write barrier mode for this. Callers of this function
+  // must be able to present a reference to an AssertNoAllocation
+  // object as a sign that they are not going to use this function
+  // from code that allocates and thus invalidates the returned write
+  // barrier mode.
+  inline WriteBarrierMode GetWriteBarrierMode(const AssertNoAllocation&);
 
   // Dispatched behavior.
   void HeapObjectShortPrint(StringStream* accumulator);
@@ -1669,7 +1673,8 @@ class FixedArray: public Array {
   void SortPairs(FixedArray* numbers, uint32_t len);
 
  protected:
-  // Set operation on FixedArray without using write barriers.
+  // Set operation on FixedArray without using write barriers. Can
+  // only be used for storing old space objects or smis.
   static inline void fast_set(FixedArray* array, int index, Object* value);
 
  private:
@@ -4473,6 +4478,10 @@ class JSArray: public JSObject {
  public:
   // [length]: The length property.
   DECL_ACCESSORS(length, Object)
+
+  // Overload the length setter to skip write barrier when the length
+  // is set to a smi. This matches the set function on FixedArray.
+  inline void set_length(Smi* length);
 
   Object* JSArrayUpdateLengthFromIndex(uint32_t index, Object* value);
 

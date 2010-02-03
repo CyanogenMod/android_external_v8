@@ -75,9 +75,6 @@ BreakLocationIterator::BreakLocationIterator(Handle<DebugInfo> debug_info,
                                              BreakLocatorType type) {
   debug_info_ = debug_info;
   type_ = type;
-  // Get the stub early to avoid possible GC during iterations. We may need
-  // this stub to detect debugger calls generated from debugger statements.
-  debug_break_stub_ = RuntimeStub(Runtime::kDebugBreak, 0).GetCode();
   reloc_iterator_ = NULL;
   reloc_iterator_original_ = NULL;
   Reset();  // Initialize the rest of the member variables.
@@ -461,9 +458,7 @@ bool BreakLocationIterator::IsDebuggerStatement() {
     Code* code = Code::GetCodeFromTargetAddress(target);
     if (code->kind() == Code::STUB) {
       CodeStub::Major major_key = code->major_key();
-      if (major_key == CodeStub::Runtime) {
-        return (*debug_break_stub_ == code);
-      }
+      return (major_key == CodeStub::DebuggerStatement);
     }
   }
   return false;
@@ -1526,19 +1521,13 @@ void Debug::ClearStepNext() {
 }
 
 
-bool Debug::EnsureCompiled(Handle<SharedFunctionInfo> shared) {
-  if (shared->is_compiled()) return true;
-  return CompileLazyShared(shared, CLEAR_EXCEPTION, 0);
-}
-
-
 // Ensures the debug information is present for shared.
 bool Debug::EnsureDebugInfo(Handle<SharedFunctionInfo> shared) {
   // Return if we already have the debug info for shared.
   if (HasDebugInfo(shared)) return true;
 
   // Ensure shared in compiled. Return false if this failed.
-  if (!EnsureCompiled(shared)) return false;
+  if (!EnsureCompiled(shared, CLEAR_EXCEPTION)) return false;
 
   // Create the debug info object.
   Handle<DebugInfo> debug_info = Factory::NewDebugInfo(shared);

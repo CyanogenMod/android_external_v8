@@ -27,6 +27,8 @@
 
 #include "v8.h"
 
+#include "codegen-inl.h"
+#include "data-flow.h"
 #include "fast-codegen.h"
 #include "scopes.h"
 
@@ -49,11 +51,20 @@ namespace internal {
   } while (false)
 
 
-void FastCodeGenSyntaxChecker::Check(FunctionLiteral* fun) {
-  Scope* scope = fun->scope();
+void FastCodeGenSyntaxChecker::Check(FunctionLiteral* fun,
+                                     CompilationInfo* info) {
+  info_ = info;
+
+  // We do not specialize if we do not have a receiver or if it is not a
+  // JS object with fast mode properties.
+  if (!info->has_receiver()) BAILOUT("No receiver");
+  if (!info->receiver()->IsJSObject()) BAILOUT("Receiver is not an object");
+  Handle<JSObject> object = Handle<JSObject>::cast(info->receiver());
+  if (!object->HasFastProperties()) BAILOUT("Receiver is in dictionary mode");
 
   // We do not support stack or heap slots (both of which require
   // allocation).
+  Scope* scope = fun->scope();
   if (scope->num_stack_slots() > 0) {
     BAILOUT("Function has stack-allocated locals");
   }
@@ -246,6 +257,22 @@ void FastCodeGenSyntaxChecker::VisitAssignment(Assignment* expr) {
     BAILOUT("Non-named-property assignment");
   }
 
+  // We will only specialize for fields on the object itself.
+  // Expression::IsPropertyName implies that the name is a literal
+  // symbol but we do not assume that.
+  Literal* key = prop->key()->AsLiteral();
+  if (key != NULL && key->handle()->IsString()) {
+    Handle<Object> receiver = info()->receiver();
+    Handle<String> name = Handle<String>::cast(key->handle());
+    LookupResult lookup;
+    receiver->Lookup(*name, &lookup);
+    if (lookup.holder() != *receiver) BAILOUT("Non-own property assignment");
+    if (!lookup.type() == FIELD) BAILOUT("Non-field property assignment");
+  } else {
+    UNREACHABLE();
+    BAILOUT("Unexpected non-string-literal property key");
+  }
+
   Visit(expr->value());
 }
 
@@ -301,6 +328,268 @@ void FastCodeGenSyntaxChecker::VisitThisFunction(ThisFunction* expr) {
 
 #undef BAILOUT
 #undef CHECK_BAILOUT
+
+
+#define __ ACCESS_MASM(masm())
+
+Handle<Code> FastCodeGenerator::MakeCode(FunctionLiteral* fun,
+                                         Handle<Script> script,
+                                         bool is_eval,
+                                         CompilationInfo* info) {
+  // Label the AST before calling MakeCodePrologue, so AST node numbers are
+  // printed with the AST.
+  AstLabeler labeler;
+  labeler.Label(fun);
+  info->set_has_this_properties(labeler.has_this_properties());
+
+  CodeGenerator::MakeCodePrologue(fun);
+
+  const int kInitialBufferSize = 4 * KB;
+  MacroAssembler masm(NULL, kInitialBufferSize);
+
+  // Generate the fast-path code.
+  FastCodeGenerator fast_cgen(&masm, script, is_eval);
+  fast_cgen.Generate(fun, info);
+  if (fast_cgen.HasStackOverflow()) {
+    ASSERT(!Top::has_pending_exception());
+    return Handle<Code>::null();
+  }
+
+  // Generate the full code for the function in bailout mode, using the same
+  // macro assembler.
+  CodeGenerator cgen(&masm, script, is_eval);
+  CodeGeneratorScope scope(&cgen);
+  cgen.Generate(fun, CodeGenerator::SECONDARY, info);
+  if (cgen.HasStackOverflow()) {
+    ASSERT(!Top::has_pending_exception());
+    return Handle<Code>::null();
+  }
+
+  Code::Flags flags = Code::ComputeFlags(Code::FUNCTION, NOT_IN_LOOP);
+  return CodeGenerator::MakeCodeEpilogue(fun, &masm, flags, script);
+}
+
+
+void FastCodeGenerator::VisitDeclaration(Declaration* decl) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitBlock(Block* stmt) {
+  VisitStatements(stmt->statements());
+}
+
+
+void FastCodeGenerator::VisitExpressionStatement(ExpressionStatement* stmt) {
+  Visit(stmt->expression());
+}
+
+
+void FastCodeGenerator::VisitEmptyStatement(EmptyStatement* stmt) {
+  // Nothing to do.
+}
+
+
+void FastCodeGenerator::VisitIfStatement(IfStatement* stmt) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitContinueStatement(ContinueStatement* stmt) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitBreakStatement(BreakStatement* stmt) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitReturnStatement(ReturnStatement* stmt) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitWithEnterStatement(WithEnterStatement* stmt) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitWithExitStatement(WithExitStatement* stmt) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitDoWhileStatement(DoWhileStatement* stmt) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitWhileStatement(WhileStatement* stmt) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitForStatement(ForStatement* stmt) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitForInStatement(ForInStatement* stmt) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitTryCatchStatement(TryCatchStatement* stmt) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitTryFinallyStatement(TryFinallyStatement* stmt) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitDebuggerStatement(DebuggerStatement* stmt) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitFunctionLiteral(FunctionLiteral* expr) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitFunctionBoilerplateLiteral(
+    FunctionBoilerplateLiteral* expr) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitConditional(Conditional* expr) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitSlot(Slot* expr) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitVariableProxy(VariableProxy* expr) {
+  ASSERT(expr->var()->is_global() && !expr->var()->is_this());
+  Comment cmnt(masm(), ";; Global");
+  if (FLAG_print_ir) {
+    SmartPointer<char> name = expr->name()->ToCString();
+    PrintF("%d: t%d = Global(%s)\n", expr->num(), expr->num(), *name);
+  }
+  EmitGlobalVariableLoad(expr->name());
+}
+
+
+void FastCodeGenerator::VisitLiteral(Literal* expr) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitRegExpLiteral(RegExpLiteral* expr) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitArrayLiteral(ArrayLiteral* expr) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitCatchExtensionObject(CatchExtensionObject* expr) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitAssignment(Assignment* expr) {
+  // Known to be a simple this property assignment.
+  Visit(expr->value());
+
+  Property* prop = expr->target()->AsProperty();
+  ASSERT_NOT_NULL(prop);
+  ASSERT_NOT_NULL(prop->obj()->AsVariableProxy());
+  ASSERT(prop->obj()->AsVariableProxy()->var()->is_this());
+  ASSERT(prop->key()->IsPropertyName());
+  Handle<String> name =
+      Handle<String>::cast(prop->key()->AsLiteral()->handle());
+
+  Comment cmnt(masm(), ";; Store(this)");
+  if (FLAG_print_ir) {
+    SmartPointer<char> name_string = name->ToCString();
+    PrintF("%d: t%d = Store(this, \"%s\", t%d)\n",
+           expr->num(), expr->num(), *name_string, expr->value()->num());
+  }
+
+  EmitThisPropertyStore(name);
+}
+
+
+void FastCodeGenerator::VisitThrow(Throw* expr) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitProperty(Property* expr) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitCall(Call* expr) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitCallNew(CallNew* expr) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitCallRuntime(CallRuntime* expr) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitUnaryOperation(UnaryOperation* expr) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitCountOperation(CountOperation* expr) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitBinaryOperation(BinaryOperation* expr) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitCompareOperation(CompareOperation* expr) {
+  UNREACHABLE();
+}
+
+
+void FastCodeGenerator::VisitThisFunction(ThisFunction* expr) {
+  UNREACHABLE();
+}
+
+#undef __
 
 
 } }  // namespace v8::internal

@@ -47,7 +47,7 @@ static Handle<Code> MakeCode(FunctionLiteral* literal,
                              Handle<Script> script,
                              Handle<Context> context,
                              bool is_eval,
-                             Handle<SharedFunctionInfo> shared) {
+                             CompilationInfo* info) {
   ASSERT(literal != NULL);
 
   // Rewrite the AST by introducing .result assignments where needed.
@@ -96,6 +96,7 @@ static Handle<Code> MakeCode(FunctionLiteral* literal,
   // incompatible.
   CHECK(!FLAG_always_full_compiler || !FLAG_always_fast_compiler);
 
+  Handle<SharedFunctionInfo> shared = info->shared_info();
   bool is_run_once = (shared.is_null())
       ? literal->scope()->is_global_scope()
       : (shared->is_toplevel() || shared->try_full_codegen());
@@ -109,22 +110,13 @@ static Handle<Code> MakeCode(FunctionLiteral* literal,
   } else if (FLAG_always_fast_compiler ||
              (FLAG_fast_compiler && !is_run_once)) {
     FastCodeGenSyntaxChecker checker;
-    checker.Check(literal);
-    // Does not yet generate code.
+    checker.Check(literal, info);
+    if (checker.has_supported_syntax()) {
+      return FastCodeGenerator::MakeCode(literal, script, is_eval, info);
+    }
   }
 
-  return CodeGenerator::MakeCode(literal, script, is_eval);
-}
-
-
-static bool IsValidJSON(FunctionLiteral* lit) {
-  if (lit->body()->length() != 1)
-    return false;
-  Statement* stmt = lit->body()->at(0);
-  if (stmt->AsExpressionStatement() == NULL)
-    return false;
-  Expression* expr = stmt->AsExpressionStatement()->expression();
-  return expr->IsValidJSON();
+  return CodeGenerator::MakeCode(literal, script, is_eval, info);
 }
 
 
@@ -142,8 +134,8 @@ static Handle<JSFunction> MakeFunction(bool is_global,
   ASSERT(!i::Top::global_context().is_null());
   script->set_context_data((*i::Top::global_context())->data());
 
-#ifdef ENABLE_DEBUGGER_SUPPORT
   bool is_json = (validate == Compiler::VALIDATE_JSON);
+#ifdef ENABLE_DEBUGGER_SUPPORT
   if (is_eval || is_json) {
     script->set_compilation_type(
         is_json ? Smi::FromInt(Script::COMPILATION_TYPE_JSON) :
@@ -151,12 +143,14 @@ static Handle<JSFunction> MakeFunction(bool is_global,
     // For eval scripts add information on the function from which eval was
     // called.
     if (is_eval) {
-      JavaScriptFrameIterator it;
-      script->set_eval_from_shared(
-          JSFunction::cast(it.frame()->function())->shared());
-      int offset = static_cast<int>(
-          it.frame()->pc() - it.frame()->code()->instruction_start());
-      script->set_eval_from_instructions_offset(Smi::FromInt(offset));
+      StackTraceFrameIterator it;
+      if (!it.done()) {
+        script->set_eval_from_shared(
+            JSFunction::cast(it.frame()->function())->shared());
+        int offset = static_cast<int>(
+            it.frame()->pc() - it.frame()->code()->instruction_start());
+        script->set_eval_from_instructions_offset(Smi::FromInt(offset));
+      }
     }
   }
 
@@ -168,24 +162,12 @@ static Handle<JSFunction> MakeFunction(bool is_global,
   ASSERT(is_eval || is_global);
 
   // Build AST.
-  FunctionLiteral* lit = MakeAST(is_global, script, extension, pre_data);
+  FunctionLiteral* lit =
+      MakeAST(is_global, script, extension, pre_data, is_json);
 
   // Check for parse errors.
   if (lit == NULL) {
     ASSERT(Top::has_pending_exception());
-    return Handle<JSFunction>::null();
-  }
-
-  // When parsing JSON we do an ordinary parse and then afterwards
-  // check the AST to ensure it was well-formed.  If not we give a
-  // syntax error.
-  if (validate == Compiler::VALIDATE_JSON && !IsValidJSON(lit)) {
-    HandleScope scope;
-    Handle<JSArray> args = Factory::NewJSArray(1);
-    Handle<Object> source(script->source());
-    SetElement(args, 0, source);
-    Handle<Object> result = Factory::NewSyntaxError("invalid_json", args);
-    Top::Throw(*result, NULL);
     return Handle<JSFunction>::null();
   }
 
@@ -198,8 +180,10 @@ static Handle<JSFunction> MakeFunction(bool is_global,
   HistogramTimerScope timer(rate);
 
   // Compile the code.
-  Handle<Code> code = MakeCode(lit, script, context, is_eval,
-                               Handle<SharedFunctionInfo>::null());
+  CompilationInfo info(Handle<SharedFunctionInfo>::null(),
+                       Handle<Object>::null(),  // No receiver.
+                       0);  // Not nested in a loop.
+  Handle<Code> code = MakeCode(lit, script, context, is_eval, &info);
 
   // Check for stack-overflow exceptions.
   if (code.is_null()) {
@@ -360,8 +344,7 @@ Handle<JSFunction> Compiler::CompileEval(Handle<String> source,
 }
 
 
-bool Compiler::CompileLazy(Handle<SharedFunctionInfo> shared,
-                           int loop_nesting) {
+bool Compiler::CompileLazy(CompilationInfo* info) {
   CompilationZoneScope zone_scope(DELETE_ON_EXIT);
 
   // The VM is in the COMPILER state until exiting this function.
@@ -370,6 +353,7 @@ bool Compiler::CompileLazy(Handle<SharedFunctionInfo> shared,
   PostponeInterruptsScope postpone;
 
   // Compute name, source code and script data.
+  Handle<SharedFunctionInfo> shared = info->shared_info();
   Handle<String> name(String::cast(shared->name()));
   Handle<Script> script(Script::cast(shared->script()));
 
@@ -391,17 +375,17 @@ bool Compiler::CompileLazy(Handle<SharedFunctionInfo> shared,
     return false;
   }
 
-  // Update the loop nesting in the function literal.
-  lit->set_loop_nesting(loop_nesting);
-
   // Measure how long it takes to do the lazy compilation; only take
   // the rest of the function into account to avoid overlap with the
   // lazy parsing statistics.
   HistogramTimerScope timer(&Counters::compile_lazy);
 
   // Compile the code.
-  Handle<Code> code = MakeCode(lit, script, Handle<Context>::null(), false,
-                               shared);
+  Handle<Code> code = MakeCode(lit,
+                               script,
+                               Handle<Context>::null(),
+                               false,
+                               info);
 
   // Check for stack-overflow exception.
   if (code.is_null()) {
@@ -482,6 +466,10 @@ Handle<JSFunction> Compiler::BuildBoilerplate(FunctionLiteral* literal,
     // Generate code and return it.  The way that the compilation mode
     // is controlled by the command-line flags is described in
     // the static helper function MakeCode.
+    CompilationInfo info(Handle<SharedFunctionInfo>::null(),
+                         Handle<Object>::null(),  // No receiver.
+                         0);  // Not nested in a loop.
+
     CHECK(!FLAG_always_full_compiler || !FLAG_always_fast_compiler);
     bool is_run_once = literal->try_full_codegen();
     bool is_compiled = false;
@@ -496,16 +484,22 @@ Handle<JSFunction> Compiler::BuildBoilerplate(FunctionLiteral* literal,
       }
     } else if (FLAG_always_fast_compiler ||
                (FLAG_fast_compiler && !is_run_once)) {
+      // Since we are not lazily compiling we do not have a receiver to
+      // specialize for.
       FastCodeGenSyntaxChecker checker;
-      checker.Check(literal);
-      // Generate no code.
+      checker.Check(literal, &info);
+      if (checker.has_supported_syntax()) {
+        code = FastCodeGenerator::MakeCode(literal, script, false, &info);
+        is_compiled = true;
+      }
     }
 
     if (!is_compiled) {
       // We fall back to the classic V8 code generator.
       code = CodeGenerator::MakeCode(literal,
                                      script,
-                                     false);  // Not eval.
+                                     false,  // Not eval.
+                                     &info);
     }
 
     // Check for stack-overflow exception.

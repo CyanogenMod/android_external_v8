@@ -52,80 +52,90 @@ namespace internal {
 //
 // The function builds a JS frame.  Please see JavaScriptFrameConstants in
 // frames-arm.h for its layout.
-void FullCodeGenerator::Generate(FunctionLiteral* fun) {
+void FullCodeGenerator::Generate(FunctionLiteral* fun, Mode mode) {
   function_ = fun;
   SetFunctionPosition(fun);
-  int locals_count = fun->scope()->num_stack_slots();
 
-  __ stm(db_w, sp, r1.bit() | cp.bit() | fp.bit() | lr.bit());
-  if (locals_count > 0) {
-      // Load undefined value here, so the value is ready for the loop below.
+  if (mode == PRIMARY) {
+    int locals_count = fun->scope()->num_stack_slots();
+
+    __ stm(db_w, sp, r1.bit() | cp.bit() | fp.bit() | lr.bit());
+    if (locals_count > 0) {
+      // Load undefined value here, so the value is ready for the loop
+      // below.
       __ LoadRoot(ip, Heap::kUndefinedValueRootIndex);
-  }
-  // Adjust fp to point to caller's fp.
-  __ add(fp, sp, Operand(2 * kPointerSize));
-
-  { Comment cmnt(masm_, "[ Allocate locals");
-    for (int i = 0; i < locals_count; i++) {
-      __ push(ip);
     }
-  }
+    // Adjust fp to point to caller's fp.
+    __ add(fp, sp, Operand(2 * kPointerSize));
 
-  bool function_in_register = true;
-
-  // Possibly allocate a local context.
-  if (fun->scope()->num_heap_slots() > 0) {
-    Comment cmnt(masm_, "[ Allocate local context");
-    // Argument to NewContext is the function, which is in r1.
-    __ push(r1);
-    __ CallRuntime(Runtime::kNewContext, 1);
-    function_in_register = false;
-    // Context is returned in both r0 and cp.  It replaces the context
-    // passed to us.  It's saved in the stack and kept live in cp.
-    __ str(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
-    // Copy any necessary parameters into the context.
-    int num_parameters = fun->scope()->num_parameters();
-    for (int i = 0; i < num_parameters; i++) {
-      Slot* slot = fun->scope()->parameter(i)->slot();
-      if (slot != NULL && slot->type() == Slot::CONTEXT) {
-        int parameter_offset = StandardFrameConstants::kCallerSPOffset +
-                               (num_parameters - 1 - i) * kPointerSize;
-        // Load parameter from stack.
-        __ ldr(r0, MemOperand(fp, parameter_offset));
-        // Store it in the context
-        __ str(r0, MemOperand(cp, Context::SlotOffset(slot->index())));
+    { Comment cmnt(masm_, "[ Allocate locals");
+      for (int i = 0; i < locals_count; i++) {
+        __ push(ip);
       }
     }
-  }
 
-  Variable* arguments = fun->scope()->arguments()->AsVariable();
-  if (arguments != NULL) {
-    // Function uses arguments object.
-    Comment cmnt(masm_, "[ Allocate arguments object");
-    if (!function_in_register) {
-      // Load this again, if it's used by the local context below.
-      __ ldr(r3, MemOperand(fp, JavaScriptFrameConstants::kFunctionOffset));
-    } else {
-      __ mov(r3, r1);
+    bool function_in_register = true;
+
+    // Possibly allocate a local context.
+    if (fun->scope()->num_heap_slots() > 0) {
+      Comment cmnt(masm_, "[ Allocate local context");
+      // Argument to NewContext is the function, which is in r1.
+      __ push(r1);
+      __ CallRuntime(Runtime::kNewContext, 1);
+      function_in_register = false;
+      // Context is returned in both r0 and cp.  It replaces the context
+      // passed to us.  It's saved in the stack and kept live in cp.
+      __ str(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
+      // Copy any necessary parameters into the context.
+      int num_parameters = fun->scope()->num_parameters();
+      for (int i = 0; i < num_parameters; i++) {
+        Slot* slot = fun->scope()->parameter(i)->slot();
+        if (slot != NULL && slot->type() == Slot::CONTEXT) {
+          int parameter_offset = StandardFrameConstants::kCallerSPOffset +
+                                   (num_parameters - 1 - i) * kPointerSize;
+          // Load parameter from stack.
+          __ ldr(r0, MemOperand(fp, parameter_offset));
+          // Store it in the context.
+          __ mov(r1, Operand(Context::SlotOffset(slot->index())));
+          __ str(r0, MemOperand(cp, r1));
+          // Update the write barrier. This clobbers all involved
+          // registers, so we have use a third register to avoid
+          // clobbering cp.
+          __ mov(r2, Operand(cp));
+          __ RecordWrite(r2, r1, r0);
+        }
+      }
     }
-    // Receiver is just before the parameters on the caller's stack.
-    __ add(r2, fp, Operand(StandardFrameConstants::kCallerSPOffset +
-                               fun->num_parameters() * kPointerSize));
-    __ mov(r1, Operand(Smi::FromInt(fun->num_parameters())));
-    __ stm(db_w, sp, r3.bit() | r2.bit() | r1.bit());
 
-    // Arguments to ArgumentsAccessStub:
-    //   function, receiver address, parameter count.
-    // The stub will rewrite receiever and parameter count if the previous
-    // stack frame was an arguments adapter frame.
-    ArgumentsAccessStub stub(ArgumentsAccessStub::NEW_OBJECT);
-    __ CallStub(&stub);
-    // Duplicate the value; move-to-slot operation might clobber registers.
-    __ mov(r3, r0);
-    Move(arguments->slot(), r0, r1, r2);
-    Slot* dot_arguments_slot =
-        fun->scope()->arguments_shadow()->AsVariable()->slot();
-    Move(dot_arguments_slot, r3, r1, r2);
+    Variable* arguments = fun->scope()->arguments()->AsVariable();
+    if (arguments != NULL) {
+      // Function uses arguments object.
+      Comment cmnt(masm_, "[ Allocate arguments object");
+      if (!function_in_register) {
+        // Load this again, if it's used by the local context below.
+        __ ldr(r3, MemOperand(fp, JavaScriptFrameConstants::kFunctionOffset));
+      } else {
+        __ mov(r3, r1);
+      }
+      // Receiver is just before the parameters on the caller's stack.
+      __ add(r2, fp, Operand(StandardFrameConstants::kCallerSPOffset +
+                             fun->num_parameters() * kPointerSize));
+      __ mov(r1, Operand(Smi::FromInt(fun->num_parameters())));
+      __ stm(db_w, sp, r3.bit() | r2.bit() | r1.bit());
+
+      // Arguments to ArgumentsAccessStub:
+      //   function, receiver address, parameter count.
+      // The stub will rewrite receiever and parameter count if the previous
+      // stack frame was an arguments adapter frame.
+      ArgumentsAccessStub stub(ArgumentsAccessStub::NEW_OBJECT);
+      __ CallStub(&stub);
+      // Duplicate the value; move-to-slot operation might clobber registers.
+      __ mov(r3, r0);
+      Move(arguments->slot(), r0, r1, r2);
+      Slot* dot_arguments_slot =
+          fun->scope()->arguments_shadow()->AsVariable()->slot();
+      Move(dot_arguments_slot, r3, r1, r2);
+    }
   }
 
   // Check the stack for overflow or break request.
@@ -133,15 +143,15 @@ void FullCodeGenerator::Generate(FunctionLiteral* fun) {
   // added to the implicit 8 byte offset that always applies to operations
   // with pc and gives a return address 12 bytes down.
   { Comment cmnt(masm_, "[ Stack check");
-  __ LoadRoot(r2, Heap::kStackLimitRootIndex);
-  __ add(lr, pc, Operand(Assembler::kInstrSize));
-  __ cmp(sp, Operand(r2));
-  StackCheckStub stub;
-  __ mov(pc,
-         Operand(reinterpret_cast<intptr_t>(stub.GetCode().location()),
-                 RelocInfo::CODE_TARGET),
-         LeaveCC,
-         lo);
+    __ LoadRoot(r2, Heap::kStackLimitRootIndex);
+    __ add(lr, pc, Operand(Assembler::kInstrSize));
+    __ cmp(sp, Operand(r2));
+    StackCheckStub stub;
+    __ mov(pc,
+           Operand(reinterpret_cast<intptr_t>(stub.GetCode().location()),
+                   RelocInfo::CODE_TARGET),
+           LeaveCC,
+           lo);
   }
 
   { Comment cmnt(masm_, "[ Declarations");
@@ -581,7 +591,8 @@ void FullCodeGenerator::VisitDeclaration(Declaration* decl) {
           int offset = Context::SlotOffset(slot->index());
           __ mov(r2, Operand(offset));
           // We know that we have written a function, which is not a smi.
-          __ RecordWrite(cp, r2, result_register());
+          __ mov(r1, Operand(cp));
+          __ RecordWrite(r1, r2, result_register());
         }
         break;
 
@@ -1368,6 +1379,46 @@ void FullCodeGenerator::VisitUnaryOperation(UnaryOperation* expr) {
       __ push(r0);
       __ InvokeBuiltin(Builtins::TO_NUMBER, CALL_JS);
       __ bind(&no_conversion);
+      Apply(context_, result_register());
+      break;
+    }
+
+    case Token::SUB: {
+      Comment cmt(masm_, "[ UnaryOperation (SUB)");
+      bool overwrite =
+          (expr->expression()->AsBinaryOperation() != NULL &&
+           expr->expression()->AsBinaryOperation()->ResultOverwriteAllowed());
+      GenericUnaryOpStub stub(Token::SUB, overwrite);
+      // GenericUnaryOpStub expects the argument to be in the
+      // accumulator register r0.
+      VisitForValue(expr->expression(), kAccumulator);
+      __ CallStub(&stub);
+      Apply(context_, r0);
+      break;
+    }
+
+    case Token::BIT_NOT: {
+      Comment cmt(masm_, "[ UnaryOperation (BIT_NOT)");
+      bool overwrite =
+          (expr->expression()->AsBinaryOperation() != NULL &&
+           expr->expression()->AsBinaryOperation()->ResultOverwriteAllowed());
+      GenericUnaryOpStub stub(Token::BIT_NOT, overwrite);
+      // GenericUnaryOpStub expects the argument to be in the
+      // accumulator register r0.
+      VisitForValue(expr->expression(), kAccumulator);
+      // Avoid calling the stub for Smis.
+      Label smi, done;
+      __ tst(result_register(), Operand(kSmiTagMask));
+      __ b(eq, &smi);
+      // Non-smi: call stub leaving result in accumulator register.
+      __ CallStub(&stub);
+      __ b(&done);
+      // Perform operation directly on Smis.
+      __ bind(&smi);
+      __ mvn(result_register(), Operand(result_register()));
+      // Bit-clear inverted smi-tag.
+      __ bic(result_register(), result_register(), Operand(kSmiTagMask));
+      __ bind(&done);
       Apply(context_, result_register());
       break;
     }

@@ -121,12 +121,13 @@ CodeGenState::~CodeGenState() {
 // -------------------------------------------------------------------------
 // CodeGenerator implementation
 
-CodeGenerator::CodeGenerator(int buffer_size, Handle<Script> script,
+CodeGenerator::CodeGenerator(MacroAssembler* masm,
+                             Handle<Script> script,
                              bool is_eval)
     : is_eval_(is_eval),
       script_(script),
       deferred_(8),
-      masm_(new MacroAssembler(NULL, buffer_size)),
+      masm_(masm),
       scope_(NULL),
       frame_(NULL),
       allocator_(NULL),
@@ -142,7 +143,9 @@ CodeGenerator::CodeGenerator(int buffer_size, Handle<Script> script,
 // r1: called JS function
 // cp: callee's context
 
-void CodeGenerator::GenCode(FunctionLiteral* fun) {
+void CodeGenerator::Generate(FunctionLiteral* fun,
+                             Mode mode,
+                             CompilationInfo* info) {
   // Record the position for debugging purposes.
   CodeForFunctionPosition(fun);
 
@@ -168,8 +171,7 @@ void CodeGenerator::GenCode(FunctionLiteral* fun) {
     // r1: called JS function
     // cp: callee's context
     allocator_->Initialize();
-    frame_->Enter();
-    // tos: code slot
+
 #ifdef DEBUG
     if (strlen(FLAG_stop_at) > 0 &&
         fun->name()->IsEqualTo(CStrVector(FLAG_stop_at))) {
@@ -178,103 +180,117 @@ void CodeGenerator::GenCode(FunctionLiteral* fun) {
     }
 #endif
 
-    // Allocate space for locals and initialize them.  This also checks
-    // for stack overflow.
-    frame_->AllocateStackSlots();
+    if (mode == PRIMARY) {
+      frame_->Enter();
+      // tos: code slot
+
+      // Allocate space for locals and initialize them.  This also checks
+      // for stack overflow.
+      frame_->AllocateStackSlots();
+
+      VirtualFrame::SpilledScope spilled_scope;
+      int heap_slots = scope_->num_heap_slots();
+      if (heap_slots > 0) {
+        // Allocate local context.
+        // Get outer context and create a new context based on it.
+        __ ldr(r0, frame_->Function());
+        frame_->EmitPush(r0);
+        if (heap_slots <= FastNewContextStub::kMaximumSlots) {
+          FastNewContextStub stub(heap_slots);
+          frame_->CallStub(&stub, 1);
+        } else {
+          frame_->CallRuntime(Runtime::kNewContext, 1);
+        }
+
+#ifdef DEBUG
+        JumpTarget verified_true;
+        __ cmp(r0, Operand(cp));
+        verified_true.Branch(eq);
+        __ stop("NewContext: r0 is expected to be the same as cp");
+        verified_true.Bind();
+#endif
+        // Update context local.
+        __ str(cp, frame_->Context());
+      }
+
+      // TODO(1241774): Improve this code:
+      // 1) only needed if we have a context
+      // 2) no need to recompute context ptr every single time
+      // 3) don't copy parameter operand code from SlotOperand!
+      {
+        Comment cmnt2(masm_, "[ copy context parameters into .context");
+
+        // Note that iteration order is relevant here! If we have the same
+        // parameter twice (e.g., function (x, y, x)), and that parameter
+        // needs to be copied into the context, it must be the last argument
+        // passed to the parameter that needs to be copied. This is a rare
+        // case so we don't check for it, instead we rely on the copying
+        // order: such a parameter is copied repeatedly into the same
+        // context location and thus the last value is what is seen inside
+        // the function.
+        for (int i = 0; i < scope_->num_parameters(); i++) {
+          Variable* par = scope_->parameter(i);
+          Slot* slot = par->slot();
+          if (slot != NULL && slot->type() == Slot::CONTEXT) {
+            // No parameters in global scope.
+            ASSERT(!scope_->is_global_scope());
+            __ ldr(r1, frame_->ParameterAt(i));
+            // Loads r2 with context; used below in RecordWrite.
+            __ str(r1, SlotOperand(slot, r2));
+            // Load the offset into r3.
+            int slot_offset =
+                FixedArray::kHeaderSize + slot->index() * kPointerSize;
+            __ mov(r3, Operand(slot_offset));
+            __ RecordWrite(r2, r3, r1);
+          }
+        }
+      }
+
+      // Store the arguments object.  This must happen after context
+      // initialization because the arguments object may be stored in the
+      // context.
+      if (scope_->arguments() != NULL) {
+        Comment cmnt(masm_, "[ allocate arguments object");
+        ASSERT(scope_->arguments_shadow() != NULL);
+        Variable* arguments = scope_->arguments()->var();
+        Variable* shadow = scope_->arguments_shadow()->var();
+        ASSERT(arguments != NULL && arguments->slot() != NULL);
+        ASSERT(shadow != NULL && shadow->slot() != NULL);
+        ArgumentsAccessStub stub(ArgumentsAccessStub::NEW_OBJECT);
+        __ ldr(r2, frame_->Function());
+        // The receiver is below the arguments, the return address, and the
+        // frame pointer on the stack.
+        const int kReceiverDisplacement = 2 + scope_->num_parameters();
+        __ add(r1, fp, Operand(kReceiverDisplacement * kPointerSize));
+        __ mov(r0, Operand(Smi::FromInt(scope_->num_parameters())));
+        frame_->Adjust(3);
+        __ stm(db_w, sp, r0.bit() | r1.bit() | r2.bit());
+        frame_->CallStub(&stub, 3);
+        frame_->EmitPush(r0);
+        StoreToSlot(arguments->slot(), NOT_CONST_INIT);
+        StoreToSlot(shadow->slot(), NOT_CONST_INIT);
+        frame_->Drop();  // Value is no longer needed.
+      }
+
+      // Initialize ThisFunction reference if present.
+      if (scope_->is_function_scope() && scope_->function() != NULL) {
+        __ mov(ip, Operand(Factory::the_hole_value()));
+        frame_->EmitPush(ip);
+        StoreToSlot(scope_->function()->slot(), NOT_CONST_INIT);
+      }
+    } else {
+      // When used as the secondary compiler for splitting, r1, cp,
+      // fp, and lr have been pushed on the stack.  Adjust the virtual
+      // frame to match this state.
+      frame_->Adjust(4);
+      allocator_->Unuse(r1);
+      allocator_->Unuse(lr);
+    }
+
     // Initialize the function return target after the locals are set
     // up, because it needs the expected frame height from the frame.
     function_return_.set_direction(JumpTarget::BIDIRECTIONAL);
     function_return_is_shadowed_ = false;
-
-    VirtualFrame::SpilledScope spilled_scope;
-    int heap_slots = scope_->num_heap_slots();
-    if (heap_slots > 0) {
-      // Allocate local context.
-      // Get outer context and create a new context based on it.
-      __ ldr(r0, frame_->Function());
-      frame_->EmitPush(r0);
-      if (heap_slots <= FastNewContextStub::kMaximumSlots) {
-        FastNewContextStub stub(heap_slots);
-        frame_->CallStub(&stub, 1);
-      } else {
-        frame_->CallRuntime(Runtime::kNewContext, 1);
-      }
-
-#ifdef DEBUG
-      JumpTarget verified_true;
-      __ cmp(r0, Operand(cp));
-      verified_true.Branch(eq);
-      __ stop("NewContext: r0 is expected to be the same as cp");
-      verified_true.Bind();
-#endif
-      // Update context local.
-      __ str(cp, frame_->Context());
-    }
-
-    // TODO(1241774): Improve this code:
-    // 1) only needed if we have a context
-    // 2) no need to recompute context ptr every single time
-    // 3) don't copy parameter operand code from SlotOperand!
-    {
-      Comment cmnt2(masm_, "[ copy context parameters into .context");
-
-      // Note that iteration order is relevant here! If we have the same
-      // parameter twice (e.g., function (x, y, x)), and that parameter
-      // needs to be copied into the context, it must be the last argument
-      // passed to the parameter that needs to be copied. This is a rare
-      // case so we don't check for it, instead we rely on the copying
-      // order: such a parameter is copied repeatedly into the same
-      // context location and thus the last value is what is seen inside
-      // the function.
-      for (int i = 0; i < scope_->num_parameters(); i++) {
-        Variable* par = scope_->parameter(i);
-        Slot* slot = par->slot();
-        if (slot != NULL && slot->type() == Slot::CONTEXT) {
-          ASSERT(!scope_->is_global_scope());  // no parameters in global scope
-          __ ldr(r1, frame_->ParameterAt(i));
-          // Loads r2 with context; used below in RecordWrite.
-          __ str(r1, SlotOperand(slot, r2));
-          // Load the offset into r3.
-          int slot_offset =
-              FixedArray::kHeaderSize + slot->index() * kPointerSize;
-          __ mov(r3, Operand(slot_offset));
-          __ RecordWrite(r2, r3, r1);
-        }
-      }
-    }
-
-    // Store the arguments object.  This must happen after context
-    // initialization because the arguments object may be stored in the
-    // context.
-    if (scope_->arguments() != NULL) {
-      Comment cmnt(masm_, "[ allocate arguments object");
-      ASSERT(scope_->arguments_shadow() != NULL);
-      Variable* arguments = scope_->arguments()->var();
-      Variable* shadow = scope_->arguments_shadow()->var();
-      ASSERT(arguments != NULL && arguments->slot() != NULL);
-      ASSERT(shadow != NULL && shadow->slot() != NULL);
-      ArgumentsAccessStub stub(ArgumentsAccessStub::NEW_OBJECT);
-      __ ldr(r2, frame_->Function());
-      // The receiver is below the arguments, the return address, and the
-      // frame pointer on the stack.
-      const int kReceiverDisplacement = 2 + scope_->num_parameters();
-      __ add(r1, fp, Operand(kReceiverDisplacement * kPointerSize));
-      __ mov(r0, Operand(Smi::FromInt(scope_->num_parameters())));
-      frame_->Adjust(3);
-      __ stm(db_w, sp, r0.bit() | r1.bit() | r2.bit());
-      frame_->CallStub(&stub, 3);
-      frame_->EmitPush(r0);
-      StoreToSlot(arguments->slot(), NOT_CONST_INIT);
-      StoreToSlot(shadow->slot(), NOT_CONST_INIT);
-      frame_->Drop();  // Value is no longer needed.
-    }
-
-    // Initialize ThisFunction reference if present.
-    if (scope_->is_function_scope() && scope_->function() != NULL) {
-      __ mov(ip, Operand(Factory::the_hole_value()));
-      frame_->EmitPush(ip);
-      StoreToSlot(scope_->function()->slot(), NOT_CONST_INIT);
-    }
 
     // Generate code to 'execute' declarations and initialize functions
     // (source elements). In case of an illegal redeclaration we need to
@@ -2286,7 +2302,8 @@ void CodeGenerator::VisitDebuggerStatement(DebuggerStatement* node) {
   Comment cmnt(masm_, "[ DebuggerStatament");
   CodeForStatementPosition(node);
 #ifdef ENABLE_DEBUGGER_SUPPORT
-  frame_->CallRuntime(Runtime::kDebugBreak, 0);
+  DebuggerStatementStub ces;
+  frame_->CallStub(&ces, 0);
 #endif
   // Ignore the return value.
   ASSERT(frame_->height() == original_height);
@@ -2589,13 +2606,12 @@ void CodeGenerator::LoadFromGlobalSlotCheckExtensions(Slot* slot,
   // Load the global object.
   LoadGlobal();
   // Setup the name register.
-  Result name(r2);
   __ mov(r2, Operand(slot->var()->name()));
   // Call IC stub.
   if (typeof_state == INSIDE_TYPEOF) {
-    frame_->CallCodeObject(ic, RelocInfo::CODE_TARGET, &name, 0);
+    frame_->CallCodeObject(ic, RelocInfo::CODE_TARGET, 0);
   } else {
-    frame_->CallCodeObject(ic, RelocInfo::CODE_TARGET_CONTEXT, &name, 0);
+    frame_->CallCodeObject(ic, RelocInfo::CODE_TARGET_CONTEXT, 0);
   }
 
   // Drop the global object. The result is in r0.
@@ -3158,22 +3174,15 @@ void CodeGenerator::VisitCallNew(CallNew* node) {
   }
 
   // r0: the number of arguments.
-  Result num_args(r0);
   __ mov(r0, Operand(arg_count));
-
   // Load the function into r1 as per calling convention.
-  Result function(r1);
   __ ldr(r1, frame_->ElementAt(arg_count + 1));
 
   // Call the construct call builtin that handles allocation and
   // constructor invocation.
   CodeForSourcePosition(node->position());
   Handle<Code> ic(Builtins::builtin(Builtins::JSConstructCall));
-  frame_->CallCodeObject(ic,
-                         RelocInfo::CONSTRUCT_CALL,
-                         &num_args,
-                         &function,
-                         arg_count + 1);
+  frame_->CallCodeObject(ic, RelocInfo::CONSTRUCT_CALL, arg_count + 1);
 
   // Discard old TOS value and push r0 on the stack (same as Pop(), push(r0)).
   __ str(r0, frame_->Top());
@@ -3723,6 +3732,9 @@ void CodeGenerator::VisitUnaryOperation(UnaryOperation* node) {
     frame_->EmitPush(r0);  // r0 has result
 
   } else {
+    bool overwrite =
+        (node->expression()->AsBinaryOperation() != NULL &&
+         node->expression()->AsBinaryOperation()->ResultOverwriteAllowed());
     LoadAndSpill(node->expression());
     frame_->EmitPop(r0);
     switch (op) {
@@ -3733,9 +3745,6 @@ void CodeGenerator::VisitUnaryOperation(UnaryOperation* node) {
         break;
 
       case Token::SUB: {
-        bool overwrite =
-            (node->expression()->AsBinaryOperation() != NULL &&
-             node->expression()->AsBinaryOperation()->ResultOverwriteAllowed());
         GenericUnaryOpStub stub(Token::SUB, overwrite);
         frame_->CallStub(&stub, 0);
         break;
@@ -3748,10 +3757,10 @@ void CodeGenerator::VisitUnaryOperation(UnaryOperation* node) {
         __ tst(r0, Operand(kSmiTagMask));
         smi_label.Branch(eq);
 
-        frame_->EmitPush(r0);
-        frame_->InvokeBuiltin(Builtins::BIT_NOT, CALL_JS, 1);
-
+        GenericUnaryOpStub stub(Token::BIT_NOT, overwrite);
+        frame_->CallStub(&stub, 0);
         continue_label.Jump();
+
         smi_label.Bind();
         __ mvn(r0, Operand(r0));
         __ bic(r0, r0, Operand(kSmiTagMask));  // bit-clear inverted smi-tag
@@ -4330,13 +4339,12 @@ void Reference::GetValue() {
       Variable* var = expression_->AsVariableProxy()->AsVariable();
       Handle<Code> ic(Builtins::builtin(Builtins::LoadIC_Initialize));
       // Setup the name register.
-      Result name_reg(r2);
       __ mov(r2, Operand(name));
       ASSERT(var == NULL || var->is_global());
       RelocInfo::Mode rmode = (var == NULL)
                             ? RelocInfo::CODE_TARGET
                             : RelocInfo::CODE_TARGET_CONTEXT;
-      frame->CallCodeObject(ic, rmode, &name_reg, 0);
+      frame->CallCodeObject(ic, rmode, 0);
       frame->EmitPush(r0);
       break;
     }
@@ -4377,6 +4385,7 @@ void Reference::SetValue(InitState init_state) {
       Comment cmnt(masm, "[ Store to Slot");
       Slot* slot = expression_->AsVariableProxy()->AsVariable()->slot();
       cgen_->StoreToSlot(slot, init_state);
+      cgen_->UnloadReference(this);
       break;
     }
 
@@ -4386,18 +4395,12 @@ void Reference::SetValue(InitState init_state) {
       Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Initialize));
       Handle<String> name(GetName());
 
-      Result value(r0);
       frame->EmitPop(r0);
-
       // Setup the name register.
-      Result property_name(r2);
       __ mov(r2, Operand(name));
-      frame->CallCodeObject(ic,
-                            RelocInfo::CODE_TARGET,
-                            &value,
-                            &property_name,
-                            0);
+      frame->CallCodeObject(ic, RelocInfo::CODE_TARGET, 0);
       frame->EmitPush(r0);
+      cgen_->UnloadReference(this);
       break;
     }
 
@@ -4410,17 +4413,16 @@ void Reference::SetValue(InitState init_state) {
       // Call IC code.
       Handle<Code> ic(Builtins::builtin(Builtins::KeyedStoreIC_Initialize));
       // TODO(1222589): Make the IC grab the values from the stack.
-      Result value(r0);
       frame->EmitPop(r0);  // value
-      frame->CallCodeObject(ic, RelocInfo::CODE_TARGET, &value, 0);
+      frame->CallCodeObject(ic, RelocInfo::CODE_TARGET, 0);
       frame->EmitPush(r0);
+      cgen_->UnloadReference(this);
       break;
     }
 
     default:
       UNREACHABLE();
   }
-  cgen_->UnloadReference(this);
 }
 
 
@@ -6102,59 +6104,96 @@ void StackCheckStub::Generate(MacroAssembler* masm) {
 
 
 void GenericUnaryOpStub::Generate(MacroAssembler* masm) {
-  ASSERT(op_ == Token::SUB);
+  Label slow, done;
 
-  Label undo;
-  Label slow;
-  Label not_smi;
+  if (op_ == Token::SUB) {
+    // Check whether the value is a smi.
+    Label try_float;
+    __ tst(r0, Operand(kSmiTagMask));
+    __ b(ne, &try_float);
 
-  // Enter runtime system if the value is not a smi.
-  __ tst(r0, Operand(kSmiTagMask));
-  __ b(ne, &not_smi);
+    // Go slow case if the value of the expression is zero
+    // to make sure that we switch between 0 and -0.
+    __ cmp(r0, Operand(0));
+    __ b(eq, &slow);
 
-  // Enter runtime system if the value of the expression is zero
-  // to make sure that we switch between 0 and -0.
-  __ cmp(r0, Operand(0));
-  __ b(eq, &slow);
+    // The value of the expression is a smi that is not zero.  Try
+    // optimistic subtraction '0 - value'.
+    __ rsb(r1, r0, Operand(0), SetCC);
+    __ b(vs, &slow);
 
-  // The value of the expression is a smi that is not zero.  Try
-  // optimistic subtraction '0 - value'.
-  __ rsb(r1, r0, Operand(0), SetCC);
-  __ b(vs, &slow);
+    __ mov(r0, Operand(r1));  // Set r0 to result.
+    __ b(&done);
 
-  __ mov(r0, Operand(r1));  // Set r0 to result.
+    __ bind(&try_float);
+    __ CompareObjectType(r0, r1, r1, HEAP_NUMBER_TYPE);
+    __ b(ne, &slow);
+    // r0 is a heap number.  Get a new heap number in r1.
+    if (overwrite_) {
+      __ ldr(r2, FieldMemOperand(r0, HeapNumber::kExponentOffset));
+      __ eor(r2, r2, Operand(HeapNumber::kSignMask));  // Flip sign.
+      __ str(r2, FieldMemOperand(r0, HeapNumber::kExponentOffset));
+    } else {
+      AllocateHeapNumber(masm, &slow, r1, r2, r3);
+      __ ldr(r3, FieldMemOperand(r0, HeapNumber::kMantissaOffset));
+      __ ldr(r2, FieldMemOperand(r0, HeapNumber::kExponentOffset));
+      __ str(r3, FieldMemOperand(r1, HeapNumber::kMantissaOffset));
+      __ eor(r2, r2, Operand(HeapNumber::kSignMask));  // Flip sign.
+      __ str(r2, FieldMemOperand(r1, HeapNumber::kExponentOffset));
+      __ mov(r0, Operand(r1));
+    }
+  } else if (op_ == Token::BIT_NOT) {
+    // Check if the operand is a heap number.
+    __ CompareObjectType(r0, r1, r1, HEAP_NUMBER_TYPE);
+    __ b(ne, &slow);
+
+    // Convert the heap number is r0 to an untagged integer in r1.
+    GetInt32(masm, r0, r1, r2, r3, &slow);
+
+    // Do the bitwise operation (move negated) and check if the result
+    // fits in a smi.
+    Label try_float;
+    __ mvn(r1, Operand(r1));
+    __ add(r2, r1, Operand(0x40000000), SetCC);
+    __ b(mi, &try_float);
+    __ mov(r0, Operand(r1, LSL, kSmiTagSize));
+    __ b(&done);
+
+    __ bind(&try_float);
+    if (!overwrite_) {
+      // Allocate a fresh heap number, but don't overwrite r0 until
+      // we're sure we can do it without going through the slow case
+      // that needs the value in r0.
+      AllocateHeapNumber(masm, &slow, r2, r3, r4);
+      __ mov(r0, Operand(r2));
+    }
+
+    // WriteInt32ToHeapNumberStub does not trigger GC, so we do not
+    // have to set up a frame.
+    WriteInt32ToHeapNumberStub stub(r1, r0, r2);
+    __ push(lr);
+    __ Call(stub.GetCode(), RelocInfo::CODE_TARGET);
+    __ pop(lr);
+  } else {
+    UNIMPLEMENTED();
+  }
+
+  __ bind(&done);
   __ StubReturn(1);
 
-  // Enter runtime system.
+  // Handle the slow case by jumping to the JavaScript builtin.
   __ bind(&slow);
   __ push(r0);
-  __ InvokeBuiltin(Builtins::UNARY_MINUS, JUMP_JS);
-
-  __ bind(&not_smi);
-  __ CompareObjectType(r0, r1, r1, HEAP_NUMBER_TYPE);
-  __ b(ne, &slow);
-  // r0 is a heap number.  Get a new heap number in r1.
-  if (overwrite_) {
-    __ ldr(r2, FieldMemOperand(r0, HeapNumber::kExponentOffset));
-    __ eor(r2, r2, Operand(HeapNumber::kSignMask));  // Flip sign.
-    __ str(r2, FieldMemOperand(r0, HeapNumber::kExponentOffset));
-  } else {
-    AllocateHeapNumber(masm, &slow, r1, r2, r3);
-    __ ldr(r3, FieldMemOperand(r0, HeapNumber::kMantissaOffset));
-    __ ldr(r2, FieldMemOperand(r0, HeapNumber::kExponentOffset));
-    __ str(r3, FieldMemOperand(r1, HeapNumber::kMantissaOffset));
-    __ eor(r2, r2, Operand(HeapNumber::kSignMask));  // Flip sign.
-    __ str(r2, FieldMemOperand(r1, HeapNumber::kExponentOffset));
-    __ mov(r0, Operand(r1));
+  switch (op_) {
+    case Token::SUB:
+      __ InvokeBuiltin(Builtins::UNARY_MINUS, JUMP_JS);
+      break;
+    case Token::BIT_NOT:
+      __ InvokeBuiltin(Builtins::BIT_NOT, JUMP_JS);
+      break;
+    default:
+      UNREACHABLE();
   }
-  __ StubReturn(1);
-}
-
-
-int CEntryStub::MinorKey() {
-  ASSERT(result_size_ <= 2);
-  // Result returned in r0 or r0+r1 by default.
-  return 0;
 }
 
 
@@ -6265,7 +6304,6 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
                               Label* throw_normal_exception,
                               Label* throw_termination_exception,
                               Label* throw_out_of_memory_exception,
-                              ExitFrame::Mode mode,
                               bool do_gc,
                               bool always_allocate) {
   // r0: result parameter for PerformGC, if any
@@ -6325,7 +6363,7 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
   // r0:r1: result
   // sp: stack pointer
   // fp: frame pointer
-  __ LeaveExitFrame(mode);
+  __ LeaveExitFrame(mode_);
 
   // check if we should retry or throw exception
   Label retry;
@@ -6358,7 +6396,7 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
 }
 
 
-void CEntryStub::GenerateBody(MacroAssembler* masm, bool is_debug_break) {
+void CEntryStub::Generate(MacroAssembler* masm) {
   // Called from JavaScript; parameters are on stack as if calling JS function
   // r0: number of arguments including receiver
   // r1: pointer to builtin function
@@ -6366,17 +6404,15 @@ void CEntryStub::GenerateBody(MacroAssembler* masm, bool is_debug_break) {
   // sp: stack pointer  (restored as callee's sp after C call)
   // cp: current context  (C callee-saved)
 
+  // Result returned in r0 or r0+r1 by default.
+
   // NOTE: Invocations of builtins may return failure objects
   // instead of a proper result. The builtin entry handles
   // this by performing a garbage collection and retrying the
   // builtin once.
 
-  ExitFrame::Mode mode = is_debug_break
-      ? ExitFrame::MODE_DEBUG
-      : ExitFrame::MODE_NORMAL;
-
   // Enter the exit frame that transitions from JavaScript to C++.
-  __ EnterExitFrame(mode);
+  __ EnterExitFrame(mode_);
 
   // r4: number of arguments (C callee-saved)
   // r5: pointer to builtin function (C callee-saved)
@@ -6391,7 +6427,6 @@ void CEntryStub::GenerateBody(MacroAssembler* masm, bool is_debug_break) {
                &throw_normal_exception,
                &throw_termination_exception,
                &throw_out_of_memory_exception,
-               mode,
                false,
                false);
 
@@ -6400,7 +6435,6 @@ void CEntryStub::GenerateBody(MacroAssembler* masm, bool is_debug_break) {
                &throw_normal_exception,
                &throw_termination_exception,
                &throw_out_of_memory_exception,
-               mode,
                true,
                false);
 
@@ -6411,7 +6445,6 @@ void CEntryStub::GenerateBody(MacroAssembler* masm, bool is_debug_break) {
                &throw_normal_exception,
                &throw_termination_exception,
                &throw_out_of_memory_exception,
-               mode,
                true,
                true);
 
@@ -6445,8 +6478,7 @@ void JSEntryStub::GenerateBody(MacroAssembler* masm, bool is_construct) {
   // r1: function
   // r2: receiver
   // r3: argc
-  __ add(r4, sp, Operand((kNumCalleeSaved + 1)*kPointerSize));
-  __ ldr(r4, MemOperand(r4));  // argv
+  __ ldr(r4, MemOperand(sp, (kNumCalleeSaved + 1) * kPointerSize));  // argv
 
   // Push a frame with special values setup to mark it as an entry frame.
   // r0: code entry

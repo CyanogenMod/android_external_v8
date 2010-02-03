@@ -103,13 +103,13 @@ CodeGenState::~CodeGenState() {
 // -------------------------------------------------------------------------
 // CodeGenerator implementation
 
-CodeGenerator::CodeGenerator(int buffer_size,
+CodeGenerator::CodeGenerator(MacroAssembler* masm,
                              Handle<Script> script,
                              bool is_eval)
     : is_eval_(is_eval),
       script_(script),
       deferred_(8),
-      masm_(new MacroAssembler(NULL, buffer_size)),
+      masm_(masm),
       scope_(NULL),
       frame_(NULL),
       allocator_(NULL),
@@ -126,7 +126,9 @@ CodeGenerator::CodeGenerator(int buffer_size,
 // edi: called JS function
 // esi: callee's context
 
-void CodeGenerator::GenCode(FunctionLiteral* fun) {
+void CodeGenerator::Generate(FunctionLiteral* fun,
+                             Mode mode,
+                             CompilationInfo* info) {
   // Record the position for debugging purposes.
   CodeForFunctionPosition(fun);
 
@@ -143,7 +145,7 @@ void CodeGenerator::GenCode(FunctionLiteral* fun) {
   set_in_spilled_code(false);
 
   // Adjust for function-level loop nesting.
-  loop_nesting_ += fun->loop_nesting();
+  loop_nesting_ += info->loop_nesting();
 
   JumpTarget::set_compiling_deferred_code(false);
 
@@ -167,95 +169,105 @@ void CodeGenerator::GenCode(FunctionLiteral* fun) {
     // edi: called JS function
     // esi: callee's context
     allocator_->Initialize();
-    frame_->Enter();
 
-    // Allocate space for locals and initialize them.
-    frame_->AllocateStackSlots();
+    if (mode == PRIMARY) {
+      frame_->Enter();
+
+      // Allocate space for locals and initialize them.
+      frame_->AllocateStackSlots();
+
+      // Allocate the local context if needed.
+      int heap_slots = scope_->num_heap_slots() - Context::MIN_CONTEXT_SLOTS;
+      if (heap_slots > 0) {
+        Comment cmnt(masm_, "[ allocate local context");
+        // Allocate local context.
+        // Get outer context and create a new context based on it.
+        frame_->PushFunction();
+        Result context;
+        if (heap_slots <= FastNewContextStub::kMaximumSlots) {
+          FastNewContextStub stub(heap_slots);
+          context = frame_->CallStub(&stub, 1);
+        } else {
+          context = frame_->CallRuntime(Runtime::kNewContext, 1);
+        }
+
+        // Update context local.
+        frame_->SaveContextRegister();
+
+        // Verify that the runtime call result and esi agree.
+        if (FLAG_debug_code) {
+          __ cmp(context.reg(), Operand(esi));
+          __ Assert(equal, "Runtime::NewContext should end up in esi");
+        }
+      }
+
+      // TODO(1241774): Improve this code:
+      // 1) only needed if we have a context
+      // 2) no need to recompute context ptr every single time
+      // 3) don't copy parameter operand code from SlotOperand!
+      {
+        Comment cmnt2(masm_, "[ copy context parameters into .context");
+
+        // Note that iteration order is relevant here! If we have the same
+        // parameter twice (e.g., function (x, y, x)), and that parameter
+        // needs to be copied into the context, it must be the last argument
+        // passed to the parameter that needs to be copied. This is a rare
+        // case so we don't check for it, instead we rely on the copying
+        // order: such a parameter is copied repeatedly into the same
+        // context location and thus the last value is what is seen inside
+        // the function.
+        for (int i = 0; i < scope_->num_parameters(); i++) {
+          Variable* par = scope_->parameter(i);
+          Slot* slot = par->slot();
+          if (slot != NULL && slot->type() == Slot::CONTEXT) {
+            // The use of SlotOperand below is safe in unspilled code
+            // because the slot is guaranteed to be a context slot.
+            //
+            // There are no parameters in the global scope.
+            ASSERT(!scope_->is_global_scope());
+            frame_->PushParameterAt(i);
+            Result value = frame_->Pop();
+            value.ToRegister();
+
+            // SlotOperand loads context.reg() with the context object
+            // stored to, used below in RecordWrite.
+            Result context = allocator_->Allocate();
+            ASSERT(context.is_valid());
+            __ mov(SlotOperand(slot, context.reg()), value.reg());
+            int offset = FixedArray::kHeaderSize + slot->index() * kPointerSize;
+            Result scratch = allocator_->Allocate();
+            ASSERT(scratch.is_valid());
+            frame_->Spill(context.reg());
+            frame_->Spill(value.reg());
+            __ RecordWrite(context.reg(), offset, value.reg(), scratch.reg());
+          }
+        }
+      }
+
+      // Store the arguments object.  This must happen after context
+      // initialization because the arguments object may be stored in
+      // the context.
+      if (ArgumentsMode() != NO_ARGUMENTS_ALLOCATION) {
+        StoreArgumentsObject(true);
+      }
+
+      // Initialize ThisFunction reference if present.
+      if (scope_->is_function_scope() && scope_->function() != NULL) {
+        frame_->Push(Factory::the_hole_value());
+        StoreToSlot(scope_->function()->slot(), NOT_CONST_INIT);
+      }
+    } else {
+      // When used as the secondary compiler for splitting, ebp, esi,
+      // and edi have been pushed on the stack.  Adjust the virtual
+      // frame to match this state.
+      frame_->Adjust(3);
+      allocator_->Unuse(edi);
+    }
+
     // Initialize the function return target after the locals are set
     // up, because it needs the expected frame height from the frame.
     function_return_.set_direction(JumpTarget::BIDIRECTIONAL);
     function_return_is_shadowed_ = false;
-
-    // Allocate the local context if needed.
-    int heap_slots = scope_->num_heap_slots() - Context::MIN_CONTEXT_SLOTS;
-    if (heap_slots > 0) {
-      Comment cmnt(masm_, "[ allocate local context");
-      // Allocate local context.
-      // Get outer context and create a new context based on it.
-      frame_->PushFunction();
-      Result context;
-      if (heap_slots <= FastNewContextStub::kMaximumSlots) {
-        FastNewContextStub stub(heap_slots);
-        context = frame_->CallStub(&stub, 1);
-      } else {
-        context = frame_->CallRuntime(Runtime::kNewContext, 1);
-      }
-
-      // Update context local.
-      frame_->SaveContextRegister();
-
-      // Verify that the runtime call result and esi agree.
-      if (FLAG_debug_code) {
-        __ cmp(context.reg(), Operand(esi));
-        __ Assert(equal, "Runtime::NewContext should end up in esi");
-      }
-    }
-
-    // TODO(1241774): Improve this code:
-    // 1) only needed if we have a context
-    // 2) no need to recompute context ptr every single time
-    // 3) don't copy parameter operand code from SlotOperand!
-    {
-      Comment cmnt2(masm_, "[ copy context parameters into .context");
-
-      // Note that iteration order is relevant here! If we have the same
-      // parameter twice (e.g., function (x, y, x)), and that parameter
-      // needs to be copied into the context, it must be the last argument
-      // passed to the parameter that needs to be copied. This is a rare
-      // case so we don't check for it, instead we rely on the copying
-      // order: such a parameter is copied repeatedly into the same
-      // context location and thus the last value is what is seen inside
-      // the function.
-      for (int i = 0; i < scope_->num_parameters(); i++) {
-        Variable* par = scope_->parameter(i);
-        Slot* slot = par->slot();
-        if (slot != NULL && slot->type() == Slot::CONTEXT) {
-          // The use of SlotOperand below is safe in unspilled code
-          // because the slot is guaranteed to be a context slot.
-          //
-          // There are no parameters in the global scope.
-          ASSERT(!scope_->is_global_scope());
-          frame_->PushParameterAt(i);
-          Result value = frame_->Pop();
-          value.ToRegister();
-
-          // SlotOperand loads context.reg() with the context object
-          // stored to, used below in RecordWrite.
-          Result context = allocator_->Allocate();
-          ASSERT(context.is_valid());
-          __ mov(SlotOperand(slot, context.reg()), value.reg());
-          int offset = FixedArray::kHeaderSize + slot->index() * kPointerSize;
-          Result scratch = allocator_->Allocate();
-          ASSERT(scratch.is_valid());
-          frame_->Spill(context.reg());
-          frame_->Spill(value.reg());
-          __ RecordWrite(context.reg(), offset, value.reg(), scratch.reg());
-        }
-      }
-    }
-
-    // Store the arguments object.  This must happen after context
-    // initialization because the arguments object may be stored in
-    // the context.
-    if (ArgumentsMode() != NO_ARGUMENTS_ALLOCATION) {
-      StoreArgumentsObject(true);
-    }
-
-    // Initialize ThisFunction reference if present.
-    if (scope_->is_function_scope() && scope_->function() != NULL) {
-      frame_->Push(Factory::the_hole_value());
-      StoreToSlot(scope_->function()->slot(), NOT_CONST_INIT);
-    }
 
     // Generate code to 'execute' declarations and initialize functions
     // (source elements). In case of an illegal redeclaration we need to
@@ -321,7 +333,7 @@ void CodeGenerator::GenCode(FunctionLiteral* fun) {
   }
 
   // Adjust for function-level loop nesting.
-  loop_nesting_ -= fun->loop_nesting();
+  loop_nesting_ -= info->loop_nesting();
 
   // Code generation state must be reset.
   ASSERT(state_ == NULL);
@@ -3901,7 +3913,9 @@ void CodeGenerator::VisitDebuggerStatement(DebuggerStatement* node) {
 #ifdef ENABLE_DEBUGGER_SUPPORT
   // Spill everything, even constants, to the frame.
   frame_->SpillAll();
-  frame_->CallRuntime(Runtime::kDebugBreak, 0);
+
+  DebuggerStatementStub ces;
+  frame_->CallStub(&ces, 0);
   // Ignore the return value.
 #endif
 }
@@ -4470,8 +4484,6 @@ void CodeGenerator::VisitObjectLiteral(ObjectLiteral* node) {
           Load(property->value());
           frame_->Push(key);
           Result ignored = frame_->CallStoreIC();
-          // Drop the duplicated receiver and ignore the result.
-          frame_->Drop();
           break;
         }
         // Fall through
@@ -5134,7 +5146,7 @@ void CodeGenerator::GenerateFastCharCodeAt(ZoneList<Expression*>* args) {
   // flat string in a cons string).  If that is not the case we would rather go
   // to the runtime system now, to flatten the string.
   __ mov(temp.reg(), FieldOperand(object.reg(), ConsString::kSecondOffset));
-  __ cmp(Operand(temp.reg()), Immediate(Handle<String>(Heap::empty_string())));
+  __ cmp(Operand(temp.reg()), Factory::empty_string());
   __ j(not_equal, &slow_case);
   // Get the first of the two strings.
   __ mov(object.reg(), FieldOperand(object.reg(), ConsString::kFirstOffset));
@@ -6704,6 +6716,7 @@ void Reference::SetValue(InitState init_state) {
       Slot* slot = expression_->AsVariableProxy()->AsVariable()->slot();
       ASSERT(slot != NULL);
       cgen_->StoreToSlot(slot, init_state);
+      cgen_->UnloadReference(this);
       break;
     }
 
@@ -6712,6 +6725,7 @@ void Reference::SetValue(InitState init_state) {
       cgen_->frame()->Push(GetName());
       Result answer = cgen_->frame()->CallStoreIC();
       cgen_->frame()->Push(&answer);
+      set_unloaded();
       break;
     }
 
@@ -6814,13 +6828,13 @@ void Reference::SetValue(InitState init_state) {
         __ nop();
         cgen_->frame()->Push(&answer);
       }
+      cgen_->UnloadReference(this);
       break;
     }
 
     default:
       UNREACHABLE();
   }
-  cgen_->UnloadReference(this);
 }
 
 
@@ -8397,8 +8411,12 @@ void ArgumentsAccessStub::GenerateNewObject(MacroAssembler* masm) {
 
 
 void RegExpExecStub::Generate(MacroAssembler* masm) {
-  // Just jump directly to runtime if regexp entry in generated code is turned
-  // off.
+  // Just jump directly to runtime if native RegExp is not selected at compile
+  // time or if regexp entry in generated code is turned off runtime switch or
+  // at compilation.
+#ifndef V8_NATIVE_REGEXP
+  __ TailCallRuntime(ExternalReference(Runtime::kRegExpExec), 4, 1);
+#else  // V8_NATIVE_REGEXP
   if (!FLAG_regexp_entry_native) {
     __ TailCallRuntime(ExternalReference(Runtime::kRegExpExec), 4, 1);
     return;
@@ -8436,12 +8454,12 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   __ j(not_equal, &runtime);
   // Check that the RegExp has been compiled (data contains a fixed array).
   __ mov(ecx, FieldOperand(eax, JSRegExp::kDataOffset));
-#ifdef DEBUG
-  __ test(ecx, Immediate(kSmiTagMask));
-  __ Check(not_zero, "Unexpected type for RegExp data, FixedArray expected");
-  __ CmpObjectType(ecx, FIXED_ARRAY_TYPE, ebx);
-  __ Check(equal, "Unexpected type for RegExp data, FixedArray expected");
-#endif
+  if (FLAG_debug_code) {
+    __ test(ecx, Immediate(kSmiTagMask));
+    __ Check(not_zero, "Unexpected type for RegExp data, FixedArray expected");
+    __ CmpObjectType(ecx, FIXED_ARRAY_TYPE, ebx);
+    __ Check(equal, "Unexpected type for RegExp data, FixedArray expected");
+  }
 
   // ecx: RegExp data (FixedArray)
   // Check the type of the RegExp. Only continue if type is JSRegExp::IRREGEXP.
@@ -8476,13 +8494,12 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   // ecx: RegExp data (FixedArray)
   // edx: Number of capture registers
   // Check that the third argument is a positive smi.
+  // Check that the third argument is a positive smi less than the subject
+  // string length. A negative value will be greater (usigned comparison).
   __ mov(eax, Operand(esp, kPreviousIndexOffset));
-  __ test(eax, Immediate(kSmiTagMask | 0x80000000));
-  __ j(not_zero, &runtime);
-  // Check that it is not greater than the subject string length.
   __ SmiUntag(eax);
   __ cmp(eax, Operand(ebx));
-  __ j(greater, &runtime);
+  __ j(above, &runtime);
 
   // ecx: RegExp data (FixedArray)
   // edx: Number of capture registers
@@ -8524,17 +8541,20 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   // A flat cons string is a cons string where the second part is the empty
   // string. In that case the subject string is just the first part of the cons
   // string. Also in this case the first part of the cons string is known to be
-  // a sequential string.
+  // a sequential string or an external string.
   __ mov(edx, ebx);
   __ and_(edx, kStringRepresentationMask);
   __ cmp(edx, kConsStringTag);
   __ j(not_equal, &runtime);
   __ mov(edx, FieldOperand(eax, ConsString::kSecondOffset));
-  __ cmp(Operand(edx), Immediate(Handle<String>(Heap::empty_string())));
+  __ cmp(Operand(edx), Factory::empty_string());
   __ j(not_equal, &runtime);
   __ mov(eax, FieldOperand(eax, ConsString::kFirstOffset));
   __ mov(ebx, FieldOperand(eax, HeapObject::kMapOffset));
   __ movzx_b(ebx, FieldOperand(ebx, Map::kInstanceTypeOffset));
+  ASSERT_EQ(0, kSeqStringTag);
+  __ test(ebx, Immediate(kStringRepresentationMask));
+  __ j(not_zero, &runtime);
   __ and_(ebx, kStringRepresentationEncodingMask);
 
   __ bind(&seq_string);
@@ -8545,10 +8565,10 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   // it has, the field contains a code object otherwise it contains the hole.
   __ cmp(ebx, kStringTag | kSeqStringTag | kTwoByteStringTag);
   __ j(equal, &seq_two_byte_string);
-#ifdef DEBUG
-  __ cmp(ebx, kStringTag | kSeqStringTag | kAsciiStringTag);
-  __ Check(equal, "Expected sequential ascii string");
-#endif
+  if (FLAG_debug_code) {
+    __ cmp(ebx, kStringTag | kSeqStringTag | kAsciiStringTag);
+    __ Check(equal, "Expected sequential ascii string");
+  }
   __ mov(edx, FieldOperand(ecx, JSRegExp::kDataAsciiCodeOffset));
   __ Set(edi, Immediate(1));  // Type is ascii.
   __ jmp(&check_code);
@@ -8560,23 +8580,24 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   __ Set(edi, Immediate(0));  // Type is two byte.
 
   __ bind(&check_code);
-  // Check that the irregexp code has been generated for If it has, the field
-  // contains a code object otherwise it contains the hole.
+  // Check that the irregexp code has been generated for the actual string
+  // encoding. If it has, the field contains a code object otherwise it contains
+  // the hole.
   __ CmpObjectType(edx, CODE_TYPE, ebx);
   __ j(not_equal, &runtime);
 
   // eax: subject string
   // edx: code
-  // edi: encoding of subject string (1 if ascii 0 if two_byte);
+  // edi: encoding of subject string (1 if ascii, 0 if two_byte);
   // Load used arguments before starting to push arguments for call to native
   // RegExp code to avoid handling changing stack height.
   __ mov(ebx, Operand(esp, kPreviousIndexOffset));
-  __ mov(ecx, Operand(esp, kJSRegExpOffset));
   __ SmiUntag(ebx);  // Previous index from smi.
 
   // eax: subject string
   // ebx: previous index
   // edx: code
+  // edi: encoding of subject string (1 if ascii 0 if two_byte);
   // All checks done. Now push arguments for native regexp code.
   __ IncrementCounter(&Counters::regexp_entry_native, 1);
 
@@ -8604,7 +8625,6 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   __ jmp(&push_rest);
 
   __ bind(&push_two_byte);
-  ASSERT(kShortSize == 2);
   __ lea(ecx, FieldOperand(eax, edi, times_2, SeqTwoByteString::kHeaderSize));
   __ push(ecx);  // Argument 4.
   __ lea(ecx, FieldOperand(eax, ebx, times_2, SeqTwoByteString::kHeaderSize));
@@ -8637,6 +8657,7 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   // Result must now be exception. If there is no pending exception already a
   // stack overflow (on the backtrack stack) was detected in RegExp code but
   // haven't created the exception yet. Handle that in the runtime system.
+  // TODO(592) Rerunning the RegExp to get the stack overflow exception.
   ExternalReference pending_exception(Top::k_pending_exception_address);
   __ mov(eax,
          Operand::StaticVariable(ExternalReference::the_hole_value_location()));
@@ -8653,6 +8674,8 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   __ mov(ecx, FieldOperand(eax, JSRegExp::kDataOffset));
   __ mov(edx, FieldOperand(ecx, JSRegExp::kIrregexpCaptureCountOffset));
   // Calculate number of capture registers (number_of_captures + 1) * 2.
+  ASSERT_EQ(0, kSmiTag);
+  ASSERT_EQ(1, kSmiTagSize + kSmiShiftSize);
   __ add(Operand(edx), Immediate(2));  // edx was a smi.
 
   // edx: Number of capture registers
@@ -8692,7 +8715,7 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   __ sub(Operand(edx), Immediate(1));
   __ j(negative, &done);
   // Read the value from the static offsets vector buffer.
-  __ mov(edi, Operand(ecx, edx, times_pointer_size, 0));
+  __ mov(edi, Operand(ecx, edx, times_int_size, 0));
   // Perform explicit shift
   ASSERT_EQ(0, kSmiTag);
   __ shl(edi, kSmiTagSize);
@@ -8718,6 +8741,7 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   // Do the runtime call to execute the regexp.
   __ bind(&runtime);
   __ TailCallRuntime(ExternalReference(Runtime::kRegExpExec), 4, 1);
+#endif  // V8_NATIVE_REGEXP
 }
 
 
@@ -9061,13 +9085,6 @@ void CallFunctionStub::Generate(MacroAssembler* masm) {
 }
 
 
-int CEntryStub::MinorKey() {
-  ASSERT(result_size_ <= 2);
-  // Result returned in eax, or eax+edx if result_size_ is 2.
-  return 0;
-}
-
-
 void CEntryStub::GenerateThrowTOS(MacroAssembler* masm) {
   // eax holds the exception.
 
@@ -9177,7 +9194,6 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
                               Label* throw_normal_exception,
                               Label* throw_termination_exception,
                               Label* throw_out_of_memory_exception,
-                              ExitFrame::Mode mode,
                               bool do_gc,
                               bool always_allocate_scope) {
   // eax: result parameter for PerformGC, if any
@@ -9186,6 +9202,8 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
   // esp: stack pointer  (restored after C call)
   // edi: number of arguments including receiver  (C callee-saved)
   // esi: pointer to the first argument (C callee-saved)
+
+  // Result returned in eax, or eax+edx if result_size_ is 2.
 
   if (do_gc) {
     __ mov(Operand(esp, 0 * kPointerSize), eax);  // Result.
@@ -9227,7 +9245,7 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
   __ j(zero, &failure_returned, not_taken);
 
   // Exit the JavaScript to C++ exit frame.
-  __ LeaveExitFrame(mode);
+  __ LeaveExitFrame(mode_);
   __ ret(0);
 
   // Handling of failure.
@@ -9314,7 +9332,7 @@ void CEntryStub::GenerateThrowUncatchable(MacroAssembler* masm,
 }
 
 
-void CEntryStub::GenerateBody(MacroAssembler* masm, bool is_debug_break) {
+void CEntryStub::Generate(MacroAssembler* masm) {
   // eax: number of arguments including receiver
   // ebx: pointer to C function  (C callee-saved)
   // ebp: frame pointer  (restored after C call)
@@ -9326,12 +9344,8 @@ void CEntryStub::GenerateBody(MacroAssembler* masm, bool is_debug_break) {
   // of a proper result. The builtin entry handles this by performing
   // a garbage collection and retrying the builtin (twice).
 
-  ExitFrame::Mode mode = is_debug_break
-      ? ExitFrame::MODE_DEBUG
-      : ExitFrame::MODE_NORMAL;
-
   // Enter the exit frame that transitions from JavaScript to C++.
-  __ EnterExitFrame(mode);
+  __ EnterExitFrame(mode_);
 
   // eax: result parameter for PerformGC, if any (setup below)
   // ebx: pointer to builtin function  (C callee-saved)
@@ -9349,7 +9363,6 @@ void CEntryStub::GenerateBody(MacroAssembler* masm, bool is_debug_break) {
                &throw_normal_exception,
                &throw_termination_exception,
                &throw_out_of_memory_exception,
-               mode,
                false,
                false);
 
@@ -9358,7 +9371,6 @@ void CEntryStub::GenerateBody(MacroAssembler* masm, bool is_debug_break) {
                &throw_normal_exception,
                &throw_termination_exception,
                &throw_out_of_memory_exception,
-               mode,
                true,
                false);
 
@@ -9369,7 +9381,6 @@ void CEntryStub::GenerateBody(MacroAssembler* masm, bool is_debug_break) {
                &throw_normal_exception,
                &throw_termination_exception,
                &throw_out_of_memory_exception,
-               mode,
                true,
                true);
 

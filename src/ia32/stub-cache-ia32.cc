@@ -161,6 +161,7 @@ static void PushInterceptorArguments(MacroAssembler* masm,
   __ push(holder);
   __ push(name);
   InterceptorInfo* interceptor = holder_obj->GetNamedInterceptor();
+  ASSERT(!Heap::InNewSpace(interceptor));
   __ mov(receiver, Immediate(Handle<Object>(interceptor)));
   __ push(receiver);
   __ push(FieldOperand(receiver, InterceptorInfo::kDataOffset));
@@ -343,19 +344,6 @@ static void CompileLoadInterceptor(Compiler* compiler,
                              scratch2,
                              holder,
                              miss);
-  }
-}
-
-
-static void LookupPostInterceptor(JSObject* holder,
-                                  String* name,
-                                  LookupResult* lookup) {
-  holder->LocalLookupRealNamedProperty(name, lookup);
-  if (lookup->IsNotFound()) {
-    Object* proto = holder->GetPrototype();
-    if (proto != Heap::null_value()) {
-      proto->Lookup(name, lookup);
-    }
   }
 }
 
@@ -559,7 +547,6 @@ class CallInterceptorCompiler BASE_EMBEDDED {
     __ mov(esi, FieldOperand(edi, JSFunction::kContextOffset));
 
     // Jump to the cached code (tail call).
-    ASSERT(function->is_compiled());
     Handle<Code> code(function->code());
     ParameterCount expected(function->shared()->formal_parameter_count());
     __ InvokeCode(code, expected, arguments_,
@@ -1255,13 +1242,10 @@ Object* StoreStubCompiler::CompileStoreField(JSObject* object,
   // ----------- S t a t e -------------
   //  -- eax    : value
   //  -- ecx    : name
+  //  -- edx    : receiver
   //  -- esp[0] : return address
-  //  -- esp[4] : receiver
   // -----------------------------------
   Label miss;
-
-  // Get the object from the stack.
-  __ mov(ebx, Operand(esp, 1 * kPointerSize));
 
   // Generate store field code.  Trashes the name register.
   GenerateStoreField(masm(),
@@ -1269,7 +1253,7 @@ Object* StoreStubCompiler::CompileStoreField(JSObject* object,
                      object,
                      index,
                      transition,
-                     ebx, ecx, edx,
+                     edx, ecx, ebx,
                      &miss);
 
   // Handle store cache miss.
@@ -1289,26 +1273,23 @@ Object* StoreStubCompiler::CompileStoreCallback(JSObject* object,
   // ----------- S t a t e -------------
   //  -- eax    : value
   //  -- ecx    : name
+  //  -- edx    : receiver
   //  -- esp[0] : return address
-  //  -- esp[4] : receiver
   // -----------------------------------
   Label miss;
 
-  // Get the object from the stack.
-  __ mov(ebx, Operand(esp, 1 * kPointerSize));
-
   // Check that the object isn't a smi.
-  __ test(ebx, Immediate(kSmiTagMask));
+  __ test(edx, Immediate(kSmiTagMask));
   __ j(zero, &miss, not_taken);
 
   // Check that the map of the object hasn't changed.
-  __ cmp(FieldOperand(ebx, HeapObject::kMapOffset),
+  __ cmp(FieldOperand(edx, HeapObject::kMapOffset),
          Immediate(Handle<Map>(object->map())));
   __ j(not_equal, &miss, not_taken);
 
   // Perform global security token check if needed.
   if (object->IsJSGlobalProxy()) {
-    __ CheckAccessGlobalProxy(ebx, edx, &miss);
+    __ CheckAccessGlobalProxy(edx, ebx, &miss);
   }
 
   // Stub never generated for non-global objects that require access
@@ -1316,7 +1297,7 @@ Object* StoreStubCompiler::CompileStoreCallback(JSObject* object,
   ASSERT(object->IsJSGlobalProxy() || !object->IsAccessCheckNeeded());
 
   __ pop(ebx);  // remove the return address
-  __ push(Operand(esp, 0));  // receiver
+  __ push(edx);  // receiver
   __ push(Immediate(Handle<AccessorInfo>(callback)));  // callback info
   __ push(ecx);  // name
   __ push(eax);  // value
@@ -1329,7 +1310,6 @@ Object* StoreStubCompiler::CompileStoreCallback(JSObject* object,
 
   // Handle store cache miss.
   __ bind(&miss);
-  __ mov(ecx, Immediate(Handle<String>(name)));  // restore name
   Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Miss));
   __ jmp(ic, RelocInfo::CODE_TARGET);
 
@@ -1343,26 +1323,23 @@ Object* StoreStubCompiler::CompileStoreInterceptor(JSObject* receiver,
   // ----------- S t a t e -------------
   //  -- eax    : value
   //  -- ecx    : name
+  //  -- edx    : receiver
   //  -- esp[0] : return address
-  //  -- esp[4] : receiver
   // -----------------------------------
   Label miss;
 
-  // Get the object from the stack.
-  __ mov(ebx, Operand(esp, 1 * kPointerSize));
-
   // Check that the object isn't a smi.
-  __ test(ebx, Immediate(kSmiTagMask));
+  __ test(edx, Immediate(kSmiTagMask));
   __ j(zero, &miss, not_taken);
 
   // Check that the map of the object hasn't changed.
-  __ cmp(FieldOperand(ebx, HeapObject::kMapOffset),
+  __ cmp(FieldOperand(edx, HeapObject::kMapOffset),
          Immediate(Handle<Map>(receiver->map())));
   __ j(not_equal, &miss, not_taken);
 
   // Perform global security token check if needed.
   if (receiver->IsJSGlobalProxy()) {
-    __ CheckAccessGlobalProxy(ebx, edx, &miss);
+    __ CheckAccessGlobalProxy(edx, ebx, &miss);
   }
 
   // Stub never generated for non-global objects that require access
@@ -1370,7 +1347,7 @@ Object* StoreStubCompiler::CompileStoreInterceptor(JSObject* receiver,
   ASSERT(receiver->IsJSGlobalProxy() || !receiver->IsAccessCheckNeeded());
 
   __ pop(ebx);  // remove the return address
-  __ push(Operand(esp, 0));  // receiver
+  __ push(edx);  // receiver
   __ push(ecx);  // name
   __ push(eax);  // value
   __ push(ebx);  // restore return address
@@ -1382,7 +1359,6 @@ Object* StoreStubCompiler::CompileStoreInterceptor(JSObject* receiver,
 
   // Handle store cache miss.
   __ bind(&miss);
-  __ mov(ecx, Immediate(Handle<String>(name)));  // restore name
   Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Miss));
   __ jmp(ic, RelocInfo::CODE_TARGET);
 
@@ -1397,14 +1373,13 @@ Object* StoreStubCompiler::CompileStoreGlobal(GlobalObject* object,
   // ----------- S t a t e -------------
   //  -- eax    : value
   //  -- ecx    : name
+  //  -- edx    : receiver
   //  -- esp[0] : return address
-  //  -- esp[4] : receiver
   // -----------------------------------
   Label miss;
 
   // Check that the map of the global has not changed.
-  __ mov(ebx, Operand(esp, kPointerSize));
-  __ cmp(FieldOperand(ebx, HeapObject::kMapOffset),
+  __ cmp(FieldOperand(edx, HeapObject::kMapOffset),
          Immediate(Handle<Map>(object->map())));
   __ j(not_equal, &miss, not_taken);
 

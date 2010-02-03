@@ -32,6 +32,7 @@ namespace v8 {
 namespace internal {
 
 // Forward declarations
+class CompilationInfo;
 class DeferredCode;
 class RegisterAllocator;
 class RegisterFile;
@@ -293,11 +294,21 @@ enum ArgumentsAllocationMode {
 
 class CodeGenerator: public AstVisitor {
  public:
+  // Compilation mode.  Either the compiler is used as the primary
+  // compiler and needs to setup everything or the compiler is used as
+  // the secondary compiler for split compilation and has to handle
+  // bailouts.
+  enum Mode {
+    PRIMARY,
+    SECONDARY
+  };
+
   // Takes a function literal, generates code for it. This function should only
   // be called by compiler.cc.
   static Handle<Code> MakeCode(FunctionLiteral* fun,
                                Handle<Script> script,
-                               bool is_eval);
+                               bool is_eval,
+                               CompilationInfo* info);
 
   // Printing of AST, etc. as requested by flags.
   static void MakeCodePrologue(FunctionLiteral* fun);
@@ -341,8 +352,7 @@ class CodeGenerator: public AstVisitor {
 
  private:
   // Construction/Destruction
-  CodeGenerator(int buffer_size, Handle<Script> script, bool is_eval);
-  virtual ~CodeGenerator() { delete masm_; }
+  CodeGenerator(MacroAssembler* masm, Handle<Script> script, bool is_eval);
 
   // Accessors
   Scope* scope() const { return scope_; }
@@ -380,7 +390,7 @@ class CodeGenerator: public AstVisitor {
   void VisitStatementsAndSpill(ZoneList<Statement*>* statements);
 
   // Main code generation function
-  void GenCode(FunctionLiteral* fun);
+  void Generate(FunctionLiteral* fun, Mode mode, CompilationInfo* info);
 
   // Generate the return sequence code.  Should be called no more than
   // once per compiled function, immediately after binding the return
@@ -629,6 +639,7 @@ class CodeGenerator: public AstVisitor {
   friend class JumpTarget;
   friend class Reference;
   friend class Result;
+  friend class FastCodeGenerator;
   friend class FullCodeGenerator;
   friend class FullCodeGenSyntaxChecker;
 
@@ -666,6 +677,11 @@ class GenericBinaryOpStub: public CodeStub {
   void GenerateCall(MacroAssembler* masm, Register left, Register right);
   void GenerateCall(MacroAssembler* masm, Register left, Smi* right);
   void GenerateCall(MacroAssembler* masm, Smi* left, Register right);
+
+  Result GenerateCall(MacroAssembler* masm,
+                      VirtualFrame* frame,
+                      Result* left,
+                      Result* right);
 
  private:
   Token::Value op_;
@@ -715,9 +731,8 @@ class GenericBinaryOpStub: public CodeStub {
   void GenerateReturn(MacroAssembler* masm);
 
   bool ArgsInRegistersSupported() {
-    return ((op_ == Token::ADD) || (op_ == Token::SUB)
-             || (op_ == Token::MUL) || (op_ == Token::DIV))
-            && flags_ != NO_SMI_CODE_IN_STUB;
+    return (op_ == Token::ADD) || (op_ == Token::SUB)
+        || (op_ == Token::MUL) || (op_ == Token::DIV);
   }
   bool IsOperationCommutative() {
     return (op_ == Token::ADD) || (op_ == Token::MUL);
@@ -726,8 +741,8 @@ class GenericBinaryOpStub: public CodeStub {
   void SetArgsInRegisters() { args_in_registers_ = true; }
   void SetArgsReversed() { args_reversed_ = true; }
   bool HasSmiCodeInStub() { return (flags_ & NO_SMI_CODE_IN_STUB) == 0; }
-  bool HasArgumentsInRegisters() { return args_in_registers_; }
-  bool HasArgumentsReversed() { return args_reversed_; }
+  bool HasArgsInRegisters() { return args_in_registers_; }
+  bool HasArgsReversed() { return args_reversed_; }
 };
 
 

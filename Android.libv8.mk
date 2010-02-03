@@ -9,6 +9,9 @@ LOCAL_MODULE := libv8
 LOCAL_MODULE_CLASS := STATIC_LIBRARIES
 intermediates := $(call local-intermediates-dir)
 
+#ENABLE_V8_SNAPSHOT:=true
+#include $(LOCAL_PATH)/Android.mksnapshot.mk
+
 # Android.v8common.mk defines common V8_LOCAL_SRC_FILES
 # and V8_LOCAL_JS_LIBRARY_FILES
 V8_LOCAL_SRC_FILES :=

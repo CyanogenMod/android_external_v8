@@ -1185,7 +1185,10 @@ Object* Heap::AllocatePartialMap(InstanceType instance_type,
   reinterpret_cast<Map*>(result)->set_instance_type(instance_type);
   reinterpret_cast<Map*>(result)->set_instance_size(instance_size);
   reinterpret_cast<Map*>(result)->set_inobject_properties(0);
+  reinterpret_cast<Map*>(result)->set_pre_allocated_property_fields(0);
   reinterpret_cast<Map*>(result)->set_unused_property_fields(0);
+  reinterpret_cast<Map*>(result)->set_bit_field(0);
+  reinterpret_cast<Map*>(result)->set_bit_field2(0);
   return result;
 }
 
@@ -1495,10 +1498,12 @@ void Heap::CreateRegExpCEntryStub() {
 #endif
 
 
+#ifdef ENABLE_DEBUGGER_SUPPORT
 void Heap::CreateCEntryDebugBreakStub() {
-  CEntryDebugBreakStub stub;
-  set_c_entry_debug_break_code(*stub.GetCode());
+  DebuggerStatementStub stub;
+  set_debugger_statement_code(*stub.GetCode());
 }
+#endif
 
 
 void Heap::CreateJSEntryStub() {
@@ -1523,12 +1528,14 @@ void Heap::CreateFixedStubs() {
   // {  CEntryStub stub;
   //    c_entry_code_ = *stub.GetCode();
   // }
-  // {  CEntryDebugBreakStub stub;
-  //    c_entry_debug_break_code_ = *stub.GetCode();
+  // {  DebuggerStatementStub stub;
+  //    debugger_statement_code_ = *stub.GetCode();
   // }
   // To workaround the problem, make separate functions without inlining.
   Heap::CreateCEntryStub();
+#ifdef ENABLE_DEBUGGER_SUPPORT
   Heap::CreateCEntryDebugBreakStub();
+#endif
   Heap::CreateJSEntryStub();
   Heap::CreateJSConstructEntryStub();
 #if V8_TARGET_ARCH_ARM && V8_NATIVE_REGEXP
@@ -1726,7 +1733,7 @@ void Heap::SetNumberStringCache(Object* number, String* string) {
   int mask = (number_string_cache()->length() >> 1) - 1;
   if (number->IsSmi()) {
     hash = smi_get_hash(Smi::cast(number)) & mask;
-    number_string_cache()->set(hash * 2, number, SKIP_WRITE_BARRIER);
+    number_string_cache()->set(hash * 2, Smi::cast(number));
   } else {
     hash = double_get_hash(number->Number()) & mask;
     number_string_cache()->set(hash * 2, number);
@@ -1983,8 +1990,10 @@ Object* Heap::AllocateConsString(String* first, String* second) {
 
   Object* result = Allocate(map, NEW_SPACE);
   if (result->IsFailure()) return result;
+
+  AssertNoAllocation no_gc;
   ConsString* cons_string = ConsString::cast(result);
-  WriteBarrierMode mode = cons_string->GetWriteBarrierMode();
+  WriteBarrierMode mode = cons_string->GetWriteBarrierMode(no_gc);
   cons_string->set_length(length);
   cons_string->set_hash_field(String::kEmptyHashField);
   cons_string->set_first(first, mode);
@@ -2282,7 +2291,7 @@ Object* Heap::InitializeFunction(JSFunction* function,
   function->set_shared(shared);
   function->set_prototype_or_initial_map(prototype);
   function->set_context(undefined_value());
-  function->set_literals(empty_fixed_array(), SKIP_WRITE_BARRIER);
+  function->set_literals(empty_fixed_array());
   return function;
 }
 
@@ -2401,8 +2410,10 @@ Object* Heap::AllocateInitialMap(JSFunction* fun) {
       String* name = fun->shared()->GetThisPropertyAssignmentName(i);
       ASSERT(name->IsSymbol());
       FieldDescriptor field(name, i, NONE);
+      field.SetEnumerationIndex(i);
       descriptors->Set(i, &field);
     }
+    descriptors->SetNextEnumerationIndex(count);
     descriptors->Sort();
     map->set_instance_descriptors(descriptors);
     map->set_pre_allocated_property_fields(count);
@@ -2883,8 +2894,10 @@ Object* Heap::CopyFixedArray(FixedArray* src) {
   HeapObject::cast(obj)->set_map(src->map());
   FixedArray* result = FixedArray::cast(obj);
   result->set_length(len);
+
   // Copy the content
-  WriteBarrierMode mode = result->GetWriteBarrierMode();
+  AssertNoAllocation no_gc;
+  WriteBarrierMode mode = result->GetWriteBarrierMode(no_gc);
   for (int i = 0; i < len; i++) result->set(i, src->get(i), mode);
   return result;
 }
@@ -2902,6 +2915,7 @@ Object* Heap::AllocateFixedArray(int length) {
     Object* value = undefined_value();
     // Initialize body.
     for (int index = 0; index < length; index++) {
+      ASSERT(!Heap::InNewSpace(value));  // value = undefined
       array->set(index, value, SKIP_WRITE_BARRIER);
     }
   }
@@ -2957,6 +2971,7 @@ Object* Heap::AllocateFixedArray(int length, PretenureFlag pretenure) {
   array->set_length(length);
   Object* value = undefined_value();
   for (int index = 0; index < length; index++) {
+    ASSERT(!Heap::InNewSpace(value));  // value = undefined
     array->set(index, value, SKIP_WRITE_BARRIER);
   }
   return array;
@@ -2974,6 +2989,7 @@ Object* Heap::AllocateFixedArrayWithHoles(int length) {
     // Initialize body.
     Object* value = the_hole_value();
     for (int index = 0; index < length; index++)  {
+      ASSERT(!Heap::InNewSpace(value));  // value = the hole
       array->set(index, value, SKIP_WRITE_BARRIER);
     }
   }

@@ -205,6 +205,11 @@ void MacroAssembler::LoadRoot(Register destination,
 // tag is shifted away.
 void MacroAssembler::RecordWrite(Register object, Register offset,
                                  Register scratch) {
+  // The compiled code assumes that record write doesn't change the
+  // context register, so we check that none of the clobbered
+  // registers are cp.
+  ASSERT(!object.is(cp) && !offset.is(cp) && !scratch.is(cp));
+
   // This is how much we shift the remembered set bit offset to get the
   // offset of the word in the remembered set.  We divide by kBitsPerInt (32,
   // shift right 5) and then multiply by kIntSize (4, shift left 2).
@@ -272,6 +277,14 @@ void MacroAssembler::RecordWrite(Register object, Register offset,
   str(scratch, MemOperand(object));
 
   bind(&done);
+
+  // Clobber all input registers when running with the debug-code flag
+  // turned on to provoke errors.
+  if (FLAG_debug_code) {
+    mov(object, Operand(bit_cast<int32_t>(kZapValue)));
+    mov(offset, Operand(bit_cast<int32_t>(kZapValue)));
+    mov(scratch, Operand(bit_cast<int32_t>(kZapValue)));
+  }
 }
 
 
@@ -1035,9 +1048,13 @@ void MacroAssembler::CallRuntime(Runtime::Function* f, int num_arguments) {
     return;
   }
 
-  Runtime::FunctionId function_id =
-      static_cast<Runtime::FunctionId>(f->stub_id);
-  RuntimeStub stub(function_id, num_arguments);
+  // TODO(1236192): Most runtime routines don't need the number of
+  // arguments passed in because it is constant. At some point we
+  // should remove this need and make the runtime routine entry code
+  // smarter.
+  mov(r0, Operand(num_arguments));
+  mov(r1, Operand(ExternalReference(f)));
+  CEntryStub stub(1);
   CallStub(&stub);
 }
 

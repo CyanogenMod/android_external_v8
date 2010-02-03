@@ -16,6 +16,7 @@ V8_LOCAL_SRC_FILES := \
 	src/contexts.cc \
 	src/conversions.cc \
 	src/counters.cc \
+	src/data-flow.cc \
 	src/dateparser.cc \
 	src/disassembler.cc \
 	src/execution.cc \
@@ -77,6 +78,7 @@ ifeq ($(TARGET_ARCH),arm)
 		src/arm/cpu-arm.cc \
 		src/arm/disasm-arm.cc \
 		src/arm/frames-arm.cc \
+		src/arm/fast-codegen-arm.cc \
 		src/arm/full-codegen-arm.cc \
 		src/arm/ic-arm.cc \
 		src/arm/jump-target-arm.cc \

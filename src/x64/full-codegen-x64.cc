@@ -1,4 +1,4 @@
-// Copyright 2009 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -51,83 +51,91 @@ namespace internal {
 //
 // The function builds a JS frame.  Please see JavaScriptFrameConstants in
 // frames-x64.h for its layout.
-void FullCodeGenerator::Generate(FunctionLiteral* fun) {
+void FullCodeGenerator::Generate(FunctionLiteral* fun, Mode mode) {
   function_ = fun;
   SetFunctionPosition(fun);
 
-  __ push(rbp);  // Caller's frame pointer.
-  __ movq(rbp, rsp);
-  __ push(rsi);  // Callee's context.
-  __ push(rdi);  // Callee's JS Function.
+  if (mode == PRIMARY) {
+    __ push(rbp);  // Caller's frame pointer.
+    __ movq(rbp, rsp);
+    __ push(rsi);  // Callee's context.
+    __ push(rdi);  // Callee's JS Function.
 
-  { Comment cmnt(masm_, "[ Allocate locals");
-    int locals_count = fun->scope()->num_stack_slots();
-    if (locals_count == 1) {
-      __ PushRoot(Heap::kUndefinedValueRootIndex);
-    } else if (locals_count > 1) {
-      __ LoadRoot(rdx, Heap::kUndefinedValueRootIndex);
-      for (int i = 0; i < locals_count; i++) {
-        __ push(rdx);
+    { Comment cmnt(masm_, "[ Allocate locals");
+      int locals_count = fun->scope()->num_stack_slots();
+      if (locals_count == 1) {
+        __ PushRoot(Heap::kUndefinedValueRootIndex);
+      } else if (locals_count > 1) {
+        __ LoadRoot(rdx, Heap::kUndefinedValueRootIndex);
+        for (int i = 0; i < locals_count; i++) {
+          __ push(rdx);
+        }
       }
     }
-  }
 
-  bool function_in_register = true;
+    bool function_in_register = true;
 
-  // Possibly allocate a local context.
-  if (fun->scope()->num_heap_slots() > 0) {
-    Comment cmnt(masm_, "[ Allocate local context");
-    // Argument to NewContext is the function, which is still in rdi.
-    __ push(rdi);
-    __ CallRuntime(Runtime::kNewContext, 1);
-    function_in_register = false;
-    // Context is returned in both rax and rsi.  It replaces the context
-    // passed to us.  It's saved in the stack and kept live in rsi.
-    __ movq(Operand(rbp, StandardFrameConstants::kContextOffset), rsi);
-
-    // Copy any necessary parameters into the context.
-    int num_parameters = fun->scope()->num_parameters();
-    for (int i = 0; i < num_parameters; i++) {
-      Slot* slot = fun->scope()->parameter(i)->slot();
-      if (slot != NULL && slot->type() == Slot::CONTEXT) {
-        int parameter_offset = StandardFrameConstants::kCallerSPOffset +
-                               (num_parameters - 1 - i) * kPointerSize;
-        // Load parameter from stack.
-        __ movq(rax, Operand(rbp, parameter_offset));
-        // Store it in the context
-        __ movq(Operand(rsi, Context::SlotOffset(slot->index())), rax);
-      }
-    }
-  }
-
-  // Possibly allocate an arguments object.
-  Variable* arguments = fun->scope()->arguments()->AsVariable();
-  if (arguments != NULL) {
-    // Arguments object must be allocated after the context object, in
-    // case the "arguments" or ".arguments" variables are in the context.
-    Comment cmnt(masm_, "[ Allocate arguments object");
-    if (function_in_register) {
+    // Possibly allocate a local context.
+    if (fun->scope()->num_heap_slots() > 0) {
+      Comment cmnt(masm_, "[ Allocate local context");
+      // Argument to NewContext is the function, which is still in rdi.
       __ push(rdi);
-    } else {
-      __ push(Operand(rbp, JavaScriptFrameConstants::kFunctionOffset));
+      __ CallRuntime(Runtime::kNewContext, 1);
+      function_in_register = false;
+      // Context is returned in both rax and rsi.  It replaces the context
+      // passed to us.  It's saved in the stack and kept live in rsi.
+      __ movq(Operand(rbp, StandardFrameConstants::kContextOffset), rsi);
+
+      // Copy any necessary parameters into the context.
+      int num_parameters = fun->scope()->num_parameters();
+      for (int i = 0; i < num_parameters; i++) {
+        Slot* slot = fun->scope()->parameter(i)->slot();
+        if (slot != NULL && slot->type() == Slot::CONTEXT) {
+          int parameter_offset = StandardFrameConstants::kCallerSPOffset +
+                                     (num_parameters - 1 - i) * kPointerSize;
+          // Load parameter from stack.
+          __ movq(rax, Operand(rbp, parameter_offset));
+          // Store it in the context.
+          int context_offset = Context::SlotOffset(slot->index());
+          __ movq(Operand(rsi, context_offset), rax);
+          // Update the write barrier. This clobbers all involved
+          // registers, so we have use a third register to avoid
+          // clobbering rsi.
+          __ movq(rcx, rsi);
+          __ RecordWrite(rcx, context_offset, rax, rbx);
+        }
+      }
     }
-    // The receiver is just before the parameters on the caller's stack.
-    __ lea(rdx, Operand(rbp, StandardFrameConstants::kCallerSPOffset +
-                                 fun->num_parameters() * kPointerSize));
-    __ push(rdx);
-    __ Push(Smi::FromInt(fun->num_parameters()));
-    // Arguments to ArgumentsAccessStub:
-    //   function, receiver address, parameter count.
-    // The stub will rewrite receiver and parameter count if the previous
-    // stack frame was an arguments adapter frame.
-    ArgumentsAccessStub stub(ArgumentsAccessStub::NEW_OBJECT);
-    __ CallStub(&stub);
-    // Store new arguments object in both "arguments" and ".arguments" slots.
-    __ movq(rcx, rax);
-    Move(arguments->slot(), rax, rbx, rdx);
-    Slot* dot_arguments_slot =
-        fun->scope()->arguments_shadow()->AsVariable()->slot();
-    Move(dot_arguments_slot, rcx, rbx, rdx);
+
+    // Possibly allocate an arguments object.
+    Variable* arguments = fun->scope()->arguments()->AsVariable();
+    if (arguments != NULL) {
+      // Arguments object must be allocated after the context object, in
+      // case the "arguments" or ".arguments" variables are in the context.
+      Comment cmnt(masm_, "[ Allocate arguments object");
+      if (function_in_register) {
+        __ push(rdi);
+      } else {
+        __ push(Operand(rbp, JavaScriptFrameConstants::kFunctionOffset));
+      }
+      // The receiver is just before the parameters on the caller's stack.
+      __ lea(rdx, Operand(rbp, StandardFrameConstants::kCallerSPOffset +
+                          fun->num_parameters() * kPointerSize));
+      __ push(rdx);
+      __ Push(Smi::FromInt(fun->num_parameters()));
+      // Arguments to ArgumentsAccessStub:
+      //   function, receiver address, parameter count.
+      // The stub will rewrite receiver and parameter count if the previous
+      // stack frame was an arguments adapter frame.
+      ArgumentsAccessStub stub(ArgumentsAccessStub::NEW_OBJECT);
+      __ CallStub(&stub);
+      // Store new arguments object in both "arguments" and ".arguments" slots.
+      __ movq(rcx, rax);
+      Move(arguments->slot(), rax, rbx, rdx);
+      Slot* dot_arguments_slot =
+          fun->scope()->arguments_shadow()->AsVariable()->slot();
+      Move(dot_arguments_slot, rcx, rbx, rdx);
+    }
   }
 
   { Comment cmnt(masm_, "[ Declarations");
@@ -698,7 +706,8 @@ void FullCodeGenerator::VisitDeclaration(Declaration* decl) {
           __ movq(CodeGenerator::ContextOperand(rsi, slot->index()),
                   result_register());
           int offset = Context::SlotOffset(slot->index());
-          __ RecordWrite(rsi, offset, result_register(), rcx);
+          __ movq(rbx, rsi);
+          __ RecordWrite(rbx, offset, result_register(), rcx);
         }
         break;
 
@@ -920,10 +929,10 @@ void FullCodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
         if (key->handle()->IsSymbol()) {
           VisitForValue(value, kAccumulator);
           __ Move(rcx, key->handle());
+          __ movq(rdx, Operand(rsp, 0));
           Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Initialize));
           __ call(ic, RelocInfo::CODE_TARGET);
           __ nop();
-          // StoreIC leaves the receiver on the stack.
           break;
         }
         // Fall through.
@@ -1045,13 +1054,12 @@ void FullCodeGenerator::EmitVariableAssignment(Variable* var,
     ASSERT(!var->is_this());
     // Assignment to a global variable.  Use inline caching for the
     // assignment.  Right-hand-side value is passed in rax, variable name in
-    // rcx, and the global object on the stack.
+    // rcx, and the global object in rdx.
     __ Move(rcx, var->name());
-    __ push(CodeGenerator::GlobalObject());
+    __ movq(rdx, CodeGenerator::GlobalObject());
     Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Initialize));
     __ Call(ic, RelocInfo::CODE_TARGET);
-    // Overwrite the global object on the stack with the result if needed.
-    DropAndApply(1, context, rax);
+    Apply(context, rax);
 
   } else if (slot != NULL && slot->type() == Slot::LOOKUP) {
     __ push(result_register());  // Value.
@@ -1111,6 +1119,11 @@ void FullCodeGenerator::EmitNamedPropertyAssignment(Assignment* expr) {
   // Record source code position before IC call.
   SetSourcePosition(expr->position());
   __ Move(rcx, prop->key()->AsLiteral()->handle());
+  if (expr->ends_initialization_block()) {
+    __ movq(rdx, Operand(rsp, 0));
+  } else {
+    __ pop(rdx);
+  }
   Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Initialize));
   __ Call(ic, RelocInfo::CODE_TARGET);
   __ nop();
@@ -1121,9 +1134,10 @@ void FullCodeGenerator::EmitNamedPropertyAssignment(Assignment* expr) {
     __ push(Operand(rsp, kPointerSize));  // Receiver is under value.
     __ CallRuntime(Runtime::kToFastProperties, 1);
     __ pop(rax);
+    DropAndApply(1, context_, rax);
+  } else {
+    Apply(context_, rax);
   }
-
-  DropAndApply(1, context_, rax);
 }
 
 
@@ -1474,12 +1488,49 @@ void FullCodeGenerator::VisitUnaryOperation(UnaryOperation* expr) {
       Comment cmt(masm_, "[ UnaryOperation (ADD)");
       VisitForValue(expr->expression(), kAccumulator);
       Label no_conversion;
-      Condition is_smi;
-      is_smi = masm_->CheckSmi(result_register());
+      Condition is_smi = masm_->CheckSmi(result_register());
       __ j(is_smi, &no_conversion);
       __ push(result_register());
       __ InvokeBuiltin(Builtins::TO_NUMBER, CALL_FUNCTION);
       __ bind(&no_conversion);
+      Apply(context_, result_register());
+      break;
+    }
+
+    case Token::SUB: {
+      Comment cmt(masm_, "[ UnaryOperation (SUB)");
+      bool overwrite =
+          (expr->expression()->AsBinaryOperation() != NULL &&
+           expr->expression()->AsBinaryOperation()->ResultOverwriteAllowed());
+      GenericUnaryOpStub stub(Token::SUB, overwrite);
+      // GenericUnaryOpStub expects the argument to be in the
+      // accumulator register rax.
+      VisitForValue(expr->expression(), kAccumulator);
+      __ CallStub(&stub);
+      Apply(context_, rax);
+      break;
+    }
+
+    case Token::BIT_NOT: {
+      Comment cmt(masm_, "[ UnaryOperation (BIT_NOT)");
+      bool overwrite =
+          (expr->expression()->AsBinaryOperation() != NULL &&
+           expr->expression()->AsBinaryOperation()->ResultOverwriteAllowed());
+      GenericUnaryOpStub stub(Token::BIT_NOT, overwrite);
+      // GenericUnaryOpStub expects the argument to be in the
+      // accumulator register rax.
+      VisitForValue(expr->expression(), kAccumulator);
+      // Avoid calling the stub for Smis.
+      Label smi, done;
+      Condition is_smi = masm_->CheckSmi(result_register());
+      __ j(is_smi, &smi);
+      // Non-smi: call stub leaving result in accumulator register.
+      __ CallStub(&stub);
+      __ jmp(&done);
+      // Perform operation directly on Smis.
+      __ bind(&smi);
+      __ SmiNot(result_register(), result_register());
+      __ bind(&done);
       Apply(context_, result_register());
       break;
     }
@@ -1588,12 +1639,10 @@ void FullCodeGenerator::VisitCountOperation(CountOperation* expr) {
     }
   }
   // Call stub for +1/-1.
-  __ push(rax);
-  __ Push(Smi::FromInt(1));
   GenericBinaryOpStub stub(expr->binary_op(),
                            NO_OVERWRITE,
                            NO_GENERIC_BINARY_FLAGS);
-  __ CallStub(&stub);
+  stub.GenerateCall(masm_, rax, Smi::FromInt(1));
   __ bind(&done);
 
   // Store the value returned in rax.
@@ -1614,18 +1663,18 @@ void FullCodeGenerator::VisitCountOperation(CountOperation* expr) {
       break;
     case NAMED_PROPERTY: {
       __ Move(rcx, prop->key()->AsLiteral()->handle());
+      __ pop(rdx);
       Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Initialize));
       __ call(ic, RelocInfo::CODE_TARGET);
       // This nop signals to the IC that there is no inlined code at the call
       // site for it to patch.
       __ nop();
       if (expr->is_postfix()) {
-        __ Drop(1);  // Result is on the stack under the receiver.
         if (context_ != Expression::kEffect) {
           ApplyTOS(context_);
         }
       } else {
-        DropAndApply(1, context_, rax);
+        Apply(context_, rax);
       }
       break;
     }

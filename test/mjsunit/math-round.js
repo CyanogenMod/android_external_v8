@@ -1,4 +1,4 @@
-// Copyright 2009 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,11 +25,28 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Flags: --always-full-compiler
+assertEquals(0, Math.round(0));
+assertEquals(-0, Math.round(-0));
+assertEquals(Infinity, Math.round(Infinity));
+assertEquals(-Infinity, Math.round(-Infinity));
+assertNaN(Math.round(NaN));
 
-// Test reference to this-function.
+assertEquals(1, Math.round(0.5));
+assertEquals(1, Math.round(0.7));
+assertEquals(1, Math.round(1));
+assertEquals(1, Math.round(1.1));
+assertEquals(1, Math.round(1.49999));
+assertEquals(1/-0, 1/Math.round(-0.5));  // Test for -0 result.
+assertEquals(-1, Math.round(-0.5000000000000001));
+assertEquals(-1, Math.round(-0.7));
+assertEquals(-1, Math.round(-1));
+assertEquals(-1, Math.round(-1.1));
+assertEquals(-1, Math.round(-1.49999));
+assertEquals(-1, Math.round(-1.5));
 
-var g = (function f(x) {
-    if (x == 1) return 42; else return f(1);
-  })(0);
-assertEquals(42, g);
+assertEquals(9007199254740990, Math.round(9007199254740990));
+assertEquals(9007199254740991, Math.round(9007199254740991));
+assertEquals(-9007199254740990, Math.round(-9007199254740990));
+assertEquals(-9007199254740991, Math.round(-9007199254740991));
+assertEquals(Number.MAX_VALUE, Math.round(Number.MAX_VALUE));
+assertEquals(-Number.MAX_VALUE, Math.round(-Number.MAX_VALUE));

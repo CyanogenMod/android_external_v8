@@ -32,6 +32,7 @@ namespace v8 {
 namespace internal {
 
 // Forward declarations
+class CompilationInfo;
 class DeferredCode;
 class RegisterAllocator;
 class RegisterFile;
@@ -149,11 +150,21 @@ class CodeGenState BASE_EMBEDDED {
 
 class CodeGenerator: public AstVisitor {
  public:
+  // Compilation mode.  Either the compiler is used as the primary
+  // compiler and needs to setup everything or the compiler is used as
+  // the secondary compiler for split compilation and has to handle
+  // bailouts.
+  enum Mode {
+    PRIMARY,
+    SECONDARY
+  };
+
   // Takes a function literal, generates code for it. This function should only
   // be called by compiler.cc.
   static Handle<Code> MakeCode(FunctionLiteral* fun,
                                Handle<Script> script,
-                               bool is_eval);
+                               bool is_eval,
+                               CompilationInfo* info);
 
   // Printing of AST, etc. as requested by flags.
   static void MakeCodePrologue(FunctionLiteral* fun);
@@ -201,8 +212,7 @@ class CodeGenerator: public AstVisitor {
 
  private:
   // Construction/Destruction
-  CodeGenerator(int buffer_size, Handle<Script> script, bool is_eval);
-  virtual ~CodeGenerator() { delete masm_; }
+  CodeGenerator(MacroAssembler* masm, Handle<Script> script, bool is_eval);
 
   // Accessors
   Scope* scope() const { return scope_; }
@@ -239,7 +249,7 @@ class CodeGenerator: public AstVisitor {
   inline void VisitStatementsAndSpill(ZoneList<Statement*>* statements);
 
   // Main code generation function
-  void GenCode(FunctionLiteral* fun);
+  void Generate(FunctionLiteral* fun, Mode mode, CompilationInfo* info);
 
   // The following are used by class Reference.
   void LoadReference(Reference* ref);
@@ -443,6 +453,7 @@ class CodeGenerator: public AstVisitor {
   friend class VirtualFrame;
   friend class JumpTarget;
   friend class Reference;
+  friend class FastCodeGenerator;
   friend class FullCodeGenerator;
   friend class FullCodeGenSyntaxChecker;
 

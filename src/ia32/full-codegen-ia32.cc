@@ -51,80 +51,88 @@ namespace internal {
 //
 // The function builds a JS frame.  Please see JavaScriptFrameConstants in
 // frames-ia32.h for its layout.
-void FullCodeGenerator::Generate(FunctionLiteral* fun) {
+void FullCodeGenerator::Generate(FunctionLiteral* fun, Mode mode) {
   function_ = fun;
   SetFunctionPosition(fun);
 
-  __ push(ebp);  // Caller's frame pointer.
-  __ mov(ebp, esp);
-  __ push(esi);  // Callee's context.
-  __ push(edi);  // Callee's JS Function.
+  if (mode == PRIMARY) {
+    __ push(ebp);  // Caller's frame pointer.
+    __ mov(ebp, esp);
+    __ push(esi);  // Callee's context.
+    __ push(edi);  // Callee's JS Function.
 
-  { Comment cmnt(masm_, "[ Allocate locals");
-    int locals_count = fun->scope()->num_stack_slots();
-    if (locals_count == 1) {
-      __ push(Immediate(Factory::undefined_value()));
-    } else if (locals_count > 1) {
-      __ mov(eax, Immediate(Factory::undefined_value()));
-      for (int i = 0; i < locals_count; i++) {
-       __ push(eax);
+    { Comment cmnt(masm_, "[ Allocate locals");
+      int locals_count = fun->scope()->num_stack_slots();
+      if (locals_count == 1) {
+        __ push(Immediate(Factory::undefined_value()));
+      } else if (locals_count > 1) {
+        __ mov(eax, Immediate(Factory::undefined_value()));
+        for (int i = 0; i < locals_count; i++) {
+          __ push(eax);
+        }
       }
     }
-  }
 
-  bool function_in_register = true;
+    bool function_in_register = true;
 
-  // Possibly allocate a local context.
-  if (fun->scope()->num_heap_slots() > 0) {
-    Comment cmnt(masm_, "[ Allocate local context");
-    // Argument to NewContext is the function, which is still in edi.
-    __ push(edi);
-    __ CallRuntime(Runtime::kNewContext, 1);
-    function_in_register = false;
-    // Context is returned in both eax and esi.  It replaces the context
-    // passed to us.  It's saved in the stack and kept live in esi.
-    __ mov(Operand(ebp, StandardFrameConstants::kContextOffset), esi);
-
-    // Copy parameters into context if necessary.
-    int num_parameters = fun->scope()->num_parameters();
-    for (int i = 0; i < num_parameters; i++) {
-      Slot* slot = fun->scope()->parameter(i)->slot();
-      if (slot != NULL && slot->type() == Slot::CONTEXT) {
-        int parameter_offset = StandardFrameConstants::kCallerSPOffset +
-                               (num_parameters - 1 - i) * kPointerSize;
-        // Load parameter from stack.
-        __ mov(eax, Operand(ebp, parameter_offset));
-        // Store it in the context
-        __ mov(Operand(esi, Context::SlotOffset(slot->index())), eax);
-      }
-    }
-  }
-
-  Variable* arguments = fun->scope()->arguments()->AsVariable();
-  if (arguments != NULL) {
-    // Function uses arguments object.
-    Comment cmnt(masm_, "[ Allocate arguments object");
-    if (function_in_register) {
+    // Possibly allocate a local context.
+    if (fun->scope()->num_heap_slots() > 0) {
+      Comment cmnt(masm_, "[ Allocate local context");
+      // Argument to NewContext is the function, which is still in edi.
       __ push(edi);
-    } else {
-      __ push(Operand(ebp, JavaScriptFrameConstants::kFunctionOffset));
+      __ CallRuntime(Runtime::kNewContext, 1);
+      function_in_register = false;
+      // Context is returned in both eax and esi.  It replaces the context
+      // passed to us.  It's saved in the stack and kept live in esi.
+      __ mov(Operand(ebp, StandardFrameConstants::kContextOffset), esi);
+
+      // Copy parameters into context if necessary.
+      int num_parameters = fun->scope()->num_parameters();
+      for (int i = 0; i < num_parameters; i++) {
+        Slot* slot = fun->scope()->parameter(i)->slot();
+        if (slot != NULL && slot->type() == Slot::CONTEXT) {
+          int parameter_offset = StandardFrameConstants::kCallerSPOffset +
+                                     (num_parameters - 1 - i) * kPointerSize;
+          // Load parameter from stack.
+          __ mov(eax, Operand(ebp, parameter_offset));
+          // Store it in the context.
+          int context_offset = Context::SlotOffset(slot->index());
+          __ mov(Operand(esi, context_offset), eax);
+          // Update the write barrier. This clobbers all involved
+          // registers, so we have use a third register to avoid
+          // clobbering esi.
+          __ mov(ecx, esi);
+          __ RecordWrite(ecx, context_offset, eax, ebx);
+        }
+      }
     }
-    // Receiver is just before the parameters on the caller's stack.
-    __ lea(edx, Operand(ebp, StandardFrameConstants::kCallerSPOffset +
-                                 fun->num_parameters() * kPointerSize));
-    __ push(edx);
-    __ push(Immediate(Smi::FromInt(fun->num_parameters())));
-    // Arguments to ArgumentsAccessStub:
-    //   function, receiver address, parameter count.
-    // The stub will rewrite receiver and parameter count if the previous
-    // stack frame was an arguments adapter frame.
-    ArgumentsAccessStub stub(ArgumentsAccessStub::NEW_OBJECT);
-    __ CallStub(&stub);
-    __ mov(ecx, eax);  // Duplicate result.
-    Move(arguments->slot(), eax, ebx, edx);
-    Slot* dot_arguments_slot =
-        fun->scope()->arguments_shadow()->AsVariable()->slot();
-    Move(dot_arguments_slot, ecx, ebx, edx);
+
+    Variable* arguments = fun->scope()->arguments()->AsVariable();
+    if (arguments != NULL) {
+      // Function uses arguments object.
+      Comment cmnt(masm_, "[ Allocate arguments object");
+      if (function_in_register) {
+        __ push(edi);
+      } else {
+        __ push(Operand(ebp, JavaScriptFrameConstants::kFunctionOffset));
+      }
+      // Receiver is just before the parameters on the caller's stack.
+      __ lea(edx, Operand(ebp, StandardFrameConstants::kCallerSPOffset +
+                          fun->num_parameters() * kPointerSize));
+      __ push(edx);
+      __ push(Immediate(Smi::FromInt(fun->num_parameters())));
+      // Arguments to ArgumentsAccessStub:
+      //   function, receiver address, parameter count.
+      // The stub will rewrite receiver and parameter count if the previous
+      // stack frame was an arguments adapter frame.
+      ArgumentsAccessStub stub(ArgumentsAccessStub::NEW_OBJECT);
+      __ CallStub(&stub);
+      __ mov(ecx, eax);  // Duplicate result.
+      Move(arguments->slot(), eax, ebx, edx);
+      Slot* dot_arguments_slot =
+          fun->scope()->arguments_shadow()->AsVariable()->slot();
+      Move(dot_arguments_slot, ecx, ebx, edx);
+    }
   }
 
   { Comment cmnt(masm_, "[ Declarations");
@@ -695,7 +703,8 @@ void FullCodeGenerator::VisitDeclaration(Declaration* decl) {
           __ mov(CodeGenerator::ContextOperand(esi, slot->index()),
                  result_register());
           int offset = Context::SlotOffset(slot->index());
-          __ RecordWrite(esi, offset, result_register(), ecx);
+          __ mov(ebx, esi);
+          __ RecordWrite(ebx, offset, result_register(), ecx);
         }
         break;
 
@@ -917,10 +926,10 @@ void FullCodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
         if (key->handle()->IsSymbol()) {
           VisitForValue(value, kAccumulator);
           __ mov(ecx, Immediate(key->handle()));
+          __ mov(edx, Operand(esp, 0));
           Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Initialize));
           __ call(ic, RelocInfo::CODE_TARGET);
           __ nop();
-          // StoreIC leaves the receiver on the stack.
           break;
         }
         // Fall through.
@@ -1046,12 +1055,11 @@ void FullCodeGenerator::EmitVariableAssignment(Variable* var,
     // assignment.  Right-hand-side value is passed in eax, variable name in
     // ecx, and the global object on the stack.
     __ mov(ecx, var->name());
-    __ push(CodeGenerator::GlobalObject());
+    __ mov(edx, CodeGenerator::GlobalObject());
     Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Initialize));
     __ call(ic, RelocInfo::CODE_TARGET);
     __ nop();
-    // Overwrite the receiver on the stack with the result if needed.
-    DropAndApply(1, context, eax);
+    Apply(context, eax);
 
   } else if (slot != NULL && slot->type() == Slot::LOOKUP) {
     __ push(result_register());  // Value.
@@ -1111,6 +1119,11 @@ void FullCodeGenerator::EmitNamedPropertyAssignment(Assignment* expr) {
   // Record source code position before IC call.
   SetSourcePosition(expr->position());
   __ mov(ecx, prop->key()->AsLiteral()->handle());
+  if (expr->ends_initialization_block()) {
+    __ mov(edx, Operand(esp, 0));
+  } else {
+    __ pop(edx);
+  }
   Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Initialize));
   __ call(ic, RelocInfo::CODE_TARGET);
   __ nop();
@@ -1121,9 +1134,10 @@ void FullCodeGenerator::EmitNamedPropertyAssignment(Assignment* expr) {
     __ push(Operand(esp, kPointerSize));  // Receiver is under value.
     __ CallRuntime(Runtime::kToFastProperties, 1);
     __ pop(eax);
+    DropAndApply(1, context_, eax);
+  } else {
+    Apply(context_, eax);
   }
-
-  DropAndApply(1, context_, eax);
 }
 
 
@@ -1476,6 +1490,45 @@ void FullCodeGenerator::VisitUnaryOperation(UnaryOperation* expr) {
       break;
     }
 
+    case Token::SUB: {
+      Comment cmt(masm_, "[ UnaryOperation (SUB)");
+      bool overwrite =
+          (expr->expression()->AsBinaryOperation() != NULL &&
+           expr->expression()->AsBinaryOperation()->ResultOverwriteAllowed());
+      GenericUnaryOpStub stub(Token::SUB, overwrite);
+      // GenericUnaryOpStub expects the argument to be in the
+      // accumulator register eax.
+      VisitForValue(expr->expression(), kAccumulator);
+      __ CallStub(&stub);
+      Apply(context_, eax);
+      break;
+    }
+
+    case Token::BIT_NOT: {
+      Comment cmt(masm_, "[ UnaryOperation (BIT_NOT)");
+      bool overwrite =
+          (expr->expression()->AsBinaryOperation() != NULL &&
+           expr->expression()->AsBinaryOperation()->ResultOverwriteAllowed());
+      GenericUnaryOpStub stub(Token::BIT_NOT, overwrite);
+      // GenericUnaryOpStub expects the argument to be in the
+      // accumulator register eax.
+      VisitForValue(expr->expression(), kAccumulator);
+      // Avoid calling the stub for Smis.
+      Label smi, done;
+      __ test(result_register(), Immediate(kSmiTagMask));
+      __ j(zero, &smi);
+      // Non-smi: call stub leaving result in accumulator register.
+      __ CallStub(&stub);
+      __ jmp(&done);
+      // Perform operation directly on Smis.
+      __ bind(&smi);
+      __ not_(result_register());
+      __ and_(result_register(), ~kSmiTagMask);  // Remove inverted smi-tag.
+      __ bind(&done);
+      Apply(context_, result_register());
+      break;
+    }
+
     default:
       UNREACHABLE();
   }
@@ -1603,18 +1656,18 @@ void FullCodeGenerator::VisitCountOperation(CountOperation* expr) {
       break;
     case NAMED_PROPERTY: {
       __ mov(ecx, prop->key()->AsLiteral()->handle());
+      __ pop(edx);
       Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Initialize));
       __ call(ic, RelocInfo::CODE_TARGET);
       // This nop signals to the IC that there is no inlined code at the call
       // site for it to patch.
       __ nop();
       if (expr->is_postfix()) {
-        __ Drop(1);  // Result is on the stack under the receiver.
         if (context_ != Expression::kEffect) {
           ApplyTOS(context_);
         }
       } else {
-        DropAndApply(1, context_, eax);
+        Apply(context_, eax);
       }
       break;
     }

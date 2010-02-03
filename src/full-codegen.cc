@@ -54,18 +54,6 @@ namespace internal {
 
 void FullCodeGenSyntaxChecker::Check(FunctionLiteral* fun) {
   Scope* scope = fun->scope();
-
-  if (scope->num_heap_slots() > 0) {
-    // We support functions with a local context if they do not have
-    // parameters that need to be copied into the context.
-    for (int i = 0, len = scope->num_parameters(); i < len; i++) {
-      Slot* slot = scope->parameter(i)->slot();
-      if (slot != NULL && slot->type() == Slot::CONTEXT) {
-        BAILOUT("Function has context-allocated parameters.");
-      }
-    }
-  }
-
   VisitDeclarations(scope->declarations());
   CHECK_BAILOUT;
 
@@ -387,17 +375,15 @@ void FullCodeGenSyntaxChecker::VisitCallRuntime(CallRuntime* expr) {
 void FullCodeGenSyntaxChecker::VisitUnaryOperation(UnaryOperation* expr) {
   switch (expr->op()) {
     case Token::ADD:
+    case Token::BIT_NOT:
     case Token::NOT:
+    case Token::SUB:
     case Token::TYPEOF:
     case Token::VOID:
       Visit(expr->expression());
       break;
-    case Token::BIT_NOT:
-      BAILOUT("UnaryOperation: BIT_NOT");
     case Token::DELETE:
       BAILOUT("UnaryOperation: DELETE");
-    case Token::SUB:
-      BAILOUT("UnaryOperation: SUB");
     default:
       UNREACHABLE();
   }
@@ -464,7 +450,7 @@ Handle<Code> FullCodeGenerator::MakeCode(FunctionLiteral* fun,
   const int kInitialBufferSize = 4 * KB;
   MacroAssembler masm(NULL, kInitialBufferSize);
   FullCodeGenerator cgen(&masm, script, is_eval);
-  cgen.Generate(fun);
+  cgen.Generate(fun, PRIMARY);
   if (cgen.HasStackOverflow()) {
     ASSERT(!Top::has_pending_exception());
     return Handle<Code>::null();
@@ -1000,7 +986,9 @@ void FullCodeGenerator::VisitDebuggerStatement(DebuggerStatement* stmt) {
 #ifdef ENABLE_DEBUGGER_SUPPORT
   Comment cmnt(masm_, "[ DebuggerStatement");
   SetStatementPosition(stmt);
-  __ CallRuntime(Runtime::kDebugBreak, 0);
+
+  DebuggerStatementStub ces;
+  __ CallStub(&ces);
   // Ignore the return value.
 #endif
 }
@@ -1160,7 +1148,6 @@ int FullCodeGenerator::TryCatch::Exit(int stack_depth) {
   __ PopTryHandler();
   return 0;
 }
-
 
 #undef __
 

@@ -132,7 +132,6 @@ class BreakLocationIterator {
   int position_;
   int statement_position_;
   Handle<DebugInfo> debug_info_;
-  Handle<Code> debug_break_stub_;
   RelocIterator* reloc_iterator_;
   RelocIterator* reloc_iterator_original_;
 
@@ -391,7 +390,6 @@ class Debug {
   static void ClearStepOut();
   static void ClearStepNext();
   // Returns whether the compile succeeded.
-  static bool EnsureCompiled(Handle<SharedFunctionInfo> shared);
   static void RemoveDebugInfo(Handle<DebugInfo> debug_info);
   static void SetAfterBreakTarget(JavaScriptFrame* frame);
   static Handle<Object> CheckBreakPoints(Handle<Object> break_point);

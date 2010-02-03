@@ -55,7 +55,7 @@
 //   CodeGenerator
 //   ~CodeGenerator
 //   ProcessDeferred
-//   GenCode
+//   Generate
 //   ComputeLazyCompile
 //   BuildBoilerplate
 //   ComputeCallInitialize
@@ -180,43 +180,6 @@ class DeferredCode: public ZoneObject {
 #endif
   DISALLOW_COPY_AND_ASSIGN(DeferredCode);
 };
-
-
-// RuntimeStub models code stubs calling entry points in the Runtime class.
-class RuntimeStub : public CodeStub {
- public:
-  explicit RuntimeStub(Runtime::FunctionId id, int num_arguments)
-      : id_(id), num_arguments_(num_arguments) { }
-
-  void Generate(MacroAssembler* masm);
-
-  // Disassembler support.  It is useful to be able to print the name
-  // of the runtime function called through this stub.
-  static const char* GetNameFromMinorKey(int minor_key) {
-    return Runtime::FunctionForId(IdField::decode(minor_key))->stub_name;
-  }
-
- private:
-  Runtime::FunctionId id_;
-  int num_arguments_;
-
-  class ArgumentField: public BitField<int,  0, 16> {};
-  class IdField: public BitField<Runtime::FunctionId, 16, kMinorBits - 16> {};
-
-  Major MajorKey() { return Runtime; }
-  int MinorKey() {
-    return IdField::encode(id_) | ArgumentField::encode(num_arguments_);
-  }
-
-  const char* GetName();
-
-#ifdef DEBUG
-  void Print() {
-    PrintF("RuntimeStub (id %s)\n", Runtime::FunctionForId(id_)->name);
-  }
-#endif
-};
-
 
 class StackCheckStub : public CodeStub {
  public:
@@ -367,25 +330,30 @@ class CompareStub: public CodeStub {
 
 class CEntryStub : public CodeStub {
  public:
-  explicit CEntryStub(int result_size) : result_size_(result_size) { }
+  explicit CEntryStub(int result_size,
+                      ExitFrame::Mode mode = ExitFrame::MODE_NORMAL)
+      : result_size_(result_size), mode_(mode) { }
 
-  void Generate(MacroAssembler* masm) { GenerateBody(masm, false); }
+  void Generate(MacroAssembler* masm);
 
- protected:
-  void GenerateBody(MacroAssembler* masm, bool is_debug_break);
+ private:
   void GenerateCore(MacroAssembler* masm,
                     Label* throw_normal_exception,
                     Label* throw_termination_exception,
                     Label* throw_out_of_memory_exception,
-                    ExitFrame::Mode mode,
                     bool do_gc,
                     bool always_allocate_scope);
   void GenerateThrowTOS(MacroAssembler* masm);
   void GenerateThrowUncatchable(MacroAssembler* masm,
                                 UncatchableExceptionType type);
- private:
+
   // Number of pointers/values returned.
-  int result_size_;
+  const int result_size_;
+  const ExitFrame::Mode mode_;
+
+  // Minor key encoding
+  class ExitFrameModeBits: public BitField<ExitFrame::Mode, 0, 1> {};
+  class IndirectResultBits: public BitField<bool, 1, 1> {};
 
   Major MajorKey() { return CEntry; }
   // Minor key must differ if different result_size_ values means different
@@ -422,16 +390,18 @@ class ApiGetterEntryStub : public CodeStub {
 };
 
 
-class CEntryDebugBreakStub : public CEntryStub {
+// Mark the debugger statement to be recognized by debugger (by the MajorKey)
+class DebuggerStatementStub : public CodeStub {
  public:
-  CEntryDebugBreakStub() : CEntryStub(1) { }
+  DebuggerStatementStub() { }
 
-  void Generate(MacroAssembler* masm) { GenerateBody(masm, true); }
+  void Generate(MacroAssembler* masm);
 
  private:
-  int MinorKey() { return 1; }
+  Major MajorKey() { return DebuggerStatement; }
+  int MinorKey() { return 0; }
 
-  const char* GetName() { return "CEntryDebugBreakStub"; }
+  const char* GetName() { return "DebuggerStatementStub"; }
 };
 
 

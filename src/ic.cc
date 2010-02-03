@@ -1302,9 +1302,9 @@ Object* CallIC_Miss(Arguments args) {
   Handle<JSFunction> function = Handle<JSFunction>(JSFunction::cast(result));
   InLoopFlag in_loop = ic.target()->ic_in_loop();
   if (in_loop == IN_LOOP) {
-    CompileLazyInLoop(function, CLEAR_EXCEPTION);
+    CompileLazyInLoop(function, args.at<Object>(0), CLEAR_EXCEPTION);
   } else {
-    CompileLazy(function, CLEAR_EXCEPTION);
+    CompileLazy(function, args.at<Object>(0), CLEAR_EXCEPTION);
   }
   return *function;
 }
@@ -1392,16 +1392,6 @@ Object* SharedStoreIC_ExtendStorage(Arguments args) {
 
   // Return the stored value.
   return value;
-}
-
-
-void StoreIC::GenerateInitialize(MacroAssembler* masm) {
-  Generate(masm, ExternalReference(IC_Utility(kStoreIC_Miss)));
-}
-
-
-void StoreIC::GenerateMiss(MacroAssembler* masm) {
-  Generate(masm, ExternalReference(IC_Utility(kStoreIC_Miss)));
 }
 
 

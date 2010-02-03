@@ -147,6 +147,11 @@ void RecordWriteStub::Generate(MacroAssembler* masm) {
 // All registers are clobbered by the operation.
 void MacroAssembler::RecordWrite(Register object, int offset,
                                  Register value, Register scratch) {
+  // The compiled code assumes that record write doesn't change the
+  // context register, so we check that none of the clobbered
+  // registers are esi.
+  ASSERT(!object.is(esi) && !value.is(esi) && !scratch.is(esi));
+
   // First, check if a remembered set write is even needed. The tests below
   // catch stores of Smis and stores into young gen (which does not have space
   // for the remembered set bits.
@@ -210,6 +215,14 @@ void MacroAssembler::RecordWrite(Register object, int offset,
   }
 
   bind(&done);
+
+  // Clobber all input registers when running with the debug-code flag
+  // turned on to provoke errors.
+  if (FLAG_debug_code) {
+    mov(object, Immediate(bit_cast<int32_t>(kZapValue)));
+    mov(value, Immediate(bit_cast<int32_t>(kZapValue)));
+    mov(scratch, Immediate(bit_cast<int32_t>(kZapValue)));
+  }
 }
 
 
@@ -1098,10 +1111,14 @@ void MacroAssembler::CallRuntime(Runtime::Function* f, int num_arguments) {
     return;
   }
 
-  Runtime::FunctionId function_id =
-      static_cast<Runtime::FunctionId>(f->stub_id);
-  RuntimeStub stub(function_id, num_arguments);
-  CallStub(&stub);
+  // TODO(1236192): Most runtime routines don't need the number of
+  // arguments passed in because it is constant. At some point we
+  // should remove this need and make the runtime routine entry code
+  // smarter.
+  Set(eax, Immediate(num_arguments));
+  mov(ebx, Immediate(ExternalReference(f)));
+  CEntryStub ces(1);
+  CallStub(&ces);
 }
 
 
@@ -1114,10 +1131,14 @@ Object* MacroAssembler::TryCallRuntime(Runtime::Function* f,
     return Heap::undefined_value();
   }
 
-  Runtime::FunctionId function_id =
-      static_cast<Runtime::FunctionId>(f->stub_id);
-  RuntimeStub stub(function_id, num_arguments);
-  return TryCallStub(&stub);
+  // TODO(1236192): Most runtime routines don't need the number of
+  // arguments passed in because it is constant. At some point we
+  // should remove this need and make the runtime routine entry code
+  // smarter.
+  Set(eax, Immediate(num_arguments));
+  mov(ebx, Immediate(ExternalReference(f)));
+  CEntryStub ces(1);
+  return TryCallStub(&ces);
 }
 
 

@@ -178,6 +178,11 @@ void MacroAssembler::RecordWrite(Register object,
                                  int offset,
                                  Register value,
                                  Register smi_index) {
+  // The compiled code assumes that record write doesn't change the
+  // context register, so we check that none of the clobbered
+  // registers are rsi.
+  ASSERT(!object.is(rsi) && !value.is(rsi) && !smi_index.is(rsi));
+
   // First, check if a remembered set write is even needed. The tests below
   // catch stores of Smis and stores into young gen (which does not have space
   // for the remembered set bits.
@@ -186,6 +191,17 @@ void MacroAssembler::RecordWrite(Register object,
 
   RecordWriteNonSmi(object, offset, value, smi_index);
   bind(&done);
+
+  // Clobber all input registers when running with the debug-code flag
+  // turned on to provoke errors. This clobbering repeats the
+  // clobbering done inside RecordWriteNonSmi but it's necessary to
+  // avoid having the fast case for smis leave the registers
+  // unchanged.
+  if (FLAG_debug_code) {
+    movq(object, bit_cast<int64_t>(kZapValue), RelocInfo::NONE);
+    movq(value, bit_cast<int64_t>(kZapValue), RelocInfo::NONE);
+    movq(smi_index, bit_cast<int64_t>(kZapValue), RelocInfo::NONE);
+  }
 }
 
 
@@ -194,6 +210,14 @@ void MacroAssembler::RecordWriteNonSmi(Register object,
                                        Register scratch,
                                        Register smi_index) {
   Label done;
+
+  if (FLAG_debug_code) {
+    Label okay;
+    JumpIfNotSmi(object, &okay);
+    Abort("MacroAssembler::RecordWriteNonSmi cannot deal with smis");
+    bind(&okay);
+  }
+
   // Test that the object address is not in the new space.  We cannot
   // set remembered set bits in the new space.
   movq(scratch, object);
@@ -243,6 +267,14 @@ void MacroAssembler::RecordWriteNonSmi(Register object,
   }
 
   bind(&done);
+
+  // Clobber all input registers when running with the debug-code flag
+  // turned on to provoke errors.
+  if (FLAG_debug_code) {
+    movq(object, bit_cast<int64_t>(kZapValue), RelocInfo::NONE);
+    movq(scratch, bit_cast<int64_t>(kZapValue), RelocInfo::NONE);
+    movq(smi_index, bit_cast<int64_t>(kZapValue), RelocInfo::NONE);
+  }
 }
 
 
@@ -344,10 +376,14 @@ void MacroAssembler::CallRuntime(Runtime::Function* f, int num_arguments) {
     return;
   }
 
-  Runtime::FunctionId function_id =
-      static_cast<Runtime::FunctionId>(f->stub_id);
-  RuntimeStub stub(function_id, num_arguments);
-  CallStub(&stub);
+  // TODO(1236192): Most runtime routines don't need the number of
+  // arguments passed in because it is constant. At some point we
+  // should remove this need and make the runtime routine entry code
+  // smarter.
+  movq(rax, Immediate(num_arguments));
+  movq(rbx, ExternalReference(f));
+  CEntryStub ces(f->result_size);
+  CallStub(&ces);
 }
 
 
@@ -1553,7 +1589,7 @@ Condition MacroAssembler::IsObjectStringType(Register heap_object,
                                              Register map,
                                              Register instance_type) {
   movq(map, FieldOperand(heap_object, HeapObject::kMapOffset));
-  movzxbq(instance_type, FieldOperand(map, Map::kInstanceTypeOffset));
+  movzxbl(instance_type, FieldOperand(map, Map::kInstanceTypeOffset));
   ASSERT(kNotStringTag != 0);
   testb(instance_type, Immediate(kIsNotStringMask));
   return zero;
@@ -2471,6 +2507,51 @@ void MacroAssembler::LoadContext(Register dst, int context_chain_length) {
     // The context may be an intermediate context, not a function context.
     movq(dst, Operand(rsi, Context::SlotOffset(Context::FCONTEXT_INDEX)));
   }
+}
+
+int MacroAssembler::ArgumentStackSlotsForCFunctionCall(int num_arguments) {
+  // On Windows stack slots are reserved by the caller for all arguments
+  // including the ones passed in registers. On Linux 6 arguments are passed in
+  // registers and the caller does not reserve stack slots for them.
+  ASSERT(num_arguments >= 0);
+#ifdef _WIN64
+  static const int kArgumentsWithoutStackSlot = 0;
+#else
+  static const int kArgumentsWithoutStackSlot = 6;
+#endif
+  return num_arguments > kArgumentsWithoutStackSlot ?
+      num_arguments - kArgumentsWithoutStackSlot : 0;
+}
+
+void MacroAssembler::PrepareCallCFunction(int num_arguments) {
+  int frame_alignment = OS::ActivationFrameAlignment();
+  ASSERT(frame_alignment != 0);
+  ASSERT(num_arguments >= 0);
+  // Make stack end at alignment and allocate space for arguments and old rsp.
+  movq(kScratchRegister, rsp);
+  ASSERT(IsPowerOf2(frame_alignment));
+  int argument_slots_on_stack =
+      ArgumentStackSlotsForCFunctionCall(num_arguments);
+  subq(rsp, Immediate((argument_slots_on_stack + 1) * kPointerSize));
+  and_(rsp, Immediate(-frame_alignment));
+  movq(Operand(rsp, argument_slots_on_stack * kPointerSize), kScratchRegister);
+}
+
+
+void MacroAssembler::CallCFunction(ExternalReference function,
+                                   int num_arguments) {
+  movq(rax, function);
+  CallCFunction(rax, num_arguments);
+}
+
+
+void MacroAssembler::CallCFunction(Register function, int num_arguments) {
+  call(function);
+  ASSERT(OS::ActivationFrameAlignment() != 0);
+  ASSERT(num_arguments >= 0);
+  int argument_slots_on_stack =
+      ArgumentStackSlotsForCFunctionCall(num_arguments);
+  movq(rsp, Operand(rsp, argument_slots_on_stack * kPointerSize));
 }
 
 

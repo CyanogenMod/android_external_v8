@@ -33,6 +33,7 @@
 #include "debug.h"
 #include "ic-inl.h"
 #include "parser.h"
+#include "regexp-macro-assembler.h"
 #include "register-allocator-inl.h"
 #include "scopes.h"
 
@@ -207,11 +208,16 @@ class FloatingPointHelper : public AllStatic {
 
   // Code pattern for loading floating point values. Input values must
   // be either smi or heap number objects (fp values). Requirements:
-  // operand_1 on TOS+1 , operand_2 on TOS+2; Returns operands as
+  // operand_1 in rdx, operand_2 in rax; Returns operands as
   // floating point numbers in XMM registers.
   static void LoadFloatOperands(MacroAssembler* masm,
                                 XMMRegister dst1,
                                 XMMRegister dst2);
+
+  // Similar to LoadFloatOperands, assumes that the operands are smis.
+  static void LoadFloatOperandsFromSmis(MacroAssembler* masm,
+                                        XMMRegister dst1,
+                                        XMMRegister dst2);
 
   // Code pattern for loading floating point values onto the fp stack.
   // Input values must be either smi or heap number objects (fp values).
@@ -219,7 +225,6 @@ class FloatingPointHelper : public AllStatic {
   // Register version: operands in registers lhs and rhs.
   // Stack version: operands on TOS+1 and TOS+2.
   // Returns operands as floating point numbers on fp stack.
-  static void LoadFloatOperands(MacroAssembler* masm);
   static void LoadFloatOperands(MacroAssembler* masm,
                                 Register lhs,
                                 Register rhs);
@@ -241,13 +246,13 @@ class FloatingPointHelper : public AllStatic {
 // -----------------------------------------------------------------------------
 // CodeGenerator implementation.
 
-CodeGenerator::CodeGenerator(int buffer_size,
+CodeGenerator::CodeGenerator(MacroAssembler* masm,
                              Handle<Script> script,
                              bool is_eval)
     : is_eval_(is_eval),
       script_(script),
       deferred_(8),
-      masm_(new MacroAssembler(NULL, buffer_size)),
+      masm_(masm),
       scope_(NULL),
       frame_(NULL),
       allocator_(NULL),
@@ -273,7 +278,9 @@ void CodeGenerator::DeclareGlobals(Handle<FixedArray> pairs) {
 }
 
 
-void CodeGenerator::GenCode(FunctionLiteral* function) {
+void CodeGenerator::Generate(FunctionLiteral* function,
+                             Mode mode,
+                             CompilationInfo* info) {
   // Record the position for debugging purposes.
   CodeForFunctionPosition(function);
   ZoneList<Statement*>* body = function->body();
@@ -289,7 +296,7 @@ void CodeGenerator::GenCode(FunctionLiteral* function) {
   set_in_spilled_code(false);
 
   // Adjust for function-level loop nesting.
-  loop_nesting_ += function->loop_nesting();
+  loop_nesting_ += info->loop_nesting();
 
   JumpTarget::set_compiling_deferred_code(false);
 
@@ -313,95 +320,105 @@ void CodeGenerator::GenCode(FunctionLiteral* function) {
     // rdi: called JS function
     // rsi: callee's context
     allocator_->Initialize();
-    frame_->Enter();
 
-    // Allocate space for locals and initialize them.
-    frame_->AllocateStackSlots();
+    if (mode == PRIMARY) {
+      frame_->Enter();
+
+      // Allocate space for locals and initialize them.
+      frame_->AllocateStackSlots();
+
+      // Allocate the local context if needed.
+      int heap_slots = scope_->num_heap_slots();
+      if (heap_slots > 0) {
+        Comment cmnt(masm_, "[ allocate local context");
+        // Allocate local context.
+        // Get outer context and create a new context based on it.
+        frame_->PushFunction();
+        Result context;
+        if (heap_slots <= FastNewContextStub::kMaximumSlots) {
+          FastNewContextStub stub(heap_slots);
+          context = frame_->CallStub(&stub, 1);
+        } else {
+          context = frame_->CallRuntime(Runtime::kNewContext, 1);
+        }
+
+        // Update context local.
+        frame_->SaveContextRegister();
+
+        // Verify that the runtime call result and rsi agree.
+        if (FLAG_debug_code) {
+          __ cmpq(context.reg(), rsi);
+          __ Assert(equal, "Runtime::NewContext should end up in rsi");
+        }
+      }
+
+      // TODO(1241774): Improve this code:
+      // 1) only needed if we have a context
+      // 2) no need to recompute context ptr every single time
+      // 3) don't copy parameter operand code from SlotOperand!
+      {
+        Comment cmnt2(masm_, "[ copy context parameters into .context");
+
+        // Note that iteration order is relevant here! If we have the same
+        // parameter twice (e.g., function (x, y, x)), and that parameter
+        // needs to be copied into the context, it must be the last argument
+        // passed to the parameter that needs to be copied. This is a rare
+        // case so we don't check for it, instead we rely on the copying
+        // order: such a parameter is copied repeatedly into the same
+        // context location and thus the last value is what is seen inside
+        // the function.
+        for (int i = 0; i < scope_->num_parameters(); i++) {
+          Variable* par = scope_->parameter(i);
+          Slot* slot = par->slot();
+          if (slot != NULL && slot->type() == Slot::CONTEXT) {
+            // The use of SlotOperand below is safe in unspilled code
+            // because the slot is guaranteed to be a context slot.
+            //
+            // There are no parameters in the global scope.
+            ASSERT(!scope_->is_global_scope());
+            frame_->PushParameterAt(i);
+            Result value = frame_->Pop();
+            value.ToRegister();
+
+            // SlotOperand loads context.reg() with the context object
+            // stored to, used below in RecordWrite.
+            Result context = allocator_->Allocate();
+            ASSERT(context.is_valid());
+            __ movq(SlotOperand(slot, context.reg()), value.reg());
+            int offset = FixedArray::kHeaderSize + slot->index() * kPointerSize;
+            Result scratch = allocator_->Allocate();
+            ASSERT(scratch.is_valid());
+            frame_->Spill(context.reg());
+            frame_->Spill(value.reg());
+            __ RecordWrite(context.reg(), offset, value.reg(), scratch.reg());
+          }
+        }
+      }
+
+      // Store the arguments object.  This must happen after context
+      // initialization because the arguments object may be stored in
+      // the context.
+      if (ArgumentsMode() != NO_ARGUMENTS_ALLOCATION) {
+        StoreArgumentsObject(true);
+      }
+
+      // Initialize ThisFunction reference if present.
+      if (scope_->is_function_scope() && scope_->function() != NULL) {
+        frame_->Push(Factory::the_hole_value());
+        StoreToSlot(scope_->function()->slot(), NOT_CONST_INIT);
+      }
+    } else {
+      // When used as the secondary compiler for splitting, rbp, rsi,
+      // and rdi have been pushed on the stack.  Adjust the virtual
+      // frame to match this state.
+      frame_->Adjust(3);
+      allocator_->Unuse(rdi);
+    }
+
     // Initialize the function return target after the locals are set
     // up, because it needs the expected frame height from the frame.
     function_return_.set_direction(JumpTarget::BIDIRECTIONAL);
     function_return_is_shadowed_ = false;
-
-    // Allocate the local context if needed.
-    int heap_slots = scope_->num_heap_slots();
-    if (heap_slots > 0) {
-      Comment cmnt(masm_, "[ allocate local context");
-      // Allocate local context.
-      // Get outer context and create a new context based on it.
-      frame_->PushFunction();
-      Result context;
-      if (heap_slots <= FastNewContextStub::kMaximumSlots) {
-        FastNewContextStub stub(heap_slots);
-        context = frame_->CallStub(&stub, 1);
-      } else {
-        context = frame_->CallRuntime(Runtime::kNewContext, 1);
-      }
-
-      // Update context local.
-      frame_->SaveContextRegister();
-
-      // Verify that the runtime call result and rsi agree.
-      if (FLAG_debug_code) {
-        __ cmpq(context.reg(), rsi);
-        __ Assert(equal, "Runtime::NewContext should end up in rsi");
-      }
-    }
-
-    // TODO(1241774): Improve this code:
-    // 1) only needed if we have a context
-    // 2) no need to recompute context ptr every single time
-    // 3) don't copy parameter operand code from SlotOperand!
-    {
-      Comment cmnt2(masm_, "[ copy context parameters into .context");
-
-      // Note that iteration order is relevant here! If we have the same
-      // parameter twice (e.g., function (x, y, x)), and that parameter
-      // needs to be copied into the context, it must be the last argument
-      // passed to the parameter that needs to be copied. This is a rare
-      // case so we don't check for it, instead we rely on the copying
-      // order: such a parameter is copied repeatedly into the same
-      // context location and thus the last value is what is seen inside
-      // the function.
-      for (int i = 0; i < scope_->num_parameters(); i++) {
-        Variable* par = scope_->parameter(i);
-        Slot* slot = par->slot();
-        if (slot != NULL && slot->type() == Slot::CONTEXT) {
-          // The use of SlotOperand below is safe in unspilled code
-          // because the slot is guaranteed to be a context slot.
-          //
-          // There are no parameters in the global scope.
-          ASSERT(!scope_->is_global_scope());
-          frame_->PushParameterAt(i);
-          Result value = frame_->Pop();
-          value.ToRegister();
-
-          // SlotOperand loads context.reg() with the context object
-          // stored to, used below in RecordWrite.
-          Result context = allocator_->Allocate();
-          ASSERT(context.is_valid());
-          __ movq(SlotOperand(slot, context.reg()), value.reg());
-          int offset = FixedArray::kHeaderSize + slot->index() * kPointerSize;
-          Result scratch = allocator_->Allocate();
-          ASSERT(scratch.is_valid());
-          frame_->Spill(context.reg());
-          frame_->Spill(value.reg());
-          __ RecordWrite(context.reg(), offset, value.reg(), scratch.reg());
-        }
-      }
-    }
-
-    // Store the arguments object.  This must happen after context
-    // initialization because the arguments object may be stored in
-    // the context.
-    if (ArgumentsMode() != NO_ARGUMENTS_ALLOCATION) {
-      StoreArgumentsObject(true);
-    }
-
-    // Initialize ThisFunction reference if present.
-    if (scope_->is_function_scope() && scope_->function() != NULL) {
-      frame_->Push(Factory::the_hole_value());
-      StoreToSlot(scope_->function()->slot(), NOT_CONST_INIT);
-    }
 
     // Generate code to 'execute' declarations and initialize functions
     // (source elements). In case of an illegal redeclaration we need to
@@ -467,7 +484,7 @@ void CodeGenerator::GenCode(FunctionLiteral* function) {
   }
 
   // Adjust for function-level loop nesting.
-  loop_nesting_ -= function->loop_nesting();
+  loop_nesting_ -= info->loop_nesting();
 
   // Code generation state must be reset.
   ASSERT(state_ == NULL);
@@ -2207,7 +2224,9 @@ void CodeGenerator::VisitDebuggerStatement(DebuggerStatement* node) {
 #ifdef ENABLE_DEBUGGER_SUPPORT
   // Spill everything, even constants, to the frame.
   frame_->SpillAll();
-  frame_->CallRuntime(Runtime::kDebugBreak, 0);
+
+  DebuggerStatementStub ces;
+  frame_->CallStub(&ces, 0);
   // Ignore the return value.
 #endif
 }
@@ -2432,8 +2451,6 @@ void CodeGenerator::VisitObjectLiteral(ObjectLiteral* node) {
           Load(property->value());
           frame_->Push(key);
           Result ignored = frame_->CallStoreIC();
-          // Drop the duplicated receiver and ignore the result.
-          frame_->Drop();
           break;
         }
         // Fall through
@@ -3955,7 +3972,8 @@ void CodeGenerator::GenerateRegExpExec(ZoneList<Expression*>* args) {
   Load(args->at(1));
   Load(args->at(2));
   Load(args->at(3));
-  Result result = frame_->CallRuntime(Runtime::kRegExpExec, 4);
+  RegExpExecStub stub;
+  Result result = frame_->CallStub(&stub, 4);
   frame_->Push(&result);
 }
 
@@ -5117,11 +5135,8 @@ void CodeGenerator::GenericBinaryOperation(Token::Value op,
 
   Result answer;
   if (left_is_non_smi || right_is_non_smi) {
-    // Go straight to the slow case, with no smi code
-    frame_->Push(&left);
-    frame_->Push(&right);
     GenericBinaryOpStub stub(op, overwrite_mode, NO_SMI_CODE_IN_STUB);
-    answer = frame_->CallStub(&stub, 2);
+    answer = stub.GenerateCall(masm_, frame_, &left, &right);
   } else if (right_is_smi) {
     answer = ConstantSmiBinaryOperation(op, &left, right.handle(),
                                         type, false, overwrite_mode);
@@ -5137,10 +5152,8 @@ void CodeGenerator::GenericBinaryOperation(Token::Value op,
     if (loop_nesting() > 0 && (Token::IsBitOp(op) || type->IsLikelySmi())) {
       answer = LikelySmiBinaryOperation(op, &left, &right, overwrite_mode);
     } else {
-      frame_->Push(&left);
-      frame_->Push(&right);
       GenericBinaryOpStub stub(op, overwrite_mode, NO_GENERIC_BINARY_FLAGS);
-      answer = frame_->CallStub(&stub, 2);
+      answer = stub.GenerateCall(masm_, frame_, &left, &right);
     }
   }
   frame_->Push(&answer);
@@ -6009,6 +6022,7 @@ void Reference::SetValue(InitState init_state) {
       Slot* slot = expression_->AsVariableProxy()->AsVariable()->slot();
       ASSERT(slot != NULL);
       cgen_->StoreToSlot(slot, init_state);
+      cgen_->UnloadReference(this);
       break;
     }
 
@@ -6017,6 +6031,7 @@ void Reference::SetValue(InitState init_state) {
       cgen_->frame()->Push(GetName());
       Result answer = cgen_->frame()->CallStoreIC();
       cgen_->frame()->Push(&answer);
+      set_unloaded();
       break;
     }
 
@@ -6118,13 +6133,13 @@ void Reference::SetValue(InitState init_state) {
         masm->nop();
         cgen_->frame()->Push(&answer);
       }
+      cgen_->UnloadReference(this);
       break;
     }
 
     default:
       UNREACHABLE();
   }
-  cgen_->UnloadReference(this);
 }
 
 
@@ -6563,6 +6578,363 @@ void GenericUnaryOpStub::Generate(MacroAssembler* masm) {
 }
 
 
+void RegExpExecStub::Generate(MacroAssembler* masm) {
+  // Just jump directly to runtime if native RegExp is not selected at compile
+  // time or if regexp entry in generated code is turned off runtime switch or
+  // at compilation.
+#ifndef V8_NATIVE_REGEXP
+  __ TailCallRuntime(ExternalReference(Runtime::kRegExpExec), 4, 1);
+#else  // V8_NATIVE_REGEXP
+  if (!FLAG_regexp_entry_native) {
+    __ TailCallRuntime(ExternalReference(Runtime::kRegExpExec), 4, 1);
+    return;
+  }
+
+  // Stack frame on entry.
+  //  esp[0]: return address
+  //  esp[8]: last_match_info (expected JSArray)
+  //  esp[16]: previous index
+  //  esp[24]: subject string
+  //  esp[32]: JSRegExp object
+
+  static const int kLastMatchInfoOffset = 1 * kPointerSize;
+  static const int kPreviousIndexOffset = 2 * kPointerSize;
+  static const int kSubjectOffset = 3 * kPointerSize;
+  static const int kJSRegExpOffset = 4 * kPointerSize;
+
+  Label runtime;
+
+  // Ensure that a RegExp stack is allocated.
+  ExternalReference address_of_regexp_stack_memory_address =
+      ExternalReference::address_of_regexp_stack_memory_address();
+  ExternalReference address_of_regexp_stack_memory_size =
+      ExternalReference::address_of_regexp_stack_memory_size();
+  __ movq(kScratchRegister, address_of_regexp_stack_memory_size);
+  __ movq(kScratchRegister, Operand(kScratchRegister, 0));
+  __ testq(kScratchRegister, kScratchRegister);
+  __ j(zero, &runtime);
+
+
+  // Check that the first argument is a JSRegExp object.
+  __ movq(rax, Operand(rsp, kJSRegExpOffset));
+  __ JumpIfSmi(rax, &runtime);
+  __ CmpObjectType(rax, JS_REGEXP_TYPE, kScratchRegister);
+  __ j(not_equal, &runtime);
+  // Check that the RegExp has been compiled (data contains a fixed array).
+  __ movq(rcx, FieldOperand(rax, JSRegExp::kDataOffset));
+  if (FLAG_debug_code) {
+    Condition is_smi = masm->CheckSmi(rcx);
+    __ Check(NegateCondition(is_smi),
+        "Unexpected type for RegExp data, FixedArray expected");
+    __ CmpObjectType(rcx, FIXED_ARRAY_TYPE, kScratchRegister);
+    __ Check(equal, "Unexpected type for RegExp data, FixedArray expected");
+  }
+
+  // rcx: RegExp data (FixedArray)
+  // Check the type of the RegExp. Only continue if type is JSRegExp::IRREGEXP.
+  __ movq(rbx, FieldOperand(rcx, JSRegExp::kDataTagOffset));
+  __ SmiCompare(rbx, Smi::FromInt(JSRegExp::IRREGEXP));
+  __ j(not_equal, &runtime);
+
+  // rcx: RegExp data (FixedArray)
+  // Check that the number of captures fit in the static offsets vector buffer.
+  __ movq(rdx, FieldOperand(rcx, JSRegExp::kIrregexpCaptureCountOffset));
+  // Calculate number of capture registers (number_of_captures + 1) * 2.
+  __ PositiveSmiTimesPowerOfTwoToInteger64(rdx, rdx, 1);
+  __ addq(rdx, Immediate(2));  // rdx was number_of_captures * 2.
+  // Check that the static offsets vector buffer is large enough.
+  __ cmpq(rdx, Immediate(OffsetsVector::kStaticOffsetsVectorSize));
+  __ j(above, &runtime);
+
+  // rcx: RegExp data (FixedArray)
+  // rdx: Number of capture registers
+  // Check that the second argument is a string.
+  __ movq(rax, Operand(rsp, kSubjectOffset));
+  __ JumpIfSmi(rax, &runtime);
+  Condition is_string = masm->IsObjectStringType(rax, rbx, rbx);
+  __ j(NegateCondition(is_string), &runtime);
+  // Get the length of the string to rbx.
+  __ movl(rbx, FieldOperand(rax, String::kLengthOffset));
+
+  // rbx: Length of subject string
+  // rcx: RegExp data (FixedArray)
+  // rdx: Number of capture registers
+  // Check that the third argument is a positive smi less than the string
+  // length. A negative value will be greater (usigned comparison).
+  __ movq(rax, Operand(rsp, kPreviousIndexOffset));
+  __ SmiToInteger32(rax, rax);
+  __ cmpl(rax, rbx);
+  __ j(above, &runtime);
+
+  // rcx: RegExp data (FixedArray)
+  // rdx: Number of capture registers
+  // Check that the fourth object is a JSArray object.
+  __ movq(rax, Operand(rsp, kLastMatchInfoOffset));
+  __ JumpIfSmi(rax, &runtime);
+  __ CmpObjectType(rax, JS_ARRAY_TYPE, kScratchRegister);
+  __ j(not_equal, &runtime);
+  // Check that the JSArray is in fast case.
+  __ movq(rbx, FieldOperand(rax, JSArray::kElementsOffset));
+  __ movq(rax, FieldOperand(rbx, HeapObject::kMapOffset));
+  __ Cmp(rax, Factory::fixed_array_map());
+  __ j(not_equal, &runtime);
+  // Check that the last match info has space for the capture registers and the
+  // additional information. Ensure no overflow in add.
+  ASSERT(FixedArray::kMaxLength < kMaxInt - FixedArray::kLengthOffset);
+  __ movl(rax, FieldOperand(rbx, FixedArray::kLengthOffset));
+  __ addl(rdx, Immediate(RegExpImpl::kLastMatchOverhead));
+  __ cmpl(rdx, rax);
+  __ j(greater, &runtime);
+
+  // ecx: RegExp data (FixedArray)
+  // Check the representation and encoding of the subject string.
+  Label seq_string, seq_two_byte_string, check_code;
+  const int kStringRepresentationEncodingMask =
+      kIsNotStringMask | kStringRepresentationMask | kStringEncodingMask;
+  __ movq(rax, Operand(rsp, kSubjectOffset));
+  __ movq(rbx, FieldOperand(rax, HeapObject::kMapOffset));
+  __ movzxbl(rbx, FieldOperand(rbx, Map::kInstanceTypeOffset));
+  __ andb(rbx, Immediate(kStringRepresentationEncodingMask));
+  // First check for sequential string.
+  ASSERT_EQ(0, kStringTag);
+  ASSERT_EQ(0, kSeqStringTag);
+  __ testb(rbx, Immediate(kIsNotStringMask | kStringRepresentationMask));
+  __ j(zero, &seq_string);
+
+  // Check for flat cons string.
+  // A flat cons string is a cons string where the second part is the empty
+  // string. In that case the subject string is just the first part of the cons
+  // string. Also in this case the first part of the cons string is known to be
+  // a sequential string or an external string.
+  __ movl(rdx, rbx);
+  __ andb(rdx, Immediate(kStringRepresentationMask));
+  __ cmpb(rdx, Immediate(kConsStringTag));
+  __ j(not_equal, &runtime);
+  __ movq(rdx, FieldOperand(rax, ConsString::kSecondOffset));
+  __ Cmp(rdx, Factory::empty_string());
+  __ j(not_equal, &runtime);
+  __ movq(rax, FieldOperand(rax, ConsString::kFirstOffset));
+  __ movq(rbx, FieldOperand(rax, HeapObject::kMapOffset));
+  __ movzxbl(rbx, FieldOperand(rbx, Map::kInstanceTypeOffset));
+  ASSERT_EQ(0, kSeqStringTag);
+  __ testb(rbx, Immediate(kStringRepresentationMask));
+  __ j(not_zero, &runtime);
+  __ andb(rbx, Immediate(kStringRepresentationEncodingMask));
+
+  __ bind(&seq_string);
+  // rax: subject string (sequential either ascii to two byte)
+  // rbx: suject string type & kStringRepresentationEncodingMask
+  // rcx: RegExp data (FixedArray)
+  // Check that the irregexp code has been generated for an ascii string. If
+  // it has, the field contains a code object otherwise it contains the hole.
+  __ cmpb(rbx, Immediate(kStringTag | kSeqStringTag | kTwoByteStringTag));
+  __ j(equal, &seq_two_byte_string);
+  if (FLAG_debug_code) {
+    __ cmpb(rbx, Immediate(kStringTag | kSeqStringTag | kAsciiStringTag));
+    __ Check(equal, "Expected sequential ascii string");
+  }
+  __ movq(r12, FieldOperand(rcx, JSRegExp::kDataAsciiCodeOffset));
+  __ Set(rdi, 1);  // Type is ascii.
+  __ jmp(&check_code);
+
+  __ bind(&seq_two_byte_string);
+  // rax: subject string
+  // rcx: RegExp data (FixedArray)
+  __ movq(r12, FieldOperand(rcx, JSRegExp::kDataUC16CodeOffset));
+  __ Set(rdi, 0);  // Type is two byte.
+
+  __ bind(&check_code);
+  // Check that the irregexp code has been generated for the actual string
+  // encoding. If it has, the field contains a code object otherwise it contains
+  // the hole.
+  __ CmpObjectType(r12, CODE_TYPE, kScratchRegister);
+  __ j(not_equal, &runtime);
+
+  // rax: subject string
+  // rdi: encoding of subject string (1 if ascii, 0 if two_byte);
+  // r12: code
+  // Load used arguments before starting to push arguments for call to native
+  // RegExp code to avoid handling changing stack height.
+  __ movq(rbx, Operand(rsp, kPreviousIndexOffset));
+  __ SmiToInteger64(rbx, rbx);  // Previous index from smi.
+
+  // rax: subject string
+  // rbx: previous index
+  // rdi: encoding of subject string (1 if ascii 0 if two_byte);
+  // r12: code
+  // All checks done. Now push arguments for native regexp code.
+  __ IncrementCounter(&Counters::regexp_entry_native, 1);
+
+  // rsi is caller save on Windows and used to pass parameter on Linux.
+  __ push(rsi);
+
+  static const int kRegExpExecuteArguments = 7;
+  __ PrepareCallCFunction(kRegExpExecuteArguments);
+  int argument_slots_on_stack =
+      masm->ArgumentStackSlotsForCFunctionCall(kRegExpExecuteArguments);
+
+  // Argument 7: Indicate that this is a direct call from JavaScript.
+  __ movq(Operand(rsp, (argument_slots_on_stack - 1) * kPointerSize),
+          Immediate(1));
+
+  // Argument 6: Start (high end) of backtracking stack memory area.
+  __ movq(kScratchRegister, address_of_regexp_stack_memory_address);
+  __ movq(r9, Operand(kScratchRegister, 0));
+  __ movq(kScratchRegister, address_of_regexp_stack_memory_size);
+  __ addq(r9, Operand(kScratchRegister, 0));
+  // Argument 6 passed in r9 on Linux and on the stack on Windows.
+#ifdef _WIN64
+  __ movq(Operand(rsp, (argument_slots_on_stack - 2) * kPointerSize), r9);
+#endif
+
+  // Argument 5: static offsets vector buffer.
+  __ movq(r8, ExternalReference::address_of_static_offsets_vector());
+  // Argument 5 passed in r8 on Linux and on the stack on Windows.
+#ifdef _WIN64
+  __ movq(Operand(rsp, (argument_slots_on_stack - 3) * kPointerSize), r8);
+#endif
+
+  // First four arguments are passed in registers on both Linux and Windows.
+#ifdef _WIN64
+  Register arg4 = r9;
+  Register arg3 = r8;
+  Register arg2 = rdx;
+  Register arg1 = rcx;
+#else
+  Register arg4 = rcx;
+  Register arg3 = rdx;
+  Register arg2 = rsi;
+  Register arg1 = rdi;
+#endif
+
+  // Keep track on aliasing between argX defined above and the registers used.
+  // rax: subject string
+  // rbx: previous index
+  // rdi: encoding of subject string (1 if ascii 0 if two_byte);
+  // r12: code
+
+  // Argument 4: End of string data
+  // Argument 3: Start of string data
+  Label setup_two_byte, setup_rest;
+  __ testb(rdi, rdi);
+  __ movl(rdi, FieldOperand(rax, String::kLengthOffset));
+  __ j(zero, &setup_two_byte);
+  __ lea(arg4, FieldOperand(rax, rdi, times_1, SeqAsciiString::kHeaderSize));
+  __ lea(arg3, FieldOperand(rax, rbx, times_1, SeqAsciiString::kHeaderSize));
+  __ jmp(&setup_rest);
+  __ bind(&setup_two_byte);
+  __ lea(arg4, FieldOperand(rax, rdi, times_2, SeqTwoByteString::kHeaderSize));
+  __ lea(arg3, FieldOperand(rax, rbx, times_2, SeqTwoByteString::kHeaderSize));
+
+  __ bind(&setup_rest);
+  // Argument 2: Previous index.
+  __ movq(arg2, rbx);
+
+  // Argument 1: Subject string.
+  __ movq(arg1, rax);
+
+  // Locate the code entry and call it.
+  __ addq(r12, Immediate(Code::kHeaderSize - kHeapObjectTag));
+  __ CallCFunction(r12, kRegExpExecuteArguments);
+
+  // rsi is caller save, as it is used to pass parameter.
+  __ pop(rsi);
+
+  // Check the result.
+  Label success;
+  __ cmpq(rax, Immediate(NativeRegExpMacroAssembler::SUCCESS));
+  __ j(equal, &success);
+  Label failure;
+  __ cmpq(rax, Immediate(NativeRegExpMacroAssembler::FAILURE));
+  __ j(equal, &failure);
+  __ cmpq(rax, Immediate(NativeRegExpMacroAssembler::EXCEPTION));
+  // If not exception it can only be retry. Handle that in the runtime system.
+  __ j(not_equal, &runtime);
+  // Result must now be exception. If there is no pending exception already a
+  // stack overflow (on the backtrack stack) was detected in RegExp code but
+  // haven't created the exception yet. Handle that in the runtime system.
+  // TODO(592) Rerunning the RegExp to get the stack overflow exception.
+  ExternalReference pending_exception_address(Top::k_pending_exception_address);
+  __ movq(kScratchRegister, pending_exception_address);
+  __ Cmp(kScratchRegister, Factory::the_hole_value());
+  __ j(equal, &runtime);
+  __ bind(&failure);
+  // For failure and exception return null.
+  __ Move(rax, Factory::null_value());
+  __ ret(4 * kPointerSize);
+
+  // Load RegExp data.
+  __ bind(&success);
+  __ movq(rax, Operand(rsp, kJSRegExpOffset));
+  __ movq(rcx, FieldOperand(rax, JSRegExp::kDataOffset));
+  __ movq(rdx, FieldOperand(rcx, JSRegExp::kIrregexpCaptureCountOffset));
+  // Calculate number of capture registers (number_of_captures + 1) * 2.
+  __ PositiveSmiTimesPowerOfTwoToInteger64(rdx, rdx, 1);
+  __ addq(rdx, Immediate(2));  // rdx was number_of_captures * 2.
+
+  // rdx: Number of capture registers
+  // Load last_match_info which is still known to be a fast case JSArray.
+  __ movq(rax, Operand(rsp, kLastMatchInfoOffset));
+  __ movq(rbx, FieldOperand(rax, JSArray::kElementsOffset));
+
+  // rbx: last_match_info backing store (FixedArray)
+  // rdx: number of capture registers
+  // Store the capture count.
+  __ Integer32ToSmi(kScratchRegister, rdx);
+  __ movq(FieldOperand(rbx, RegExpImpl::kLastCaptureCountOffset),
+          kScratchRegister);
+  // Store last subject and last input.
+  __ movq(rax, Operand(rsp, kSubjectOffset));
+  __ movq(FieldOperand(rbx, RegExpImpl::kLastSubjectOffset), rax);
+  __ movq(rcx, rbx);
+  __ RecordWrite(rcx, RegExpImpl::kLastSubjectOffset, rax, rdi);
+  __ movq(rax, Operand(rsp, kSubjectOffset));
+  __ movq(FieldOperand(rbx, RegExpImpl::kLastInputOffset), rax);
+  __ movq(rcx, rbx);
+  __ RecordWrite(rcx, RegExpImpl::kLastInputOffset, rax, rdi);
+
+  // Get the static offsets vector filled by the native regexp code.
+  __ movq(rcx, ExternalReference::address_of_static_offsets_vector());
+
+  // rbx: last_match_info backing store (FixedArray)
+  // rcx: offsets vector
+  // rdx: number of capture registers
+  Label next_capture, done;
+  __ movq(rax, Operand(rsp, kPreviousIndexOffset));
+  // Capture register counter starts from number of capture registers and
+  // counts down until wraping after zero.
+  __ bind(&next_capture);
+  __ subq(rdx, Immediate(1));
+  __ j(negative, &done);
+  // Read the value from the static offsets vector buffer and make it a smi.
+  __ movl(rdi, Operand(rcx, rdx, times_int_size, 0));
+  __ Integer32ToSmi(rdi, rdi, &runtime);
+  // Add previous index (from its stack slot) if value is not negative.
+  Label capture_negative;
+  // Negative flag set by smi convertion above.
+  __ j(negative, &capture_negative);
+  __ SmiAdd(rdi, rdi, rax, &runtime);  // Add previous index.
+  __ bind(&capture_negative);
+  // Store the smi value in the last match info.
+  __ movq(FieldOperand(rbx,
+                       rdx,
+                       times_pointer_size,
+                       RegExpImpl::kFirstCaptureOffset),
+                       rdi);
+  __ jmp(&next_capture);
+  __ bind(&done);
+
+  // Return last match info.
+  __ movq(rax, Operand(rsp, kLastMatchInfoOffset));
+  __ ret(4 * kPointerSize);
+
+  // Do the runtime call to execute the regexp.
+  __ bind(&runtime);
+  __ TailCallRuntime(ExternalReference(Runtime::kRegExpExec), 4, 1);
+#endif  // V8_NATIVE_REGEXP
+}
+
+
 void CompareStub::Generate(MacroAssembler* masm) {
   Label call_builtin, done;
 
@@ -6972,23 +7344,6 @@ void ArgumentsAccessStub::GenerateReadLength(MacroAssembler* masm) {
 }
 
 
-int CEntryStub::MinorKey() {
-  ASSERT(result_size_ <= 2);
-#ifdef _WIN64
-  // Simple results returned in rax (using default code).
-  // Complex results must be written to address passed as first argument.
-  // Use even numbers for minor keys, reserving the odd numbers for
-  // CEntryDebugBreakStub.
-  return (result_size_ < 2) ? 0 : result_size_ * 2;
-#else
-  // Single results returned in rax (both AMD64 and Win64 calling conventions)
-  // and a struct of two pointers in rax+rdx (AMD64 calling convention only)
-  // by default.
-  return 0;
-#endif
-}
-
-
 void CEntryStub::GenerateThrowTOS(MacroAssembler* masm) {
   // Check that stack should contain next handler, frame pointer, state and
   // return address in that order.
@@ -7022,7 +7377,6 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
                               Label* throw_normal_exception,
                               Label* throw_termination_exception,
                               Label* throw_out_of_memory_exception,
-                              ExitFrame::Mode mode,
                               bool do_gc,
                               bool always_allocate_scope) {
   // rax: result parameter for PerformGC, if any.
@@ -7033,6 +7387,10 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
   // r15: pointer to the first argument (C callee-saved).
   //      This pointer is reused in LeaveExitFrame(), so it is stored in a
   //      callee-saved register.
+
+  // Simple results returned in rax (both AMD64 and Win64 calling conventions).
+  // Complex results must be written to address passed as first argument.
+  // AMD64 calling convention: a struct of two pointers in rax+rdx
 
   if (do_gc) {
     // Pass failure code returned from last attempt as first argument to GC.
@@ -7105,7 +7463,7 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
   __ j(zero, &failure_returned);
 
   // Exit the JavaScript to C++ exit frame.
-  __ LeaveExitFrame(mode, result_size_);
+  __ LeaveExitFrame(mode_, result_size_);
   __ ret(0);
 
   // Handling of failure.
@@ -7249,7 +7607,7 @@ void CallFunctionStub::Generate(MacroAssembler* masm) {
 }
 
 
-void CEntryStub::GenerateBody(MacroAssembler* masm, bool is_debug_break) {
+void CEntryStub::Generate(MacroAssembler* masm) {
   // rax: number of arguments including receiver
   // rbx: pointer to C function  (C callee-saved)
   // rbp: frame pointer of calling JS frame (restored after C call)
@@ -7261,12 +7619,8 @@ void CEntryStub::GenerateBody(MacroAssembler* masm, bool is_debug_break) {
   // this by performing a garbage collection and retrying the
   // builtin once.
 
-  ExitFrame::Mode mode = is_debug_break ?
-      ExitFrame::MODE_DEBUG :
-      ExitFrame::MODE_NORMAL;
-
   // Enter the exit frame that transitions from JavaScript to C++.
-  __ EnterExitFrame(mode, result_size_);
+  __ EnterExitFrame(mode_, result_size_);
 
   // rax: Holds the context at this point, but should not be used.
   //      On entry to code generated by GenerateCore, it must hold
@@ -7289,7 +7643,6 @@ void CEntryStub::GenerateBody(MacroAssembler* masm, bool is_debug_break) {
                &throw_normal_exception,
                &throw_termination_exception,
                &throw_out_of_memory_exception,
-               mode,
                false,
                false);
 
@@ -7298,7 +7651,6 @@ void CEntryStub::GenerateBody(MacroAssembler* masm, bool is_debug_break) {
                &throw_normal_exception,
                &throw_termination_exception,
                &throw_out_of_memory_exception,
-               mode,
                true,
                false);
 
@@ -7309,7 +7661,6 @@ void CEntryStub::GenerateBody(MacroAssembler* masm, bool is_debug_break) {
                &throw_normal_exception,
                &throw_termination_exception,
                &throw_out_of_memory_exception,
-               mode,
                true,
                true);
 
@@ -7501,39 +7852,20 @@ void FloatingPointHelper::LoadFloatOperand(MacroAssembler* masm,
 void FloatingPointHelper::LoadFloatOperands(MacroAssembler* masm,
                                             XMMRegister dst1,
                                             XMMRegister dst2) {
-  __ movq(kScratchRegister, Operand(rsp, 2 * kPointerSize));
+  __ movq(kScratchRegister, rdx);
   LoadFloatOperand(masm, kScratchRegister, dst1);
-  __ movq(kScratchRegister, Operand(rsp, 1 * kPointerSize));
+  __ movq(kScratchRegister, rax);
   LoadFloatOperand(masm, kScratchRegister, dst2);
 }
 
 
-void FloatingPointHelper::LoadFloatOperands(MacroAssembler* masm) {
-  Label load_smi_1, load_smi_2, done_load_1, done;
-  __ movq(kScratchRegister, Operand(rsp, 2 * kPointerSize));
-  __ JumpIfSmi(kScratchRegister, &load_smi_1);
-  __ fld_d(FieldOperand(kScratchRegister, HeapNumber::kValueOffset));
-  __ bind(&done_load_1);
-
-  __ movq(kScratchRegister, Operand(rsp, 1 * kPointerSize));
-  __ JumpIfSmi(kScratchRegister, &load_smi_2);
-  __ fld_d(FieldOperand(kScratchRegister, HeapNumber::kValueOffset));
-  __ jmp(&done);
-
-  __ bind(&load_smi_1);
-  __ SmiToInteger32(kScratchRegister, kScratchRegister);
-  __ push(kScratchRegister);
-  __ fild_s(Operand(rsp, 0));
-  __ pop(kScratchRegister);
-  __ jmp(&done_load_1);
-
-  __ bind(&load_smi_2);
-  __ SmiToInteger32(kScratchRegister, kScratchRegister);
-  __ push(kScratchRegister);
-  __ fild_s(Operand(rsp, 0));
-  __ pop(kScratchRegister);
-
-  __ bind(&done);
+void FloatingPointHelper::LoadFloatOperandsFromSmis(MacroAssembler* masm,
+                                                    XMMRegister dst1,
+                                                    XMMRegister dst2) {
+  __ SmiToInteger32(kScratchRegister, rdx);
+  __ cvtlsi2sd(dst1, kScratchRegister);
+  __ SmiToInteger32(kScratchRegister, rax);
+  __ cvtlsi2sd(dst2, kScratchRegister);
 }
 
 
@@ -7787,71 +8119,176 @@ void GenericBinaryOpStub::GenerateCall(
 }
 
 
+Result GenericBinaryOpStub::GenerateCall(MacroAssembler* masm,
+                                         VirtualFrame* frame,
+                                         Result* left,
+                                         Result* right) {
+  if (ArgsInRegistersSupported()) {
+    SetArgsInRegisters();
+    return frame->CallStub(this, left, right);
+  } else {
+    frame->Push(left);
+    frame->Push(right);
+    return frame->CallStub(this, 2);
+  }
+}
+
+
 void GenericBinaryOpStub::GenerateSmiCode(MacroAssembler* masm, Label* slow) {
-  // Perform fast-case smi code for the operation (rax <op> rbx) and
-  // leave result in register rax.
+  // 1. Move arguments into edx, eax except for DIV and MOD, which need the
+  // dividend in eax and edx free for the division.  Use eax, ebx for those.
+  Comment load_comment(masm, "-- Load arguments");
+  Register left = rdx;
+  Register right = rax;
+  if (op_ == Token::DIV || op_ == Token::MOD) {
+    left = rax;
+    right = rbx;
+    if (HasArgsInRegisters()) {
+      __ movq(rbx, rax);
+      __ movq(rax, rdx);
+    }
+  }
+  if (!HasArgsInRegisters()) {
+    __ movq(right, Operand(rsp, 1 * kPointerSize));
+    __ movq(left, Operand(rsp, 2 * kPointerSize));
+  }
 
-  // Smi check both operands.
-  __ JumpIfNotBothSmi(rax, rbx, slow);
+  // 2. Smi check both operands. Skip the check for OR as it is better combined
+  // with the actual operation.
+  Label not_smis;
+  if (op_ != Token::BIT_OR) {
+    Comment smi_check_comment(masm, "-- Smi check arguments");
+    __ JumpIfNotBothSmi(left, right, &not_smis);
+  }
 
+  // 3. Operands are both smis (except for OR), perform the operation leaving
+  // the result in rax and check the result if necessary.
+  Comment perform_smi(masm, "-- Perform smi operation");
+  Label use_fp_on_smis;
   switch (op_) {
     case Token::ADD: {
-      __ SmiAdd(rax, rax, rbx, slow);
+      ASSERT(right.is(rax));
+      __ SmiAdd(right, right, left, &use_fp_on_smis);  // ADD is commutative.
       break;
     }
 
     case Token::SUB: {
-      __ SmiSub(rax, rax, rbx, slow);
+      __ SmiSub(left, left, right, &use_fp_on_smis);
+      __ movq(rax, left);
       break;
     }
 
     case Token::MUL:
-      __ SmiMul(rax, rax, rbx, slow);
+      ASSERT(right.is(rax));
+      __ SmiMul(right, right, left, &use_fp_on_smis);  // MUL is commutative.
       break;
 
     case Token::DIV:
-      __ SmiDiv(rax, rax, rbx, slow);
+      ASSERT(left.is(rax));
+      __ SmiDiv(left, left, right, &use_fp_on_smis);
       break;
 
     case Token::MOD:
-      __ SmiMod(rax, rax, rbx, slow);
+      ASSERT(left.is(rax));
+      __ SmiMod(left, left, right, slow);
       break;
 
     case Token::BIT_OR:
-      __ SmiOr(rax, rax, rbx);
+      ASSERT(right.is(rax));
+      __ movq(rcx, right);  // Save the right operand.
+      __ SmiOr(right, right, left);  // BIT_OR is commutative.
+      __ testb(right, Immediate(kSmiTagMask));
+      __ j(not_zero, &not_smis);
       break;
 
     case Token::BIT_AND:
-      __ SmiAnd(rax, rax, rbx);
+      ASSERT(right.is(rax));
+      __ SmiAnd(right, right, left);  // BIT_AND is commutative.
       break;
 
     case Token::BIT_XOR:
-      __ SmiXor(rax, rax, rbx);
+      ASSERT(right.is(rax));
+      __ SmiXor(right, right, left);  // BIT_XOR is commutative.
       break;
 
     case Token::SHL:
     case Token::SHR:
     case Token::SAR:
-      // Move the second operand into register rcx.
-      __ movq(rcx, rbx);
-      // Perform the operation.
       switch (op_) {
         case Token::SAR:
-          __ SmiShiftArithmeticRight(rax, rax, rcx);
+          __ SmiShiftArithmeticRight(left, left, right);
           break;
         case Token::SHR:
-          __ SmiShiftLogicalRight(rax, rax, rcx, slow);
+          __ SmiShiftLogicalRight(left, left, right, slow);
           break;
         case Token::SHL:
-          __ SmiShiftLeft(rax, rax, rcx, slow);
+          __ SmiShiftLeft(left, left, right, slow);
           break;
         default:
           UNREACHABLE();
       }
+      __ movq(rax, left);
       break;
 
     default:
       UNREACHABLE();
+      break;
+  }
+
+  // 4. Emit return of result in eax.
+  GenerateReturn(masm);
+
+  // 5. For some operations emit inline code to perform floating point
+  // operations on known smis (e.g., if the result of the operation
+  // overflowed the smi range).
+  switch (op_) {
+    case Token::ADD:
+    case Token::SUB:
+    case Token::MUL:
+    case Token::DIV: {
+      __ bind(&use_fp_on_smis);
+      if (op_ == Token::DIV) {
+        __ movq(rdx, rax);
+        __ movq(rax, rbx);
+      }
+      // left is rdx, right is rax.
+      __ AllocateHeapNumber(rbx, rcx, slow);
+      FloatingPointHelper::LoadFloatOperandsFromSmis(masm, xmm4, xmm5);
+      switch (op_) {
+        case Token::ADD: __ addsd(xmm4, xmm5); break;
+        case Token::SUB: __ subsd(xmm4, xmm5); break;
+        case Token::MUL: __ mulsd(xmm4, xmm5); break;
+        case Token::DIV: __ divsd(xmm4, xmm5); break;
+        default: UNREACHABLE();
+      }
+      __ movsd(FieldOperand(rbx, HeapNumber::kValueOffset), xmm4);
+      __ movq(rax, rbx);
+      GenerateReturn(masm);
+    }
+    default:
+      break;
+  }
+
+  // 6. Non-smi operands, fall out to the non-smi code with the operands in
+  // rdx and rax.
+  Comment done_comment(masm, "-- Enter non-smi code");
+  __ bind(&not_smis);
+
+  switch (op_) {
+    case Token::DIV:
+    case Token::MOD:
+      // Operands are in rax, rbx at this point.
+      __ movq(rdx, rax);
+      __ movq(rax, rbx);
+      break;
+
+    case Token::BIT_OR:
+      // Right operand is saved in rcx and rax was destroyed by the smi
+      // operation.
+      __ movq(rax, rcx);
+      break;
+
+    default:
       break;
   }
 }
@@ -7860,21 +8297,10 @@ void GenericBinaryOpStub::GenerateSmiCode(MacroAssembler* masm, Label* slow) {
 void GenericBinaryOpStub::Generate(MacroAssembler* masm) {
   Label call_runtime;
   if (HasSmiCodeInStub()) {
-    // The fast case smi code wasn't inlined in the stub caller
-    // code. Generate it here to speed up common operations.
-    Label slow;
-    __ movq(rbx, Operand(rsp, 1 * kPointerSize));  // get y
-    __ movq(rax, Operand(rsp, 2 * kPointerSize));  // get x
-    GenerateSmiCode(masm, &slow);
-    GenerateReturn(masm);
-
-    // Too bad. The fast case smi code didn't succeed.
-    __ bind(&slow);
+    GenerateSmiCode(masm, &call_runtime);
+  } else if (op_ != Token::MOD) {
+    GenerateLoadArguments(masm);
   }
-
-  // Make sure the arguments are in rdx and rax.
-  GenerateLoadArguments(masm);
-
   // Floating point case.
   switch (op_) {
     case Token::ADD:
@@ -7885,12 +8311,34 @@ void GenericBinaryOpStub::Generate(MacroAssembler* masm) {
       // rdx: x
       FloatingPointHelper::CheckNumberOperands(masm, &call_runtime);
       // Fast-case: Both operands are numbers.
+      // xmm4 and xmm5 are volatile XMM registers.
+      FloatingPointHelper::LoadFloatOperands(masm, xmm4, xmm5);
+
+      switch (op_) {
+        case Token::ADD: __ addsd(xmm4, xmm5); break;
+        case Token::SUB: __ subsd(xmm4, xmm5); break;
+        case Token::MUL: __ mulsd(xmm4, xmm5); break;
+        case Token::DIV: __ divsd(xmm4, xmm5); break;
+        default: UNREACHABLE();
+      }
       // Allocate a heap number, if needed.
       Label skip_allocation;
-      switch (mode_) {
+      OverwriteMode mode = mode_;
+      if (HasArgsReversed()) {
+        if (mode == OVERWRITE_RIGHT) {
+          mode = OVERWRITE_LEFT;
+        } else if (mode == OVERWRITE_LEFT) {
+          mode = OVERWRITE_RIGHT;
+        }
+      }
+      switch (mode) {
         case OVERWRITE_LEFT:
+          __ JumpIfNotSmi(rdx, &skip_allocation);
+          __ AllocateHeapNumber(rbx, rcx, &call_runtime);
+          __ movq(rdx, rbx);
+          __ bind(&skip_allocation);
           __ movq(rax, rdx);
-          // Fall through!
+          break;
         case OVERWRITE_RIGHT:
           // If the argument in rax is already an object, we skip the
           // allocation of a heap number.
@@ -7903,16 +8351,6 @@ void GenericBinaryOpStub::Generate(MacroAssembler* masm) {
           __ movq(rax, rbx);
           __ bind(&skip_allocation);
           break;
-        default: UNREACHABLE();
-      }
-      // xmm4 and xmm5 are volatile XMM registers.
-      FloatingPointHelper::LoadFloatOperands(masm, xmm4, xmm5);
-
-      switch (op_) {
-        case Token::ADD: __ addsd(xmm4, xmm5); break;
-        case Token::SUB: __ subsd(xmm4, xmm5); break;
-        case Token::MUL: __ mulsd(xmm4, xmm5); break;
-        case Token::DIV: __ divsd(xmm4, xmm5); break;
         default: UNREACHABLE();
       }
       __ movsd(FieldOperand(rax, HeapNumber::kValueOffset), xmm4);
@@ -7981,8 +8419,6 @@ void GenericBinaryOpStub::Generate(MacroAssembler* masm) {
       if (op_ == Token::SHR) {
         __ bind(&non_smi_result);
       }
-      __ movq(rax, Operand(rsp, 1 * kPointerSize));
-      __ movq(rdx, Operand(rsp, 2 * kPointerSize));
       break;
     }
     default: UNREACHABLE(); break;
@@ -7992,9 +8428,9 @@ void GenericBinaryOpStub::Generate(MacroAssembler* masm) {
   // result. If arguments was passed in registers now place them on the
   // stack in the correct order below the return address.
   __ bind(&call_runtime);
-  if (HasArgumentsInRegisters()) {
+  if (HasArgsInRegisters()) {
     __ pop(rcx);
-    if (HasArgumentsReversed()) {
+    if (HasArgsReversed()) {
       __ push(rax);
       __ push(rdx);
     } else {
@@ -8009,8 +8445,6 @@ void GenericBinaryOpStub::Generate(MacroAssembler* masm) {
       Label not_strings, both_strings, not_string1, string1;
       Condition is_smi;
       Result answer;
-      __ movq(rdx, Operand(rsp, 2 * kPointerSize));  // First argument.
-      __ movq(rax, Operand(rsp, 1 * kPointerSize));  // Second argument.
       is_smi = masm->CheckSmi(rdx);
       __ j(is_smi, &not_string1);
       __ CmpObjectType(rdx, FIRST_NONSTRING_TYPE, rdx);
@@ -8028,7 +8462,11 @@ void GenericBinaryOpStub::Generate(MacroAssembler* masm) {
 
       // Only first argument is a string.
       __ bind(&string1);
-      __ InvokeBuiltin(Builtins::STRING_ADD_LEFT, JUMP_FUNCTION);
+      __ InvokeBuiltin(
+          HasArgsReversed() ?
+              Builtins::STRING_ADD_RIGHT :
+              Builtins::STRING_ADD_LEFT,
+          JUMP_FUNCTION);
 
       // First argument was not a string, test second.
       __ bind(&not_string1);
@@ -8038,7 +8476,11 @@ void GenericBinaryOpStub::Generate(MacroAssembler* masm) {
       __ j(above_equal, &not_strings);
 
       // Only second argument is a string.
-      __ InvokeBuiltin(Builtins::STRING_ADD_RIGHT, JUMP_FUNCTION);
+      __ InvokeBuiltin(
+          HasArgsReversed() ?
+              Builtins::STRING_ADD_LEFT :
+              Builtins::STRING_ADD_RIGHT,
+          JUMP_FUNCTION);
 
       __ bind(&not_strings);
       // Neither argument is a string.
@@ -8050,7 +8492,7 @@ void GenericBinaryOpStub::Generate(MacroAssembler* masm) {
       break;
     case Token::MUL:
       __ InvokeBuiltin(Builtins::MUL, JUMP_FUNCTION);
-        break;
+      break;
     case Token::DIV:
       __ InvokeBuiltin(Builtins::DIV, JUMP_FUNCTION);
       break;
@@ -8083,7 +8525,7 @@ void GenericBinaryOpStub::Generate(MacroAssembler* masm) {
 
 void GenericBinaryOpStub::GenerateLoadArguments(MacroAssembler* masm) {
   // If arguments are not passed in registers read them from the stack.
-  if (!HasArgumentsInRegisters()) {
+  if (!HasArgsInRegisters()) {
     __ movq(rax, Operand(rsp, 1 * kPointerSize));
     __ movq(rdx, Operand(rsp, 2 * kPointerSize));
   }
@@ -8093,7 +8535,7 @@ void GenericBinaryOpStub::GenerateLoadArguments(MacroAssembler* masm) {
 void GenericBinaryOpStub::GenerateReturn(MacroAssembler* masm) {
   // If arguments are not passed in registers remove them from the stack before
   // returning.
-  if (!HasArgumentsInRegisters()) {
+  if (!HasArgsInRegisters()) {
     __ ret(2 * kPointerSize);  // Remove both operands
   } else {
     __ ret(0);

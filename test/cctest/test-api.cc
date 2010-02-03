@@ -1151,7 +1151,7 @@ THREADED_TEST(UndefinedIsNotEnumerable) {
 
 
 v8::Handle<Script> call_recursively_script;
-static const int kTargetRecursionDepth = 300;  // near maximum
+static const int kTargetRecursionDepth = 200;  // near maximum
 
 
 static v8::Handle<Value> CallScriptRecursivelyCall(const v8::Arguments& args) {
@@ -3602,6 +3602,37 @@ TEST(ApiUncaughtException) {
   v8::V8::RemoveMessageListeners(ApiUncaughtExceptionTestListener);
 }
 
+static const char* script_resource_name = "ExceptionInNativeScript.js";
+static void ExceptionInNativeScriptTestListener(v8::Handle<v8::Message> message,
+                                                v8::Handle<Value>) {
+  v8::Handle<v8::Value> name_val = message->GetScriptResourceName();
+  CHECK(!name_val.IsEmpty() && name_val->IsString());
+  v8::String::AsciiValue name(message->GetScriptResourceName());
+  CHECK_EQ(script_resource_name, *name);
+  CHECK_EQ(3, message->GetLineNumber());
+  v8::String::AsciiValue source_line(message->GetSourceLine());
+  CHECK_EQ("  new o.foo();", *source_line);
+}
+
+TEST(ExceptionInNativeScript) {
+  v8::HandleScope scope;
+  LocalContext env;
+  v8::V8::AddMessageListener(ExceptionInNativeScriptTestListener);
+
+  Local<v8::FunctionTemplate> fun = v8::FunctionTemplate::New(TroubleCallback);
+  v8::Local<v8::Object> global = env->Global();
+  global->Set(v8_str("trouble"), fun->GetFunction());
+
+  Script::Compile(v8_str("function trouble() {\n"
+                         "  var o = {};\n"
+                         "  new o.foo();\n"
+                         "};"), v8::String::New(script_resource_name))->Run();
+  Local<Value> trouble = global->Get(v8_str("trouble"));
+  CHECK(trouble->IsFunction());
+  Function::Cast(*trouble)->Call(global, 0, NULL);
+  v8::V8::RemoveMessageListeners(ExceptionInNativeScriptTestListener);
+}
+
 
 TEST(CompilationErrorUsingTryCatchHandler) {
   v8::HandleScope scope;
@@ -4085,6 +4116,65 @@ THREADED_TEST(AccessControl) {
                  "   }"
                  "return true;})()");
   CHECK(result->IsTrue());
+
+  context1->Exit();
+  context0->Exit();
+  context1.Dispose();
+  context0.Dispose();
+}
+
+
+static bool GetOwnPropertyNamesNamedBlocker(Local<v8::Object> global,
+                                            Local<Value> name,
+                                            v8::AccessType type,
+                                            Local<Value> data) {
+  return false;
+}
+
+
+static bool GetOwnPropertyNamesIndexedBlocker(Local<v8::Object> global,
+                                              uint32_t key,
+                                              v8::AccessType type,
+                                              Local<Value> data) {
+  return false;
+}
+
+
+THREADED_TEST(AccessControlGetOwnPropertyNames) {
+  v8::HandleScope handle_scope;
+  v8::Handle<v8::ObjectTemplate> obj_template = v8::ObjectTemplate::New();
+
+  obj_template->Set(v8_str("x"), v8::Integer::New(42));
+  obj_template->SetAccessCheckCallbacks(GetOwnPropertyNamesNamedBlocker,
+                                        GetOwnPropertyNamesIndexedBlocker);
+
+  // Create an environment
+  v8::Persistent<Context> context0 = Context::New(NULL, obj_template);
+  context0->Enter();
+
+  v8::Handle<v8::Object> global0 = context0->Global();
+
+  v8::HandleScope scope1;
+
+  v8::Persistent<Context> context1 = Context::New();
+  context1->Enter();
+
+  v8::Handle<v8::Object> global1 = context1->Global();
+  global1->Set(v8_str("other"), global0);
+  global1->Set(v8_str("object"), obj_template->NewInstance());
+
+  v8::Handle<Value> value;
+
+  // Attempt to get the property names of the other global object and
+  // of an object that requires access checks.  Accessing the other
+  // global object should be blocked by access checks on the global
+  // proxy object.  Accessing the object that requires access checks
+  // is blocked by the access checks on the object itself.
+  value = CompileRun("Object.getOwnPropertyNames(other).length == 0");
+  CHECK(value->IsTrue());
+
+  value = CompileRun("Object.getOwnPropertyNames(object).length == 0");
+  CHECK(value->IsTrue());
 
   context1->Exit();
   context0->Exit();
@@ -5672,6 +5762,35 @@ THREADED_TEST(InterceptorCallICInvalidatedConstantFunctionViaGlobal) {
     "  result += o.y(42);"
     "}");
   CHECK_EQ(41 * 7, value->Int32Value());
+}
+
+
+// Test the case when actual function to call sits on global object.
+THREADED_TEST(InterceptorCallICCachedFromGlobal) {
+  v8::HandleScope scope;
+  v8::Handle<v8::ObjectTemplate> templ_o = ObjectTemplate::New();
+  templ_o->SetNamedPropertyHandler(NoBlockGetterX);
+
+  LocalContext context;
+  context->Global()->Set(v8_str("o"), templ_o->NewInstance());
+
+  v8::Handle<Value> value = CompileRun(
+    "try {"
+    "  o.__proto__ = this;"
+    "  for (var i = 0; i < 10; i++) {"
+    "    var v = o.parseFloat('239');"
+    "    if (v != 239) throw v;"
+      // Now it should be ICed and keep a reference to parseFloat.
+    "  }"
+    "  var result = 0;"
+    "  for (var i = 0; i < 10; i++) {"
+    "    result += o.parseFloat('239');"
+    "  }"
+    "  result"
+    "} catch(e) {"
+    "  e"
+    "};");
+  CHECK_EQ(239 * 10, value->Int32Value());
 }
 
 

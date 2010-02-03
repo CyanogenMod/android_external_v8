@@ -1,4 +1,4 @@
-// Copyright 2009 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,11 +25,44 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Flags: --always-full-compiler
+// Flags: --expose-debug-as debug
+// Get the Debug object exposed from the debug context global object.
+Debug = debug.Debug
 
-// Test reference to this-function.
+var exception = null;  // Exception in debug event listener.
 
-var g = (function f(x) {
-    if (x == 1) return 42; else return f(1);
-  })(0);
-assertEquals(42, g);
+function listener(event, exec_state, event_data, data) {
+  try {
+    if (event == Debug.DebugEvent.AfterCompile) {
+      assertEquals(Debug.ScriptCompilationType.Eval,
+                   event_data.script().compilationType(),
+                  'Wrong compilationType');
+      var evalFromScript = event_data.script().evalFromScript();
+      assertTrue(!!evalFromScript, ' evalFromScript ');
+      assertFalse(evalFromScript.isUndefined(), 'evalFromScript.isUndefined()');
+      assertTrue(/debug-compile-event-newfunction.js$/.test(
+                     evalFromScript.name()),
+                 'Wrong eval from script name.');
+
+      var evalFromLocation = event_data.script().evalFromLocation();
+      assertTrue(!!evalFromLocation, 'evalFromLocation is undefined');
+      assertEquals(63, evalFromLocation.line);
+
+      // Check that the event can be serialized without exceptions.
+      var json = event_data.toJSONProtocol();
+    }
+  } catch (e) {
+    exception = e
+  }
+};
+
+
+// Add the debug event listener.
+Debug.setListener(listener);
+
+// Create a function from its body text. It will lead to an eval.
+new Function('arg1', 'return arg1 + 1;');
+
+assertNull(exception, "exception in listener");
+
+Debug.setListener(null);

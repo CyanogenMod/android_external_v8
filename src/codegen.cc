@@ -216,7 +216,8 @@ Handle<Code> CodeGenerator::MakeCodeEpilogue(FunctionLiteral* fun,
 // the compiler.cc code.
 Handle<Code> CodeGenerator::MakeCode(FunctionLiteral* fun,
                                      Handle<Script> script,
-                                     bool is_eval) {
+                                     bool is_eval,
+                                     CompilationInfo* info) {
   if (!script->IsUndefined() && !script->source()->IsUndefined()) {
     int len = String::cast(script->source())->length();
     Counters::total_old_codegen_source_size.Increment(len);
@@ -224,9 +225,10 @@ Handle<Code> CodeGenerator::MakeCode(FunctionLiteral* fun,
   MakeCodePrologue(fun);
   // Generate code.
   const int kInitialBufferSize = 4 * KB;
-  CodeGenerator cgen(kInitialBufferSize, script, is_eval);
+  MacroAssembler masm(NULL, kInitialBufferSize);
+  CodeGenerator cgen(&masm, script, is_eval);
   CodeGeneratorScope scope(&cgen);
-  cgen.GenCode(fun);
+  cgen.Generate(fun, PRIMARY, info);
   if (cgen.HasStackOverflow()) {
     ASSERT(!Top::has_pending_exception());
     return Handle<Code>::null();
@@ -451,11 +453,6 @@ void CodeGenerator::CodeForSourcePosition(int pos) {
 }
 
 
-const char* RuntimeStub::GetName() {
-  return Runtime::FunctionForId(id_)->stub_name;
-}
-
-
 const char* GenericUnaryOpStub::GetName() {
   switch (op_) {
     case Token::SUB:
@@ -473,20 +470,23 @@ const char* GenericUnaryOpStub::GetName() {
 }
 
 
-void RuntimeStub::Generate(MacroAssembler* masm) {
-  Runtime::Function* f = Runtime::FunctionForId(id_);
-  masm->TailCallRuntime(ExternalReference(f),
-                        num_arguments_,
-                        f->result_size);
-}
-
-
 void ArgumentsAccessStub::Generate(MacroAssembler* masm) {
   switch (type_) {
     case READ_LENGTH: GenerateReadLength(masm); break;
     case READ_ELEMENT: GenerateReadElement(masm); break;
     case NEW_OBJECT: GenerateNewObject(masm); break;
   }
+}
+
+
+int CEntryStub::MinorKey() {
+  ASSERT(result_size_ <= 2);
+#ifdef _WIN64
+  return ExitFrameModeBits::encode(mode_)
+         | IndirectResultBits::encode(result_size_ > 1);
+#else
+  return ExitFrameModeBits::encode(mode_);
+#endif
 }
 
 
@@ -504,6 +504,13 @@ bool ApiGetterEntryStub::GetCustomCache(Code** code_out) {
 void ApiGetterEntryStub::SetCustomCache(Code* value) {
   info()->set_load_stub_cache(value);
 }
+
+#ifdef ENABLE_DEBUGGER_SUPPORT
+void DebuggerStatementStub::Generate(MacroAssembler* masm) {
+  Runtime::Function* f = Runtime::FunctionForId(Runtime::kDebugBreak);
+  masm->TailCallRuntime(ExternalReference(f), 0, f->result_size);
+}
+#endif
 
 
 } }  // namespace v8::internal
