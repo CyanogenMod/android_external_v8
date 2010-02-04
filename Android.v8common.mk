@@ -75,6 +75,7 @@ ifeq ($(TARGET_ARCH),arm)
 		src/arm/assembler-arm.cc \
 		src/arm/builtins-arm.cc \
 		src/arm/codegen-arm.cc \
+		src/arm/constants-arm.cc \
 		src/arm/cpu-arm.cc \
 		src/arm/disasm-arm.cc \
 		src/arm/frames-arm.cc \

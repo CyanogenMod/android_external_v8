@@ -9,9 +9,6 @@ LOCAL_MODULE := libv8
 LOCAL_MODULE_CLASS := STATIC_LIBRARIES
 intermediates := $(call local-intermediates-dir)
 
-#ENABLE_V8_SNAPSHOT:=true
-#include $(LOCAL_PATH)/Android.mksnapshot.mk
-
 # Android.v8common.mk defines common V8_LOCAL_SRC_FILES
 # and V8_LOCAL_JS_LIBRARY_FILES
 V8_LOCAL_SRC_FILES :=
@@ -48,14 +45,15 @@ LOCAL_GENERATED_SOURCES += $(V8_GENERATED_LIBRARIES)
 
 # Generate snapshot.cc
 ifeq ($(ENABLE_V8_SNAPSHOT),true)
-GEN := $(intermediates)/snapshot.cc
-$(GEN): MKSNAPSHOT := $(HOST_OUT_EXECUTABLES)/mksnapshot
+SNAP_GEN := $(intermediates)/snapshot.cc
+$(SNAP_GEN): MKSNAPSHOT := $(HOST_OUT_EXECUTABLES)/mksnapshot
 # mksnapshot is the module name. This dependency rule makes sure that mksnapshot
 # is built before calling the following rule.
-$(GEN): mksnapshot
+$(SNAP_GEN): mksnapshot
 	@echo "Generating snapshot.cc"
 	@mkdir -p $(dir $@)
-	$(MKSNAPSHOT) $(GEN)
+	@echo $(MKSNAPSHOT) $(SNAP_GEN)
+	$(MKSNAPSHOT) $(SNAP_GEN)
 LOCAL_GENERATED_SOURCES += $(intermediates)/snapshot.cc
 else
 LOCAL_SRC_FILES += \
