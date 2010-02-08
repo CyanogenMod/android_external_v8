@@ -18,6 +18,8 @@ V8_LOCAL_SRC_FILES := \
 	src/counters.cc \
 	src/data-flow.cc \
 	src/dateparser.cc \
+	src/debug.cc \
+	src/debug-agent.cc \
 	src/disassembler.cc \
 	src/execution.cc \
 	src/factory.cc \
@@ -77,6 +79,7 @@ ifeq ($(TARGET_ARCH),arm)
 		src/arm/codegen-arm.cc \
 		src/arm/constants-arm.cc \
 		src/arm/cpu-arm.cc \
+		src/arm/debug-arm.cc \
 		src/arm/disasm-arm.cc \
 		src/arm/frames-arm.cc \
 		src/arm/fast-codegen-arm.cc \
@@ -130,4 +133,6 @@ V8_LOCAL_JS_LIBRARY_FILES := \
 	src/date-delay.js \
 	src/regexp-delay.js \
 	src/json-delay.js \
+	src/mirror-delay.js \
+	src/debug-delay.js \
 	src/macros.py
