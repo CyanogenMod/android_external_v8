@@ -169,11 +169,29 @@ const char* OS::LocalTimezone(double time) {
 
 
 double OS::LocalTimeOffset() {
+#if defined(ANDROID)
+  // Android does not have tm_gmtoff, so instead we'll work it out.
+  // Use a date in the local timezone representing 1st January 2010.
+  struct tm t;
+  t.tm_sec = 0;
+  t.tm_min = 0;
+  t.tm_hour = 0;
+  t.tm_mday = 1;
+  t.tm_mon = 0;
+  t.tm_year = 110;
+  t.tm_wday = 0;
+  t.tm_yday = 0;
+  t.tm_isdst = 0;
+  // 1262304000 is January, 1 2010 UTC.
+  time_t offset = 1262304000 - mktime(&t);
+  return static_cast<double>(offset * msPerSecond);
+#else
   time_t tv = time(NULL);
   struct tm* t = localtime(&tv);
   // tm_gmtoff includes any daylight savings offset, so subtract it.
   return static_cast<double>(t->tm_gmtoff * msPerSecond -
                              (t->tm_isdst > 0 ? 3600 * msPerSecond : 0));
+#endif
 }
 
 
