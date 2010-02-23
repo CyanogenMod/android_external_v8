@@ -86,6 +86,8 @@ enum UncatchableExceptionType { OUT_OF_MEMORY, TERMINATION };
 #include "x64/codegen-x64.h"
 #elif V8_TARGET_ARCH_ARM
 #include "arm/codegen-arm.h"
+#elif V8_TARGET_ARCH_MIPS
+#include "mips/codegen-mips.h"
 #else
 #error Unsupported target architecture.
 #endif
@@ -94,6 +96,29 @@ enum UncatchableExceptionType { OUT_OF_MEMORY, TERMINATION };
 
 namespace v8 {
 namespace internal {
+
+
+// Support for "structured" code comments.
+#ifdef DEBUG
+
+class Comment BASE_EMBEDDED {
+ public:
+  Comment(MacroAssembler* masm, const char* msg);
+  ~Comment();
+
+ private:
+  MacroAssembler* masm_;
+  const char* msg_;
+};
+
+#else
+
+class Comment BASE_EMBEDDED {
+ public:
+  Comment(MacroAssembler*, const char*)  {}
+};
+
+#endif  // DEBUG
 
 
 // Code generation can be nested.  Code generation scopes form a stack

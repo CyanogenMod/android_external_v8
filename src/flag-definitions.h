@@ -116,11 +116,12 @@ DEFINE_bool(enable_sahf, true,
             "enable use of SAHF instruction if available (X64 only)")
 DEFINE_bool(enable_vfp3, true,
             "enable use of VFP3 instructions if available (ARM only)")
+DEFINE_bool(enable_armv7, true,
+            "enable use of ARMv7 instructions if available (ARM only)")
 
 // bootstrapper.cc
 DEFINE_string(expose_natives_as, NULL, "expose natives in global object")
 DEFINE_string(expose_debug_as, NULL, "expose debug in global object")
-DEFINE_string(natives_file, NULL, "alternative natives file")
 DEFINE_bool(expose_gc, false, "expose gc extension")
 DEFINE_int(stack_trace_limit, 10, "number of stack frames to capture")
 
@@ -218,7 +219,7 @@ DEFINE_bool(allow_natives_syntax, false, "allow natives syntax")
 // rewriter.cc
 DEFINE_bool(optimize_ast, true, "optimize the ast")
 
-// simulator-arm.cc
+// simulator-arm.cc and simulator-mips.cc
 DEFINE_bool(trace_sim, false, "trace simulator execution")
 DEFINE_int(stop_sim_at, 0, "Simulator stop after x number of instructions")
 
@@ -383,7 +384,7 @@ DEFINE_bool(prof_lazy, false,
 DEFINE_bool(log_regexp, false, "Log regular expression execution.")
 DEFINE_bool(sliding_state_window, false,
             "Update sliding state window counters.")
-DEFINE_string(logfile, "v8.log", "Specify the name of the log file.")
+DEFINE_string(logfile, "/sdcard/v8.log", "Specify the name of the log file.")
 DEFINE_bool(oprofile, false, "Enable JIT agent for OProfile.")
 
 //

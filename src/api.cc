@@ -34,6 +34,7 @@
 #include "debug.h"
 #include "execution.h"
 #include "global-handles.h"
+#include "globals.h"
 #include "platform.h"
 #include "serialize.h"
 #include "snapshot.h"
@@ -1134,12 +1135,14 @@ Local<Script> Script::New(v8::Handle<String> source,
   if (pre_data != NULL && !pre_data->SanityCheck()) {
     pre_data = NULL;
   }
-  i::Handle<i::JSFunction> boilerplate = i::Compiler::Compile(str,
-                                                              name_obj,
-                                                              line_offset,
-                                                              column_offset,
-                                                              NULL,
-                                                              pre_data);
+  i::Handle<i::JSFunction> boilerplate =
+      i::Compiler::Compile(str,
+                           name_obj,
+                           line_offset,
+                           column_offset,
+                           NULL,
+                           pre_data,
+                           i::NOT_NATIVES_CODE);
   has_pending_exception = boilerplate.is_null();
   EXCEPTION_BAILOUT_CHECK(Local<Script>());
   return Local<Script>(ToApi<Script>(boilerplate));
@@ -2739,17 +2742,18 @@ Persistent<Context> v8::Context::New(
   LOG_API("Context::New");
   ON_BAILOUT("v8::Context::New()", return Persistent<Context>());
 
+#if defined(ANDROID)
+  // On mobile device, full GC is expensive, leave it to the system to
+  // decide when should make a full GC.
+#else
+  // Give the heap a chance to cleanup if we've disposed contexts.
+  i::Heap::CollectAllGarbageIfContextDisposed();
+#endif
+
   // Enter V8 via an ENTER_V8 scope.
   i::Handle<i::Context> env;
   {
     ENTER_V8;
-#if defined(ANDROID)
-    // On mobile device, full GC is expensive, leave it to the system to
-    // decide when should make a full GC.
-#else
-    // Give the heap a chance to cleanup if we've disposed contexts.
-    i::Heap::CollectAllGarbageIfContextDisposed();
-#endif
     v8::Handle<ObjectTemplate> proxy_template = global_template;
     i::Handle<i::FunctionTemplateInfo> proxy_constructor;
     i::Handle<i::FunctionTemplateInfo> global_constructor;

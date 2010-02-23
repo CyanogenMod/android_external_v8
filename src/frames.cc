@@ -355,6 +355,7 @@ void StackFrame::UncookFramesForThread(ThreadLocalTop* thread) {
 
 void StackFrame::Cook() {
   Code* code = this->code();
+  ASSERT(code->IsCode());
   for (StackHandlerIterator it(this, top_handler()); !it.done(); it.Advance()) {
     it.handler()->Cook(code);
   }
@@ -365,6 +366,7 @@ void StackFrame::Cook() {
 
 void StackFrame::Uncook() {
   Code* code = this->code();
+  ASSERT(code->IsCode());
   for (StackHandlerIterator it(this, top_handler()); !it.done(); it.Advance()) {
     it.handler()->Uncook(code);
   }

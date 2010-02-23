@@ -67,6 +67,9 @@ function SnapshotLogProcessor() {
           processor: this.processCodeMove, backrefs: true },
       'code-delete': { parsers: [this.createAddressParser('code')],
           processor: this.processCodeDelete, backrefs: true },
+      'function-creation': null,
+      'function-move': null,
+      'function-delete': null,
       'snapshot-pos': { parsers: [this.createAddressParser('code'), parseInt],
           processor: this.processSnapshotPosition, backrefs: true }});
 
@@ -157,6 +160,10 @@ function TickProcessor(
           processor: this.processHeapSampleEnd },
       'heap-js-prod-item': { parsers: [null, 'var-args'],
           processor: this.processJSProducer, backrefs: true },
+      'PAGE-LOAD-START': { parsers: [null, null],
+          processor: this.processPageLoadStart },
+      'PAGE-LOAD-END': { parsers: [null, null],
+          processor: this.processPageLoadEnd },
       // Ignored events.
       'profiler': null,
       'heap-sample-stats': null,
@@ -173,6 +180,7 @@ function TickProcessor(
   this.stateFilter_ = stateFilter;
   this.snapshotLogProcessor_ = snapshotLogProcessor;
   this.deserializedEntriesNames_ = [];
+  this.handle_ticks_ = false;
   var ticks = this.ticks_ =
     { total: 0, unaccounted: 0, excluded: 0, gc: 0 };
 
@@ -259,6 +267,16 @@ TickProcessor.prototype.isJsCode = function(name) {
 
 TickProcessor.prototype.processLogFile = function(fileName) {
   this.lastLogFileName_ = fileName;
+  var line;
+  while (line = readline()) {
+    this.processLogLine(line);
+  }
+};
+
+
+TickProcessor.prototype.processLogFileInTest = function(fileName) {
+   // Hack file name to avoid dealing with platform specifics.
+  this.lastLogFileName_ = 'v8.log';
   var contents = readFile(fileName);
   this.processLogChunk(contents);
 };
@@ -326,6 +344,7 @@ TickProcessor.prototype.includeTick = function(vmState) {
 
 
 TickProcessor.prototype.processTick = function(pc, sp, func, vmState, stack) {
+  if (!this.handle_ticks_) return;
   this.ticks_.total++;
   if (vmState == TickProcessor.VmStates.GC) this.ticks_.gc++;
   if (!this.includeTick(vmState)) {
@@ -370,6 +389,16 @@ TickProcessor.prototype.processHeapSampleEnd = function(space, state) {
 
   this.currentProducerProfile_ = null;
   this.generation_++;
+};
+
+
+TickProcessor.prototype.processPageLoadStart = function() {
+  this.handle_ticks_ = true;
+};
+
+
+TickProcessor.prototype.processPageLoadEnd = function() {
+  this.handle_ticks_ = false;
 };
 
 

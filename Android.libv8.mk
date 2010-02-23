@@ -64,8 +64,7 @@ LOCAL_CFLAGS += \
 	-Wno-endif-labels \
 	-Wno-import \
 	-Wno-format \
-	-fno-exceptions \
-	-DENABLE_DEBUGGER_SUPPORT
+	-fno-exceptions
 
 ifeq ($(TARGET_ARCH),arm)
 	LOCAL_CFLAGS += -DARM -DV8_TARGET_ARCH_ARM

@@ -46,6 +46,9 @@ namespace internal {
 #elif defined(__ARMEL__)
 #define V8_HOST_ARCH_ARM 1
 #define V8_HOST_ARCH_32_BIT 1
+#elif defined(_MIPS_ARCH_MIPS32R2)
+#define V8_HOST_ARCH_MIPS 1
+#define V8_HOST_ARCH_32_BIT 1
 #else
 #error Your host architecture was not detected as supported by v8
 #endif
@@ -53,6 +56,7 @@ namespace internal {
 #if defined(V8_TARGET_ARCH_X64) || defined(V8_TARGET_ARCH_IA32)
 #define V8_TARGET_CAN_READ_UNALIGNED 1
 #elif V8_TARGET_ARCH_ARM
+#elif V8_TARGET_ARCH_MIPS
 #else
 #error Your target architecture is not supported by v8
 #endif
@@ -310,6 +314,10 @@ enum Executability { NOT_EXECUTABLE, EXECUTABLE };
 
 enum VisitMode { VISIT_ALL, VISIT_ALL_IN_SCAVENGE, VISIT_ONLY_STRONG };
 
+// Flag indicating whether code is built in to the VM (one of the natives
+// files).
+enum NativesFlag { NOT_NATIVES_CODE, NATIVES_CODE };
+
 
 // A CodeDesc describes a buffer holding instructions and relocation
 // information. The instructions start at the beginning of the buffer
@@ -389,7 +397,7 @@ enum CallFunctionFlags {
 // Type of properties.
 // Order of properties is significant.
 // Must fit in the BitField PropertyDetails::TypeField.
-// A copy of this is in mirror-delay.js.
+// A copy of this is in mirror-debugger.js.
 enum PropertyType {
   NORMAL              = 0,  // only in slow mode
   FIELD               = 1,  // only in fast mode
@@ -608,6 +616,7 @@ enum CpuFeature { SSE3 = 32,   // x86
                   RDTSC = 4,   // x86
                   CPUID = 10,  // x86
                   VFP3 = 1,    // ARM
+                  ARMv7 = 2,   // ARM
                   SAHF = 0};   // x86
 
 } }  // namespace v8::internal

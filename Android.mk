@@ -40,6 +40,9 @@ endif
 
 ifeq ($(NEED_V8),true)
   # Build libv8 and v8shell
+  # Temporarily enable snapshot support.
+  # TODO(andreip): re-enable this after the experiment
+  ENABLE_V8_SNAPSHOT = true
   ifeq ($(ENABLE_V8_SNAPSHOT),true)
     include $(BASE_PATH)/Android.mksnapshot.mk
   endif

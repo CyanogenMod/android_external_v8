@@ -573,6 +573,20 @@ void Logger::LogRuntime(Vector<const char> format, JSArray* args) {
 }
 
 
+void Logger::LogProfileMarker(Vector<const char> marker) {
+#ifdef ENABLE_LOGGING_AND_PROFILING
+  if (!Log::IsEnabled() || !FLAG_prof) return;
+  LogMessageBuilder msg;
+  for (int i = 0; i < marker.length(); i++) {
+    char c = marker[i];
+    msg.Append(c);
+  }
+  msg.Append('\n');
+  msg.WriteToLogFile();
+#endif
+}
+
+
 void Logger::ApiIndexedSecurityCheck(uint32_t index) {
 #ifdef ENABLE_LOGGING_AND_PROFILING
   if (!Log::IsEnabled() || !FLAG_log_api) return;
@@ -1261,7 +1275,9 @@ void Logger::LogCodeObject(Object* object) {
       case Code::FUNCTION:
         return;  // We log this later using LogCompiledFunctions.
       case Code::STUB:
-        description = CodeStub::MajorName(code_object->major_key());
+        description = CodeStub::MajorName(code_object->major_key(), true);
+        if (description == NULL)
+          description = "A stub from the snapshot";
         tag = Logger::STUB_TAG;
         break;
       case Code::BUILTIN:
@@ -1290,6 +1306,15 @@ void Logger::LogCodeObject(Object* object) {
         break;
     }
     LOG(CodeCreateEvent(tag, code_object, description));
+  }
+}
+
+
+void Logger::LogCodeObjects() {
+  AssertNoAllocation no_alloc;
+  HeapIterator iterator;
+  for (HeapObject* obj = iterator.next(); obj != NULL; obj = iterator.next()) {
+    if (obj->IsCode()) LogCodeObject(obj);
   }
 }
 

@@ -33,6 +33,7 @@ V8_LOCAL_SRC_FILES := \
 	src/handles.cc \
 	src/hashmap.cc \
 	src/heap.cc \
+	src/heap-profiler.cc \
 	src/ic.cc \
 	src/interpreter-irregexp.cc \
 	src/jsregexp.cc \
@@ -130,9 +131,7 @@ V8_LOCAL_JS_LIBRARY_FILES := \
 	src/math.js \
 	src/messages.js \
 	src/apinatives.js \
-	src/date-delay.js \
-	src/regexp-delay.js \
-	src/json-delay.js \
-	src/mirror-delay.js \
-	src/debug-delay.js \
+	src/date.js \
+	src/regexp.js \
+	src/json.js \
 	src/macros.py

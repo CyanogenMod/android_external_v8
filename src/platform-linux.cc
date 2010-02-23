@@ -89,6 +89,8 @@ uint64_t OS::CpuFeaturesImpliedByPlatform() {
   // Here gcc is telling us that we are on an ARM and gcc is assuming that we
   // have VFP3 instructions.  If gcc can assume it then so can we.
   return 1u << VFP3;
+#elif CAN_USE_ARMV7_INSTRUCTIONS
+  return 1u << ARMv7;
 #else
   return 0;  // Linux runs on anything.
 #endif
@@ -112,6 +114,9 @@ bool OS::ArmCpuHasFeature(CpuFeature feature) {
   switch (feature) {
     case VFP3:
       search_string = "vfp";
+      break;
+    case ARMv7:
+      search_string = "ARMv7";
       break;
     default:
       UNREACHABLE();
@@ -151,11 +156,12 @@ int OS::ActivationFrameAlignment() {
   // On EABI ARM targets this is required for fp correctness in the
   // runtime system.
   return 8;
-#else
+#elif V8_TARGET_ARCH_MIPS
+  return 8;
+#endif
   // With gcc 4.4 the tree vectorization optimiser can generate code
   // that requires 16 byte alignment such as movdqa on x86.
   return 16;
-#endif
 }
 
 
@@ -169,29 +175,11 @@ const char* OS::LocalTimezone(double time) {
 
 
 double OS::LocalTimeOffset() {
-#if defined(ANDROID)
-  // Android does not have tm_gmtoff, so instead we'll work it out.
-  // Use a date in the local timezone representing 1st January 2010.
-  struct tm t;
-  t.tm_sec = 0;
-  t.tm_min = 0;
-  t.tm_hour = 0;
-  t.tm_mday = 1;
-  t.tm_mon = 0;
-  t.tm_year = 110;
-  t.tm_wday = 0;
-  t.tm_yday = 0;
-  t.tm_isdst = 0;
-  // 1262304000 is January, 1 2010 UTC.
-  time_t offset = 1262304000 - mktime(&t);
-  return static_cast<double>(offset * msPerSecond);
-#else
   time_t tv = time(NULL);
   struct tm* t = localtime(&tv);
   // tm_gmtoff includes any daylight savings offset, so subtract it.
   return static_cast<double>(t->tm_gmtoff * msPerSecond -
                              (t->tm_isdst > 0 ? 3600 * msPerSecond : 0));
-#endif
 }
 
 
@@ -280,6 +268,8 @@ void OS::DebugBreak() {
 //  which is the architecture of generated code).
 #if defined(__arm__) || defined(__thumb__)
   asm("bkpt 0");
+#elif defined(__mips__)
+  asm("break");
 #else
   asm("int $3");
 #endif
@@ -731,8 +721,11 @@ static inline bool IsVmThread() {
 
 
 static void ProfilerSignalHandler(int signal, siginfo_t* info, void* context) {
+    return;
+/*#ifndef V8_HOST_ARCH_MIPS
   USE(info);
   if (signal != SIGPROF) return;
+  if (!IsVmThread()) return;
   if (active_sampler_ == NULL) return;
 
   TickSample sample;
@@ -761,6 +754,9 @@ static void ProfilerSignalHandler(int signal, siginfo_t* info, void* context) {
     sample.sp = reinterpret_cast<Address>(mcontext.arm_sp);
     sample.fp = reinterpret_cast<Address>(mcontext.arm_fp);
 #endif
+#elif V8_HOST_ARCH_MIPS
+    // Implement this on MIPS.
+    UNIMPLEMENTED();
 #endif
     if (IsVmThread())
       active_sampler_->SampleStack(&sample);
@@ -770,6 +766,7 @@ static void ProfilerSignalHandler(int signal, siginfo_t* info, void* context) {
   sample.state = Logger::state();
 
   active_sampler_->Tick(&sample);
+#endif*/
 }
 
 
@@ -808,7 +805,7 @@ void Sampler::Start() {
   sa.sa_sigaction = ProfilerSignalHandler;
   sigemptyset(&sa.sa_mask);
   sa.sa_flags = SA_SIGINFO;
-  if (sigaction(SIGPROF, &sa, &data_->old_signal_handler_) != 0) return;
+  if (sigaction(SIGALRM, &sa, &data_->old_signal_handler_) != 0) return;
   data_->signal_handler_installed_ = true;
 
   // Set the itimer to generate a tick for each interval.
@@ -817,7 +814,7 @@ void Sampler::Start() {
   itimer.it_interval.tv_usec = (interval_ % 1000) * 1000;
   itimer.it_value.tv_sec = itimer.it_interval.tv_sec;
   itimer.it_value.tv_usec = itimer.it_interval.tv_usec;
-  setitimer(ITIMER_PROF, &itimer, &data_->old_timer_value_);
+  setitimer(ITIMER_REAL, &itimer, &data_->old_timer_value_);
 
   // Set this sampler as the active sampler.
   active_sampler_ = this;

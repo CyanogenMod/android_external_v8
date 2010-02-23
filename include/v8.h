@@ -2587,7 +2587,7 @@ class V8EXPORT Context {
 
   /** Creates a new context. */
   static Persistent<Context> New(
-      ExtensionConfiguration* extensions = 0,
+      ExtensionConfiguration* extensions = NULL,
       Handle<ObjectTemplate> global_template = Handle<ObjectTemplate>(),
       Handle<Value> global_object = Handle<Value>());
 
