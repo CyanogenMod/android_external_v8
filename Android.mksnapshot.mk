@@ -55,7 +55,8 @@ LOCAL_CFLAGS := \
 	-Wno-import \
 	-Wno-format \
 	-ansi \
-	-fno-rtti
+	-fno-rtti \
+	-DENABLE_DEBUGGER_SUPPORT
 
 ifeq ($(TARGET_ARCH),arm)
   LOCAL_CFLAGS += -DV8_TARGET_ARCH_ARM
@@ -63,6 +64,10 @@ endif
 
 ifeq ($(TARGET_ARCH),x86)
   LOCAL_CFLAGS += -DV8_TARGET_ARCH_IA32
+endif
+
+ifeq ($(DEBUG_V8),true)
+	LOCAL_CFLAGS += -DDEBUG -UNDEBUG
 endif
 
 LOCAL_C_INCLUDES := $(LOCAL_PATH)/src

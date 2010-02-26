@@ -134,4 +134,6 @@ V8_LOCAL_JS_LIBRARY_FILES := \
 	src/date.js \
 	src/regexp.js \
 	src/json.js \
+	src/mirror-debugger.js \
+	src/debug-debugger.js \
 	src/macros.py
