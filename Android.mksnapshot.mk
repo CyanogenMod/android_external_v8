@@ -62,6 +62,13 @@ ifeq ($(TARGET_ARCH),arm)
   LOCAL_CFLAGS += -DV8_TARGET_ARCH_ARM
 endif
 
+ifeq ($(TARGET_CPU_ABI),armeabi-v7a)
+    ifeq ($(TARGET_ARCH_VARIANT),armv7-a)
+        LOCAL_CFLAGS += -DCAN_USE_VFP_INSTRUCTIONS -DCAN_USE_ARMV7_INSTRUCTIONS
+    endif
+endif
+
+
 ifeq ($(TARGET_ARCH),x86)
   LOCAL_CFLAGS += -DV8_TARGET_ARCH_IA32
 endif
