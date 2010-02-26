@@ -730,8 +730,7 @@ function DateValueOf() {
 
 
 // ECMA 262 - 15.9.5.9
-function DateGetTime(logMarker) {
-  if (logMarker) %ProfileLogMarker(logMarker);
+function DateGetTime() {
   return DATE_VALUE(this);
 }
 

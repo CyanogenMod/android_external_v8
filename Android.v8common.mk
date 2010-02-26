@@ -38,6 +38,7 @@ V8_LOCAL_SRC_FILES := \
 	src/interpreter-irregexp.cc \
 	src/jsregexp.cc \
 	src/jump-target.cc \
+	src/liveedit.cc \
 	src/log.cc \
 	src/log-utils.cc \
 	src/mark-compact.cc \

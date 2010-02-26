@@ -430,6 +430,11 @@ const char* RelocInfo::RelocModeName(RelocInfo::Mode rmode) {
       return "code target (js construct call)";
     case RelocInfo::CODE_TARGET_CONTEXT:
       return "code target (context)";
+    case RelocInfo::DEBUG_BREAK:
+#ifndef ENABLE_DEBUGGER_SUPPORT
+      UNREACHABLE();
+#endif
+      return "debug break";
     case RelocInfo::CODE_TARGET:
       return "code target";
     case RelocInfo::RUNTIME_ENTRY:
@@ -485,6 +490,11 @@ void RelocInfo::Verify() {
     case EMBEDDED_OBJECT:
       Object::VerifyPointer(target_object());
       break;
+    case DEBUG_BREAK:
+#ifndef ENABLE_DEBUGGER_SUPPORT
+      UNREACHABLE();
+      break;
+#endif
     case CONSTRUCT_CALL:
     case CODE_TARGET_CONTEXT:
     case CODE_TARGET: {
@@ -569,6 +579,11 @@ ExternalReference ExternalReference::random_positive_smi_function() {
 }
 
 
+ExternalReference ExternalReference::transcendental_cache_array_address() {
+  return ExternalReference(TranscendentalCache::cache_array_address());
+}
+
+
 ExternalReference ExternalReference::keyed_lookup_cache_keys() {
   return ExternalReference(KeyedLookupCache::keys_address());
 }
@@ -606,6 +621,11 @@ ExternalReference ExternalReference::address_of_regexp_stack_limit() {
 
 ExternalReference ExternalReference::new_space_start() {
   return ExternalReference(Heap::NewSpaceStart());
+}
+
+
+ExternalReference ExternalReference::new_space_mask() {
+  return ExternalReference(reinterpret_cast<Address>(Heap::NewSpaceMask()));
 }
 
 

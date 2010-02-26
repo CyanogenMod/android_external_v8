@@ -266,7 +266,8 @@ void OS::Abort() {
 void OS::DebugBreak() {
 // TODO(lrn): Introduce processor define for runtime system (!= V8_ARCH_x,
 //  which is the architecture of generated code).
-#if defined(__arm__) || defined(__thumb__)
+#if (defined(__arm__) || defined(__thumb__)) && \
+    defined(CAN_USE_ARMV5_INSTRUCTIONS)
   asm("bkpt 0");
 #elif defined(__mips__)
   asm("break");
@@ -721,11 +722,9 @@ static inline bool IsVmThread() {
 
 
 static void ProfilerSignalHandler(int signal, siginfo_t* info, void* context) {
-    return;
-/*#ifndef V8_HOST_ARCH_MIPS
+#ifndef V8_HOST_ARCH_MIPS
   USE(info);
   if (signal != SIGPROF) return;
-  if (!IsVmThread()) return;
   if (active_sampler_ == NULL) return;
 
   TickSample sample;
@@ -766,7 +765,7 @@ static void ProfilerSignalHandler(int signal, siginfo_t* info, void* context) {
   sample.state = Logger::state();
 
   active_sampler_->Tick(&sample);
-#endif*/
+#endif
 }
 
 
@@ -805,7 +804,7 @@ void Sampler::Start() {
   sa.sa_sigaction = ProfilerSignalHandler;
   sigemptyset(&sa.sa_mask);
   sa.sa_flags = SA_SIGINFO;
-  if (sigaction(SIGALRM, &sa, &data_->old_signal_handler_) != 0) return;
+  if (sigaction(SIGPROF, &sa, &data_->old_signal_handler_) != 0) return;
   data_->signal_handler_installed_ = true;
 
   // Set the itimer to generate a tick for each interval.
@@ -814,7 +813,7 @@ void Sampler::Start() {
   itimer.it_interval.tv_usec = (interval_ % 1000) * 1000;
   itimer.it_value.tv_sec = itimer.it_interval.tv_sec;
   itimer.it_value.tv_usec = itimer.it_interval.tv_usec;
-  setitimer(ITIMER_REAL, &itimer, &data_->old_timer_value_);
+  setitimer(ITIMER_PROF, &itimer, &data_->old_timer_value_);
 
   // Set this sampler as the active sampler.
   active_sampler_ = this;

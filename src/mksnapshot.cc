@@ -205,7 +205,6 @@ class CppByteSink : public i::SnapshotByteSink {
 
 
 int main(int argc, char** argv) {
-
 #ifdef ENABLE_LOGGING_AND_PROFILING
   // By default, log code create information in the snapshot.
   i::FLAG_log_code = true;
