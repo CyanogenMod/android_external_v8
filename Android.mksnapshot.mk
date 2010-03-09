@@ -63,7 +63,7 @@ ifeq ($(TARGET_ARCH),arm)
 endif
 
 ifeq ($(TARGET_CPU_ABI),armeabi-v7a)
-    ifeq ($(TARGET_ARCH_VARIANT),armv7-a)
+    ifeq ($(ARCH_ARM_HAVE_VFP),true)
         LOCAL_CFLAGS += -DCAN_USE_VFP_INSTRUCTIONS -DCAN_USE_ARMV7_INSTRUCTIONS
     endif
 endif
