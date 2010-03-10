@@ -27,25 +27,12 @@ include $(CLEAR_VARS)
 #    can be set to true, so that two builds can be different but without
 #    specifying which JS engine to use.
 
-NEED_V8 = false
-ifeq ($(JS_ENGINE),v8)
-  NEED_V8 = true
-else
-  ifneq ($(JS_ENGINE),jsc)
-    ifeq ($(USE_ALT_JS_ENGINE),true)
-      NEED_V8 = true
-    endif
-  endif
+# Build libv8 and v8shell
+# Temporarily enable snapshot support.
+# TODO(andreip): re-enable this after the experiment
+ENABLE_V8_SNAPSHOT = true
+ifeq ($(ENABLE_V8_SNAPSHOT),true)
+		include $(BASE_PATH)/Android.mksnapshot.mk
 endif
-
-ifeq ($(NEED_V8),true)
-  # Build libv8 and v8shell
-  # Temporarily enable snapshot support.
-  # TODO(andreip): re-enable this after the experiment
-  ENABLE_V8_SNAPSHOT = true
-  ifeq ($(ENABLE_V8_SNAPSHOT),true)
-    include $(BASE_PATH)/Android.mksnapshot.mk
-  endif
-  include $(BASE_PATH)/Android.libv8.mk
-  include $(BASE_PATH)/Android.v8shell.mk
-endif
+include $(BASE_PATH)/Android.libv8.mk
+include $(BASE_PATH)/Android.v8shell.mk
