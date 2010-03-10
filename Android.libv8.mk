@@ -31,7 +31,6 @@ $(JS2C_PY): $(intermediates)/%.py : $(LOCAL_PATH)/tools/%.py | $(ACP)
 	@echo "Copying $@"
 	$(copy-file-to-target)
 
-LOCAL_GENERATED_SOURCES :=
 # Generate libraries.cc
 GEN1 := $(intermediates)/libraries.cc $(intermediates)/libraries-empty.cc
 $(GEN1): SCRIPT := $(intermediates)/js2c.py
@@ -46,15 +45,11 @@ LOCAL_GENERATED_SOURCES += $(V8_GENERATED_LIBRARIES)
 # Generate snapshot.cc
 ifeq ($(ENABLE_V8_SNAPSHOT),true)
 SNAP_GEN := $(intermediates)/snapshot.cc
-$(SNAP_GEN): MKSNAPSHOT := $(HOST_OUT_EXECUTABLES)/mksnapshot
-# mksnapshot is the module name. This dependency rule makes sure that mksnapshot
-# is built before calling the following rule.
-$(SNAP_GEN): mksnapshot
-	@echo "Generating snapshot.cc"
-	@mkdir -p $(dir $@)
-	@echo $(MKSNAPSHOT) $(SNAP_GEN)
-	$(MKSNAPSHOT) $(SNAP_GEN)
-LOCAL_GENERATED_SOURCES += $(intermediates)/snapshot.cc
+MKSNAPSHOT := $(HOST_OUT_EXECUTABLES)/mksnapshot
+$(SNAP_GEN): PRIVATE_CUSTOM_TOOL = $(MKSNAPSHOT) $(SNAP_GEN)
+$(SNAP_GEN): $(MKSNAPSHOT)
+	$(transform-generated-source)
+LOCAL_GENERATED_SOURCES += $(SNAP_GEN)
 else
 LOCAL_SRC_FILES += \
   src/snapshot-empty.cc
