@@ -278,6 +278,12 @@ double OS::LocalTimeOffset() {
 
 
 int OS::StackWalk(Vector<StackFrame> frames) {
+#ifdef ANDROID
+  // For some reason the weak linkage doesn't work when building mksnapshot
+  // for android on macos. Just bail out as if we're on 10.4. We don't need
+  // stack walking for mksnapshot.
+  return 0;
+#else
   // If weak link to execinfo lib has failed, ie because we are on 10.4, abort.
   if (backtrace == NULL)
     return 0;
@@ -309,6 +315,7 @@ int OS::StackWalk(Vector<StackFrame> frames) {
   free(symbols);
 
   return frames_count;
+#endif // ANDROID
 }
 
 
