@@ -60,7 +60,8 @@ LOCAL_CFLAGS += \
 	-Wno-import \
 	-Wno-format \
 	-fno-exceptions \
-	-DENABLE_DEBUGGER_SUPPORT
+	-DENABLE_DEBUGGER_SUPPORT \
+	-DV8_NATIVE_REGEXP
 
 ifeq ($(TARGET_ARCH),arm)
 	LOCAL_CFLAGS += -DARM -DV8_TARGET_ARCH_ARM
