@@ -102,7 +102,7 @@ bool CounterMap::Match(void* key1, void* key2) {
 
 
 // Converts a V8 value to a C string.
-const char* ToCString(const v8::String::Utf8Value& value) {
+const char* Shell::ToCString(const v8::String::Utf8Value& value) {
   return *value ? *value : "<string conversion failed>";
 }
 
@@ -447,9 +447,10 @@ void Shell::Initialize() {
 #ifdef ENABLE_DEBUGGER_SUPPORT
   // Install the debugger object in the utility scope
   i::Debug::Load();
-  i::JSObject* debug = i::Debug::debug_context()->global();
+  i::Handle<i::JSObject> debug
+      = i::Handle<i::JSObject>(i::Debug::debug_context()->global());
   utility_context_->Global()->Set(String::New("$debug"),
-                                  Utils::ToLocal(&debug));
+                                  Utils::ToLocal(debug));
 #endif
 
   // Run the d8 shell utility script in the utility context
@@ -467,9 +468,12 @@ void Shell::Initialize() {
 
   // Mark the d8 shell script as native to avoid it showing up as normal source
   // in the debugger.
-  i::Handle<i::JSFunction> script_fun = Utils::OpenHandle(*script);
-  i::Handle<i::Script> script_object =
-      i::Handle<i::Script>(i::Script::cast(script_fun->shared()->script()));
+  i::Handle<i::Object> compiled_script = Utils::OpenHandle(*script);
+  i::Handle<i::Script> script_object = compiled_script->IsJSFunction()
+      ? i::Handle<i::Script>(i::Script::cast(
+          i::JSFunction::cast(*compiled_script)->shared()->script()))
+      : i::Handle<i::Script>(i::Script::cast(
+          i::SharedFunctionInfo::cast(*compiled_script)->script()));
   script_object->set_type(i::Smi::FromInt(i::Script::TYPE_NATIVE));
 
   // Create the evaluation context

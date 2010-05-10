@@ -34,14 +34,17 @@
 #include "debug.h"
 #include "execution.h"
 #include "global-handles.h"
-#include "globals.h"
+#include "messages.h"
 #include "platform.h"
+#include "profile-generator-inl.h"
 #include "serialize.h"
 #include "snapshot.h"
+#include "top.h"
 #include "utils.h"
 #include "v8threads.h"
 #include "version.h"
 
+#include "../include/v8-profiler.h"
 
 #define LOG_API(expr) LOG(ApiEntryCall(expr))
 
@@ -439,7 +442,6 @@ bool V8::IsGlobalWeak(i::Object** obj) {
 void V8::DisposeGlobal(i::Object** obj) {
   LOG_API("DisposeGlobal");
   if (!i::V8::IsRunning()) return;
-  if ((*obj)->IsGlobalContext()) i::Heap::NotifyContextDisposed();
   i::GlobalHandles::Destroy(obj);
 }
 
@@ -537,9 +539,16 @@ i::Object** v8::HandleScope::RawClose(i::Object** value) {
   LOG_API("CloseHandleScope");
 
   // Read the result before popping the handle block.
-  i::Object* result = *value;
+  i::Object* result = NULL;
+  if (value != NULL) {
+    result = *value;
+  }
   is_closed_ = true;
   i::HandleScope::Leave(&previous_);
+
+  if (value == NULL) {
+    return NULL;
+  }
 
   // Allocate a new handle on the previous handle block.
   i::Handle<i::Object> handle(result);
@@ -1136,7 +1145,7 @@ Local<Script> Script::New(v8::Handle<String> source,
   if (pre_data_impl != NULL && !pre_data_impl->SanityCheck()) {
     pre_data_impl = NULL;
   }
-  i::Handle<i::JSFunction> boilerplate =
+  i::Handle<i::SharedFunctionInfo> result =
       i::Compiler::Compile(str,
                            name_obj,
                            line_offset,
@@ -1145,9 +1154,9 @@ Local<Script> Script::New(v8::Handle<String> source,
                            pre_data_impl,
                            Utils::OpenHandle(*script_data),
                            i::NOT_NATIVES_CODE);
-  has_pending_exception = boilerplate.is_null();
+  has_pending_exception = result.is_null();
   EXCEPTION_BAILOUT_CHECK(Local<Script>());
-  return Local<Script>(ToApi<Script>(boilerplate));
+  return Local<Script>(ToApi<Script>(result));
 }
 
 
@@ -1168,10 +1177,12 @@ Local<Script> Script::Compile(v8::Handle<String> source,
   Local<Script> generic = New(source, origin, pre_data, script_data);
   if (generic.IsEmpty())
     return generic;
-  i::Handle<i::JSFunction> boilerplate = Utils::OpenHandle(*generic);
+  i::Handle<i::Object> obj = Utils::OpenHandle(*generic);
+  i::Handle<i::SharedFunctionInfo> function =
+      i::Handle<i::SharedFunctionInfo>(i::SharedFunctionInfo::cast(*obj));
   i::Handle<i::JSFunction> result =
-      i::Factory::NewFunctionFromBoilerplate(boilerplate,
-                                             i::Top::global_context());
+      i::Factory::NewFunctionFromSharedFunctionInfo(function,
+                                                    i::Top::global_context());
   return Local<Script>(ToApi<Script>(result));
 }
 
@@ -1191,10 +1202,15 @@ Local<Value> Script::Run() {
   i::Object* raw_result = NULL;
   {
     HandleScope scope;
-    i::Handle<i::JSFunction> fun = Utils::OpenHandle(this);
-    if (fun->IsBoilerplate()) {
-      fun = i::Factory::NewFunctionFromBoilerplate(fun,
-                                                   i::Top::global_context());
+    i::Handle<i::Object> obj = Utils::OpenHandle(this);
+    i::Handle<i::JSFunction> fun;
+    if (obj->IsSharedFunctionInfo()) {
+      i::Handle<i::SharedFunctionInfo>
+          function_info(i::SharedFunctionInfo::cast(*obj));
+      fun = i::Factory::NewFunctionFromSharedFunctionInfo(
+          function_info, i::Top::global_context());
+    } else {
+      fun = i::Handle<i::JSFunction>(i::JSFunction::cast(*obj));
     }
     EXCEPTION_PREAMBLE();
     i::Handle<i::Object> receiver(i::Top::context()->global_proxy());
@@ -1208,14 +1224,28 @@ Local<Value> Script::Run() {
 }
 
 
+static i::Handle<i::SharedFunctionInfo> OpenScript(Script* script) {
+  i::Handle<i::Object> obj = Utils::OpenHandle(script);
+  i::Handle<i::SharedFunctionInfo> result;
+  if (obj->IsSharedFunctionInfo()) {
+    result =
+        i::Handle<i::SharedFunctionInfo>(i::SharedFunctionInfo::cast(*obj));
+  } else {
+    result =
+        i::Handle<i::SharedFunctionInfo>(i::JSFunction::cast(*obj)->shared());
+  }
+  return result;
+}
+
+
 Local<Value> Script::Id() {
   ON_BAILOUT("v8::Script::Id()", return Local<Value>());
   LOG_API("Script::Id");
   i::Object* raw_id = NULL;
   {
     HandleScope scope;
-    i::Handle<i::JSFunction> fun = Utils::OpenHandle(this);
-    i::Handle<i::Script> script(i::Script::cast(fun->shared()->script()));
+    i::Handle<i::SharedFunctionInfo> function_info = OpenScript(this);
+    i::Handle<i::Script> script(i::Script::cast(function_info->script()));
     i::Handle<i::Object> id(script->id());
     raw_id = *id;
   }
@@ -1229,9 +1259,9 @@ void Script::SetData(v8::Handle<String> data) {
   LOG_API("Script::SetData");
   {
     HandleScope scope;
-    i::Handle<i::JSFunction> fun = Utils::OpenHandle(this);
+    i::Handle<i::SharedFunctionInfo> function_info = OpenScript(this);
     i::Handle<i::Object> raw_data = Utils::OpenHandle(*data);
-    i::Handle<i::Script> script(i::Script::cast(fun->shared()->script()));
+    i::Handle<i::Script> script(i::Script::cast(function_info->script()));
     script->set_data(*raw_data);
   }
 }
@@ -1572,6 +1602,18 @@ bool Value::IsInt32() const {
   if (obj->IsNumber()) {
     double value = obj->Number();
     return i::FastI2D(i::FastD2I(value)) == value;
+  }
+  return false;
+}
+
+
+bool Value::IsUint32() const {
+  if (IsDeadCheck("v8::Value::IsUint32()")) return false;
+  i::Handle<i::Object> obj = Utils::OpenHandle(this);
+  if (obj->IsSmi()) return i::Smi::cast(*obj)->value() >= 0;
+  if (obj->IsNumber()) {
+    double value = obj->Number();
+    return i::FastUI2D(i::FastD2UI(value)) == value;
   }
   return false;
 }
@@ -1982,6 +2024,23 @@ bool v8::Object::Set(v8::Handle<Value> key, v8::Handle<Value> value,
 }
 
 
+bool v8::Object::Set(uint32_t index, v8::Handle<Value> value) {
+  ON_BAILOUT("v8::Object::Set()", return false);
+  ENTER_V8;
+  HandleScope scope;
+  i::Handle<i::JSObject> self = Utils::OpenHandle(this);
+  i::Handle<i::Object> value_obj = Utils::OpenHandle(*value);
+  EXCEPTION_PREAMBLE();
+  i::Handle<i::Object> obj = i::SetElement(
+      self,
+      index,
+      value_obj);
+  has_pending_exception = obj.is_null();
+  EXCEPTION_BAILOUT_CHECK(false);
+  return true;
+}
+
+
 bool v8::Object::ForceSet(v8::Handle<Value> key,
                           v8::Handle<Value> value,
                           v8::PropertyAttribute attribs) {
@@ -2024,6 +2083,18 @@ Local<Value> v8::Object::Get(v8::Handle<Value> key) {
   i::Handle<i::Object> key_obj = Utils::OpenHandle(*key);
   EXCEPTION_PREAMBLE();
   i::Handle<i::Object> result = i::GetProperty(self, key_obj);
+  has_pending_exception = result.is_null();
+  EXCEPTION_BAILOUT_CHECK(Local<Value>());
+  return Utils::ToLocal(result);
+}
+
+
+Local<Value> v8::Object::Get(uint32_t index) {
+  ON_BAILOUT("v8::Object::Get()", return Local<v8::Value>());
+  ENTER_V8;
+  i::Handle<i::JSObject> self = Utils::OpenHandle(this);
+  EXCEPTION_PREAMBLE();
+  i::Handle<i::Object> result = i::GetElement(self, index);
   has_pending_exception = result.is_null();
   EXCEPTION_BAILOUT_CHECK(Local<Value>());
   return Utils::ToLocal(result);
@@ -2570,12 +2641,20 @@ int String::Utf8Length() const {
 }
 
 
-int String::WriteUtf8(char* buffer, int capacity) const {
+int String::WriteUtf8(char* buffer,
+                      int capacity,
+                      int* nchars_ref,
+                      WriteHints hints) const {
   if (IsDeadCheck("v8::String::WriteUtf8()")) return 0;
   LOG_API("String::WriteUtf8");
   ENTER_V8;
   i::Handle<i::String> str = Utils::OpenHandle(this);
   StringTracker::RecordWrite(str);
+  if (hints & HINT_MANY_WRITES_EXPECTED) {
+    // Flatten the string for efficiency.  This applies whether we are
+    // using StringInputBuffer or Get(i) to access the characters.
+    str->TryFlatten();
+  }
   write_input_buffer.Reset(0, *str);
   int len = str->length();
   // Encode the first K - 3 bytes directly into the buffer since we
@@ -2584,10 +2663,12 @@ int String::WriteUtf8(char* buffer, int capacity) const {
   int fast_end = capacity - (unibrow::Utf8::kMaxEncodedSize - 1);
   int i;
   int pos = 0;
+  int nchars = 0;
   for (i = 0; i < len && (capacity == -1 || pos < fast_end); i++) {
     i::uc32 c = write_input_buffer.GetNext();
     int written = unibrow::Utf8::Encode(buffer + pos, c);
     pos += written;
+    nchars++;
   }
   if (i < len) {
     // For the last characters we need to check the length for each one
@@ -2601,28 +2682,35 @@ int String::WriteUtf8(char* buffer, int capacity) const {
         for (int j = 0; j < written; j++)
           buffer[pos + j] = intermediate[j];
         pos += written;
+        nchars++;
       } else {
         // We've reached the end of the buffer
         break;
       }
     }
   }
+  if (nchars_ref != NULL) *nchars_ref = nchars;
   if (i == len && (capacity == -1 || pos < capacity))
     buffer[pos++] = '\0';
   return pos;
 }
 
 
-int String::WriteAscii(char* buffer, int start, int length) const {
+int String::WriteAscii(char* buffer,
+                       int start,
+                       int length,
+                       WriteHints hints) const {
   if (IsDeadCheck("v8::String::WriteAscii()")) return 0;
   LOG_API("String::WriteAscii");
   ENTER_V8;
   ASSERT(start >= 0 && length >= -1);
   i::Handle<i::String> str = Utils::OpenHandle(this);
   StringTracker::RecordWrite(str);
-  // Flatten the string for efficiency.  This applies whether we are
-  // using StringInputBuffer or Get(i) to access the characters.
-  str->TryFlattenIfNotFlat();
+  if (hints & HINT_MANY_WRITES_EXPECTED) {
+    // Flatten the string for efficiency.  This applies whether we are
+    // using StringInputBuffer or Get(i) to access the characters.
+    str->TryFlatten();
+  }
   int end = length;
   if ( (length == -1) || (length > str->length() - start) )
     end = str->length() - start;
@@ -2640,13 +2728,21 @@ int String::WriteAscii(char* buffer, int start, int length) const {
 }
 
 
-int String::Write(uint16_t* buffer, int start, int length) const {
+int String::Write(uint16_t* buffer,
+                  int start,
+                  int length,
+                  WriteHints hints) const {
   if (IsDeadCheck("v8::String::Write()")) return 0;
   LOG_API("String::Write");
   ENTER_V8;
   ASSERT(start >= 0 && length >= -1);
   i::Handle<i::String> str = Utils::OpenHandle(this);
   StringTracker::RecordWrite(str);
+  if (hints & HINT_MANY_WRITES_EXPECTED) {
+    // Flatten the string for efficiency.  This applies whether we are
+    // using StringInputBuffer or Get(i) to access the characters.
+    str->TryFlatten();
+  }
   int end = length;
   if ( (length == -1) || (length > str->length() - start) )
     end = str->length() - start;
@@ -2735,6 +2831,17 @@ int32_t Int32::Value() const {
 }
 
 
+uint32_t Uint32::Value() const {
+  if (IsDeadCheck("v8::Uint32::Value()")) return 0;
+  i::Handle<i::Object> obj = Utils::OpenHandle(this);
+  if (obj->IsSmi()) {
+    return i::Smi::cast(*obj)->value();
+  } else {
+    return static_cast<uint32_t>(obj->Number());
+  }
+}
+
+
 int v8::Object::InternalFieldCount() {
   if (IsDeadCheck("v8::Object::InternalFieldCount()")) return 0;
   i::Handle<i::JSObject> obj = Utils::OpenHandle(this);
@@ -2775,6 +2882,7 @@ void v8::Object::SetInternalField(int index, v8::Handle<Value> value) {
 
 
 void v8::Object::SetPointerInInternalField(int index, void* value) {
+  ENTER_V8;
   i::Object* as_object = reinterpret_cast<i::Object*>(value);
   if (as_object->IsSmi()) {
     Utils::OpenHandle(this)->SetInternalField(index, as_object);
@@ -2828,6 +2936,12 @@ void v8::V8::LowMemoryNotification() {
 }
 
 
+int v8::V8::ContextDisposedNotification() {
+  if (!i::V8::IsRunning()) return 0;
+  return i::Heap::NotifyContextDisposed();
+}
+
+
 const char* v8::V8::GetVersion() {
   static v8::internal::EmbeddedVector<char, 128> buffer;
   v8::internal::Version::GetString(buffer);
@@ -2854,14 +2968,6 @@ Persistent<Context> v8::Context::New(
   EnsureInitialized("v8::Context::New()");
   LOG_API("Context::New");
   ON_BAILOUT("v8::Context::New()", return Persistent<Context>());
-
-#if defined(ANDROID)
-  // On mobile device, full GC is expensive, leave it to the system to
-  // decide when should make a full GC.
-#else
-  // Give the heap a chance to cleanup if we've disposed contexts.
-  i::Heap::CollectAllGarbageIfContextDisposed();
-#endif
 
   // Enter V8 via an ENTER_V8 scope.
   i::Handle<i::Context> env;
@@ -3341,6 +3447,7 @@ Local<Object> Array::CloneElementAt(uint32_t index) {
   }
   i::Handle<i::JSObject> paragon_handle(i::JSObject::cast(paragon));
   EXCEPTION_PREAMBLE();
+  ENTER_V8;
   i::Handle<i::JSObject> result = i::Copy(paragon_handle);
   has_pending_exception = result.is_null();
   EXCEPTION_BAILOUT_CHECK(Local<Object>());
@@ -3485,6 +3592,30 @@ void V8::SetGlobalGCEpilogueCallback(GCCallback callback) {
 }
 
 
+void V8::AddGCPrologueCallback(GCPrologueCallback callback, GCType gc_type) {
+  if (IsDeadCheck("v8::V8::AddGCPrologueCallback()")) return;
+  i::Heap::AddGCPrologueCallback(callback, gc_type);
+}
+
+
+void V8::RemoveGCPrologueCallback(GCPrologueCallback callback) {
+  if (IsDeadCheck("v8::V8::RemoveGCPrologueCallback()")) return;
+  i::Heap::RemoveGCPrologueCallback(callback);
+}
+
+
+void V8::AddGCEpilogueCallback(GCEpilogueCallback callback, GCType gc_type) {
+  if (IsDeadCheck("v8::V8::AddGCEpilogueCallback()")) return;
+  i::Heap::AddGCEpilogueCallback(callback, gc_type);
+}
+
+
+void V8::RemoveGCEpilogueCallback(GCEpilogueCallback callback) {
+  if (IsDeadCheck("v8::V8::RemoveGCEpilogueCallback()")) return;
+  i::Heap::RemoveGCEpilogueCallback(callback);
+}
+
+
 void V8::PauseProfiler() {
 #ifdef ENABLE_LOGGING_AND_PROFILING
   PauseProfilerEx(PROFILER_MODULE_CPU);
@@ -3515,6 +3646,8 @@ void V8::ResumeProfilerEx(int flags, int tag) {
     // those modules which haven't been started prior to making a
     // snapshot.
 
+    // Make a GC prior to taking a snapshot.
+    i::Heap::CollectAllGarbage(false);
     // Reset snapshot flag and CPU module flags.
     flags &= ~(PROFILER_MODULE_HEAP_SNAPSHOT | PROFILER_MODULE_CPU);
     const int current_flags = i::Logger::GetActiveProfilerModules();
@@ -3546,6 +3679,7 @@ int V8::GetActiveProfilerModules() {
 
 int V8::GetLogLines(int from_pos, char* dest_buf, int max_size) {
 #ifdef ENABLE_LOGGING_AND_PROFILING
+  ASSERT(max_size >= kMinimumSizeForLogLinesBuffer);
   return i::Logger::GetLogLines(from_pos, dest_buf, max_size);
 #endif
   return 0;
@@ -3576,6 +3710,15 @@ void V8::TerminateExecution(int thread_id) {
 void V8::TerminateExecution() {
   if (!i::V8::IsRunning()) return;
   i::StackGuard::TerminateExecution();
+}
+
+
+bool V8::IsExecutionTerminating() {
+  if (!i::V8::IsRunning()) return false;
+  if (i::Top::has_scheduled_exception()) {
+    return i::Top::scheduled_exception() == i::Heap::termination_exception();
+  }
+  return false;
 }
 
 
@@ -3878,7 +4021,150 @@ void Debug::ProcessDebugMessages() {
   i::Execution::ProcessDebugMesssages(true);
 }
 
+Local<Context> Debug::GetDebugContext() {
+  EnsureInitialized("v8::Debug::GetDebugContext()");
+  ENTER_V8;
+  return Utils::ToLocal(i::Debugger::GetDebugContext());
+}
+
 #endif  // ENABLE_DEBUGGER_SUPPORT
+
+
+#ifdef ENABLE_LOGGING_AND_PROFILING
+
+Handle<String> CpuProfileNode::GetFunctionName() const {
+  IsDeadCheck("v8::CpuProfileNode::GetFunctionName");
+  const i::ProfileNode* node = reinterpret_cast<const i::ProfileNode*>(this);
+  const i::CodeEntry* entry = node->entry();
+  if (!entry->has_name_prefix()) {
+    return Handle<String>(ToApi<String>(
+        i::Factory::LookupAsciiSymbol(entry->name())));
+  } else {
+    return Handle<String>(ToApi<String>(i::Factory::NewConsString(
+        i::Factory::LookupAsciiSymbol(entry->name_prefix()),
+        i::Factory::LookupAsciiSymbol(entry->name()))));
+  }
+}
+
+
+Handle<String> CpuProfileNode::GetScriptResourceName() const {
+  IsDeadCheck("v8::CpuProfileNode::GetScriptResourceName");
+  const i::ProfileNode* node = reinterpret_cast<const i::ProfileNode*>(this);
+  return Handle<String>(ToApi<String>(i::Factory::LookupAsciiSymbol(
+      node->entry()->resource_name())));
+}
+
+
+int CpuProfileNode::GetLineNumber() const {
+  IsDeadCheck("v8::CpuProfileNode::GetLineNumber");
+  return reinterpret_cast<const i::ProfileNode*>(this)->entry()->line_number();
+}
+
+
+double CpuProfileNode::GetTotalTime() const {
+  IsDeadCheck("v8::CpuProfileNode::GetTotalTime");
+  return reinterpret_cast<const i::ProfileNode*>(this)->GetTotalMillis();
+}
+
+
+double CpuProfileNode::GetSelfTime() const {
+  IsDeadCheck("v8::CpuProfileNode::GetSelfTime");
+  return reinterpret_cast<const i::ProfileNode*>(this)->GetSelfMillis();
+}
+
+
+double CpuProfileNode::GetTotalSamplesCount() const {
+  IsDeadCheck("v8::CpuProfileNode::GetTotalSamplesCount");
+  return reinterpret_cast<const i::ProfileNode*>(this)->total_ticks();
+}
+
+
+double CpuProfileNode::GetSelfSamplesCount() const {
+  IsDeadCheck("v8::CpuProfileNode::GetSelfSamplesCount");
+  return reinterpret_cast<const i::ProfileNode*>(this)->self_ticks();
+}
+
+
+unsigned CpuProfileNode::GetCallUid() const {
+  IsDeadCheck("v8::CpuProfileNode::GetCallUid");
+  return reinterpret_cast<const i::ProfileNode*>(this)->entry()->call_uid();
+}
+
+
+int CpuProfileNode::GetChildrenCount() const {
+  IsDeadCheck("v8::CpuProfileNode::GetChildrenCount");
+  return reinterpret_cast<const i::ProfileNode*>(this)->children()->length();
+}
+
+
+const CpuProfileNode* CpuProfileNode::GetChild(int index) const {
+  IsDeadCheck("v8::CpuProfileNode::GetChild");
+  const i::ProfileNode* child =
+      reinterpret_cast<const i::ProfileNode*>(this)->children()->at(index);
+  return reinterpret_cast<const CpuProfileNode*>(child);
+}
+
+
+unsigned CpuProfile::GetUid() const {
+  IsDeadCheck("v8::CpuProfile::GetUid");
+  return reinterpret_cast<const i::CpuProfile*>(this)->uid();
+}
+
+
+Handle<String> CpuProfile::GetTitle() const {
+  IsDeadCheck("v8::CpuProfile::GetTitle");
+  const i::CpuProfile* profile = reinterpret_cast<const i::CpuProfile*>(this);
+  return Handle<String>(ToApi<String>(i::Factory::LookupAsciiSymbol(
+      profile->title())));
+}
+
+
+const CpuProfileNode* CpuProfile::GetBottomUpRoot() const {
+  IsDeadCheck("v8::CpuProfile::GetBottomUpRoot");
+  const i::CpuProfile* profile = reinterpret_cast<const i::CpuProfile*>(this);
+  return reinterpret_cast<const CpuProfileNode*>(profile->bottom_up()->root());
+}
+
+
+const CpuProfileNode* CpuProfile::GetTopDownRoot() const {
+  IsDeadCheck("v8::CpuProfile::GetTopDownRoot");
+  const i::CpuProfile* profile = reinterpret_cast<const i::CpuProfile*>(this);
+  return reinterpret_cast<const CpuProfileNode*>(profile->top_down()->root());
+}
+
+
+int CpuProfiler::GetProfilesCount() {
+  IsDeadCheck("v8::CpuProfiler::GetProfilesCount");
+  return i::CpuProfiler::GetProfilesCount();
+}
+
+
+const CpuProfile* CpuProfiler::GetProfile(int index) {
+  IsDeadCheck("v8::CpuProfiler::GetProfile");
+  return reinterpret_cast<const CpuProfile*>(i::CpuProfiler::GetProfile(index));
+}
+
+
+const CpuProfile* CpuProfiler::FindProfile(unsigned uid) {
+  IsDeadCheck("v8::CpuProfiler::FindProfile");
+  return reinterpret_cast<const CpuProfile*>(i::CpuProfiler::FindProfile(uid));
+}
+
+
+void CpuProfiler::StartProfiling(Handle<String> title) {
+  IsDeadCheck("v8::CpuProfiler::StartProfiling");
+  i::CpuProfiler::StartProfiling(*Utils::OpenHandle(*title));
+}
+
+
+const CpuProfile* CpuProfiler::StopProfiling(Handle<String> title) {
+  IsDeadCheck("v8::CpuProfiler::StopProfiling");
+  return reinterpret_cast<const CpuProfile*>(
+      i::CpuProfiler::StopProfiling(*Utils::OpenHandle(*title)));
+}
+
+#endif  // ENABLE_LOGGING_AND_PROFILING
+
 
 namespace internal {
 

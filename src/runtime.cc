@@ -32,12 +32,14 @@
 #include "accessors.h"
 #include "api.h"
 #include "arguments.h"
+#include "codegen.h"
 #include "compiler.h"
 #include "cpu.h"
 #include "dateparser-inl.h"
 #include "debug.h"
 #include "execution.h"
 #include "jsregexp.h"
+#include "liveedit.h"
 #include "parser.h"
 #include "platform.h"
 #include "runtime.h"
@@ -246,7 +248,8 @@ static Handle<Object> CreateLiteralBoilerplate(
 
 static Handle<Object> CreateObjectLiteralBoilerplate(
     Handle<FixedArray> literals,
-    Handle<FixedArray> constant_properties) {
+    Handle<FixedArray> constant_properties,
+    bool should_have_fast_elements) {
   // Get the global context from the literals array.  This is the
   // context in which the function was created and we use the object
   // function from this context to create the object literal.  We do
@@ -262,6 +265,10 @@ static Handle<Object> CreateObjectLiteralBoilerplate(
                                             &is_result_from_cache);
 
   Handle<JSObject> boilerplate = Factory::NewJSObjectFromMap(map);
+
+  // Normalize the elements of the boilerplate to save space if needed.
+  if (!should_have_fast_elements) NormalizeElements(boilerplate);
+
   {  // Add the constant properties to the boilerplate.
     int length = constant_properties->length();
     OptimizedObjectForAddingMultipleProperties opt(boilerplate,
@@ -343,34 +350,16 @@ static Handle<Object> CreateLiteralBoilerplate(
     Handle<FixedArray> array) {
   Handle<FixedArray> elements = CompileTimeValue::GetElements(array);
   switch (CompileTimeValue::GetType(array)) {
-    case CompileTimeValue::OBJECT_LITERAL:
-      return CreateObjectLiteralBoilerplate(literals, elements);
+    case CompileTimeValue::OBJECT_LITERAL_FAST_ELEMENTS:
+      return CreateObjectLiteralBoilerplate(literals, elements, true);
+    case CompileTimeValue::OBJECT_LITERAL_SLOW_ELEMENTS:
+      return CreateObjectLiteralBoilerplate(literals, elements, false);
     case CompileTimeValue::ARRAY_LITERAL:
       return CreateArrayLiteralBoilerplate(literals, elements);
     default:
       UNREACHABLE();
       return Handle<Object>::null();
   }
-}
-
-
-static Object* Runtime_CreateObjectLiteralBoilerplate(Arguments args) {
-  HandleScope scope;
-  ASSERT(args.length() == 3);
-  // Copy the arguments.
-  CONVERT_ARG_CHECKED(FixedArray, literals, 0);
-  CONVERT_SMI_CHECKED(literals_index, args[1]);
-  CONVERT_ARG_CHECKED(FixedArray, constant_properties, 2);
-
-  Handle<Object> result =
-    CreateObjectLiteralBoilerplate(literals, constant_properties);
-
-  if (result.is_null()) return Failure::Exception();
-
-  // Update the functions literal and return the boilerplate.
-  literals->set(literals_index, *result);
-
-  return *result;
 }
 
 
@@ -397,15 +386,19 @@ static Object* Runtime_CreateArrayLiteralBoilerplate(Arguments args) {
 
 static Object* Runtime_CreateObjectLiteral(Arguments args) {
   HandleScope scope;
-  ASSERT(args.length() == 3);
+  ASSERT(args.length() == 4);
   CONVERT_ARG_CHECKED(FixedArray, literals, 0);
   CONVERT_SMI_CHECKED(literals_index, args[1]);
   CONVERT_ARG_CHECKED(FixedArray, constant_properties, 2);
+  CONVERT_SMI_CHECKED(fast_elements, args[3]);
+  bool should_have_fast_elements = fast_elements == 1;
 
   // Check if boilerplate exists. If not, create it first.
   Handle<Object> boilerplate(literals->get(literals_index));
   if (*boilerplate == Heap::undefined_value()) {
-    boilerplate = CreateObjectLiteralBoilerplate(literals, constant_properties);
+    boilerplate = CreateObjectLiteralBoilerplate(literals,
+                                                 constant_properties,
+                                                 should_have_fast_elements);
     if (boilerplate.is_null()) return Failure::Exception();
     // Update the functions literal and return the boilerplate.
     literals->set(literals_index, *boilerplate);
@@ -416,15 +409,19 @@ static Object* Runtime_CreateObjectLiteral(Arguments args) {
 
 static Object* Runtime_CreateObjectLiteralShallow(Arguments args) {
   HandleScope scope;
-  ASSERT(args.length() == 3);
+  ASSERT(args.length() == 4);
   CONVERT_ARG_CHECKED(FixedArray, literals, 0);
   CONVERT_SMI_CHECKED(literals_index, args[1]);
   CONVERT_ARG_CHECKED(FixedArray, constant_properties, 2);
+  CONVERT_SMI_CHECKED(fast_elements, args[3]);
+  bool should_have_fast_elements = fast_elements == 1;
 
   // Check if boilerplate exists. If not, create it first.
   Handle<Object> boilerplate(literals->get(literals_index));
   if (*boilerplate == Heap::undefined_value()) {
-    boilerplate = CreateObjectLiteralBoilerplate(literals, constant_properties);
+    boilerplate = CreateObjectLiteralBoilerplate(literals,
+                                                 constant_properties,
+                                                 should_have_fast_elements);
     if (boilerplate.is_null()) return Failure::Exception();
     // Update the functions literal and return the boilerplate.
     literals->set(literals_index, *boilerplate);
@@ -791,9 +788,10 @@ static Object* Runtime_DeclareGlobals(Arguments args) {
       }
     } else {
       // Copy the function and update its context. Use it as value.
-      Handle<JSFunction> boilerplate = Handle<JSFunction>::cast(value);
+      Handle<SharedFunctionInfo> shared =
+          Handle<SharedFunctionInfo>::cast(value);
       Handle<JSFunction> function =
-          Factory::NewFunctionFromBoilerplate(boilerplate, context, TENURED);
+          Factory::NewFunctionFromSharedFunctionInfo(shared, context, TENURED);
       value = function;
     }
 
@@ -1230,6 +1228,178 @@ static Object* Runtime_RegExpExec(Arguments args) {
 }
 
 
+static Object* Runtime_RegExpConstructResult(Arguments args) {
+  ASSERT(args.length() == 3);
+  CONVERT_SMI_CHECKED(elements_count, args[0]);
+  if (elements_count > JSArray::kMaxFastElementsLength) {
+    return Top::ThrowIllegalOperation();
+  }
+  Object* new_object = Heap::AllocateFixedArrayWithHoles(elements_count);
+  if (new_object->IsFailure()) return new_object;
+  FixedArray* elements = FixedArray::cast(new_object);
+  new_object = Heap::AllocateRaw(JSRegExpResult::kSize,
+                                 NEW_SPACE,
+                                 OLD_POINTER_SPACE);
+  if (new_object->IsFailure()) return new_object;
+  {
+    AssertNoAllocation no_gc;
+    HandleScope scope;
+    reinterpret_cast<HeapObject*>(new_object)->
+        set_map(Top::global_context()->regexp_result_map());
+  }
+  JSArray* array = JSArray::cast(new_object);
+  array->set_properties(Heap::empty_fixed_array());
+  array->set_elements(elements);
+  array->set_length(Smi::FromInt(elements_count));
+  // Write in-object properties after the length of the array.
+  array->InObjectPropertyAtPut(JSRegExpResult::kIndexIndex, args[1]);
+  array->InObjectPropertyAtPut(JSRegExpResult::kInputIndex, args[2]);
+  return array;
+}
+
+
+static Object* Runtime_RegExpInitializeObject(Arguments args) {
+  AssertNoAllocation no_alloc;
+  ASSERT(args.length() == 5);
+  CONVERT_CHECKED(JSRegExp, regexp, args[0]);
+  CONVERT_CHECKED(String, source, args[1]);
+
+  Object* global = args[2];
+  if (!global->IsTrue()) global = Heap::false_value();
+
+  Object* ignoreCase = args[3];
+  if (!ignoreCase->IsTrue()) ignoreCase = Heap::false_value();
+
+  Object* multiline = args[4];
+  if (!multiline->IsTrue()) multiline = Heap::false_value();
+
+  Map* map = regexp->map();
+  Object* constructor = map->constructor();
+  if (constructor->IsJSFunction() &&
+      JSFunction::cast(constructor)->initial_map() == map) {
+    // If we still have the original map, set in-object properties directly.
+    regexp->InObjectPropertyAtPut(JSRegExp::kSourceFieldIndex, source);
+    // TODO(lrn): Consider skipping write barrier on booleans as well.
+    // Both true and false should be in oldspace at all times.
+    regexp->InObjectPropertyAtPut(JSRegExp::kGlobalFieldIndex, global);
+    regexp->InObjectPropertyAtPut(JSRegExp::kIgnoreCaseFieldIndex, ignoreCase);
+    regexp->InObjectPropertyAtPut(JSRegExp::kMultilineFieldIndex, multiline);
+    regexp->InObjectPropertyAtPut(JSRegExp::kLastIndexFieldIndex,
+                                  Smi::FromInt(0),
+                                  SKIP_WRITE_BARRIER);
+    return regexp;
+  }
+
+  // Map has changed, so use generic, but slower, method.
+  PropertyAttributes final =
+      static_cast<PropertyAttributes>(READ_ONLY | DONT_ENUM | DONT_DELETE);
+  PropertyAttributes writable =
+      static_cast<PropertyAttributes>(DONT_ENUM | DONT_DELETE);
+  regexp->IgnoreAttributesAndSetLocalProperty(Heap::source_symbol(),
+                                              source,
+                                              final);
+  regexp->IgnoreAttributesAndSetLocalProperty(Heap::global_symbol(),
+                                              global,
+                                              final);
+  regexp->IgnoreAttributesAndSetLocalProperty(Heap::ignore_case_symbol(),
+                                              ignoreCase,
+                                              final);
+  regexp->IgnoreAttributesAndSetLocalProperty(Heap::multiline_symbol(),
+                                              multiline,
+                                              final);
+  regexp->IgnoreAttributesAndSetLocalProperty(Heap::last_index_symbol(),
+                                              Smi::FromInt(0),
+                                              writable);
+  return regexp;
+}
+
+
+static Object* Runtime_FinishArrayPrototypeSetup(Arguments args) {
+  HandleScope scope;
+  ASSERT(args.length() == 1);
+  CONVERT_ARG_CHECKED(JSArray, prototype, 0);
+  // This is necessary to enable fast checks for absence of elements
+  // on Array.prototype and below.
+  prototype->set_elements(Heap::empty_fixed_array());
+  return Smi::FromInt(0);
+}
+
+
+static void SetCustomCallGenerator(Handle<JSFunction> function,
+                                   ExternalReference* generator) {
+  if (function->shared()->function_data()->IsUndefined()) {
+    function->shared()->set_function_data(*FromCData(generator->address()));
+  }
+}
+
+
+static Handle<JSFunction> InstallBuiltin(Handle<JSObject> holder,
+                                         const char* name,
+                                         Builtins::Name builtin_name,
+                                         ExternalReference* generator = NULL) {
+  Handle<String> key = Factory::LookupAsciiSymbol(name);
+  Handle<Code> code(Builtins::builtin(builtin_name));
+  Handle<JSFunction> optimized = Factory::NewFunction(key,
+                                                      JS_OBJECT_TYPE,
+                                                      JSObject::kHeaderSize,
+                                                      code,
+                                                      false);
+  optimized->shared()->DontAdaptArguments();
+  if (generator != NULL) {
+    SetCustomCallGenerator(optimized, generator);
+  }
+  SetProperty(holder, key, optimized, NONE);
+  return optimized;
+}
+
+
+Object* CompileArrayPushCall(CallStubCompiler* compiler,
+                             Object* object,
+                             JSObject* holder,
+                             JSFunction* function,
+                             String* name,
+                             StubCompiler::CheckType check) {
+  return compiler->CompileArrayPushCall(object, holder, function, name, check);
+}
+
+
+Object* CompileArrayPopCall(CallStubCompiler* compiler,
+                            Object* object,
+                            JSObject* holder,
+                            JSFunction* function,
+                            String* name,
+                            StubCompiler::CheckType check) {
+  return compiler->CompileArrayPopCall(object, holder, function, name, check);
+}
+
+
+static Object* Runtime_SpecialArrayFunctions(Arguments args) {
+  HandleScope scope;
+  ASSERT(args.length() == 1);
+  CONVERT_ARG_CHECKED(JSObject, holder, 0);
+
+  ExternalReference pop = ExternalReference::compile_array_pop_call();
+  ExternalReference push = ExternalReference::compile_array_push_call();
+
+  InstallBuiltin(holder, "pop", Builtins::ArrayPop, &pop);
+  InstallBuiltin(holder, "push", Builtins::ArrayPush, &push);
+  InstallBuiltin(holder, "shift", Builtins::ArrayShift);
+  InstallBuiltin(holder, "unshift", Builtins::ArrayUnshift);
+  InstallBuiltin(holder, "slice", Builtins::ArraySlice);
+  InstallBuiltin(holder, "splice", Builtins::ArraySplice);
+  InstallBuiltin(holder, "concat", Builtins::ArrayConcat);
+
+  return *holder;
+}
+
+
+static Object* Runtime_GetGlobalReceiver(Arguments args) {
+  // Returns a real global receiver, not one of builtins object.
+  Context* global_context = Top::context()->global()->global_context();
+  return global_context->global()->global_receiver();
+}
+
+
 static Object* Runtime_MaterializeRegExpLiteral(Arguments args) {
   HandleScope scope;
   ASSERT(args.length() == 4);
@@ -1276,6 +1446,18 @@ static Object* Runtime_FunctionSetName(Arguments args) {
   CONVERT_CHECKED(JSFunction, f, args[0]);
   CONVERT_CHECKED(String, name, args[1]);
   f->shared()->set_name(name);
+  return Heap::undefined_value();
+}
+
+
+static Object* Runtime_FunctionRemovePrototype(Arguments args) {
+  NoHandleAllocation ha;
+  ASSERT(args.length() == 1);
+
+  CONVERT_CHECKED(JSFunction, f, args[0]);
+  Object* obj = f->RemovePrototype();
+  if (obj->IsFailure()) return obj;
+
   return Heap::undefined_value();
 }
 
@@ -1353,6 +1535,7 @@ static Object* Runtime_FunctionSetPrototype(Arguments args) {
   ASSERT(args.length() == 2);
 
   CONVERT_CHECKED(JSFunction, fun, args[0]);
+  ASSERT(fun->should_have_prototype());
   Object* obj = Accessors::FunctionSetPrototype(fun, args[1], NULL);
   if (obj->IsFailure()) return obj;
   return args[0];  // return TOS
@@ -1364,10 +1547,8 @@ static Object* Runtime_FunctionIsAPIFunction(Arguments args) {
   ASSERT(args.length() == 1);
 
   CONVERT_CHECKED(JSFunction, f, args[0]);
-  // The function_data field of the shared function info is used exclusively by
-  // the API.
-  return !f->shared()->function_data()->IsUndefined() ? Heap::true_value()
-                                                      : Heap::false_value();
+  return f->shared()->IsApiFunction() ? Heap::true_value()
+                                      : Heap::false_value();
 }
 
 static Object* Runtime_FunctionIsBuiltin(Arguments args) {
@@ -1492,9 +1673,91 @@ static Object* Runtime_CharFromCode(Arguments args) {
   return CharFromCode(args[0]);
 }
 
+
+class FixedArrayBuilder {
+ public:
+  explicit FixedArrayBuilder(int initial_capacity)
+      : array_(Factory::NewFixedArrayWithHoles(initial_capacity)),
+        length_(0) {
+    // Require a non-zero initial size. Ensures that doubling the size to
+    // extend the array will work.
+    ASSERT(initial_capacity > 0);
+  }
+
+  explicit FixedArrayBuilder(Handle<FixedArray> backing_store)
+      : array_(backing_store),
+        length_(0) {
+    // Require a non-zero initial size. Ensures that doubling the size to
+    // extend the array will work.
+    ASSERT(backing_store->length() > 0);
+  }
+
+  bool HasCapacity(int elements) {
+    int length = array_->length();
+    int required_length = length_ + elements;
+    return (length >= required_length);
+  }
+
+  void EnsureCapacity(int elements) {
+    int length = array_->length();
+    int required_length = length_ + elements;
+    if (length < required_length) {
+      int new_length = length;
+      do {
+        new_length *= 2;
+      } while (new_length < required_length);
+      Handle<FixedArray> extended_array =
+          Factory::NewFixedArrayWithHoles(new_length);
+      array_->CopyTo(0, *extended_array, 0, length_);
+      array_ = extended_array;
+    }
+  }
+
+  void Add(Object* value) {
+    ASSERT(length_ < capacity());
+    array_->set(length_, value);
+    length_++;
+  }
+
+  void Add(Smi* value) {
+    ASSERT(length_ < capacity());
+    array_->set(length_, value);
+    length_++;
+  }
+
+  Handle<FixedArray> array() {
+    return array_;
+  }
+
+  int length() {
+    return length_;
+  }
+
+  int capacity() {
+    return array_->length();
+  }
+
+  Handle<JSArray> ToJSArray() {
+    Handle<JSArray> result_array = Factory::NewJSArrayWithElements(array_);
+    result_array->set_length(Smi::FromInt(length_));
+    return result_array;
+  }
+
+  Handle<JSArray> ToJSArray(Handle<JSArray> target_array) {
+    target_array->set_elements(*array_);
+    target_array->set_length(Smi::FromInt(length_));
+    return target_array;
+  }
+
+ private:
+  Handle<FixedArray> array_;
+  int length_;
+};
+
+
 // Forward declarations.
-static const int kStringBuilderConcatHelperLengthBits = 11;
-static const int kStringBuilderConcatHelperPositionBits = 19;
+const int kStringBuilderConcatHelperLengthBits = 11;
+const int kStringBuilderConcatHelperPositionBits = 19;
 
 template <typename schar>
 static inline void StringBuilderConcatHelper(String*,
@@ -1502,15 +1765,19 @@ static inline void StringBuilderConcatHelper(String*,
                                              FixedArray*,
                                              int);
 
-typedef BitField<int, 0, 11> StringBuilderSubstringLength;
-typedef BitField<int, 11, 19> StringBuilderSubstringPosition;
+typedef BitField<int, 0, kStringBuilderConcatHelperLengthBits>
+    StringBuilderSubstringLength;
+typedef BitField<int,
+                 kStringBuilderConcatHelperLengthBits,
+                 kStringBuilderConcatHelperPositionBits>
+    StringBuilderSubstringPosition;
+
 
 class ReplacementStringBuilder {
  public:
   ReplacementStringBuilder(Handle<String> subject, int estimated_part_count)
-      : subject_(subject),
-        parts_(Factory::NewFixedArray(estimated_part_count)),
-        part_count_(0),
+      : array_builder_(estimated_part_count),
+        subject_(subject),
         character_count_(0),
         is_ascii_(subject->IsAsciiRepresentation()) {
     // Require a non-zero initial size. Ensures that doubling the size to
@@ -1518,38 +1785,33 @@ class ReplacementStringBuilder {
     ASSERT(estimated_part_count > 0);
   }
 
-  void EnsureCapacity(int elements) {
-    int length = parts_->length();
-    int required_length = part_count_ + elements;
-    if (length < required_length) {
-      int new_length = length;
-      do {
-        new_length *= 2;
-      } while (new_length < required_length);
-      Handle<FixedArray> extended_array =
-          Factory::NewFixedArray(new_length);
-      parts_->CopyTo(0, *extended_array, 0, part_count_);
-      parts_ = extended_array;
-    }
-  }
-
-  void AddSubjectSlice(int from, int to) {
+  static inline void AddSubjectSlice(FixedArrayBuilder* builder,
+                                     int from,
+                                     int to) {
     ASSERT(from >= 0);
     int length = to - from;
     ASSERT(length > 0);
-    // Can we encode the slice in 11 bits for length and 19 bits for
-    // start position - as used by StringBuilderConcatHelper?
     if (StringBuilderSubstringLength::is_valid(length) &&
         StringBuilderSubstringPosition::is_valid(from)) {
       int encoded_slice = StringBuilderSubstringLength::encode(length) |
           StringBuilderSubstringPosition::encode(from);
-      AddElement(Smi::FromInt(encoded_slice));
+      builder->Add(Smi::FromInt(encoded_slice));
     } else {
       // Otherwise encode as two smis.
-      AddElement(Smi::FromInt(-length));
-      AddElement(Smi::FromInt(from));
+      builder->Add(Smi::FromInt(-length));
+      builder->Add(Smi::FromInt(from));
     }
-    IncrementCharacterCount(length);
+  }
+
+
+  void EnsureCapacity(int elements) {
+    array_builder_.EnsureCapacity(elements);
+  }
+
+
+  void AddSubjectSlice(int from, int to) {
+    AddSubjectSlice(&array_builder_, from, to);
+    IncrementCharacterCount(to - from);
   }
 
 
@@ -1565,7 +1827,7 @@ class ReplacementStringBuilder {
 
 
   Handle<String> ToString() {
-    if (part_count_ == 0) {
+    if (array_builder_.length() == 0) {
       return Factory::empty_string();
     }
 
@@ -1577,8 +1839,8 @@ class ReplacementStringBuilder {
       char* char_buffer = seq->GetChars();
       StringBuilderConcatHelper(*subject_,
                                 char_buffer,
-                                *parts_,
-                                part_count_);
+                                *array_builder_.array(),
+                                array_builder_.length());
     } else {
       // Non-ASCII.
       joined_string = NewRawTwoByteString(character_count_);
@@ -1587,8 +1849,8 @@ class ReplacementStringBuilder {
       uc16* char_buffer = seq->GetChars();
       StringBuilderConcatHelper(*subject_,
                                 char_buffer,
-                                *parts_,
-                                part_count_);
+                                *array_builder_.array(),
+                                array_builder_.length());
     }
     return joined_string;
   }
@@ -1601,8 +1863,14 @@ class ReplacementStringBuilder {
     character_count_ += by;
   }
 
- private:
+  Handle<JSArray> GetParts() {
+    Handle<JSArray> result =
+        Factory::NewJSArrayWithElements(array_builder_.array());
+    result->set_length(Smi::FromInt(array_builder_.length()));
+    return result;
+  }
 
+ private:
   Handle<String> NewRawAsciiString(int size) {
     CALL_HEAP_FUNCTION(Heap::AllocateRawAsciiString(size), String);
   }
@@ -1615,14 +1883,12 @@ class ReplacementStringBuilder {
 
   void AddElement(Object* element) {
     ASSERT(element->IsSmi() || element->IsString());
-    ASSERT(parts_->length() > part_count_);
-    parts_->set(part_count_, element);
-    part_count_++;
+    ASSERT(array_builder_.capacity() > array_builder_.length());
+    array_builder_.Add(element);
   }
 
+  FixedArrayBuilder array_builder_;
   Handle<String> subject_;
-  Handle<FixedArray> parts_;
-  int part_count_;
   int character_count_;
   bool is_ascii_;
 };
@@ -2030,7 +2296,6 @@ static Object* Runtime_StringReplaceRegExpWithString(Arguments args) {
 }
 
 
-
 // Cap on the maximal shift in the Boyer-Moore implementation. By setting a
 // limit, we can fix the size of tables.
 static const int kBMMaxShift = 0xff;
@@ -2076,10 +2341,23 @@ class BMGoodSuffixBuffers {
 static int bad_char_occurrence[kBMAlphabetSize];
 static BMGoodSuffixBuffers bmgs_buffers;
 
+// State of the string match tables.
+// SIMPLE: No usable content in the buffers.
+// BOYER_MOORE_HORSPOOL: The bad_char_occurences table has been populated.
+// BOYER_MOORE: The bmgs_buffers tables have also been populated.
+// Whenever starting with a new needle, one should call InitializeStringSearch
+// to determine which search strategy to use, and in the case of a long-needle
+// strategy, the call also initializes the algorithm to SIMPLE.
+enum StringSearchAlgorithm { SIMPLE_SEARCH, BOYER_MOORE_HORSPOOL, BOYER_MOORE };
+static StringSearchAlgorithm algorithm;
+
+
 // Compute the bad-char table for Boyer-Moore in the static buffer.
 template <typename pchar>
-static void BoyerMoorePopulateBadCharTable(Vector<const pchar> pattern,
-                                          int start) {
+static void BoyerMoorePopulateBadCharTable(Vector<const pchar> pattern) {
+  // Only preprocess at most kBMMaxShift last characters of pattern.
+  int start = pattern.length() < kBMMaxShift ? 0
+                                             : pattern.length() - kBMMaxShift;
   // Run forwards to populate bad_char_table, so that *last* instance
   // of character equivalence class is the one registered.
   // Notice: Doesn't include the last character.
@@ -2099,10 +2377,11 @@ static void BoyerMoorePopulateBadCharTable(Vector<const pchar> pattern,
   }
 }
 
+
 template <typename pchar>
-static void BoyerMoorePopulateGoodSuffixTable(Vector<const pchar> pattern,
-                                              int start) {
+static void BoyerMoorePopulateGoodSuffixTable(Vector<const pchar> pattern) {
   int m = pattern.length();
+  int start = m < kBMMaxShift ? 0 : m - kBMMaxShift;
   int len = m - start;
   // Compute Good Suffix tables.
   bmgs_buffers.init(m);
@@ -2149,6 +2428,7 @@ static void BoyerMoorePopulateGoodSuffixTable(Vector<const pchar> pattern,
   }
 }
 
+
 template <typename schar, typename pchar>
 static inline int CharOccurrence(int char_code) {
   if (sizeof(schar) == 1) {
@@ -2163,6 +2443,7 @@ static inline int CharOccurrence(int char_code) {
   return bad_char_occurrence[char_code % kBMAlphabetSize];
 }
 
+
 // Restricted simplified Boyer-Moore string matching.
 // Uses only the bad-shift table of Boyer-Moore and only uses it
 // for the character compared to the last character of the needle.
@@ -2171,14 +2452,13 @@ static int BoyerMooreHorspool(Vector<const schar> subject,
                               Vector<const pchar> pattern,
                               int start_index,
                               bool* complete) {
+  ASSERT(algorithm <= BOYER_MOORE_HORSPOOL);
   int n = subject.length();
   int m = pattern.length();
-  // Only preprocess at most kBMMaxShift last characters of pattern.
-  int start = m < kBMMaxShift ? 0 : m - kBMMaxShift;
 
-  BoyerMoorePopulateBadCharTable(pattern, start);
+  int badness = -m;
 
-  int badness = -m;  // How bad we are doing without a good-suffix table.
+  // How bad we are doing without a good-suffix table.
   int idx;  // No matches found prior to this index.
   pchar last_char = pattern[m - 1];
   int last_char_shift = m - 1 - CharOccurrence<schar, pchar>(last_char);
@@ -2223,13 +2503,12 @@ template <typename schar, typename pchar>
 static int BoyerMooreIndexOf(Vector<const schar> subject,
                              Vector<const pchar> pattern,
                              int idx) {
+  ASSERT(algorithm <= BOYER_MOORE);
   int n = subject.length();
   int m = pattern.length();
   // Only preprocess at most kBMMaxShift last characters of pattern.
   int start = m < kBMMaxShift ? 0 : m - kBMMaxShift;
 
-  // Build the Good Suffix table and continue searching.
-  BoyerMoorePopulateGoodSuffixTable(pattern, start);
   pchar last_char = pattern[m - 1];
   // Continue search from i.
   while (idx <= n - m) {
@@ -2265,9 +2544,17 @@ static int BoyerMooreIndexOf(Vector<const schar> subject,
 
 
 template <typename schar>
-static int SingleCharIndexOf(Vector<const schar> string,
-                             schar pattern_char,
-                             int start_index) {
+static inline int SingleCharIndexOf(Vector<const schar> string,
+                                    schar pattern_char,
+                                    int start_index) {
+  if (sizeof(schar) == 1) {
+    const schar* pos = reinterpret_cast<const schar*>(
+        memchr(string.start() + start_index,
+               pattern_char,
+               string.length() - start_index));
+    if (pos == NULL) return -1;
+    return static_cast<int>(pos - string.start());
+  }
   for (int i = start_index, n = string.length(); i < n; i++) {
     if (pattern_char == string[i]) {
       return i;
@@ -2305,17 +2592,29 @@ static int SimpleIndexOf(Vector<const schar> subject,
   // done enough work we decide it's probably worth switching to a better
   // algorithm.
   int badness = -10 - (pattern.length() << 2);
+
   // We know our pattern is at least 2 characters, we cache the first so
   // the common case of the first character not matching is faster.
   pchar pattern_first_char = pattern[0];
-
   for (int i = idx, n = subject.length() - pattern.length(); i <= n; i++) {
     badness++;
     if (badness > 0) {
       *complete = false;
       return i;
     }
-    if (subject[i] != pattern_first_char) continue;
+    if (sizeof(schar) == 1 && sizeof(pchar) == 1) {
+      const schar* pos = reinterpret_cast<const schar*>(
+          memchr(subject.start() + i,
+                 pattern_first_char,
+                 n - i + 1));
+      if (pos == NULL) {
+        *complete = true;
+        return -1;
+      }
+      i = static_cast<int>(pos - subject.start());
+    } else {
+      if (subject[i] != pattern_first_char) continue;
+    }
     int j = 1;
     do {
       if (pattern[j] != subject[i+j]) {
@@ -2340,7 +2639,16 @@ static int SimpleIndexOf(Vector<const schar> subject,
                          int idx) {
   pchar pattern_first_char = pattern[0];
   for (int i = idx, n = subject.length() - pattern.length(); i <= n; i++) {
-    if (subject[i] != pattern_first_char) continue;
+    if (sizeof(schar) == 1 && sizeof(pchar) == 1) {
+      const schar* pos = reinterpret_cast<const schar*>(
+          memchr(subject.start() + i,
+                 pattern_first_char,
+                 n - i + 1));
+      if (pos == NULL) return -1;
+      i = static_cast<int>(pos - subject.start());
+    } else {
+      if (subject[i] != pattern_first_char) continue;
+    }
     int j = 1;
     do {
       if (pattern[j] != subject[i+j]) {
@@ -2356,38 +2664,83 @@ static int SimpleIndexOf(Vector<const schar> subject,
 }
 
 
-// Dispatch to different algorithms.
-template <typename schar, typename pchar>
-static int StringMatchStrategy(Vector<const schar> sub,
-                               Vector<const pchar> pat,
-                               int start_index) {
-  ASSERT(pat.length() > 1);
+// Strategy for searching for a string in another string.
+enum StringSearchStrategy { SEARCH_FAIL, SEARCH_SHORT, SEARCH_LONG };
 
+
+template <typename pchar>
+static inline StringSearchStrategy InitializeStringSearch(
+    Vector<const pchar> pat, bool ascii_subject) {
+  ASSERT(pat.length() > 1);
   // We have an ASCII haystack and a non-ASCII needle. Check if there
   // really is a non-ASCII character in the needle and bail out if there
   // is.
-  if (sizeof(schar) == 1 && sizeof(pchar) > 1) {
+  if (ascii_subject && sizeof(pchar) > 1) {
     for (int i = 0; i < pat.length(); i++) {
       uc16 c = pat[i];
       if (c > String::kMaxAsciiCharCode) {
-        return -1;
+        return SEARCH_FAIL;
       }
     }
   }
   if (pat.length() < kBMMinPatternLength) {
-    // We don't believe fancy searching can ever be more efficient.
-    // The max shift of Boyer-Moore on a pattern of this length does
-    // not compensate for the overhead.
-    return SimpleIndexOf(sub, pat, start_index);
+    return SEARCH_SHORT;
   }
+  algorithm = SIMPLE_SEARCH;
+  return SEARCH_LONG;
+}
+
+
+// Dispatch long needle searches to different algorithms.
+template <typename schar, typename pchar>
+static int ComplexIndexOf(Vector<const schar> sub,
+                          Vector<const pchar> pat,
+                          int start_index) {
+  ASSERT(pat.length() >= kBMMinPatternLength);
   // Try algorithms in order of increasing setup cost and expected performance.
   bool complete;
-  int idx = SimpleIndexOf(sub, pat, start_index, &complete);
-  if (complete) return idx;
-  idx = BoyerMooreHorspool(sub, pat, idx, &complete);
-  if (complete) return idx;
-  return BoyerMooreIndexOf(sub, pat, idx);
+  int idx = start_index;
+  switch (algorithm) {
+    case SIMPLE_SEARCH:
+      idx = SimpleIndexOf(sub, pat, idx, &complete);
+      if (complete) return idx;
+      BoyerMoorePopulateBadCharTable(pat);
+      algorithm = BOYER_MOORE_HORSPOOL;
+      // FALLTHROUGH.
+    case BOYER_MOORE_HORSPOOL:
+      idx = BoyerMooreHorspool(sub, pat, idx, &complete);
+      if (complete) return idx;
+      // Build the Good Suffix table and continue searching.
+      BoyerMoorePopulateGoodSuffixTable(pat);
+      algorithm = BOYER_MOORE;
+      // FALLTHROUGH.
+    case BOYER_MOORE:
+      return BoyerMooreIndexOf(sub, pat, idx);
+  }
+  UNREACHABLE();
+  return -1;
 }
+
+
+// Dispatch to different search strategies for a single search.
+// If searching multiple times on the same needle, the search
+// strategy should only be computed once and then dispatch to different
+// loops.
+template <typename schar, typename pchar>
+static int StringSearch(Vector<const schar> sub,
+                        Vector<const pchar> pat,
+                        int start_index) {
+  bool ascii_subject = (sizeof(schar) == 1);
+  StringSearchStrategy strategy = InitializeStringSearch(pat, ascii_subject);
+  switch (strategy) {
+    case SEARCH_FAIL: return -1;
+    case SEARCH_SHORT: return SimpleIndexOf(sub, pat, start_index);
+    case SEARCH_LONG: return ComplexIndexOf(sub, pat, start_index);
+  }
+  UNREACHABLE();
+  return -1;
+}
+
 
 // Perform string match of pattern on subject, starting at start index.
 // Caller must ensure that 0 <= start_index <= sub->length(),
@@ -2407,6 +2760,7 @@ int Runtime::StringMatch(Handle<String> sub,
   if (!sub->IsFlat()) {
     FlattenString(sub);
   }
+
   // Searching for one specific character is common.  For one
   // character patterns linear search is necessary, so any smart
   // algorithm is unnecessary overhead.
@@ -2440,15 +2794,15 @@ int Runtime::StringMatch(Handle<String> sub,
   if (pat->IsAsciiRepresentation()) {
     Vector<const char> pat_vector = pat->ToAsciiVector();
     if (sub->IsAsciiRepresentation()) {
-      return StringMatchStrategy(sub->ToAsciiVector(), pat_vector, start_index);
+      return StringSearch(sub->ToAsciiVector(), pat_vector, start_index);
     }
-    return StringMatchStrategy(sub->ToUC16Vector(), pat_vector, start_index);
+    return StringSearch(sub->ToUC16Vector(), pat_vector, start_index);
   }
   Vector<const uc16> pat_vector = pat->ToUC16Vector();
   if (sub->IsAsciiRepresentation()) {
-    return StringMatchStrategy(sub->ToAsciiVector(), pat_vector, start_index);
+    return StringSearch(sub->ToAsciiVector(), pat_vector, start_index);
   }
-  return StringMatchStrategy(sub->ToUC16Vector(), pat_vector, start_index);
+  return StringSearch(sub->ToUC16Vector(), pat_vector, start_index);
 }
 
 
@@ -2608,8 +2962,8 @@ static Object* Runtime_StringLocaleCompare(Arguments args) {
   int d = str1->Get(0) - str2->Get(0);
   if (d != 0) return Smi::FromInt(d);
 
-  str1->TryFlattenIfNotFlat();
-  str2->TryFlattenIfNotFlat();
+  str1->TryFlatten();
+  str2->TryFlatten();
 
   static StringInputBuffer buf1;
   static StringInputBuffer buf2;
@@ -2702,6 +3056,476 @@ static Object* Runtime_StringMatch(Arguments args) {
   Handle<JSArray> result = Factory::NewJSArrayWithElements(elements);
   result->set_length(Smi::FromInt(matches));
   return *result;
+}
+
+
+// Two smis before and after the match, for very long strings.
+const int kMaxBuilderEntriesPerRegExpMatch = 5;
+
+
+static void SetLastMatchInfoNoCaptures(Handle<String> subject,
+                                       Handle<JSArray> last_match_info,
+                                       int match_start,
+                                       int match_end) {
+  // Fill last_match_info with a single capture.
+  last_match_info->EnsureSize(2 + RegExpImpl::kLastMatchOverhead);
+  AssertNoAllocation no_gc;
+  FixedArray* elements = FixedArray::cast(last_match_info->elements());
+  RegExpImpl::SetLastCaptureCount(elements, 2);
+  RegExpImpl::SetLastInput(elements, *subject);
+  RegExpImpl::SetLastSubject(elements, *subject);
+  RegExpImpl::SetCapture(elements, 0, match_start);
+  RegExpImpl::SetCapture(elements, 1, match_end);
+}
+
+
+template <typename schar>
+static bool SearchCharMultiple(Vector<schar> subject,
+                               String* pattern,
+                               schar pattern_char,
+                               FixedArrayBuilder* builder,
+                               int* match_pos) {
+  // Position of last match.
+  int pos = *match_pos;
+  int subject_length = subject.length();
+  while (pos < subject_length) {
+    int match_end = pos + 1;
+    if (!builder->HasCapacity(kMaxBuilderEntriesPerRegExpMatch)) {
+      *match_pos = pos;
+      return false;
+    }
+    int new_pos = SingleCharIndexOf(subject, pattern_char, match_end);
+    if (new_pos >= 0) {
+      // Match has been found.
+      if (new_pos > match_end) {
+        ReplacementStringBuilder::AddSubjectSlice(builder, match_end, new_pos);
+      }
+      pos = new_pos;
+      builder->Add(pattern);
+    } else {
+      break;
+    }
+  }
+  if (pos + 1 < subject_length) {
+    ReplacementStringBuilder::AddSubjectSlice(builder, pos + 1, subject_length);
+  }
+  *match_pos = pos;
+  return true;
+}
+
+
+static bool SearchCharMultiple(Handle<String> subject,
+                               Handle<String> pattern,
+                               Handle<JSArray> last_match_info,
+                               FixedArrayBuilder* builder) {
+  ASSERT(subject->IsFlat());
+  ASSERT_EQ(1, pattern->length());
+  uc16 pattern_char = pattern->Get(0);
+  // Treating position before first as initial "previous match position".
+  int match_pos = -1;
+
+  for (;;) {  // Break when search complete.
+    builder->EnsureCapacity(kMaxBuilderEntriesPerRegExpMatch);
+    AssertNoAllocation no_gc;
+    if (subject->IsAsciiRepresentation()) {
+      if (pattern_char > String::kMaxAsciiCharCode) {
+        break;
+      }
+      Vector<const char> subject_vector = subject->ToAsciiVector();
+      char pattern_ascii_char = static_cast<char>(pattern_char);
+      bool complete = SearchCharMultiple<const char>(subject_vector,
+                                                     *pattern,
+                                                     pattern_ascii_char,
+                                                     builder,
+                                                     &match_pos);
+      if (complete) break;
+    } else {
+      Vector<const uc16> subject_vector = subject->ToUC16Vector();
+      bool complete = SearchCharMultiple<const uc16>(subject_vector,
+                                                     *pattern,
+                                                     pattern_char,
+                                                     builder,
+                                                     &match_pos);
+      if (complete) break;
+    }
+  }
+
+  if (match_pos >= 0) {
+    SetLastMatchInfoNoCaptures(subject,
+                               last_match_info,
+                               match_pos,
+                               match_pos + 1);
+    return true;
+  }
+  return false;  // No matches at all.
+}
+
+
+template <typename schar, typename pchar>
+static bool SearchStringMultiple(Vector<schar> subject,
+                                 String* pattern,
+                                 Vector<pchar> pattern_string,
+                                 FixedArrayBuilder* builder,
+                                 int* match_pos) {
+  int pos = *match_pos;
+  int subject_length = subject.length();
+  int pattern_length = pattern_string.length();
+  int max_search_start = subject_length - pattern_length;
+  bool is_ascii = (sizeof(schar) == 1);
+  StringSearchStrategy strategy =
+      InitializeStringSearch(pattern_string, is_ascii);
+  switch (strategy) {
+    case SEARCH_FAIL: break;
+    case SEARCH_SHORT:
+      while (pos <= max_search_start) {
+        if (!builder->HasCapacity(kMaxBuilderEntriesPerRegExpMatch)) {
+          *match_pos = pos;
+          return false;
+        }
+        // Position of end of previous match.
+        int match_end = pos + pattern_length;
+        int new_pos = SimpleIndexOf(subject, pattern_string, match_end);
+        if (new_pos >= 0) {
+          // A match.
+          if (new_pos > match_end) {
+            ReplacementStringBuilder::AddSubjectSlice(builder,
+                                                      match_end,
+                                                      new_pos);
+          }
+          pos = new_pos;
+          builder->Add(pattern);
+        } else {
+          break;
+        }
+      }
+      break;
+    case SEARCH_LONG:
+      while (pos  <= max_search_start) {
+        if (!builder->HasCapacity(kMaxBuilderEntriesPerRegExpMatch)) {
+          *match_pos = pos;
+          return false;
+        }
+        int match_end = pos + pattern_length;
+        int new_pos = ComplexIndexOf(subject, pattern_string, match_end);
+        if (new_pos >= 0) {
+          // A match has been found.
+          if (new_pos > match_end) {
+            ReplacementStringBuilder::AddSubjectSlice(builder,
+                                                      match_end,
+                                                      new_pos);
+          }
+          pos = new_pos;
+          builder->Add(pattern);
+        } else {
+         break;
+        }
+      }
+      break;
+  }
+  if (pos < max_search_start) {
+    ReplacementStringBuilder::AddSubjectSlice(builder,
+                                              pos + pattern_length,
+                                              subject_length);
+  }
+  *match_pos = pos;
+  return true;
+}
+
+
+static bool SearchStringMultiple(Handle<String> subject,
+                                 Handle<String> pattern,
+                                 Handle<JSArray> last_match_info,
+                                 FixedArrayBuilder* builder) {
+  ASSERT(subject->IsFlat());
+  ASSERT(pattern->IsFlat());
+  ASSERT(pattern->length() > 1);
+
+  // Treating as if a previous match was before first character.
+  int match_pos = -pattern->length();
+
+  for (;;) {  // Break when search complete.
+    builder->EnsureCapacity(kMaxBuilderEntriesPerRegExpMatch);
+    AssertNoAllocation no_gc;
+    if (subject->IsAsciiRepresentation()) {
+      Vector<const char> subject_vector = subject->ToAsciiVector();
+      if (pattern->IsAsciiRepresentation()) {
+        if (SearchStringMultiple(subject_vector,
+                                 *pattern,
+                                 pattern->ToAsciiVector(),
+                                 builder,
+                                 &match_pos)) break;
+      } else {
+        if (SearchStringMultiple(subject_vector,
+                                 *pattern,
+                                 pattern->ToUC16Vector(),
+                                 builder,
+                                 &match_pos)) break;
+      }
+    } else {
+      Vector<const uc16> subject_vector = subject->ToUC16Vector();
+      if (pattern->IsAsciiRepresentation()) {
+        if (SearchStringMultiple(subject_vector,
+                                 *pattern,
+                                 pattern->ToAsciiVector(),
+                                 builder,
+                                 &match_pos)) break;
+      } else {
+        if (SearchStringMultiple(subject_vector,
+                                 *pattern,
+                                 pattern->ToUC16Vector(),
+                                 builder,
+                                 &match_pos)) break;
+      }
+    }
+  }
+
+  if (match_pos >= 0) {
+    SetLastMatchInfoNoCaptures(subject,
+                               last_match_info,
+                               match_pos,
+                               match_pos + pattern->length());
+    return true;
+  }
+  return false;  // No matches at all.
+}
+
+
+static RegExpImpl::IrregexpResult SearchRegExpNoCaptureMultiple(
+    Handle<String> subject,
+    Handle<JSRegExp> regexp,
+    Handle<JSArray> last_match_array,
+    FixedArrayBuilder* builder) {
+  ASSERT(subject->IsFlat());
+  int match_start = -1;
+  int match_end = 0;
+  int pos = 0;
+  int required_registers = RegExpImpl::IrregexpPrepare(regexp, subject);
+  if (required_registers < 0) return RegExpImpl::RE_EXCEPTION;
+
+  OffsetsVector registers(required_registers);
+  Vector<int> register_vector(registers.vector(), registers.length());
+  int subject_length = subject->length();
+
+  for (;;) {  // Break on failure, return on exception.
+    RegExpImpl::IrregexpResult result =
+        RegExpImpl::IrregexpExecOnce(regexp,
+                                     subject,
+                                     pos,
+                                     register_vector);
+    if (result == RegExpImpl::RE_SUCCESS) {
+      match_start = register_vector[0];
+      builder->EnsureCapacity(kMaxBuilderEntriesPerRegExpMatch);
+      if (match_end < match_start) {
+        ReplacementStringBuilder::AddSubjectSlice(builder,
+                                                  match_end,
+                                                  match_start);
+      }
+      match_end = register_vector[1];
+      HandleScope loop_scope;
+      builder->Add(*Factory::NewSubString(subject, match_start, match_end));
+      if (match_start != match_end) {
+        pos = match_end;
+      } else {
+        pos = match_end + 1;
+        if (pos > subject_length) break;
+      }
+    } else if (result == RegExpImpl::RE_FAILURE) {
+      break;
+    } else {
+      ASSERT_EQ(result, RegExpImpl::RE_EXCEPTION);
+      return result;
+    }
+  }
+
+  if (match_start >= 0) {
+    if (match_end < subject_length) {
+      ReplacementStringBuilder::AddSubjectSlice(builder,
+                                                match_end,
+                                                subject_length);
+    }
+    SetLastMatchInfoNoCaptures(subject,
+                               last_match_array,
+                               match_start,
+                               match_end);
+    return RegExpImpl::RE_SUCCESS;
+  } else {
+    return RegExpImpl::RE_FAILURE;  // No matches at all.
+  }
+}
+
+
+static RegExpImpl::IrregexpResult SearchRegExpMultiple(
+    Handle<String> subject,
+    Handle<JSRegExp> regexp,
+    Handle<JSArray> last_match_array,
+    FixedArrayBuilder* builder) {
+
+  ASSERT(subject->IsFlat());
+  int required_registers = RegExpImpl::IrregexpPrepare(regexp, subject);
+  if (required_registers < 0) return RegExpImpl::RE_EXCEPTION;
+
+  OffsetsVector registers(required_registers);
+  Vector<int> register_vector(registers.vector(), registers.length());
+
+  RegExpImpl::IrregexpResult result =
+      RegExpImpl::IrregexpExecOnce(regexp,
+                                   subject,
+                                   0,
+                                   register_vector);
+
+  int capture_count = regexp->CaptureCount();
+  int subject_length = subject->length();
+
+  // Position to search from.
+  int pos = 0;
+  // End of previous match. Differs from pos if match was empty.
+  int match_end = 0;
+  if (result == RegExpImpl::RE_SUCCESS) {
+    // Need to keep a copy of the previous match for creating last_match_info
+    // at the end, so we have two vectors that we swap between.
+    OffsetsVector registers2(required_registers);
+    Vector<int> prev_register_vector(registers2.vector(), registers2.length());
+
+    do {
+      int match_start = register_vector[0];
+      builder->EnsureCapacity(kMaxBuilderEntriesPerRegExpMatch);
+      if (match_end < match_start) {
+        ReplacementStringBuilder::AddSubjectSlice(builder,
+                                                  match_end,
+                                                  match_start);
+      }
+      match_end = register_vector[1];
+
+      {
+        // Avoid accumulating new handles inside loop.
+        HandleScope temp_scope;
+        // Arguments array to replace function is match, captures, index and
+        // subject, i.e., 3 + capture count in total.
+        Handle<FixedArray> elements = Factory::NewFixedArray(3 + capture_count);
+        elements->set(0, *Factory::NewSubString(subject,
+                                                match_start,
+                                                match_end));
+        for (int i = 1; i <= capture_count; i++) {
+          int start = register_vector[i * 2];
+          if (start >= 0) {
+            int end = register_vector[i * 2 + 1];
+            ASSERT(start <= end);
+            Handle<String> substring = Factory::NewSubString(subject,
+                                                             start,
+                                                             end);
+            elements->set(i, *substring);
+          } else {
+            ASSERT(register_vector[i * 2 + 1] < 0);
+            elements->set(i, Heap::undefined_value());
+          }
+        }
+        elements->set(capture_count + 1, Smi::FromInt(match_start));
+        elements->set(capture_count + 2, *subject);
+        builder->Add(*Factory::NewJSArrayWithElements(elements));
+      }
+      // Swap register vectors, so the last successful match is in
+      // prev_register_vector.
+      Vector<int> tmp = prev_register_vector;
+      prev_register_vector = register_vector;
+      register_vector = tmp;
+
+      if (match_end > match_start) {
+        pos = match_end;
+      } else {
+        pos = match_end + 1;
+        if (pos > subject_length) {
+          break;
+        }
+      }
+
+      result = RegExpImpl::IrregexpExecOnce(regexp,
+                                            subject,
+                                            pos,
+                                            register_vector);
+    } while (result == RegExpImpl::RE_SUCCESS);
+
+    if (result != RegExpImpl::RE_EXCEPTION) {
+      // Finished matching, with at least one match.
+      if (match_end < subject_length) {
+        ReplacementStringBuilder::AddSubjectSlice(builder,
+                                                  match_end,
+                                                  subject_length);
+      }
+
+      int last_match_capture_count = (capture_count + 1) * 2;
+      int last_match_array_size =
+          last_match_capture_count + RegExpImpl::kLastMatchOverhead;
+      last_match_array->EnsureSize(last_match_array_size);
+      AssertNoAllocation no_gc;
+      FixedArray* elements = FixedArray::cast(last_match_array->elements());
+      RegExpImpl::SetLastCaptureCount(elements, last_match_capture_count);
+      RegExpImpl::SetLastSubject(elements, *subject);
+      RegExpImpl::SetLastInput(elements, *subject);
+      for (int i = 0; i < last_match_capture_count; i++) {
+        RegExpImpl::SetCapture(elements, i, prev_register_vector[i]);
+      }
+      return RegExpImpl::RE_SUCCESS;
+    }
+  }
+  // No matches at all, return failure or exception result directly.
+  return result;
+}
+
+
+static Object* Runtime_RegExpExecMultiple(Arguments args) {
+  ASSERT(args.length() == 4);
+  HandleScope handles;
+
+  CONVERT_ARG_CHECKED(String, subject, 1);
+  if (!subject->IsFlat()) { FlattenString(subject); }
+  CONVERT_ARG_CHECKED(JSRegExp, regexp, 0);
+  CONVERT_ARG_CHECKED(JSArray, last_match_info, 2);
+  CONVERT_ARG_CHECKED(JSArray, result_array, 3);
+
+  ASSERT(last_match_info->HasFastElements());
+  ASSERT(regexp->GetFlags().is_global());
+  Handle<FixedArray> result_elements;
+  if (result_array->HasFastElements()) {
+    result_elements =
+        Handle<FixedArray>(FixedArray::cast(result_array->elements()));
+  } else {
+    result_elements = Factory::NewFixedArrayWithHoles(16);
+  }
+  FixedArrayBuilder builder(result_elements);
+
+  if (regexp->TypeTag() == JSRegExp::ATOM) {
+    Handle<String> pattern(
+        String::cast(regexp->DataAt(JSRegExp::kAtomPatternIndex)));
+    int pattern_length = pattern->length();
+    if (pattern_length == 1) {
+      if (SearchCharMultiple(subject, pattern, last_match_info, &builder)) {
+        return *builder.ToJSArray(result_array);
+      }
+      return Heap::null_value();
+    }
+
+    if (!pattern->IsFlat()) FlattenString(pattern);
+    if (SearchStringMultiple(subject, pattern, last_match_info, &builder)) {
+      return *builder.ToJSArray(result_array);
+    }
+    return Heap::null_value();
+  }
+
+  ASSERT_EQ(regexp->TypeTag(), JSRegExp::IRREGEXP);
+
+  RegExpImpl::IrregexpResult result;
+  if (regexp->CaptureCount() == 0) {
+    result = SearchRegExpNoCaptureMultiple(subject,
+                                           regexp,
+                                           last_match_info,
+                                           &builder);
+  } else {
+    result = SearchRegExpMultiple(subject, regexp, last_match_info, &builder);
+  }
+  if (result == RegExpImpl::RE_SUCCESS) return *builder.ToJSArray(result_array);
+  if (result == RegExpImpl::RE_FAILURE) return Heap::null_value();
+  ASSERT_EQ(result, RegExpImpl::RE_EXCEPTION);
+  return Failure::Exception();
 }
 
 
@@ -2818,7 +3642,7 @@ static Object* Runtime_NumberToPrecision(Arguments args) {
 // string->Get(index).
 static Handle<Object> GetCharAt(Handle<String> string, uint32_t index) {
   if (index < static_cast<uint32_t>(string->length())) {
-    string->TryFlattenIfNotFlat();
+    string->TryFlatten();
     return LookupSingleCharacterStringFromCode(
         string->Get(index));
   }
@@ -2846,6 +3670,11 @@ Object* Runtime::GetElementOrCharAt(Handle<Object> object, uint32_t index) {
     return prototype->GetElement(index);
   }
 
+  return GetElement(object, index);
+}
+
+
+Object* Runtime::GetElement(Handle<Object> object, uint32_t index) {
   return object->GetElement(index);
 }
 
@@ -3072,7 +3901,7 @@ Object* Runtime::SetObjectProperty(Handle<Object> object,
       result = SetElement(js_object, index, value);
     } else {
       Handle<String> key_string = Handle<String>::cast(key);
-      key_string->TryFlattenIfNotFlat();
+      key_string->TryFlatten();
       result = SetProperty(js_object, key_string, value, attr);
     }
     if (result.is_null()) return Failure::Exception();
@@ -3121,7 +3950,7 @@ Object* Runtime::ForceSetObjectProperty(Handle<JSObject> js_object,
       return js_object->SetElement(index, *value);
     } else {
       Handle<String> key_string = Handle<String>::cast(key);
-      key_string->TryFlattenIfNotFlat();
+      key_string->TryFlatten();
       return js_object->IgnoreAttributesAndSetLocalProperty(*key_string,
                                                             *value,
                                                             attr);
@@ -3173,7 +4002,7 @@ Object* Runtime::ForceDeleteObjectProperty(Handle<JSObject> js_object,
     key_string = Handle<String>::cast(converted);
   }
 
-  key_string->TryFlattenIfNotFlat();
+  key_string->TryFlatten();
   return js_object->DeleteProperty(*key_string, JSObject::FORCE_DELETION);
 }
 
@@ -3396,7 +4225,7 @@ static Object* Runtime_GetLocalPropertyNames(Arguments args) {
   int length = LocalPrototypeChainLength(*obj);
 
   // Find the number of local properties for each of the objects.
-  int* local_property_count = NewArray<int>(length);
+  ScopedVector<int> local_property_count(length);
   int total_property_count = 0;
   Handle<JSObject> jsproto = obj;
   for (int i = 0; i < length; i++) {
@@ -3449,7 +4278,6 @@ static Object* Runtime_GetLocalPropertyNames(Arguments args) {
     }
   }
 
-  DeleteArray(local_property_count);
   return *Factory::NewJSArrayWithElements(names);
 }
 
@@ -3665,11 +4493,66 @@ static Object* Runtime_Typeof(Arguments args) {
 }
 
 
+static bool AreDigits(const char*s, int from, int to) {
+  for (int i = from; i < to; i++) {
+    if (s[i] < '0' || s[i] > '9') return false;
+  }
+
+  return true;
+}
+
+
+static int ParseDecimalInteger(const char*s, int from, int to) {
+  ASSERT(to - from < 10);  // Overflow is not possible.
+  ASSERT(from < to);
+  int d = s[from] - '0';
+
+  for (int i = from + 1; i < to; i++) {
+    d = 10 * d + (s[i] - '0');
+  }
+
+  return d;
+}
+
+
 static Object* Runtime_StringToNumber(Arguments args) {
   NoHandleAllocation ha;
   ASSERT(args.length() == 1);
   CONVERT_CHECKED(String, subject, args[0]);
-  subject->TryFlattenIfNotFlat();
+  subject->TryFlatten();
+
+  // Fast case: short integer or some sorts of junk values.
+  int len = subject->length();
+  if (subject->IsSeqAsciiString()) {
+    if (len == 0) return Smi::FromInt(0);
+
+    char const* data = SeqAsciiString::cast(subject)->GetChars();
+    bool minus = (data[0] == '-');
+    int start_pos = (minus ? 1 : 0);
+
+    if (start_pos == len) {
+      return Heap::nan_value();
+    } else if (data[start_pos] > '9') {
+      // Fast check for a junk value. A valid string may start from a
+      // whitespace, a sign ('+' or '-'), the decimal point, a decimal digit or
+      // the 'I' character ('Infinity'). All of that have codes not greater than
+      // '9' except 'I'.
+      if (data[start_pos] != 'I') {
+        return Heap::nan_value();
+      }
+    } else if (len - start_pos < 10 && AreDigits(data, start_pos, len)) {
+      // The maximal/minimal smi has 10 digits. If the string has less digits we
+      // know it will fit into the smi-data type.
+      int d = ParseDecimalInteger(data, start_pos, len);
+      if (minus) {
+        if (d == 0) return Heap::minus_zero_value();
+        d = -d;
+      }
+      return Smi::FromInt(d);
+    }
+  }
+
+  // Slower case.
   return Heap::NumberFromDouble(StringToDouble(subject, ALLOW_HEX));
 }
 
@@ -3751,7 +4634,7 @@ static Object* Runtime_URIEscape(Arguments args) {
   ASSERT(args.length() == 1);
   CONVERT_CHECKED(String, source, args[0]);
 
-  source->TryFlattenIfNotFlat();
+  source->TryFlatten();
 
   int escaped_length = 0;
   int length = source->length();
@@ -3864,7 +4747,7 @@ static Object* Runtime_URIUnescape(Arguments args) {
   ASSERT(args.length() == 1);
   CONVERT_CHECKED(String, source, args[0]);
 
-  source->TryFlattenIfNotFlat();
+  source->TryFlatten();
 
   bool ascii = true;
   int length = source->length();
@@ -3904,51 +4787,11 @@ static Object* Runtime_StringParseInt(Arguments args) {
   CONVERT_CHECKED(String, s, args[0]);
   CONVERT_SMI_CHECKED(radix, args[1]);
 
-  s->TryFlattenIfNotFlat();
+  s->TryFlatten();
 
-  int len = s->length();
-  int i;
-
-  // Skip leading white space.
-  for (i = 0; i < len && Scanner::kIsWhiteSpace.get(s->Get(i)); i++) ;
-  if (i == len) return Heap::nan_value();
-
-  // Compute the sign (default to +).
-  int sign = 1;
-  if (s->Get(i) == '-') {
-    sign = -1;
-    i++;
-  } else if (s->Get(i) == '+') {
-    i++;
-  }
-
-  // Compute the radix if 0.
-  if (radix == 0) {
-    radix = 10;
-    if (i < len && s->Get(i) == '0') {
-      radix = 8;
-      if (i + 1 < len) {
-        int c = s->Get(i + 1);
-        if (c == 'x' || c == 'X') {
-          radix = 16;
-          i += 2;
-        }
-      }
-    }
-  } else if (radix == 16) {
-    // Allow 0x or 0X prefix if radix is 16.
-    if (i + 1 < len && s->Get(i) == '0') {
-      int c = s->Get(i + 1);
-      if (c == 'x' || c == 'X') i += 2;
-    }
-  }
-
-  RUNTIME_ASSERT(2 <= radix && radix <= 36);
-  double value;
-  int end_index = StringToInt(s, i, radix, &value);
-  if (end_index != i) {
-    return Heap::NumberFromDouble(sign * value);
-  }
+  RUNTIME_ASSERT(radix == 0 || (2 <= radix && radix <= 36));
+  double value = StringToInt(s, radix);
+  return Heap::NumberFromDouble(value);
   return Heap::nan_value();
 }
 
@@ -4068,18 +4911,83 @@ static Object* ConvertCaseHelper(String* s,
 }
 
 
-template <class Converter>
-static Object* ConvertCase(Arguments args,
-                           unibrow::Mapping<Converter, 128>* mapping) {
+static inline SeqAsciiString* TryGetSeqAsciiString(String* s) {
+  if (!s->IsFlat() || !s->IsAsciiRepresentation()) return NULL;
+  if (s->IsConsString()) {
+    ASSERT(ConsString::cast(s)->second()->length() == 0);
+    return SeqAsciiString::cast(ConsString::cast(s)->first());
+  }
+  return SeqAsciiString::cast(s);
+}
+
+
+namespace {
+
+struct ToLowerTraits {
+  typedef unibrow::ToLowercase UnibrowConverter;
+
+  static bool ConvertAscii(char* dst, char* src, int length) {
+    bool changed = false;
+    for (int i = 0; i < length; ++i) {
+      char c = src[i];
+      if ('A' <= c && c <= 'Z') {
+        c += ('a' - 'A');
+        changed = true;
+      }
+      dst[i] = c;
+    }
+    return changed;
+  }
+};
+
+
+struct ToUpperTraits {
+  typedef unibrow::ToUppercase UnibrowConverter;
+
+  static bool ConvertAscii(char* dst, char* src, int length) {
+    bool changed = false;
+    for (int i = 0; i < length; ++i) {
+      char c = src[i];
+      if ('a' <= c && c <= 'z') {
+        c -= ('a' - 'A');
+        changed = true;
+      }
+      dst[i] = c;
+    }
+    return changed;
+  }
+};
+
+}  // namespace
+
+
+template <typename ConvertTraits>
+static Object* ConvertCase(
+    Arguments args,
+    unibrow::Mapping<typename ConvertTraits::UnibrowConverter, 128>* mapping) {
   NoHandleAllocation ha;
-
   CONVERT_CHECKED(String, s, args[0]);
-  s->TryFlattenIfNotFlat();
+  s->TryFlatten();
 
-  int input_string_length = s->length();
+  const int length = s->length();
   // Assume that the string is not empty; we need this assumption later
-  if (input_string_length == 0) return s;
-  int length = input_string_length;
+  if (length == 0) return s;
+
+  // Simpler handling of ascii strings.
+  //
+  // NOTE: This assumes that the upper/lower case of an ascii
+  // character is also ascii.  This is currently the case, but it
+  // might break in the future if we implement more context and locale
+  // dependent upper/lower conversions.
+  SeqAsciiString* seq_ascii = TryGetSeqAsciiString(s);
+  if (seq_ascii != NULL) {
+    Object* o = Heap::AllocateRawAsciiString(length);
+    if (o->IsFailure()) return o;
+    SeqAsciiString* result = SeqAsciiString::cast(o);
+    bool has_changed_character = ConvertTraits::ConvertAscii(
+        result->GetChars(), seq_ascii->GetChars(), length);
+    return has_changed_character ? result : s;
+  }
 
   Object* answer = ConvertCaseHelper(s, length, length, mapping);
   if (answer->IsSmi()) {
@@ -4091,17 +4999,19 @@ static Object* ConvertCase(Arguments args,
 
 
 static Object* Runtime_StringToLowerCase(Arguments args) {
-  return ConvertCase<unibrow::ToLowercase>(args, &to_lower_mapping);
+  return ConvertCase<ToLowerTraits>(args, &to_lower_mapping);
 }
 
 
 static Object* Runtime_StringToUpperCase(Arguments args) {
-  return ConvertCase<unibrow::ToUppercase>(args, &to_upper_mapping);
+  return ConvertCase<ToUpperTraits>(args, &to_upper_mapping);
 }
+
 
 static inline bool IsTrimWhiteSpace(unibrow::uchar c) {
   return unibrow::WhiteSpace::Is(c) || c == 0x200b;
 }
+
 
 static Object* Runtime_StringTrim(Arguments args) {
   NoHandleAllocation ha;
@@ -4111,7 +5021,7 @@ static Object* Runtime_StringTrim(Arguments args) {
   CONVERT_BOOLEAN_CHECKED(trimLeft, args[1]);
   CONVERT_BOOLEAN_CHECKED(trimRight, args[2]);
 
-  s->TryFlattenIfNotFlat();
+  s->TryFlatten();
   int length = s->length();
 
   int left = 0;
@@ -4129,6 +5039,245 @@ static Object* Runtime_StringTrim(Arguments args) {
   }
   return s->SubString(left, right);
 }
+
+
+template <typename schar, typename pchar>
+void FindStringIndices(Vector<const schar> subject,
+                       Vector<const pchar> pattern,
+                       ZoneList<int>* indices,
+                       unsigned int limit) {
+  ASSERT(limit > 0);
+  // Collect indices of pattern in subject, and the end-of-string index.
+  // Stop after finding at most limit values.
+  StringSearchStrategy strategy =
+      InitializeStringSearch(pattern, sizeof(schar) == 1);
+  switch (strategy) {
+    case SEARCH_FAIL: return;
+    case SEARCH_SHORT: {
+      int pattern_length = pattern.length();
+      int index = 0;
+      while (limit > 0) {
+        index = SimpleIndexOf(subject, pattern, index);
+        if (index < 0) return;
+        indices->Add(index);
+        index += pattern_length;
+        limit--;
+      }
+      return;
+    }
+    case SEARCH_LONG: {
+      int pattern_length = pattern.length();
+      int index = 0;
+      while (limit > 0) {
+        index = ComplexIndexOf(subject, pattern, index);
+        if (index < 0) return;
+        indices->Add(index);
+        index += pattern_length;
+        limit--;
+      }
+      return;
+    }
+    default:
+      UNREACHABLE();
+      return;
+  }
+}
+
+template <typename schar>
+inline void FindCharIndices(Vector<const schar> subject,
+                            const schar pattern_char,
+                            ZoneList<int>* indices,
+                            unsigned int limit) {
+  // Collect indices of pattern_char in subject, and the end-of-string index.
+  // Stop after finding at most limit values.
+  int index = 0;
+  while (limit > 0) {
+    index = SingleCharIndexOf(subject, pattern_char, index);
+    if (index < 0) return;
+    indices->Add(index);
+    index++;
+    limit--;
+  }
+}
+
+
+static Object* Runtime_StringSplit(Arguments args) {
+  ASSERT(args.length() == 3);
+  HandleScope handle_scope;
+  CONVERT_ARG_CHECKED(String, subject, 0);
+  CONVERT_ARG_CHECKED(String, pattern, 1);
+  CONVERT_NUMBER_CHECKED(uint32_t, limit, Uint32, args[2]);
+
+  int subject_length = subject->length();
+  int pattern_length = pattern->length();
+  RUNTIME_ASSERT(pattern_length > 0);
+
+  // The limit can be very large (0xffffffffu), but since the pattern
+  // isn't empty, we can never create more parts than ~half the length
+  // of the subject.
+
+  if (!subject->IsFlat()) FlattenString(subject);
+
+  static const int kMaxInitialListCapacity = 16;
+
+  ZoneScope scope(DELETE_ON_EXIT);
+
+  // Find (up to limit) indices of separator and end-of-string in subject
+  int initial_capacity = Min<uint32_t>(kMaxInitialListCapacity, limit);
+  ZoneList<int> indices(initial_capacity);
+  if (pattern_length == 1) {
+    // Special case, go directly to fast single-character split.
+    AssertNoAllocation nogc;
+    uc16 pattern_char = pattern->Get(0);
+    if (subject->IsTwoByteRepresentation()) {
+      FindCharIndices(subject->ToUC16Vector(), pattern_char,
+                      &indices,
+                      limit);
+    } else if (pattern_char <= String::kMaxAsciiCharCode) {
+      FindCharIndices(subject->ToAsciiVector(),
+                      static_cast<char>(pattern_char),
+                      &indices,
+                      limit);
+    }
+  } else {
+    if (!pattern->IsFlat()) FlattenString(pattern);
+    AssertNoAllocation nogc;
+    if (subject->IsAsciiRepresentation()) {
+      Vector<const char> subject_vector = subject->ToAsciiVector();
+      if (pattern->IsAsciiRepresentation()) {
+        FindStringIndices(subject_vector,
+                          pattern->ToAsciiVector(),
+                          &indices,
+                          limit);
+      } else {
+        FindStringIndices(subject_vector,
+                          pattern->ToUC16Vector(),
+                          &indices,
+                          limit);
+      }
+    } else {
+      Vector<const uc16> subject_vector = subject->ToUC16Vector();
+      if (pattern->IsAsciiRepresentation()) {
+        FindStringIndices(subject_vector,
+                          pattern->ToAsciiVector(),
+                          &indices,
+                          limit);
+      } else {
+        FindStringIndices(subject_vector,
+                          pattern->ToUC16Vector(),
+                          &indices,
+                          limit);
+      }
+    }
+  }
+  if (static_cast<uint32_t>(indices.length()) < limit) {
+    indices.Add(subject_length);
+  }
+  // The list indices now contains the end of each part to create.
+
+
+  // Create JSArray of substrings separated by separator.
+  int part_count = indices.length();
+
+  Handle<JSArray> result = Factory::NewJSArray(part_count);
+  result->set_length(Smi::FromInt(part_count));
+
+  ASSERT(result->HasFastElements());
+
+  if (part_count == 1 && indices.at(0) == subject_length) {
+    FixedArray::cast(result->elements())->set(0, *subject);
+    return *result;
+  }
+
+  Handle<FixedArray> elements(FixedArray::cast(result->elements()));
+  int part_start = 0;
+  for (int i = 0; i < part_count; i++) {
+    HandleScope local_loop_handle;
+    int part_end = indices.at(i);
+    Handle<String> substring =
+        Factory::NewSubString(subject, part_start, part_end);
+    elements->set(i, *substring);
+    part_start = part_end + pattern_length;
+  }
+
+  return *result;
+}
+
+
+// Copies ascii characters to the given fixed array looking up
+// one-char strings in the cache. Gives up on the first char that is
+// not in the cache and fills the remainder with smi zeros. Returns
+// the length of the successfully copied prefix.
+static int CopyCachedAsciiCharsToArray(const char* chars,
+                                       FixedArray* elements,
+                                       int length) {
+  AssertNoAllocation nogc;
+  FixedArray* ascii_cache = Heap::single_character_string_cache();
+  Object* undefined = Heap::undefined_value();
+  int i;
+  for (i = 0; i < length; ++i) {
+    Object* value = ascii_cache->get(chars[i]);
+    if (value == undefined) break;
+    ASSERT(!Heap::InNewSpace(value));
+    elements->set(i, value, SKIP_WRITE_BARRIER);
+  }
+  if (i < length) {
+    ASSERT(Smi::FromInt(0) == 0);
+    memset(elements->data_start() + i, 0, kPointerSize * (length - i));
+  }
+#ifdef DEBUG
+  for (int j = 0; j < length; ++j) {
+    Object* element = elements->get(j);
+    ASSERT(element == Smi::FromInt(0) ||
+           (element->IsString() && String::cast(element)->LooksValid()));
+  }
+#endif
+  return i;
+}
+
+
+// Converts a String to JSArray.
+// For example, "foo" => ["f", "o", "o"].
+static Object* Runtime_StringToArray(Arguments args) {
+  HandleScope scope;
+  ASSERT(args.length() == 1);
+  CONVERT_ARG_CHECKED(String, s, 0);
+
+  s->TryFlatten();
+  const int length = s->length();
+
+  Handle<FixedArray> elements;
+  if (s->IsFlat() && s->IsAsciiRepresentation()) {
+    Object* obj = Heap::AllocateUninitializedFixedArray(length);
+    if (obj->IsFailure()) return obj;
+    elements = Handle<FixedArray>(FixedArray::cast(obj));
+
+    Vector<const char> chars = s->ToAsciiVector();
+    // Note, this will initialize all elements (not only the prefix)
+    // to prevent GC from seeing partially initialized array.
+    int num_copied_from_cache = CopyCachedAsciiCharsToArray(chars.start(),
+                                                            *elements,
+                                                            length);
+
+    for (int i = num_copied_from_cache; i < length; ++i) {
+      elements->set(i, *LookupSingleCharacterStringFromCode(chars[i]));
+    }
+  } else {
+    elements = Factory::NewFixedArray(length);
+    for (int i = 0; i < length; ++i) {
+      elements->set(i, *LookupSingleCharacterStringFromCode(s->Get(i)));
+    }
+  }
+
+#ifdef DEBUG
+  for (int i = 0; i < length; ++i) {
+    ASSERT(String::cast(elements->get(i))->length() == 1);
+  }
+#endif
+
+  return *Factory::NewJSArrayWithElements(elements);
+}
+
 
 bool Runtime::IsUpperCaseChar(uint16_t ch) {
   unibrow::uchar chars[unibrow::ToUppercase::kMaxWidth];
@@ -4148,13 +5297,27 @@ static Object* Runtime_NumberToString(Arguments args) {
 }
 
 
+static Object* Runtime_NumberToStringSkipCache(Arguments args) {
+  NoHandleAllocation ha;
+  ASSERT(args.length() == 1);
+
+  Object* number = args[0];
+  RUNTIME_ASSERT(number->IsNumber());
+
+  return Heap::NumberToString(number, false);
+}
+
+
 static Object* Runtime_NumberToInteger(Arguments args) {
   NoHandleAllocation ha;
   ASSERT(args.length() == 1);
 
-  Object* obj = args[0];
-  if (obj->IsSmi()) return obj;
-  CONVERT_DOUBLE_CHECKED(number, obj);
+  CONVERT_DOUBLE_CHECKED(number, args[0]);
+
+  // We do not include 0 so that we don't have to treat +0 / -0 cases.
+  if (number > 0 && number <= Smi::kMaxValue) {
+    return Smi::FromInt(static_cast<int>(number));
+  }
   return Heap::NumberFromDouble(DoubleToInteger(number));
 }
 
@@ -4163,9 +5326,7 @@ static Object* Runtime_NumberToJSUint32(Arguments args) {
   NoHandleAllocation ha;
   ASSERT(args.length() == 1);
 
-  Object* obj = args[0];
-  if (obj->IsSmi() && Smi::cast(obj)->value() >= 0) return obj;
-  CONVERT_NUMBER_CHECKED(int32_t, number, Uint32, obj);
+  CONVERT_NUMBER_CHECKED(int32_t, number, Uint32, args[0]);
   return Heap::NumberFromUint32(number);
 }
 
@@ -4174,9 +5335,12 @@ static Object* Runtime_NumberToJSInt32(Arguments args) {
   NoHandleAllocation ha;
   ASSERT(args.length() == 1);
 
-  Object* obj = args[0];
-  if (obj->IsSmi()) return obj;
-  CONVERT_DOUBLE_CHECKED(number, obj);
+  CONVERT_DOUBLE_CHECKED(number, args[0]);
+
+  // We do not include 0 so that we don't have to treat +0 / -0 cases.
+  if (number > 0 && number <= Smi::kMaxValue) {
+    return Smi::FromInt(static_cast<int>(number));
+  }
   return Heap::NumberFromInt32(DoubleToInt32(number));
 }
 
@@ -4247,7 +5411,7 @@ static Object* Runtime_NumberDiv(Arguments args) {
 
   CONVERT_DOUBLE_CHECKED(x, args[0]);
   CONVERT_DOUBLE_CHECKED(y, args[1]);
-  return Heap::NewNumberFromDouble(x / y);
+  return Heap::NumberFromDouble(x / y);
 }
 
 
@@ -4259,8 +5423,8 @@ static Object* Runtime_NumberMod(Arguments args) {
   CONVERT_DOUBLE_CHECKED(y, args[1]);
 
   x = modulo(x, y);
-  // NewNumberFromDouble may return a Smi instead of a Number object
-  return Heap::NewNumberFromDouble(x);
+  // NumberFromDouble may return a Smi instead of a Number object
+  return Heap::NumberFromDouble(x);
 }
 
 
@@ -4274,7 +5438,7 @@ static Object* Runtime_StringAdd(Arguments args) {
 }
 
 
-template<typename sinkchar>
+template <typename sinkchar>
 static inline void StringBuilderConcatHelper(String* special,
                                              sinkchar* sink,
                                              FixedArray* fixed_array,
@@ -4345,33 +5509,41 @@ static Object* Runtime_StringBuilderConcat(Arguments args) {
 
   bool ascii = special->IsAsciiRepresentation();
   int position = 0;
-  int increment = 0;
   for (int i = 0; i < array_length; i++) {
+    int increment = 0;
     Object* elt = fixed_array->get(i);
     if (elt->IsSmi()) {
       // Smi encoding of position and length.
-      int len = Smi::cast(elt)->value();
-      if (len > 0) {
+      int smi_value = Smi::cast(elt)->value();
+      int pos;
+      int len;
+      if (smi_value > 0) {
         // Position and length encoded in one smi.
-        int pos = len >> 11;
-        len &= 0x7ff;
-        if (pos + len > special_length) {
-          return Top::Throw(Heap::illegal_argument_symbol());
-        }
-        increment = len;
+        pos = StringBuilderSubstringPosition::decode(smi_value);
+        len = StringBuilderSubstringLength::decode(smi_value);
       } else {
         // Position and length encoded in two smis.
-        increment = (-len);
-        // Get the position and check that it is also a smi.
+        len = -smi_value;
+        // Get the position and check that it is a positive smi.
         i++;
         if (i >= array_length) {
           return Top::Throw(Heap::illegal_argument_symbol());
         }
-        Object* pos = fixed_array->get(i);
-        if (!pos->IsSmi()) {
+        Object* next_smi = fixed_array->get(i);
+        if (!next_smi->IsSmi()) {
+          return Top::Throw(Heap::illegal_argument_symbol());
+        }
+        pos = Smi::cast(next_smi)->value();
+        if (pos < 0) {
           return Top::Throw(Heap::illegal_argument_symbol());
         }
       }
+      ASSERT(pos >= 0);
+      ASSERT(len >= 0);
+      if (pos > special_length || len > special_length - pos) {
+        return Top::Throw(Heap::illegal_argument_symbol());
+      }
+      increment = len;
     } else if (elt->IsString()) {
       String* element = String::cast(elt);
       int element_length = element->length();
@@ -4593,6 +5765,66 @@ static Object* Runtime_SmiLexicographicCompare(Arguments args) {
 }
 
 
+static Object* StringInputBufferCompare(String* x, String* y) {
+  static StringInputBuffer bufx;
+  static StringInputBuffer bufy;
+  bufx.Reset(x);
+  bufy.Reset(y);
+  while (bufx.has_more() && bufy.has_more()) {
+    int d = bufx.GetNext() - bufy.GetNext();
+    if (d < 0) return Smi::FromInt(LESS);
+    else if (d > 0) return Smi::FromInt(GREATER);
+  }
+
+  // x is (non-trivial) prefix of y:
+  if (bufy.has_more()) return Smi::FromInt(LESS);
+  // y is prefix of x:
+  return Smi::FromInt(bufx.has_more() ? GREATER : EQUAL);
+}
+
+
+static Object* FlatStringCompare(String* x, String* y) {
+  ASSERT(x->IsFlat());
+  ASSERT(y->IsFlat());
+  Object* equal_prefix_result = Smi::FromInt(EQUAL);
+  int prefix_length = x->length();
+  if (y->length() < prefix_length) {
+    prefix_length = y->length();
+    equal_prefix_result = Smi::FromInt(GREATER);
+  } else if (y->length() > prefix_length) {
+    equal_prefix_result = Smi::FromInt(LESS);
+  }
+  int r;
+  if (x->IsAsciiRepresentation()) {
+    Vector<const char> x_chars = x->ToAsciiVector();
+    if (y->IsAsciiRepresentation()) {
+      Vector<const char> y_chars = y->ToAsciiVector();
+      r = CompareChars(x_chars.start(), y_chars.start(), prefix_length);
+    } else {
+      Vector<const uc16> y_chars = y->ToUC16Vector();
+      r = CompareChars(x_chars.start(), y_chars.start(), prefix_length);
+    }
+  } else {
+    Vector<const uc16> x_chars = x->ToUC16Vector();
+    if (y->IsAsciiRepresentation()) {
+      Vector<const char> y_chars = y->ToAsciiVector();
+      r = CompareChars(x_chars.start(), y_chars.start(), prefix_length);
+    } else {
+      Vector<const uc16> y_chars = y->ToUC16Vector();
+      r = CompareChars(x_chars.start(), y_chars.start(), prefix_length);
+    }
+  }
+  Object* result;
+  if (r == 0) {
+    result = equal_prefix_result;
+  } else {
+    result = (r < 0) ? Smi::FromInt(LESS) : Smi::FromInt(GREATER);
+  }
+  ASSERT(result == StringInputBufferCompare(x, y));
+  return result;
+}
+
+
 static Object* Runtime_StringCompare(Arguments args) {
   NoHandleAllocation ha;
   ASSERT(args.length() == 2);
@@ -4615,33 +5847,13 @@ static Object* Runtime_StringCompare(Arguments args) {
   if (d < 0) return Smi::FromInt(LESS);
   else if (d > 0) return Smi::FromInt(GREATER);
 
-  x->TryFlattenIfNotFlat();
-  y->TryFlattenIfNotFlat();
+  Object* obj = Heap::PrepareForCompare(x);
+  if (obj->IsFailure()) return obj;
+  obj = Heap::PrepareForCompare(y);
+  if (obj->IsFailure()) return obj;
 
-  static StringInputBuffer bufx;
-  static StringInputBuffer bufy;
-  bufx.Reset(x);
-  bufy.Reset(y);
-  while (bufx.has_more() && bufy.has_more()) {
-    int d = bufx.GetNext() - bufy.GetNext();
-    if (d < 0) return Smi::FromInt(LESS);
-    else if (d > 0) return Smi::FromInt(GREATER);
-  }
-
-  // x is (non-trivial) prefix of y:
-  if (bufy.has_more()) return Smi::FromInt(LESS);
-  // y is prefix of x:
-  return Smi::FromInt(bufx.has_more() ? GREATER : EQUAL);
-}
-
-
-static Object* Runtime_Math_abs(Arguments args) {
-  NoHandleAllocation ha;
-  ASSERT(args.length() == 1);
-  Counters::math_abs.Increment();
-
-  CONVERT_DOUBLE_CHECKED(x, args[0]);
-  return Heap::AllocateHeapNumber(fabs(x));
+  return (x->IsFlat() && y->IsFlat()) ? FlatStringCompare(x, y)
+                                      : StringInputBufferCompare(x, y);
 }
 
 
@@ -4818,17 +6030,56 @@ static Object* Runtime_Math_pow(Arguments args) {
   }
 }
 
+// Fast version of Math.pow if we know that y is not an integer and
+// y is not -0.5 or 0.5. Used as slowcase from codegen.
+static Object* Runtime_Math_pow_cfunction(Arguments args) {
+  NoHandleAllocation ha;
+  ASSERT(args.length() == 2);
+  CONVERT_DOUBLE_CHECKED(x, args[0]);
+  CONVERT_DOUBLE_CHECKED(y, args[1]);
+  if (y == 0) {
+      return Smi::FromInt(1);
+  } else if (isnan(y) || ((x == 1 || x == -1) && isinf(y))) {
+      return Heap::nan_value();
+  } else {
+      return Heap::AllocateHeapNumber(pow(x, y));
+  }
+}
 
-static Object* Runtime_Math_round(Arguments args) {
+
+static Object* Runtime_RoundNumber(Arguments args) {
   NoHandleAllocation ha;
   ASSERT(args.length() == 1);
   Counters::math_round.Increment();
 
-  CONVERT_DOUBLE_CHECKED(x, args[0]);
-  if (signbit(x) && x >= -0.5) return Heap::minus_zero_value();
-  double integer = ceil(x);
-  if (integer - x > 0.5) { integer -= 1.0; }
-  return Heap::NumberFromDouble(integer);
+  if (!args[0]->IsHeapNumber()) {
+    // Must be smi. Return the argument unchanged for all the other types
+    // to make fuzz-natives test happy.
+    return args[0];
+  }
+
+  HeapNumber* number = reinterpret_cast<HeapNumber*>(args[0]);
+
+  double value = number->value();
+  int exponent = number->get_exponent();
+  int sign = number->get_sign();
+
+  // We compare with kSmiValueSize - 3 because (2^30 - 0.1) has exponent 29 and
+  // should be rounded to 2^30, which is not smi.
+  if (!sign && exponent <= kSmiValueSize - 3) {
+    return Smi::FromInt(static_cast<int>(value + 0.5));
+  }
+
+  // If the magnitude is big enough, there's no place for fraction part. If we
+  // try to add 0.5 to this number, 1.0 will be added instead.
+  if (exponent >= 52) {
+    return number;
+  }
+
+  if (sign && value >= -0.5) return Heap::minus_zero_value();
+
+  // Do not call NumberFromDouble() to avoid extra checks.
+  return Heap::AllocateHeapNumber(floor(value + 0.5));
 }
 
 
@@ -4859,6 +6110,368 @@ static Object* Runtime_Math_tan(Arguments args) {
 
   CONVERT_DOUBLE_CHECKED(x, args[0]);
   return TranscendentalCache::Get(TranscendentalCache::TAN, x);
+}
+
+
+static int MakeDay(int year, int month, int day) {
+  static const int day_from_month[] = {0, 31, 59, 90, 120, 151,
+                                       181, 212, 243, 273, 304, 334};
+  static const int day_from_month_leap[] = {0, 31, 60, 91, 121, 152,
+                                            182, 213, 244, 274, 305, 335};
+
+  year += month / 12;
+  month %= 12;
+  if (month < 0) {
+    year--;
+    month += 12;
+  }
+
+  ASSERT(month >= 0);
+  ASSERT(month < 12);
+
+  // year_delta is an arbitrary number such that:
+  // a) year_delta = -1 (mod 400)
+  // b) year + year_delta > 0 for years in the range defined by
+  //    ECMA 262 - 15.9.1.1, i.e. upto 100,000,000 days on either side of
+  //    Jan 1 1970. This is required so that we don't run into integer
+  //    division of negative numbers.
+  // c) there shouldn't be an overflow for 32-bit integers in the following
+  //    operations.
+  static const int year_delta = 399999;
+  static const int base_day = 365 * (1970 + year_delta) +
+                              (1970 + year_delta) / 4 -
+                              (1970 + year_delta) / 100 +
+                              (1970 + year_delta) / 400;
+
+  int year1 = year + year_delta;
+  int day_from_year = 365 * year1 +
+                      year1 / 4 -
+                      year1 / 100 +
+                      year1 / 400 -
+                      base_day;
+
+  if (year % 4 || (year % 100 == 0 && year % 400 != 0)) {
+    return day_from_year + day_from_month[month] + day - 1;
+  }
+
+  return day_from_year + day_from_month_leap[month] + day - 1;
+}
+
+
+static Object* Runtime_DateMakeDay(Arguments args) {
+  NoHandleAllocation ha;
+  ASSERT(args.length() == 3);
+
+  CONVERT_SMI_CHECKED(year, args[0]);
+  CONVERT_SMI_CHECKED(month, args[1]);
+  CONVERT_SMI_CHECKED(date, args[2]);
+
+  return Smi::FromInt(MakeDay(year, month, date));
+}
+
+
+static const int kDays4Years[] = {0, 365, 2 * 365, 3 * 365 + 1};
+static const int kDaysIn4Years = 4 * 365 + 1;
+static const int kDaysIn100Years = 25 * kDaysIn4Years - 1;
+static const int kDaysIn400Years = 4 * kDaysIn100Years + 1;
+static const int kDays1970to2000 = 30 * 365 + 7;
+static const int kDaysOffset = 1000 * kDaysIn400Years + 5 * kDaysIn400Years -
+                               kDays1970to2000;
+static const int kYearsOffset = 400000;
+
+static const char kDayInYear[] = {
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31};
+
+static const char kMonthInYear[] = {
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0,
+      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+      1, 1, 1,
+      2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+      2, 2, 2, 2, 2, 2,
+      3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+      3, 3, 3, 3, 3,
+      4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+      4, 4, 4, 4, 4, 4,
+      5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+      5, 5, 5, 5, 5,
+      6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+      6, 6, 6, 6, 6, 6,
+      7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+      7, 7, 7, 7, 7, 7,
+      8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+      8, 8, 8, 8, 8,
+      9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
+      9, 9, 9, 9, 9, 9,
+      10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+      10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+      11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11,
+      11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11,
+
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0,
+      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+      1, 1, 1,
+      2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+      2, 2, 2, 2, 2, 2,
+      3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+      3, 3, 3, 3, 3,
+      4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+      4, 4, 4, 4, 4, 4,
+      5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+      5, 5, 5, 5, 5,
+      6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+      6, 6, 6, 6, 6, 6,
+      7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+      7, 7, 7, 7, 7, 7,
+      8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+      8, 8, 8, 8, 8,
+      9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
+      9, 9, 9, 9, 9, 9,
+      10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+      10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+      11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11,
+      11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11,
+
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0,
+      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+      1, 1, 1, 1,
+      2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+      2, 2, 2, 2, 2, 2,
+      3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+      3, 3, 3, 3, 3,
+      4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+      4, 4, 4, 4, 4, 4,
+      5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+      5, 5, 5, 5, 5,
+      6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+      6, 6, 6, 6, 6, 6,
+      7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+      7, 7, 7, 7, 7, 7,
+      8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+      8, 8, 8, 8, 8,
+      9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
+      9, 9, 9, 9, 9, 9,
+      10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+      10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+      11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11,
+      11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11,
+
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0,
+      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+      1, 1, 1,
+      2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+      2, 2, 2, 2, 2, 2,
+      3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+      3, 3, 3, 3, 3,
+      4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+      4, 4, 4, 4, 4, 4,
+      5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+      5, 5, 5, 5, 5,
+      6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+      6, 6, 6, 6, 6, 6,
+      7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+      7, 7, 7, 7, 7, 7,
+      8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+      8, 8, 8, 8, 8,
+      9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
+      9, 9, 9, 9, 9, 9,
+      10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+      10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+      11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11,
+      11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11};
+
+
+// This function works for dates from 1970 to 2099.
+static inline void DateYMDFromTimeAfter1970(int date,
+                                            int& year, int& month, int& day) {
+#ifdef DEBUG
+  int save_date = date;  // Need this for ASSERT in the end.
+#endif
+
+  year = 1970 + (4 * date + 2) / kDaysIn4Years;
+  date %= kDaysIn4Years;
+
+  month = kMonthInYear[date];
+  day = kDayInYear[date];
+
+  ASSERT(MakeDay(year, month, day) == save_date);
+}
+
+
+static inline void DateYMDFromTimeSlow(int date,
+                                       int& year, int& month, int& day) {
+#ifdef DEBUG
+  int save_date = date;  // Need this for ASSERT in the end.
+#endif
+
+  date += kDaysOffset;
+  year = 400 * (date / kDaysIn400Years) - kYearsOffset;
+  date %= kDaysIn400Years;
+
+  ASSERT(MakeDay(year, 0, 1) + date == save_date);
+
+  date--;
+  int yd1 = date / kDaysIn100Years;
+  date %= kDaysIn100Years;
+  year += 100 * yd1;
+
+  date++;
+  int yd2 = date / kDaysIn4Years;
+  date %= kDaysIn4Years;
+  year += 4 * yd2;
+
+  date--;
+  int yd3 = date / 365;
+  date %= 365;
+  year += yd3;
+
+  bool is_leap = (!yd1 || yd2) && !yd3;
+
+  ASSERT(date >= -1);
+  ASSERT(is_leap || (date >= 0));
+  ASSERT((date < 365) || (is_leap && (date < 366)));
+  ASSERT(is_leap == ((year % 4 == 0) && (year % 100 || (year % 400 == 0))));
+  ASSERT(is_leap || ((MakeDay(year, 0, 1) + date) == save_date));
+  ASSERT(!is_leap || ((MakeDay(year, 0, 1) + date + 1) == save_date));
+
+  if (is_leap) {
+    day = kDayInYear[2*365 + 1 + date];
+    month = kMonthInYear[2*365 + 1 + date];
+  } else {
+    day = kDayInYear[date];
+    month = kMonthInYear[date];
+  }
+
+  ASSERT(MakeDay(year, month, day) == save_date);
+}
+
+
+static inline void DateYMDFromTime(int date,
+                                   int& year, int& month, int& day) {
+  if (date >= 0 && date < 32 * kDaysIn4Years) {
+    DateYMDFromTimeAfter1970(date, year, month, day);
+  } else {
+    DateYMDFromTimeSlow(date, year, month, day);
+  }
+}
+
+
+static Object* Runtime_DateYMDFromTime(Arguments args) {
+  NoHandleAllocation ha;
+  ASSERT(args.length() == 2);
+
+  CONVERT_DOUBLE_CHECKED(t, args[0]);
+  CONVERT_CHECKED(JSArray, res_array, args[1]);
+
+  int year, month, day;
+  DateYMDFromTime(static_cast<int>(floor(t / 86400000)), year, month, day);
+
+  res_array->SetElement(0, Smi::FromInt(year));
+  res_array->SetElement(1, Smi::FromInt(month));
+  res_array->SetElement(2, Smi::FromInt(day));
+
+  return Heap::undefined_value();
 }
 
 
@@ -4897,13 +6510,13 @@ static Object* Runtime_NewClosure(Arguments args) {
   HandleScope scope;
   ASSERT(args.length() == 2);
   CONVERT_ARG_CHECKED(Context, context, 0);
-  CONVERT_ARG_CHECKED(JSFunction, boilerplate, 1);
+  CONVERT_ARG_CHECKED(SharedFunctionInfo, shared, 1);
 
   PretenureFlag pretenure = (context->global_context() == *context)
       ? TENURED       // Allocate global closures in old space.
       : NOT_TENURED;  // Allocate local closures in new space.
   Handle<JSFunction> result =
-      Factory::NewFunctionFromBoilerplate(boilerplate, context, pretenure);
+      Factory::NewFunctionFromSharedFunctionInfo(shared, context, pretenure);
   return *result;
 }
 
@@ -4941,6 +6554,16 @@ static Object* Runtime_NewObject(Arguments args) {
   }
 
   Handle<JSFunction> function = Handle<JSFunction>::cast(constructor);
+
+  // If function should not have prototype, construction is not allowed. In this
+  // case generated code bailouts here, since function has no initial_map.
+  if (!function->should_have_prototype()) {
+    Vector< Handle<Object> > arguments = HandleVector(&constructor, 1);
+    Handle<Object> type_error =
+        Factory::NewTypeError("not_constructor", arguments);
+    return Top::Throw(*type_error);
+  }
+
 #ifdef ENABLE_DEBUGGER_SUPPORT
   // Handle stepping into constructors if step into is active.
   if (Debug::StepInActive()) {
@@ -5463,6 +7086,7 @@ static Object* Runtime_DebugPrint(Arguments args) {
   }
   args[0]->Print();
   if (args[0]->IsHeapObject()) {
+    PrintF("\n");
     HeapObject::cast(args[0])->map()->Print();
   }
 #else
@@ -5554,21 +7178,6 @@ static Object* Runtime_DateDaylightSavingsOffset(Arguments args) {
 }
 
 
-static Object* Runtime_NumberIsFinite(Arguments args) {
-  NoHandleAllocation ha;
-  ASSERT(args.length() == 1);
-
-  CONVERT_DOUBLE_CHECKED(value, args[0]);
-  Object* result;
-  if (isnan(value) || (fpclassify(value) == FP_INFINITE)) {
-    result = Heap::false_value();
-  } else {
-    result = Heap::true_value();
-  }
-  return result;
-}
-
-
 static Object* Runtime_GlobalReceiver(Arguments args) {
   ASSERT(args.length() == 1);
   Object* global = args[0];
@@ -5587,13 +7196,13 @@ static Object* Runtime_CompileString(Arguments args) {
   Handle<Context> context(Top::context()->global_context());
   Compiler::ValidationState validate = (is_json->IsTrue())
     ? Compiler::VALIDATE_JSON : Compiler::DONT_VALIDATE_JSON;
-  Handle<JSFunction> boilerplate = Compiler::CompileEval(source,
-                                                         context,
-                                                         true,
-                                                         validate);
-  if (boilerplate.is_null()) return Failure::Exception();
+  Handle<SharedFunctionInfo> shared = Compiler::CompileEval(source,
+                                                            context,
+                                                            true,
+                                                            validate);
+  if (shared.is_null()) return Failure::Exception();
   Handle<JSFunction> fun =
-      Factory::NewFunctionFromBoilerplate(boilerplate, context, NOT_TENURED);
+      Factory::NewFunctionFromSharedFunctionInfo(shared, context, NOT_TENURED);
   return *fun;
 }
 
@@ -5666,14 +7275,14 @@ static ObjectPair Runtime_ResolvePossiblyDirectEval(Arguments args) {
   // Deal with a normal eval call with a string argument. Compile it
   // and return the compiled function bound in the local context.
   Handle<String> source = args.at<String>(1);
-  Handle<JSFunction> boilerplate = Compiler::CompileEval(
+  Handle<SharedFunctionInfo> shared = Compiler::CompileEval(
       source,
       Handle<Context>(Top::context()),
       Top::context()->IsGlobalContext(),
       Compiler::DONT_VALIDATE_JSON);
-  if (boilerplate.is_null()) return MakePair(Failure::Exception(), NULL);
-  callee = Factory::NewFunctionFromBoilerplate(
-      boilerplate,
+  if (shared.is_null()) return MakePair(Failure::Exception(), NULL);
+  callee = Factory::NewFunctionFromSharedFunctionInfo(
+      shared,
       Handle<Context>(Top::context()),
       NOT_TENURED);
   return MakePair(*callee, args[2]);
@@ -6160,6 +7769,32 @@ static Object* Runtime_EstimateNumberOfElements(Arguments args) {
   } else {
     return array->length();
   }
+}
+
+
+static Object* Runtime_SwapElements(Arguments args) {
+  HandleScope handle_scope;
+
+  ASSERT_EQ(3, args.length());
+
+  CONVERT_ARG_CHECKED(JSObject, object, 0);
+  Handle<Object> key1 = args.at<Object>(1);
+  Handle<Object> key2 = args.at<Object>(2);
+
+  uint32_t index1, index2;
+  if (!Array::IndexFromObject(*key1, &index1)
+      || !Array::IndexFromObject(*key2, &index2)) {
+    return Top::ThrowIllegalOperation();
+  }
+
+  Handle<JSObject> jsobject = Handle<JSObject>::cast(object);
+  Handle<Object> tmp1 = GetElement(jsobject, index1);
+  Handle<Object> tmp2 = GetElement(jsobject, index2);
+
+  SetElement(jsobject, index1, tmp2);
+  SetElement(jsobject, index2, tmp1);
+
+  return Heap::undefined_value();
 }
 
 
@@ -7655,14 +9290,14 @@ static Object* Runtime_DebugEvaluate(Arguments args) {
   Handle<String> function_source =
       Factory::NewStringFromAscii(Vector<const char>(source_str,
                                                      source_str_length));
-  Handle<JSFunction> boilerplate =
+  Handle<SharedFunctionInfo> shared =
       Compiler::CompileEval(function_source,
                             context,
                             context->IsGlobalContext(),
                             Compiler::DONT_VALIDATE_JSON);
-  if (boilerplate.is_null()) return Failure::Exception();
+  if (shared.is_null()) return Failure::Exception();
   Handle<JSFunction> compiled_function =
-      Factory::NewFunctionFromBoilerplate(boilerplate, context);
+      Factory::NewFunctionFromSharedFunctionInfo(shared, context);
 
   // Invoke the result of the compilation to get the evaluation function.
   bool has_pending_exception;
@@ -7723,15 +9358,15 @@ static Object* Runtime_DebugEvaluateGlobal(Arguments args) {
   Handle<Context> context = Top::global_context();
 
   // Compile the source to be evaluated.
-  Handle<JSFunction> boilerplate =
-      Handle<JSFunction>(Compiler::CompileEval(source,
-                                               context,
-                                               true,
-                                               Compiler::DONT_VALIDATE_JSON));
-  if (boilerplate.is_null()) return Failure::Exception();
+  Handle<SharedFunctionInfo> shared =
+      Compiler::CompileEval(source,
+                            context,
+                            true,
+                            Compiler::DONT_VALIDATE_JSON);
+  if (shared.is_null()) return Failure::Exception();
   Handle<JSFunction> compiled_function =
-      Handle<JSFunction>(Factory::NewFunctionFromBoilerplate(boilerplate,
-                                                             context));
+      Handle<JSFunction>(Factory::NewFunctionFromSharedFunctionInfo(shared,
+                                                                    context));
 
   // Invoke the result of the compilation to get the evaluation function.
   bool has_pending_exception;
@@ -8011,6 +9646,261 @@ static Object* Runtime_FunctionGetInferredName(Arguments args) {
   return f->shared()->inferred_name();
 }
 
+
+static int FindSharedFunctionInfosForScript(Script* script,
+                                     FixedArray* buffer) {
+  AssertNoAllocation no_allocations;
+
+  int counter = 0;
+  int buffer_size = buffer->length();
+  HeapIterator iterator;
+  for (HeapObject* obj = iterator.next(); obj != NULL; obj = iterator.next()) {
+    ASSERT(obj != NULL);
+    if (!obj->IsSharedFunctionInfo()) {
+      continue;
+    }
+    SharedFunctionInfo* shared = SharedFunctionInfo::cast(obj);
+    if (shared->script() != script) {
+      continue;
+    }
+    if (counter < buffer_size) {
+      buffer->set(counter, shared);
+    }
+    counter++;
+  }
+  return counter;
+}
+
+// For a script finds all SharedFunctionInfo's in the heap that points
+// to this script. Returns JSArray of SharedFunctionInfo wrapped
+// in OpaqueReferences.
+static Object* Runtime_LiveEditFindSharedFunctionInfosForScript(
+    Arguments args) {
+  ASSERT(args.length() == 1);
+  HandleScope scope;
+  CONVERT_CHECKED(JSValue, script_value, args[0]);
+
+  Handle<Script> script = Handle<Script>(Script::cast(script_value->value()));
+
+  const int kBufferSize = 32;
+
+  Handle<FixedArray> array;
+  array = Factory::NewFixedArray(kBufferSize);
+  int number = FindSharedFunctionInfosForScript(*script, *array);
+  if (number > kBufferSize) {
+    array = Factory::NewFixedArray(number);
+    FindSharedFunctionInfosForScript(*script, *array);
+  }
+
+  Handle<JSArray> result = Factory::NewJSArrayWithElements(array);
+  result->set_length(Smi::FromInt(number));
+
+  LiveEdit::WrapSharedFunctionInfos(result);
+
+  return *result;
+}
+
+// For a script calculates compilation information about all its functions.
+// The script source is explicitly specified by the second argument.
+// The source of the actual script is not used, however it is important that
+// all generated code keeps references to this particular instance of script.
+// Returns a JSArray of compilation infos. The array is ordered so that
+// each function with all its descendant is always stored in a continues range
+// with the function itself going first. The root function is a script function.
+static Object* Runtime_LiveEditGatherCompileInfo(Arguments args) {
+  ASSERT(args.length() == 2);
+  HandleScope scope;
+  CONVERT_CHECKED(JSValue, script, args[0]);
+  CONVERT_ARG_CHECKED(String, source, 1);
+  Handle<Script> script_handle = Handle<Script>(Script::cast(script->value()));
+
+  JSArray* result =  LiveEdit::GatherCompileInfo(script_handle, source);
+
+  if (Top::has_pending_exception()) {
+    return Failure::Exception();
+  }
+
+  return result;
+}
+
+// Changes the source of the script to a new_source.
+// If old_script_name is provided (i.e. is a String), also creates a copy of
+// the script with its original source and sends notification to debugger.
+static Object* Runtime_LiveEditReplaceScript(Arguments args) {
+  ASSERT(args.length() == 3);
+  HandleScope scope;
+  CONVERT_CHECKED(JSValue, original_script_value, args[0]);
+  CONVERT_ARG_CHECKED(String, new_source, 1);
+  Handle<Object> old_script_name(args[2]);
+
+  CONVERT_CHECKED(Script, original_script_pointer,
+                  original_script_value->value());
+  Handle<Script> original_script(original_script_pointer);
+
+  Object* old_script = LiveEdit::ChangeScriptSource(original_script,
+                                                    new_source,
+                                                    old_script_name);
+
+  if (old_script->IsScript()) {
+    Handle<Script> script_handle(Script::cast(old_script));
+    return *(GetScriptWrapper(script_handle));
+  } else {
+    return Heap::null_value();
+  }
+}
+
+// Replaces code of SharedFunctionInfo with a new one.
+static Object* Runtime_LiveEditReplaceFunctionCode(Arguments args) {
+  ASSERT(args.length() == 2);
+  HandleScope scope;
+  CONVERT_ARG_CHECKED(JSArray, new_compile_info, 0);
+  CONVERT_ARG_CHECKED(JSArray, shared_info, 1);
+
+  return LiveEdit::ReplaceFunctionCode(new_compile_info, shared_info);
+}
+
+// Connects SharedFunctionInfo to another script.
+static Object* Runtime_LiveEditFunctionSetScript(Arguments args) {
+  ASSERT(args.length() == 2);
+  HandleScope scope;
+  Handle<Object> function_object(args[0]);
+  Handle<Object> script_object(args[1]);
+
+  if (function_object->IsJSValue()) {
+    Handle<JSValue> function_wrapper = Handle<JSValue>::cast(function_object);
+    if (script_object->IsJSValue()) {
+      CONVERT_CHECKED(Script, script, JSValue::cast(*script_object)->value());
+      script_object = Handle<Object>(script);
+    }
+
+    LiveEdit::SetFunctionScript(function_wrapper, script_object);
+  } else {
+    // Just ignore this. We may not have a SharedFunctionInfo for some functions
+    // and we check it in this function.
+  }
+
+  return Heap::undefined_value();
+}
+
+
+// In a code of a parent function replaces original function as embedded object
+// with a substitution one.
+static Object* Runtime_LiveEditReplaceRefToNestedFunction(Arguments args) {
+  ASSERT(args.length() == 3);
+  HandleScope scope;
+
+  CONVERT_ARG_CHECKED(JSValue, parent_wrapper, 0);
+  CONVERT_ARG_CHECKED(JSValue, orig_wrapper, 1);
+  CONVERT_ARG_CHECKED(JSValue, subst_wrapper, 2);
+
+  LiveEdit::ReplaceRefToNestedFunction(parent_wrapper, orig_wrapper,
+                                       subst_wrapper);
+
+  return Heap::undefined_value();
+}
+
+
+// Updates positions of a shared function info (first parameter) according
+// to script source change. Text change is described in second parameter as
+// array of groups of 3 numbers:
+// (change_begin, change_end, change_end_new_position).
+// Each group describes a change in text; groups are sorted by change_begin.
+static Object* Runtime_LiveEditPatchFunctionPositions(Arguments args) {
+  ASSERT(args.length() == 2);
+  HandleScope scope;
+  CONVERT_ARG_CHECKED(JSArray, shared_array, 0);
+  CONVERT_ARG_CHECKED(JSArray, position_change_array, 1);
+
+  return LiveEdit::PatchFunctionPositions(shared_array, position_change_array);
+}
+
+
+// For array of SharedFunctionInfo's (each wrapped in JSValue)
+// checks that none of them have activations on stacks (of any thread).
+// Returns array of the same length with corresponding results of
+// LiveEdit::FunctionPatchabilityStatus type.
+static Object* Runtime_LiveEditCheckAndDropActivations(Arguments args) {
+  ASSERT(args.length() == 2);
+  HandleScope scope;
+  CONVERT_ARG_CHECKED(JSArray, shared_array, 0);
+  CONVERT_BOOLEAN_CHECKED(do_drop, args[1]);
+
+  return *LiveEdit::CheckAndDropActivations(shared_array, do_drop);
+}
+
+// Compares 2 strings line-by-line and returns diff in form of JSArray of
+// triplets (pos1, pos1_end, pos2_end) describing list of diff chunks.
+static Object* Runtime_LiveEditCompareStringsLinewise(Arguments args) {
+  ASSERT(args.length() == 2);
+  HandleScope scope;
+  CONVERT_ARG_CHECKED(String, s1, 0);
+  CONVERT_ARG_CHECKED(String, s2, 1);
+
+  return *LiveEdit::CompareStringsLinewise(s1, s2);
+}
+
+
+
+// A testing entry. Returns statement position which is the closest to
+// source_position.
+static Object* Runtime_GetFunctionCodePositionFromSource(Arguments args) {
+  ASSERT(args.length() == 2);
+  HandleScope scope;
+  CONVERT_ARG_CHECKED(JSFunction, function, 0);
+  CONVERT_NUMBER_CHECKED(int32_t, source_position, Int32, args[1]);
+
+  Handle<Code> code(function->code());
+
+  RelocIterator it(*code, 1 << RelocInfo::STATEMENT_POSITION);
+  int closest_pc = 0;
+  int distance = kMaxInt;
+  while (!it.done()) {
+    int statement_position = static_cast<int>(it.rinfo()->data());
+    // Check if this break point is closer that what was previously found.
+    if (source_position <= statement_position &&
+        statement_position - source_position < distance) {
+      closest_pc =
+          static_cast<int>(it.rinfo()->pc() - code->instruction_start());
+      distance = statement_position - source_position;
+      // Check whether we can't get any closer.
+      if (distance == 0) break;
+    }
+    it.next();
+  }
+
+  return Smi::FromInt(closest_pc);
+}
+
+
+// Calls specified function with or without entering the debugger.
+// This is used in unit tests to run code as if debugger is entered or simply
+// to have a stack with C++ frame in the middle.
+static Object* Runtime_ExecuteInDebugContext(Arguments args) {
+  ASSERT(args.length() == 2);
+  HandleScope scope;
+  CONVERT_ARG_CHECKED(JSFunction, function, 0);
+  CONVERT_BOOLEAN_CHECKED(without_debugger, args[1]);
+
+  Handle<Object> result;
+  bool pending_exception;
+  {
+    if (without_debugger) {
+      result = Execution::Call(function, Top::global(), 0, NULL,
+                               &pending_exception);
+    } else {
+      EnterDebugger enter_debugger;
+      result = Execution::Call(function, Top::global(), 0, NULL,
+                               &pending_exception);
+    }
+  }
+  if (!pending_exception) {
+    return *result;
+  } else {
+    return Failure::Exception();
+  }
+}
+
+
 #endif  // ENABLE_DEBUGGER_SUPPORT
 
 #ifdef ENABLE_LOGGING_AND_PROFILING
@@ -8197,6 +10087,91 @@ static Object* Runtime_DeleteHandleScopeExtensions(Arguments args) {
 }
 
 
+static Object* CacheMiss(FixedArray* cache_obj, int index, Object* key_obj) {
+  ASSERT(index % 2 == 0);  // index of the key
+  ASSERT(index >= JSFunctionResultCache::kEntriesIndex);
+  ASSERT(index < cache_obj->length());
+
+  HandleScope scope;
+
+  Handle<FixedArray> cache(cache_obj);
+  Handle<Object> key(key_obj);
+  Handle<JSFunction> factory(JSFunction::cast(
+        cache->get(JSFunctionResultCache::kFactoryIndex)));
+  // TODO(antonm): consider passing a receiver when constructing a cache.
+  Handle<Object> receiver(Top::global_context()->global());
+
+  Handle<Object> value;
+  {
+    // This handle is nor shared, nor used later, so it's safe.
+    Object** argv[] = { key.location() };
+    bool pending_exception = false;
+    value = Execution::Call(factory,
+                            receiver,
+                            1,
+                            argv,
+                            &pending_exception);
+    if (pending_exception) return Failure::Exception();
+  }
+
+  cache->set(index, *key);
+  cache->set(index + 1, *value);
+  cache->set(JSFunctionResultCache::kFingerIndex, Smi::FromInt(index));
+
+  return *value;
+}
+
+
+static Object* Runtime_GetFromCache(Arguments args) {
+  // This is only called from codegen, so checks might be more lax.
+  CONVERT_CHECKED(FixedArray, cache, args[0]);
+  Object* key = args[1];
+
+  const int finger_index =
+      Smi::cast(cache->get(JSFunctionResultCache::kFingerIndex))->value();
+
+  Object* o = cache->get(finger_index);
+  if (o == key) {
+    // The fastest case: hit the same place again.
+    return cache->get(finger_index + 1);
+  }
+
+  for (int i = finger_index - 2;
+       i >= JSFunctionResultCache::kEntriesIndex;
+       i -= 2) {
+    o = cache->get(i);
+    if (o == key) {
+      cache->set(JSFunctionResultCache::kFingerIndex, Smi::FromInt(i));
+      return cache->get(i + 1);
+    }
+  }
+
+  const int size =
+      Smi::cast(cache->get(JSFunctionResultCache::kCacheSizeIndex))->value();
+  ASSERT(size <= cache->length());
+
+  for (int i = size - 2; i > finger_index; i -= 2) {
+    o = cache->get(i);
+    if (o == key) {
+      cache->set(JSFunctionResultCache::kFingerIndex, Smi::FromInt(i));
+      return cache->get(i + 1);
+    }
+  }
+
+  // Cache miss.  If we have spare room, put new data into it, otherwise
+  // evict post finger entry which must be least recently used.
+  if (size < cache->length()) {
+    cache->set(JSFunctionResultCache::kCacheSizeIndex, Smi::FromInt(size + 2));
+    return CacheMiss(cache, size, key);
+  } else {
+    int target_index = finger_index + JSFunctionResultCache::kEntrySize;
+    if (target_index == cache->length()) {
+      target_index = JSFunctionResultCache::kEntriesIndex;
+    }
+    return CacheMiss(cache, target_index, key);
+  }
+}
+
 #ifdef DEBUG
 // ListNatives is ONLY used by the fuzz-natives.js in debug mode
 // Exclude the code in release mode.
@@ -8205,18 +10180,28 @@ static Object* Runtime_ListNatives(Arguments args) {
   HandleScope scope;
   Handle<JSArray> result = Factory::NewJSArray(0);
   int index = 0;
+  bool inline_runtime_functions = false;
 #define ADD_ENTRY(Name, argc, ressize)                                       \
   {                                                                          \
     HandleScope inner;                                                       \
-    Handle<String> name =                                                    \
-      Factory::NewStringFromAscii(                                           \
-          Vector<const char>(#Name, StrLength(#Name)));       \
+    Handle<String> name;                                                     \
+    /* Inline runtime functions have an underscore in front of the name. */  \
+    if (inline_runtime_functions) {                                          \
+      name = Factory::NewStringFromAscii(                                    \
+          Vector<const char>("_" #Name, StrLength("_" #Name)));              \
+    } else {                                                                 \
+      name = Factory::NewStringFromAscii(                                    \
+          Vector<const char>(#Name, StrLength(#Name)));                      \
+    }                                                                        \
     Handle<JSArray> pair = Factory::NewJSArray(0);                           \
     SetElement(pair, 0, name);                                               \
     SetElement(pair, 1, Handle<Smi>(Smi::FromInt(argc)));                    \
     SetElement(result, index++, pair);                                       \
   }
+  inline_runtime_functions = false;
   RUNTIME_FUNCTION_LIST(ADD_ENTRY)
+  inline_runtime_functions = true;
+  INLINE_RUNTIME_FUNCTION_LIST(ADD_ENTRY)
 #undef ADD_ENTRY
   return *result;
 }

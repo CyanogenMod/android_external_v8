@@ -278,12 +278,6 @@ double OS::LocalTimeOffset() {
 
 
 int OS::StackWalk(Vector<StackFrame> frames) {
-#ifdef ANDROID
-  // For some reason the weak linkage doesn't work when building mksnapshot
-  // for android on macos. Just bail out as if we're on 10.4. We don't need
-  // stack walking for mksnapshot.
-  return 0;
-#else
   // If weak link to execinfo lib has failed, ie because we are on 10.4, abort.
   if (backtrace == NULL)
     return 0;
@@ -315,7 +309,6 @@ int OS::StackWalk(Vector<StackFrame> frames) {
   free(symbols);
 
   return frames_count;
-#endif // ANDROID
 }
 
 
@@ -551,10 +544,14 @@ class Sampler::PlatformData : public Malloced {
 
   // Sampler thread handler.
   void Runner() {
-    // Loop until the sampler is disengaged.
-    while (sampler_->IsActive()) {
-      TickSample sample;
+    // Loop until the sampler is disengaged, keeping the specified samling freq.
+    for ( ; sampler_->IsActive(); OS::Sleep(sampler_->interval_)) {
+      TickSample sample_obj;
+      TickSample* sample = CpuProfiler::TickSampleEvent();
+      if (sample == NULL) sample = &sample_obj;
 
+      // We always sample the VM state.
+      sample->state = VMState::current_state();
       // If profiling, we record the pc and sp of the profiled thread.
       if (sampler_->IsProfiling()
           && KERN_SUCCESS == thread_suspend(profiled_thread_)) {
@@ -584,21 +581,16 @@ class Sampler::PlatformData : public Malloced {
                              flavor,
                              reinterpret_cast<natural_t*>(&state),
                              &count) == KERN_SUCCESS) {
-          sample.pc = reinterpret_cast<Address>(state.REGISTER_FIELD(ip));
-          sample.sp = reinterpret_cast<Address>(state.REGISTER_FIELD(sp));
-          sample.fp = reinterpret_cast<Address>(state.REGISTER_FIELD(bp));
-          sampler_->SampleStack(&sample);
+          sample->pc = reinterpret_cast<Address>(state.REGISTER_FIELD(ip));
+          sample->sp = reinterpret_cast<Address>(state.REGISTER_FIELD(sp));
+          sample->fp = reinterpret_cast<Address>(state.REGISTER_FIELD(bp));
+          sampler_->SampleStack(sample);
         }
         thread_resume(profiled_thread_);
       }
 
-      // We always sample the VM state.
-      sample.state = Logger::state();
       // Invoke tick handler with program counter and stack pointer.
-      sampler_->Tick(&sample);
-
-      // Wait until next sampling.
-      usleep(sampler_->interval_ * 1000);
+      sampler_->Tick(sample);
     }
   }
 };

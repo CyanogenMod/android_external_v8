@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -30,7 +30,9 @@
 #include "api.h"
 #include "ast.h"
 #include "bootstrapper.h"
+#include "codegen.h"
 #include "compiler.h"
+#include "messages.h"
 #include "platform.h"
 #include "runtime.h"
 #include "parser.h"
@@ -107,13 +109,13 @@ class Parser {
 
   // Returns NULL if parsing failed.
   FunctionLiteral* ParseProgram(Handle<String> source,
-                                unibrow::CharacterStream* stream,
                                 bool in_global_context);
   FunctionLiteral* ParseLazy(Handle<String> source,
                              Handle<String> name,
-                             int start_position, bool is_expression);
-  FunctionLiteral* ParseJson(Handle<String> source,
-                             unibrow::CharacterStream* stream);
+                             int start_position,
+                             int end_position,
+                             bool is_expression);
+  FunctionLiteral* ParseJson(Handle<String> source);
 
   // The minimum number of contiguous assignment that will
   // be treated as an initialization block. Benchmarks show that
@@ -146,6 +148,7 @@ class Parser {
   ParserLog* log_;
   bool is_pre_parsing_;
   ScriptDataImpl* pre_data_;
+  bool seen_loop_stmt_;  // Used for inner loop detection.
 
   bool inside_with() const  { return with_nesting_level_ > 0; }
   ParserFactory* factory() const  { return factory_; }
@@ -210,6 +213,7 @@ class Parser {
       ZoneList<ObjectLiteral::Property*>* properties,
       Handle<FixedArray> constants,
       bool* is_simple,
+      bool* fast_elements,
       int* depth);
 
   // Populate the literals fixed array for a materialized array literal.
@@ -1202,7 +1206,8 @@ Parser::Parser(Handle<Script> script,
       factory_(factory),
       log_(log),
       is_pre_parsing_(is_pre_parsing == PREPARSE),
-      pre_data_(pre_data) {
+      pre_data_(pre_data),
+      seen_loop_stmt_(false) {
 }
 
 
@@ -1212,7 +1217,7 @@ bool Parser::PreParseProgram(Handle<String> source,
   AssertNoZoneAllocation assert_no_zone_allocation;
   AssertNoAllocation assert_no_allocation;
   NoHandleAllocation no_handle_allocation;
-  scanner_.Init(source, stream, 0, JAVASCRIPT);
+  scanner_.Initialize(source, stream, JAVASCRIPT);
   ASSERT(target_stack_ == NULL);
   mode_ = PARSE_EAGERLY;
   DummyScope top_scope;
@@ -1226,7 +1231,6 @@ bool Parser::PreParseProgram(Handle<String> source,
 
 
 FunctionLiteral* Parser::ParseProgram(Handle<String> source,
-                                      unibrow::CharacterStream* stream,
                                       bool in_global_context) {
   CompilationZoneScope zone_scope(DONT_DELETE_ON_EXIT);
 
@@ -1234,8 +1238,8 @@ FunctionLiteral* Parser::ParseProgram(Handle<String> source,
   Counters::total_parse_size.Increment(source->length());
 
   // Initialize parser state.
-  source->TryFlattenIfNotFlat();
-  scanner_.Init(source, stream, 0, JAVASCRIPT);
+  source->TryFlatten();
+  scanner_.Initialize(source, JAVASCRIPT);
   ASSERT(target_stack_ == NULL);
 
   // Compute the parsing mode.
@@ -1286,15 +1290,15 @@ FunctionLiteral* Parser::ParseProgram(Handle<String> source,
 FunctionLiteral* Parser::ParseLazy(Handle<String> source,
                                    Handle<String> name,
                                    int start_position,
+                                   int end_position,
                                    bool is_expression) {
   CompilationZoneScope zone_scope(DONT_DELETE_ON_EXIT);
   HistogramTimerScope timer(&Counters::parse_lazy);
-  source->TryFlattenIfNotFlat();
   Counters::total_parse_size.Increment(source->length());
-  SafeStringInputBuffer buffer(source.location());
 
   // Initialize parser state.
-  scanner_.Init(source, &buffer, start_position, JAVASCRIPT);
+  source->TryFlatten();
+  scanner_.Initialize(source, start_position, end_position, JAVASCRIPT);
   ASSERT(target_stack_ == NULL);
   mode_ = PARSE_EAGERLY;
 
@@ -1330,16 +1334,15 @@ FunctionLiteral* Parser::ParseLazy(Handle<String> source,
   return result;
 }
 
-FunctionLiteral* Parser::ParseJson(Handle<String> source,
-                                   unibrow::CharacterStream* stream) {
+FunctionLiteral* Parser::ParseJson(Handle<String> source) {
   CompilationZoneScope zone_scope(DONT_DELETE_ON_EXIT);
 
   HistogramTimerScope timer(&Counters::parse);
   Counters::total_parse_size.Increment(source->length());
 
   // Initialize parser state.
-  source->TryFlattenIfNotFlat();
-  scanner_.Init(source, stream, 0, JSON);
+  source->TryFlatten(TENURED);
+  scanner_.Initialize(source, JSON);
   ASSERT(target_stack_ == NULL);
 
   FunctionLiteral* result = NULL;
@@ -1584,13 +1587,15 @@ class ThisNamedPropertyAssigmentFinder : public ParserFinder {
   }
 
   void HandleThisPropertyAssignment(Scope* scope, Assignment* assignment) {
-    // Check that the property assigned to is a named property.
+    // Check that the property assigned to is a named property, which is not
+    // __proto__.
     Property* property = assignment->target()->AsProperty();
     ASSERT(property != NULL);
     Literal* literal = property->key()->AsLiteral();
     uint32_t dummy;
     if (literal != NULL &&
         literal->handle()->IsString() &&
+        !String::cast(*(literal->handle()))->Equals(Heap::Proto_symbol()) &&
         !String::cast(*(literal->handle()))->AsArrayIndex(&dummy)) {
       Handle<String> key = Handle<String>::cast(literal->handle());
 
@@ -1954,27 +1959,24 @@ Statement* Parser::ParseNativeDeclaration(bool* ok) {
       extension_->GetNativeFunction(v8::Utils::ToLocal(name));
   ASSERT(!fun_template.IsEmpty());
 
-  // Instantiate the function and create a boilerplate function from it.
+  // Instantiate the function and create a shared function info from it.
   Handle<JSFunction> fun = Utils::OpenHandle(*fun_template->GetFunction());
   const int literals = fun->NumberOfLiterals();
   Handle<Code> code = Handle<Code>(fun->shared()->code());
   Handle<Code> construct_stub = Handle<Code>(fun->shared()->construct_stub());
-  Handle<JSFunction> boilerplate =
-      Factory::NewFunctionBoilerplate(name, literals, code);
-  boilerplate->shared()->set_construct_stub(*construct_stub);
+  Handle<SharedFunctionInfo> shared =
+      Factory::NewSharedFunctionInfo(name, literals, code);
+  shared->set_construct_stub(*construct_stub);
 
-  // Copy the function data to the boilerplate. Used by
-  // builtins.cc:HandleApiCall to perform argument type checks and to
-  // find the right native code to call.
-  boilerplate->shared()->set_function_data(fun->shared()->function_data());
+  // Copy the function data to the shared function info.
+  shared->set_function_data(fun->shared()->function_data());
   int parameters = fun->shared()->formal_parameter_count();
-  boilerplate->shared()->set_formal_parameter_count(parameters);
+  shared->set_formal_parameter_count(parameters);
 
   // TODO(1240846): It's weird that native function declarations are
   // introduced dynamically when we meet their declarations, whereas
   // other functions are setup when entering the surrounding scope.
-  FunctionBoilerplateLiteral* lit =
-      NEW(FunctionBoilerplateLiteral(boilerplate));
+  SharedFunctionInfoLiteral* lit = NEW(SharedFunctionInfoLiteral(shared));
   VariableProxy* var = Declare(name, Variable::VAR, NULL, true, CHECK_OK);
   return NEW(ExpressionStatement(
       new Assignment(Token::INIT_VAR, var, lit, RelocInfo::kNoPosition)));
@@ -2643,6 +2645,7 @@ DoWhileStatement* Parser::ParseDoWhileStatement(ZoneStringList* labels,
   }
 
   Expression* cond = ParseExpression(true, CHECK_OK);
+  if (cond != NULL) cond->set_is_loop_condition(true);
   Expect(Token::RPAREN, CHECK_OK);
 
   // Allow do-statements to be terminated with and without
@@ -2652,6 +2655,9 @@ DoWhileStatement* Parser::ParseDoWhileStatement(ZoneStringList* labels,
   if (peek() == Token::SEMICOLON) Consume(Token::SEMICOLON);
 
   if (loop != NULL) loop->Initialize(cond, body);
+
+  seen_loop_stmt_ = true;
+
   return loop;
 }
 
@@ -2666,10 +2672,14 @@ WhileStatement* Parser::ParseWhileStatement(ZoneStringList* labels, bool* ok) {
   Expect(Token::WHILE, CHECK_OK);
   Expect(Token::LPAREN, CHECK_OK);
   Expression* cond = ParseExpression(true, CHECK_OK);
+  if (cond != NULL) cond->set_is_loop_condition(true);
   Expect(Token::RPAREN, CHECK_OK);
   Statement* body = ParseStatement(NULL, CHECK_OK);
 
   if (loop != NULL) loop->Initialize(cond, body);
+
+  seen_loop_stmt_ = true;
+
   return loop;
 }
 
@@ -2703,6 +2713,9 @@ Statement* Parser::ParseForStatement(ZoneStringList* labels, bool* ok) {
           Block* result = NEW(Block(NULL, 2, false));
           result->AddStatement(variable_statement);
           result->AddStatement(loop);
+
+          seen_loop_stmt_ = true;
+
           // Parsed for-in loop w/ variable/const declaration.
           return result;
         }
@@ -2732,6 +2745,8 @@ Statement* Parser::ParseForStatement(ZoneStringList* labels, bool* ok) {
         Statement* body = ParseStatement(NULL, CHECK_OK);
         if (loop) loop->Initialize(expression, enumerable, body);
 
+        seen_loop_stmt_ = true;
+
         // Parsed for-in loop.
         return loop;
 
@@ -2751,9 +2766,7 @@ Statement* Parser::ParseForStatement(ZoneStringList* labels, bool* ok) {
   Expression* cond = NULL;
   if (peek() != Token::SEMICOLON) {
     cond = ParseExpression(true, CHECK_OK);
-    if (cond && cond->AsCompareOperation()) {
-      cond->AsCompareOperation()->set_is_for_loop_condition();
-    }
+    if (cond != NULL) cond->set_is_loop_condition(true);
   }
   Expect(Token::SEMICOLON, CHECK_OK);
 
@@ -2764,9 +2777,17 @@ Statement* Parser::ParseForStatement(ZoneStringList* labels, bool* ok) {
   }
   Expect(Token::RPAREN, CHECK_OK);
 
+  seen_loop_stmt_ = false;
+
   Statement* body = ParseStatement(NULL, CHECK_OK);
 
+  // Mark this loop if it is an inner loop.
+  if (loop && !seen_loop_stmt_) loop->set_peel_this_loop(true);
+
   if (loop) loop->Initialize(init, cond, next, body);
+
+  seen_loop_stmt_ = true;
+
   return loop;
 }
 
@@ -3258,7 +3279,6 @@ Expression* Parser::ParsePrimaryExpression(bool* ok) {
         result = VariableProxySentinel::this_proxy();
       } else {
         VariableProxy* recv = top_scope_->receiver();
-        recv->var_uses()->RecordRead(1);
         result = recv;
       }
       break;
@@ -3447,7 +3467,11 @@ Handle<FixedArray> CompileTimeValue::GetValue(Expression* expression) {
   ObjectLiteral* object_literal = expression->AsObjectLiteral();
   if (object_literal != NULL) {
     ASSERT(object_literal->is_simple());
-    result->set(kTypeSlot, Smi::FromInt(OBJECT_LITERAL));
+    if (object_literal->fast_elements()) {
+      result->set(kTypeSlot, Smi::FromInt(OBJECT_LITERAL_FAST_ELEMENTS));
+    } else {
+      result->set(kTypeSlot, Smi::FromInt(OBJECT_LITERAL_SLOW_ELEMENTS));
+    }
     result->set(kElementsSlot, *object_literal->constant_properties());
   } else {
     ArrayLiteral* array_literal = expression->AsArrayLiteral();
@@ -3485,11 +3509,14 @@ void Parser::BuildObjectLiteralConstantProperties(
     ZoneList<ObjectLiteral::Property*>* properties,
     Handle<FixedArray> constant_properties,
     bool* is_simple,
+    bool* fast_elements,
     int* depth) {
   int position = 0;
   // Accumulate the value in local variables and store it at the end.
   bool is_simple_acc = true;
   int depth_acc = 1;
+  uint32_t max_element_index = 0;
+  uint32_t elements = 0;
   for (int i = 0; i < properties->length(); i++) {
     ObjectLiteral::Property* property = properties->at(i);
     if (!IsBoilerplateProperty(property)) {
@@ -3508,11 +3535,31 @@ void Parser::BuildObjectLiteralConstantProperties(
     Handle<Object> value = GetBoilerplateValue(property->value());
     is_simple_acc = is_simple_acc && !value->IsUndefined();
 
+    // Keep track of the number of elements in the object literal and
+    // the largest element index.  If the largest element index is
+    // much larger than the number of elements, creating an object
+    // literal with fast elements will be a waste of space.
+    uint32_t element_index = 0;
+    if (key->IsString()
+        && Handle<String>::cast(key)->AsArrayIndex(&element_index)
+        && element_index > max_element_index) {
+      max_element_index = element_index;
+      elements++;
+    } else if (key->IsSmi()) {
+      int key_value = Smi::cast(*key)->value();
+      if (key_value > 0
+          && static_cast<uint32_t>(key_value) > max_element_index) {
+        max_element_index = key_value;
+      }
+      elements++;
+    }
+
     // Add name, value pair to the fixed array.
     constant_properties->set(position++, *key);
     constant_properties->set(position++, *value);
   }
-
+  *fast_elements =
+      (max_element_index <= 32) || ((2 * elements) >= max_element_index);
   *is_simple = is_simple_acc;
   *depth = depth_acc;
 }
@@ -3610,15 +3657,18 @@ Expression* Parser::ParseObjectLiteral(bool* ok) {
       Factory::NewFixedArray(number_of_boilerplate_properties * 2, TENURED);
 
   bool is_simple = true;
+  bool fast_elements = true;
   int depth = 1;
   BuildObjectLiteralConstantProperties(properties.elements(),
                                        constant_properties,
                                        &is_simple,
+                                       &fast_elements,
                                        &depth);
   return new ObjectLiteral(constant_properties,
                            properties.elements(),
                            literal_index,
                            is_simple,
+                           fast_elements,
                            depth);
 }
 
@@ -3681,6 +3731,9 @@ FunctionLiteral* Parser::ParseFunctionLiteral(Handle<String> var_name,
                                               bool* ok) {
   // Function ::
   //   '(' FormalParameterList? ')' '{' FunctionBody '}'
+
+  // Reset flag used for inner loop detection.
+  seen_loop_stmt_ = false;
 
   bool is_named = !var_name.is_null();
 
@@ -3792,6 +3845,12 @@ FunctionLiteral* Parser::ParseFunctionLiteral(Handle<String> var_name,
     if (!is_pre_parsing_) {
       function_literal->set_function_token_position(function_token_position);
     }
+
+    // Set flag for inner loop detection. We treat loops that contain a function
+    // literal not as inner loops because we avoid duplicating function literals
+    // when peeling or unrolling such a loop.
+    seen_loop_stmt_ = true;
+
     return function_literal;
   }
 }
@@ -3834,7 +3893,27 @@ Expression* Parser::ParseV8Intrinsic(bool* ok) {
     }
   }
 
-  // Otherwise we have a runtime call.
+  // Check that the expected number arguments are passed to runtime functions.
+  if (!is_pre_parsing_) {
+    if (function != NULL
+        && function->nargs != -1
+        && function->nargs != args->length()) {
+      ReportMessage("illegal_access", Vector<const char*>::empty());
+      *ok = false;
+      return NULL;
+    } else if (function == NULL && !name.is_null()) {
+      // If this is not a runtime function implemented in C++ it might be an
+      // inlined runtime function.
+      int argc = CodeGenerator::InlineRuntimeCallArgumentsCount(name);
+      if (argc != -1 && argc != args->length()) {
+        ReportMessage("illegal_access", Vector<const char*>::empty());
+        *ok = false;
+        return NULL;
+      }
+    }
+  }
+
+  // Otherwise we have a valid runtime call.
   return NEW(CallRuntime(name, function, args));
 }
 
@@ -4125,15 +4204,18 @@ Expression* Parser::ParseJsonObject(bool* ok) {
   Handle<FixedArray> constant_properties =
         Factory::NewFixedArray(boilerplate_properties * 2, TENURED);
   bool is_simple = true;
+  bool fast_elements = true;
   int depth = 1;
   BuildObjectLiteralConstantProperties(properties.elements(),
                                        constant_properties,
                                        &is_simple,
+                                       &fast_elements,
                                        &depth);
   return new ObjectLiteral(constant_properties,
                            properties.elements(),
                            literal_index,
                            is_simple,
+                           fast_elements,
                            depth);
 }
 
@@ -5065,13 +5147,12 @@ FunctionLiteral* MakeAST(bool compile_in_global_context,
     return NULL;
   }
   Handle<String> source = Handle<String>(String::cast(script->source()));
-  SafeStringInputBuffer input(source.location());
   FunctionLiteral* result;
   if (is_json) {
     ASSERT(compile_in_global_context);
-    result = parser.ParseJson(source, &input);
+    result = parser.ParseJson(source);
   } else {
-    result = parser.ParseProgram(source, &input, compile_in_global_context);
+    result = parser.ParseProgram(source, compile_in_global_context);
   }
   return result;
 }
@@ -5086,13 +5167,11 @@ FunctionLiteral* MakeLazyAST(Handle<Script> script,
   always_allow_natives_syntax = true;
   AstBuildingParser parser(script, true, NULL, NULL);  // always allow
   always_allow_natives_syntax = allow_natives_syntax_before;
-  // Parse the function by pulling the function source from the script source.
+  // Parse the function by pointing to the function source in the script source.
   Handle<String> script_source(String::cast(script->source()));
   FunctionLiteral* result =
-      parser.ParseLazy(SubString(script_source, start_position, end_position),
-                       name,
-                       start_position,
-                       is_expression);
+      parser.ParseLazy(script_source, name,
+                       start_position, end_position, is_expression);
   return result;
 }
 

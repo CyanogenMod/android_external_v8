@@ -239,6 +239,21 @@ function ScriptBreakPoint(type, script_id_or_name, opt_line, opt_column,
 }
 
 
+//Creates a clone of script breakpoint that is linked to another script.
+ScriptBreakPoint.prototype.cloneForOtherScript = function (other_script) {
+  var copy = new ScriptBreakPoint(Debug.ScriptBreakPointType.ScriptId,
+      other_script.id, this.line_, this.column_, this.groupId_);
+  copy.number_ = next_break_point_number++;
+  script_break_points.push(copy);
+  
+  copy.hit_count_ = this.hit_count_;
+  copy.active_ = this.active_;
+  copy.condition_ = this.condition_;
+  copy.ignoreCount_ = this.ignoreCount_;
+  return copy;
+}
+
+
 ScriptBreakPoint.prototype.number = function() {
   return this.number_;
 };
@@ -272,6 +287,13 @@ ScriptBreakPoint.prototype.line = function() {
 ScriptBreakPoint.prototype.column = function() {
   return this.column_;
 };
+
+
+ScriptBreakPoint.prototype.update_positions = function(line, column) {
+  this.line_ = line;
+  this.column_ = column;
+}
+
 
 
 ScriptBreakPoint.prototype.hit_count = function() {
@@ -327,7 +349,7 @@ ScriptBreakPoint.prototype.matchesScript = function(script) {
   if (this.type_ == Debug.ScriptBreakPointType.ScriptId) {
     return this.script_id_ == script.id;
   } else {  // this.type_ == Debug.ScriptBreakPointType.ScriptName
-    return this.script_name_ == script.name &&
+    return this.script_name_ == script.nameOrSourceURL() &&
            script.line_offset <= this.line_  &&
            this.line_ < script.line_offset + script.lineCount();
   }
@@ -397,6 +419,17 @@ function UpdateScriptBreakPoints(script) {
       script_break_points[i].set(script);
     }
   }
+}
+
+
+function GetScriptBreakPoints(script) {
+  var result = [];
+  for (var i = 0; i < script_break_points.length; i++) {
+    if (script_break_points[i].matchesScript(script)) {
+      result.push(script_break_points[i]);
+    }
+  }
+  return result;
 }
 
 
@@ -472,6 +505,11 @@ Debug.disassemble = function(f) {
 Debug.disassembleConstructor = function(f) {
   if (!IS_FUNCTION(f)) throw new Error('Parameters have wrong types.');
   return %DebugDisassembleConstructor(f);
+};
+
+Debug.ExecuteInDebugContext = function(f, without_debugger) {
+  if (!IS_FUNCTION(f)) throw new Error('Parameters have wrong types.');
+  return %ExecuteInDebugContext(f, !!without_debugger);
 };
 
 Debug.sourcePosition = function(f) {
@@ -778,6 +816,8 @@ ExecutionState.prototype.threadCount = function() {
 ExecutionState.prototype.frame = function(opt_index) {
   // If no index supplied return the selected frame.
   if (opt_index == null) opt_index = this.selected_frame;
+  if (opt_index < 0 || opt_index >= this.frameCount())
+    throw new Error('Illegal frame index.');
   return new FrameMirror(this.break_id, opt_index);
 };
 
@@ -1251,7 +1291,9 @@ DebugCommandProcessor.prototype.processDebugJSONRequest = function(json_request)
       } else if (request.command == 'version') {
         this.versionRequest_(request, response);
       } else if (request.command == 'profile') {
-        this.profileRequest_(request, response);
+          this.profileRequest_(request, response);
+      } else if (request.command == 'changelive') {
+          this.changeLiveRequest_(request, response);
       } else {
         throw new Error('Unknown command "' + request.command + '" in request');
       }
@@ -1270,7 +1312,7 @@ DebugCommandProcessor.prototype.processDebugJSONRequest = function(json_request)
         // Response controls running state.
         this.running_ = response.running;
       }
-      response.running = this.running_; 
+      response.running = this.running_;
       return response.toJSONProtocol();
     } catch (e) {
       // Failed to generate response - return generic error.
@@ -1866,12 +1908,12 @@ DebugCommandProcessor.prototype.scriptsRequest_ = function(request, response) {
         return response.failed('Invalid types "' + request.arguments.types + '"');
       }
     }
-    
+
     if (!IS_UNDEFINED(request.arguments.includeSource)) {
       includeSource = %ToBoolean(request.arguments.includeSource);
       response.setOption('includeSource', includeSource);
     }
-    
+
     if (IS_ARRAY(request.arguments.ids)) {
       idsToInclude = {};
       var ids = request.arguments.ids;
@@ -1954,6 +1996,51 @@ DebugCommandProcessor.prototype.profileRequest_ = function(request, response) {
 };
 
 
+DebugCommandProcessor.prototype.changeLiveRequest_ = function(request, response) {
+  if (!Debug.LiveEdit) {
+    return response.failed('LiveEdit feature is not supported');
+  }
+  if (!request.arguments) {
+    return response.failed('Missing arguments');
+  }
+  var script_id = request.arguments.script_id;
+  
+  var scripts = %DebugGetLoadedScripts();
+
+  var the_script = null;
+  for (var i = 0; i < scripts.length; i++) {
+    if (scripts[i].id == script_id) {
+      the_script = scripts[i];
+    }
+  }
+  if (!the_script) {
+    response.failed('Script not found');
+    return;
+  }
+
+  var change_log = new Array();
+  
+  if (!IS_STRING(request.arguments.new_source)) {
+    throw "new_source argument expected";
+  }
+
+  var new_source = request.arguments.new_source;
+  
+  try {
+    Debug.LiveEdit.SetScriptSource(the_script, new_source, change_log);
+  } catch (e) {
+    if (e instanceof Debug.LiveEdit.Failure) {
+      // Let's treat it as a "success" so that body with change_log will be
+      // sent back. "change_log" will have "failure" field set.
+      change_log.push( { failure: true, message: e.toString() } ); 
+    } else {
+      throw e;
+    }
+  }
+  response.body = {change_log: change_log};
+};
+
+
 // Check whether the previously processed command caused the VM to become
 // running.
 DebugCommandProcessor.prototype.isRunning = function() {
@@ -2026,7 +2113,7 @@ function ObjectToProtocolObject_(object, mirror_serializer) {
       }
     }
   }
-  
+
   return content;
 }
 
@@ -2049,7 +2136,7 @@ function ArrayToProtocolArray_(array, mirror_serializer) {
 
 
 /**
- * Convert a value to its debugger protocol representation. 
+ * Convert a value to its debugger protocol representation.
  * @param {*} value The value to format as protocol value.
  * @param {MirrorSerializer} mirror_serializer The serializer to use if any
  *     mirror objects are encountered.

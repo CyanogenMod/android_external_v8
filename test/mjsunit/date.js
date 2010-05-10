@@ -46,12 +46,18 @@ assertEquals(date2, date3);
 
 var dMax = new Date(8.64e15);
 assertEquals(8.64e15, dMax.getTime());
+assertEquals(275760, dMax.getFullYear());
+assertEquals(8, dMax.getMonth());
+assertEquals(13, dMax.getUTCDate());
 
 var dOverflow = new Date(8.64e15+1);
 assertTrue(isNaN(dOverflow.getTime()));
 
 var dMin = new Date(-8.64e15);
 assertEquals(-8.64e15, dMin.getTime());
+assertEquals(-271821, dMin.getFullYear());
+assertEquals(3, dMin.getMonth());
+assertEquals(20, dMin.getUTCDate());
 
 var dUnderflow = new Date(-8.64e15-1);
 assertTrue(isNaN(dUnderflow.getTime()));
@@ -147,3 +153,17 @@ function testToLocaleTimeString() {
 }
 
 testToLocaleTimeString();
+
+
+// Modified test from WebKit
+// LayoutTests/fast/js/script-tests/date-utc-timeclip.js:
+
+assertEquals(Date.UTC(275760, 8, 12, 23, 59, 59, 999), 8639999999999999);
+assertEquals(Date.UTC(275760, 8, 13), 8640000000000000);
+assertTrue(isNaN(Date.UTC(275760, 8, 13, 0, 0, 0, 1)));
+assertTrue(isNaN(Date.UTC(275760, 8, 14)));
+
+assertEquals(Date.UTC(-271821, 3, 20, 0, 0, 0, 1), -8639999999999999);
+assertEquals(Date.UTC(-271821, 3, 20), -8640000000000000);
+assertTrue(isNaN(Date.UTC(-271821, 3, 19, 23, 59, 59, 999)));
+assertTrue(isNaN(Date.UTC(-271821, 3, 19)));

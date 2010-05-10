@@ -43,6 +43,7 @@ SOURCES = {
     bootstrapper.cc
     builtins.cc
     checks.cc
+    circular-queue.cc
     code-stubs.cc
     codegen.cc
     compilation-cache.cc
@@ -50,19 +51,23 @@ SOURCES = {
     contexts.cc
     conversions.cc
     counters.cc
+    cpu-profiler.cc
     data-flow.cc
     dateparser.cc
     debug-agent.cc
     debug.cc
     disassembler.cc
+    diy-fp.cc
     execution.cc
     factory.cc
     flags.cc
+    flow-graph.cc
     frame-element.cc
     frames.cc
     full-codegen.cc
     func-name-inferrer.cc
     global-handles.cc
+    fast-dtoa.cc
     handles.cc
     hashmap.cc
     heap-profiler.cc
@@ -79,6 +84,7 @@ SOURCES = {
     objects.cc
     oprofile-agent.cc
     parser.cc
+    profile-generator.cc
     property.cc
     regexp-macro-assembler-irregexp.cc
     regexp-macro-assembler.cc
@@ -96,8 +102,8 @@ SOURCES = {
     stub-cache.cc
     token.cc
     top.cc
+    type-info.cc
     unicode.cc
-    usage-analyzer.cc
     utils.cc
     v8-counters.cc
     v8.cc
@@ -105,10 +111,13 @@ SOURCES = {
     variables.cc
     version.cc
     virtual-frame.cc
+    vm-state.cc
     zone.cc
     """),
   'arch:arm': Split("""
     fast-codegen.cc
+    jump-target-light.cc
+    virtual-frame-light.cc
     arm/builtins-arm.cc
     arm/codegen-arm.cc
     arm/constants-arm.cc
@@ -152,6 +161,8 @@ SOURCES = {
     mips/virtual-frame-mips.cc
     """),
   'arch:ia32': Split("""
+    jump-target-heavy.cc
+    virtual-frame-heavy.cc
     ia32/assembler-ia32.cc
     ia32/builtins-ia32.cc
     ia32/codegen-ia32.cc
@@ -171,6 +182,8 @@ SOURCES = {
     """),
   'arch:x64': Split("""
     fast-codegen.cc
+    jump-target-heavy.cc
+    virtual-frame-heavy.cc
     x64/assembler-x64.cc
     x64/builtins-x64.cc
     x64/codegen-x64.cc
@@ -251,6 +264,7 @@ apinatives.js
 date.js
 regexp.js
 json.js
+liveedit-debugger.js
 mirror-debugger.js
 debug-debugger.js
 '''.split()
@@ -292,7 +306,12 @@ def ConfigureObjectFiles():
   source_objs = context.ConfigureObject(env, source_files)
   non_snapshot_files = [dtoa_obj, source_objs]
 
-  # Create snapshot if necessary.
+  # Create snapshot if necessary.  For cross compilation you should either
+  # do without snapshots and take the performance hit or you should build a
+  # host VM with the simulator=arm and snapshot=on options and then take the
+  # resulting snapshot.cc file from obj/release and put it in the src
+  # directory.  Then rebuild the VM with the cross compiler and specify
+  # snapshot=nobuild on the scons command line.
   empty_snapshot_obj = context.ConfigureObject(env, 'snapshot-empty.cc')
   mksnapshot_env = env.Copy()
   mksnapshot_env.Replace(**context.flags['mksnapshot'])
@@ -302,7 +321,7 @@ def ConfigureObjectFiles():
     if context.build_snapshot:
       snapshot_cc = env.Snapshot('snapshot.cc', mksnapshot, LOGFILE=File('snapshot.log').abspath)
     else:
-      snapshot_cc = Command('snapshot.cc', [], [])
+      snapshot_cc = 'snapshot.cc'
     snapshot_obj = context.ConfigureObject(env, snapshot_cc, CPPPATH=['.'])
   else:
     snapshot_obj = empty_snapshot_obj

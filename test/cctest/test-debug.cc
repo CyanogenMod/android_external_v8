@@ -436,6 +436,12 @@ void CheckDebuggerUnloaded(bool check_functions) {
 }
 
 
+void ForceUnloadDebugger() {
+  Debugger::never_unload_debugger_ = false;
+  Debugger::UnloadDebugger();
+}
+
+
 } }  // namespace v8::internal
 
 
@@ -4655,11 +4661,9 @@ TEST(CallFunctionInDebugger) {
       v8::Script::Compile(
           v8::String::New(debugger_call_with_closure_source))->Run());
 
-  // Calling a function through the debugger returns undefined if there are no
-  // JavaScript frames.
-  CHECK(v8::Debug::Call(frame_count)->IsUndefined());
-  CHECK(v8::Debug::Call(frame_source_line)->IsUndefined());
-  CHECK(v8::Debug::Call(debugger_call_with_data)->IsUndefined());
+  // Calling a function through the debugger returns 0 frames if there are
+  // no JavaScript frames.
+  CHECK_EQ(v8::Integer::New(0), v8::Debug::Call(frame_count));
 
   // Test that the number of frames can be retrieved.
   v8::Script::Compile(v8::String::New("CheckFrameCount(1)"))->Run();
@@ -5441,7 +5445,7 @@ TEST(DebugBreakInMessageHandler) {
 }
 
 
-#ifdef V8_NATIVE_REGEXP
+#ifndef V8_INTERPRETED_REGEXP
 // Debug event handler which gets the function on the top frame and schedules a
 // break a number of times.
 static void DebugEventDebugBreak(
@@ -5508,7 +5512,7 @@ TEST(RegExpDebugBreak) {
   CHECK_EQ(1, break_point_hit_count);
   CHECK_EQ("f", last_function_hit);
 }
-#endif  // V8_NATIVE_REGEXP
+#endif  // V8_INTERPRETED_REGEXP
 
 
 // Common part of EvalContextData and NestedBreakEventContextData tests.
@@ -5958,7 +5962,7 @@ TEST(ProcessDebugMessages) {
 }
 
 
-struct BracktraceData {
+struct BacktraceData {
   static int frame_counter;
   static void MessageHandler(const v8::Debug::Message& message) {
     char print_buffer[1000];
@@ -5972,7 +5976,7 @@ struct BracktraceData {
   }
 };
 
-int BracktraceData::frame_counter;
+int BacktraceData::frame_counter;
 
 
 // Test that debug messages get processed when ProcessDebugMessages is called.
@@ -5980,7 +5984,7 @@ TEST(Backtrace) {
   v8::HandleScope scope;
   DebugLocalContext env;
 
-  v8::Debug::SetMessageHandler2(BracktraceData::MessageHandler);
+  v8::Debug::SetMessageHandler2(BacktraceData::MessageHandler);
 
   const int kBufferSize = 1000;
   uint16_t buffer[kBufferSize];
@@ -5990,19 +5994,19 @@ TEST(Backtrace) {
      "\"command\":\"backtrace\"}";
 
   // Check backtrace from ProcessDebugMessages.
-  BracktraceData::frame_counter = -10;
+  BacktraceData::frame_counter = -10;
   v8::Debug::SendCommand(buffer, AsciiToUtf16(scripts_command, buffer));
   v8::Debug::ProcessDebugMessages();
-  CHECK_EQ(BracktraceData::frame_counter, 0);
+  CHECK_EQ(BacktraceData::frame_counter, 0);
 
   v8::Handle<v8::String> void0 = v8::String::New("void(0)");
   v8::Handle<v8::Script> script = v8::Script::Compile(void0, void0);
 
   // Check backtrace from "void(0)" script.
-  BracktraceData::frame_counter = -10;
+  BacktraceData::frame_counter = -10;
   v8::Debug::SendCommand(buffer, AsciiToUtf16(scripts_command, buffer));
   script->Run();
-  CHECK_EQ(BracktraceData::frame_counter, 1);
+  CHECK_EQ(BacktraceData::frame_counter, 1);
 
   // Get rid of the debug message handler.
   v8::Debug::SetMessageHandler2(NULL);
@@ -6139,5 +6143,16 @@ TEST(CallingContextIsNotDebugContext) {
   v8::Debug::SetDebugEventListener(NULL);
   debugee_context = v8::Handle<v8::Context>();
   debugger_context = v8::Handle<v8::Context>();
+  CheckDebuggerUnloaded();
+}
+
+
+TEST(DebugContextIsPreservedBetweenAccesses) {
+  v8::HandleScope scope;
+  v8::Local<v8::Context> context1 = v8::Debug::GetDebugContext();
+  v8::Local<v8::Context> context2 = v8::Debug::GetDebugContext();
+  CHECK_EQ(*context1, *context2);
+  // Make sure debugger is unloaded before running other tests.
+  v8::internal::ForceUnloadDebugger();
   CheckDebuggerUnloaded();
 }

@@ -35,6 +35,14 @@ assertEquals("F", foo[0]);
 assertEquals("o", foo[1]);
 assertEquals("o", foo[2]);
 
+// Test string keyed load IC.
+for (var i = 0; i < 10; i++) {
+  assertEquals("F", foo[0]);
+  assertEquals("o", foo[1]);
+  assertEquals("o", foo[2]);
+  assertEquals("F", (foo[0] + "BarBazQuuxFooBarQuux")[0]);
+}
+
 assertEquals("F", foo["0" + ""], "string index");
 assertEquals("o", foo["1"], "string index");
 assertEquals("o", foo["2"], "string index");
@@ -152,3 +160,78 @@ assertEquals('o', S2);
 var s2 = (s[-2] = 't');
 assertEquals('undefined', typeof(s[-2]));
 assertEquals('t', s2);
+
+// Make sure enough of the one-char string cache is filled.
+var alpha = ['@'];
+for (var i = 1; i < 128; i++) {
+  var c = String.fromCharCode(i);
+  alpha[i] = c[0];
+}
+var alphaStr = alpha.join("");
+
+// Now test chars.
+for (var i = 1; i < 128; i++) {
+  assertEquals(alpha[i], alphaStr[i]);
+  assertEquals(String.fromCharCode(i), alphaStr[i]);
+}
+
+// Test for keyed ic.
+var foo = ['a12', ['a', 2, 'c'], 'a31', 42];
+var results = [1, 2, 3, NaN];
+for (var i = 0; i < 200; ++i) {
+  var index = Math.floor(i / 50);
+  var receiver = foo[index];
+  var expected = results[index];
+  var actual = +(receiver[1]);
+  assertEquals(expected, actual);
+}
+
+var keys = [0, '1', 2, 3.0, -1, 10];
+var str = 'abcd', arr = ['a', 'b', 'c', 'd', undefined, undefined];
+for (var i = 0; i < 300; ++i) {
+  var index = Math.floor(i / 50);
+  var key = keys[index];
+  var expected = arr[index];
+  var actual = str[key];
+  assertEquals(expected, actual);
+}
+
+// Test heap number case.
+var keys = [0, Math.floor(2) * 0.5];
+var str = 'ab', arr = ['a', 'b'];
+for (var i = 0; i < 100; ++i) {
+  var index = Math.floor(i / 50);
+  var key = keys[index];
+  var expected = arr[index];
+  var actual = str[key];
+  assertEquals(expected, actual);
+}
+
+// Test out of range case.
+var keys = [0, -1];
+var str = 'ab', arr = ['a', undefined];
+for (var i = 0; i < 100; ++i) {
+  var index = Math.floor(i / 50);
+  var key = keys[index];
+  var expected = arr[index];
+  var actual = str[key];
+  assertEquals(expected, actual);
+}
+
+var keys = [0, 10];
+var str = 'ab', arr = ['a', undefined];
+for (var i = 0; i < 100; ++i) {
+  var index = Math.floor(i / 50);
+  var key = keys[index];
+  var expected = arr[index];
+  var actual = str[key];
+  assertEquals(expected, actual);
+}
+
+// Test two byte string.
+var str = '\u0427', arr = ['\u0427'];
+for (var i = 0; i < 50; ++i) {
+  var expected = arr[0];
+  var actual = str[0];
+  assertEquals(expected, actual);
+}

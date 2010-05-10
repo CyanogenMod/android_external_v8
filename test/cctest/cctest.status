@@ -27,6 +27,8 @@
 
 prefix cctest
 
+test-api/Bug*: FAIL
+
 # BUG(281): This test fails on some Linuxes.
 test-debug/DebuggerAgent: PASS, (PASS || FAIL) if $system == linux
 
@@ -57,6 +59,7 @@ test-accessors: SKIP
 test-alloc: SKIP
 test-api: SKIP
 test-compiler: SKIP
+test-cpu-profiler: SKIP
 test-debug: SKIP
 test-decls: SKIP
 test-func-name-inference: SKIP

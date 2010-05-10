@@ -31,7 +31,6 @@
 #include "codegen-inl.h"
 #include "compiler.h"
 #include "debug.h"
-#include "liveedit.h"
 #include "oprofile-agent.h"
 #include "prettyprinter.h"
 #include "register-allocator-inl.h"
@@ -39,6 +38,7 @@
 #include "runtime.h"
 #include "scopeinfo.h"
 #include "stub-cache.h"
+#include "virtual-frame-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -63,38 +63,6 @@ Comment::~Comment() {
 
 
 CodeGenerator* CodeGeneratorScope::top_ = NULL;
-
-
-DeferredCode::DeferredCode()
-    : masm_(CodeGeneratorScope::Current()->masm()),
-      statement_position_(masm_->current_statement_position()),
-      position_(masm_->current_position()) {
-  ASSERT(statement_position_ != RelocInfo::kNoPosition);
-  ASSERT(position_ != RelocInfo::kNoPosition);
-
-  CodeGeneratorScope::Current()->AddDeferred(this);
-#ifdef DEBUG
-  comment_ = "";
-#endif
-
-  // Copy the register locations from the code generator's frame.
-  // These are the registers that will be spilled on entry to the
-  // deferred code and restored on exit.
-  VirtualFrame* frame = CodeGeneratorScope::Current()->frame();
-  int sp_offset = frame->fp_relative(frame->stack_pointer_);
-  for (int i = 0; i < RegisterAllocator::kNumRegisters; i++) {
-    int loc = frame->register_location(i);
-    if (loc == VirtualFrame::kIllegalIndex) {
-      registers_[i] = kIgnore;
-    } else if (frame->elements_[loc].is_synced()) {
-      // Needs to be restored on exit but not saved on entry.
-      registers_[i] = frame->fp_relative(loc) | kSyncedFlag;
-    } else {
-      int offset = frame->fp_relative(loc);
-      registers_[i] = (offset < sp_offset) ? kPush : offset;
-    }
-  }
-}
 
 
 void CodeGenerator::ProcessDeferred() {
@@ -235,7 +203,6 @@ Handle<Code> CodeGenerator::MakeCodeEpilogue(MacroAssembler* masm,
 // all the pieces into a Code object. This function is only to be called by
 // the compiler.cc code.
 Handle<Code> CodeGenerator::MakeCode(CompilationInfo* info) {
-  LiveEditFunctionTracker live_edit_tracker(info->function());
   Handle<Script> script = info->script();
   if (!script->IsUndefined() && !script->source()->IsUndefined()) {
     int len = String::cast(script->source())->length();
@@ -247,7 +214,6 @@ Handle<Code> CodeGenerator::MakeCode(CompilationInfo* info) {
   MacroAssembler masm(NULL, kInitialBufferSize);
   CodeGenerator cgen(&masm);
   CodeGeneratorScope scope(&cgen);
-  live_edit_tracker.RecordFunctionScope(info->function()->scope());
   cgen.Generate(info);
   if (cgen.HasStackOverflow()) {
     ASSERT(!Top::has_pending_exception());
@@ -256,9 +222,7 @@ Handle<Code> CodeGenerator::MakeCode(CompilationInfo* info) {
 
   InLoopFlag in_loop = (cgen.loop_nesting() != 0) ? IN_LOOP : NOT_IN_LOOP;
   Code::Flags flags = Code::ComputeFlags(Code::FUNCTION, in_loop);
-  Handle<Code> result = MakeCodeEpilogue(cgen.masm(), flags, info);
-  live_edit_tracker.RecordFunctionCode(result);
-  return result;
+  return MakeCodeEpilogue(cgen.masm(), flags, info);
 }
 
 
@@ -266,7 +230,7 @@ Handle<Code> CodeGenerator::MakeCode(CompilationInfo* info) {
 
 bool CodeGenerator::ShouldGenerateLog(Expression* type) {
   ASSERT(type != NULL);
-  if (!Logger::is_logging()) return false;
+  if (!Logger::is_logging() && !CpuProfiler::is_profiling()) return false;
   Handle<String> name = Handle<String>::cast(type->AsLiteral()->handle());
   if (FLAG_log_regexp) {
     static Vector<const char> kRegexp = CStrVector("regexp");
@@ -335,8 +299,8 @@ void CodeGenerator::ProcessDeclarations(ZoneList<Declaration*>* declarations) {
           array->set_undefined(j++);
         }
       } else {
-        Handle<JSFunction> function =
-            Compiler::BuildBoilerplate(node->fun(), script(), this);
+        Handle<SharedFunctionInfo> function =
+            Compiler::BuildFunctionInfo(node->fun(), script(), this);
         // Check for stack-overflow exception.
         if (HasStackOverflow()) return;
         array->set(j++, *function);
@@ -350,39 +314,18 @@ void CodeGenerator::ProcessDeclarations(ZoneList<Declaration*>* declarations) {
 }
 
 
+// List of special runtime calls which are generated inline. For some of these
+// functions the code will be generated inline, and for others a call to a code
+// stub will be inlined.
 
-// Special cases: These 'runtime calls' manipulate the current
-// frame and are only used 1 or two places, so we generate them
-// inline instead of generating calls to them.  They are used
-// for implementing Function.prototype.call() and
-// Function.prototype.apply().
+#define INLINE_RUNTIME_ENTRY(Name, argc, ressize)                             \
+    {&CodeGenerator::Generate##Name,  "_" #Name, argc},                       \
+
 CodeGenerator::InlineRuntimeLUT CodeGenerator::kInlineRuntimeLUT[] = {
-  {&CodeGenerator::GenerateIsSmi, "_IsSmi"},
-  {&CodeGenerator::GenerateIsNonNegativeSmi, "_IsNonNegativeSmi"},
-  {&CodeGenerator::GenerateIsArray, "_IsArray"},
-  {&CodeGenerator::GenerateIsRegExp, "_IsRegExp"},
-  {&CodeGenerator::GenerateIsConstructCall, "_IsConstructCall"},
-  {&CodeGenerator::GenerateArgumentsLength, "_ArgumentsLength"},
-  {&CodeGenerator::GenerateArgumentsAccess, "_Arguments"},
-  {&CodeGenerator::GenerateClassOf, "_ClassOf"},
-  {&CodeGenerator::GenerateValueOf, "_ValueOf"},
-  {&CodeGenerator::GenerateSetValueOf, "_SetValueOf"},
-  {&CodeGenerator::GenerateFastCharCodeAt, "_FastCharCodeAt"},
-  {&CodeGenerator::GenerateObjectEquals, "_ObjectEquals"},
-  {&CodeGenerator::GenerateLog, "_Log"},
-  {&CodeGenerator::GenerateRandomPositiveSmi, "_RandomPositiveSmi"},
-  {&CodeGenerator::GenerateIsObject, "_IsObject"},
-  {&CodeGenerator::GenerateIsFunction, "_IsFunction"},
-  {&CodeGenerator::GenerateIsUndetectableObject, "_IsUndetectableObject"},
-  {&CodeGenerator::GenerateStringAdd, "_StringAdd"},
-  {&CodeGenerator::GenerateSubString, "_SubString"},
-  {&CodeGenerator::GenerateStringCompare, "_StringCompare"},
-  {&CodeGenerator::GenerateRegExpExec, "_RegExpExec"},
-  {&CodeGenerator::GenerateNumberToString, "_NumberToString"},
-  {&CodeGenerator::GenerateMathSin, "_Math_sin"},
-  {&CodeGenerator::GenerateMathCos, "_Math_cos"},
+  INLINE_RUNTIME_FUNCTION_LIST(INLINE_RUNTIME_ENTRY)
 };
 
+#undef INLINE_RUNTIME_ENTRY
 
 CodeGenerator::InlineRuntimeLUT* CodeGenerator::FindInlineRuntimeLUT(
     Handle<String> name) {
@@ -424,6 +367,14 @@ bool CodeGenerator::PatchInlineRuntimeEntry(Handle<String> name,
   entry->name = new_entry.name;
   entry->method = new_entry.method;
   return true;
+}
+
+
+int CodeGenerator::InlineRuntimeCallArgumentsCount(Handle<String> name) {
+  CodeGenerator::InlineRuntimeLUT* f =
+      CodeGenerator::FindInlineRuntimeLUT(name);
+  if (f != NULL) return f->nargs;
+  return -1;
 }
 
 
@@ -498,7 +449,6 @@ const char* GenericUnaryOpStub::GetName() {
 
 void ArgumentsAccessStub::Generate(MacroAssembler* masm) {
   switch (type_) {
-    case READ_LENGTH: GenerateReadLength(masm); break;
     case READ_ELEMENT: GenerateReadElement(masm); break;
     case NEW_OBJECT: GenerateNewObject(masm); break;
   }

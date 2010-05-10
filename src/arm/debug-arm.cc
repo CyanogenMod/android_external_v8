@@ -46,13 +46,23 @@ void BreakLocationIterator::SetDebugBreakAtReturn() {
   //   add sp, sp, #4
   //   bx lr
   // to a call to the debug break return code.
+  // #if USE_BLX
+  //   ldr ip, [pc, #0]
+  //   blx ip
+  // #else
   //   mov lr, pc
   //   ldr pc, [pc, #-4]
+  // #endif
   //   <debug break return code entry point address>
   //   bktp 0
   CodePatcher patcher(rinfo()->pc(), 4);
+#ifdef USE_BLX
+  patcher.masm()->ldr(v8::internal::ip, MemOperand(v8::internal::pc, 0));
+  patcher.masm()->blx(v8::internal::ip);
+#else
   patcher.masm()->mov(v8::internal::lr, v8::internal::pc);
   patcher.masm()->ldr(v8::internal::pc, MemOperand(v8::internal::pc, -4));
+#endif
   patcher.Emit(Debug::debug_break_return()->entry());
   patcher.masm()->bkpt(0);
 }
@@ -123,9 +133,9 @@ static void Generate_DebugBreakCallHelper(MacroAssembler* masm,
 void Debug::GenerateLoadICDebugBreak(MacroAssembler* masm) {
   // Calling convention for IC load (from ic-arm.cc).
   // ----------- S t a t e -------------
-  //  -- r0    : receiver
   //  -- r2    : name
   //  -- lr    : return address
+  //  -- r0    : receiver
   //  -- [sp]  : receiver
   // -----------------------------------
   // Registers r0 and r2 contain objects that need to be pushed on the
@@ -151,9 +161,10 @@ void Debug::GenerateStoreICDebugBreak(MacroAssembler* masm) {
 void Debug::GenerateKeyedLoadICDebugBreak(MacroAssembler* masm) {
   // ---------- S t a t e --------------
   //  -- lr     : return address
+  //  -- r0     : key
   //  -- sp[0]  : key
   //  -- sp[4]  : receiver
-  Generate_DebugBreakCallHelper(masm, 0);
+  Generate_DebugBreakCallHelper(masm, r0.bit());
 }
 
 
@@ -206,7 +217,22 @@ void Debug::GenerateStubNoRegistersDebugBreak(MacroAssembler* masm) {
 }
 
 
+void Debug::GeneratePlainReturnLiveEdit(MacroAssembler* masm) {
+  masm->Abort("LiveEdit frame dropping is not supported on arm");
+}
+
+void Debug::GenerateFrameDropperLiveEdit(MacroAssembler* masm) {
+  masm->Abort("LiveEdit frame dropping is not supported on arm");
+}
+
 #undef __
+
+
+void Debug::SetUpFrameDropperFrame(StackFrame* bottom_js_frame,
+                                   Handle<Code> code) {
+  UNREACHABLE();
+}
+const int Debug::kFrameDropperFrameSize = -1;
 
 #endif  // ENABLE_DEBUGGER_SUPPORT
 

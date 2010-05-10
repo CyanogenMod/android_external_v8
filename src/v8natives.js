@@ -54,6 +54,7 @@ function InstallFunctions(object, attributes, functions) {
     var key = functions[i];
     var f = functions[i + 1];
     %FunctionSetName(f, key);
+    %FunctionRemovePrototype(f);
     %SetProperty(object, key, f, attributes);
   }
   %ToFastProperties(object);
@@ -82,7 +83,10 @@ function GlobalIsNaN(number) {
 
 // ECMA 262 - 15.1.5
 function GlobalIsFinite(number) {
-  return %NumberIsFinite(ToNumber(number));
+  if (!IS_NUMBER(number)) number = ToNumber(number);
+
+  // NaN - NaN == NaN, Infinity - Infinity == NaN, -Infinity - -Infinity == NaN.
+  return %_IsSmi(number) || number - number == 0;
 }
 
 
@@ -221,7 +225,7 @@ function ObjectHasOwnProperty(V) {
 
 // ECMA-262 - 15.2.4.6
 function ObjectIsPrototypeOf(V) {
-  if (!IS_OBJECT(V) && !IS_FUNCTION(V)) return false;
+  if (!IS_OBJECT(V) && !IS_FUNCTION(V) && !IS_UNDETECTABLE(V)) return false;
   return %IsInPrototypeChain(this, V);
 }
 
@@ -236,7 +240,7 @@ function ObjectPropertyIsEnumerable(V) {
 
 // Extensions for providing property getters and setters.
 function ObjectDefineGetter(name, fun) {
-  if (this == null) {
+  if (this == null && !IS_UNDETECTABLE(this)) {
     throw new $TypeError('Object.prototype.__defineGetter__: this is Null');
   }
   if (!IS_FUNCTION(fun)) {
@@ -247,7 +251,7 @@ function ObjectDefineGetter(name, fun) {
 
 
 function ObjectLookupGetter(name) {
-  if (this == null) {
+  if (this == null && !IS_UNDETECTABLE(this)) {
     throw new $TypeError('Object.prototype.__lookupGetter__: this is Null');
   }
   return %LookupAccessor(ToObject(this), ToString(name), GETTER);
@@ -255,7 +259,7 @@ function ObjectLookupGetter(name) {
 
 
 function ObjectDefineSetter(name, fun) {
-  if (this == null) {
+  if (this == null && !IS_UNDETECTABLE(this)) {
     throw new $TypeError('Object.prototype.__defineSetter__: this is Null');
   }
   if (!IS_FUNCTION(fun)) {
@@ -267,7 +271,7 @@ function ObjectDefineSetter(name, fun) {
 
 
 function ObjectLookupSetter(name) {
-  if (this == null) {
+  if (this == null && !IS_UNDETECTABLE(this)) {
     throw new $TypeError('Object.prototype.__lookupSetter__: this is Null');
   }
   return %LookupAccessor(ToObject(this), ToString(name), SETTER);
@@ -275,7 +279,8 @@ function ObjectLookupSetter(name) {
 
 
 function ObjectKeys(obj) {
-  if ((!IS_OBJECT(obj) || IS_NULL_OR_UNDEFINED(obj)) && !IS_FUNCTION(obj))
+  if ((!IS_OBJECT(obj) || IS_NULL_OR_UNDEFINED(obj)) && !IS_FUNCTION(obj) &&
+      !IS_UNDETECTABLE(obj))
     throw MakeTypeError("obj_ctor_property_non_object", ["keys"]);
   return %LocalKeys(obj);
 }
@@ -481,7 +486,7 @@ PropertyDescriptor.prototype.hasSetter = function() {
 // ES5 section 8.12.1.
 function GetOwnProperty(obj, p) {
   var desc = new PropertyDescriptor();
-  
+
   // An array with:
   //  obj is a data property [false, value, Writeable, Enumerable, Configurable]
   //  obj is an accessor [true, Get, Set, Enumerable, Configurable]
@@ -521,7 +526,7 @@ function HasProperty(obj, p) {
 }
 
 
-// ES5 8.12.9.  
+// ES5 8.12.9.
 function DefineOwnProperty(obj, p, desc, should_throw) {
   var current = GetOwnProperty(obj, p);
   var extensible = %IsExtensible(ToObject(obj));
@@ -557,7 +562,7 @@ function DefineOwnProperty(obj, p, desc, should_throw) {
     }
   }
 
-  // Send flags - enumerable and configurable are common - writable is 
+  // Send flags - enumerable and configurable are common - writable is
   // only send to the data descriptor.
   // Take special care if enumerable and configurable is not defined on
   // desc (we need to preserve the existing values from current).
@@ -594,15 +599,17 @@ function DefineOwnProperty(obj, p, desc, should_throw) {
 
 // ES5 section 15.2.3.2.
 function ObjectGetPrototypeOf(obj) {
-  if ((!IS_OBJECT(obj) || IS_NULL_OR_UNDEFINED(obj)) && !IS_FUNCTION(obj))
+  if ((!IS_OBJECT(obj) || IS_NULL_OR_UNDEFINED(obj)) && !IS_FUNCTION(obj) &&
+      !IS_UNDETECTABLE(obj))
     throw MakeTypeError("obj_ctor_property_non_object", ["getPrototypeOf"]);
   return obj.__proto__;
 }
 
 
-// ES5 section 15.2.3.3 
+// ES5 section 15.2.3.3
 function ObjectGetOwnPropertyDescriptor(obj, p) {
-  if ((!IS_OBJECT(obj) || IS_NULL_OR_UNDEFINED(obj)) && !IS_FUNCTION(obj))
+  if ((!IS_OBJECT(obj) || IS_NULL_OR_UNDEFINED(obj)) && !IS_FUNCTION(obj) &&
+      !IS_UNDETECTABLE(obj))
     throw MakeTypeError("obj_ctor_property_non_object", ["getOwnPropertyDescriptor"]);
   var desc = GetOwnProperty(obj, p);
   return FromPropertyDescriptor(desc);
@@ -611,7 +618,8 @@ function ObjectGetOwnPropertyDescriptor(obj, p) {
 
 // ES5 section 15.2.3.4.
 function ObjectGetOwnPropertyNames(obj) {
-  if ((!IS_OBJECT(obj) || IS_NULL_OR_UNDEFINED(obj)) && !IS_FUNCTION(obj))
+  if ((!IS_OBJECT(obj) || IS_NULL_OR_UNDEFINED(obj)) && !IS_FUNCTION(obj) &&
+      !IS_UNDETECTABLE(obj))
     throw MakeTypeError("obj_ctor_property_non_object", ["getOwnPropertyNames"]);
 
   // Find all the indexed properties.
@@ -664,7 +672,8 @@ function ObjectCreate(proto, properties) {
 
 // ES5 section 15.2.3.6.
 function ObjectDefineProperty(obj, p, attributes) {
-  if ((!IS_OBJECT(obj) || IS_NULL_OR_UNDEFINED(obj)) && !IS_FUNCTION(obj))
+  if ((!IS_OBJECT(obj) || IS_NULL_OR_UNDEFINED(obj)) && !IS_FUNCTION(obj) &&
+      !IS_UNDETECTABLE(obj))
     throw MakeTypeError("obj_ctor_property_non_object", ["defineProperty"]);
   var name = ToString(p);
   var desc = ToPropertyDescriptor(attributes);
@@ -675,7 +684,8 @@ function ObjectDefineProperty(obj, p, attributes) {
 
 // ES5 section 15.2.3.7.
 function ObjectDefineProperties(obj, properties) {
- if ((!IS_OBJECT(obj) || IS_NULL_OR_UNDEFINED(obj)) && !IS_FUNCTION(obj))
+ if ((!IS_OBJECT(obj) || IS_NULL_OR_UNDEFINED(obj)) && !IS_FUNCTION(obj) &&
+     !IS_UNDETECTABLE(obj))
     throw MakeTypeError("obj_ctor_property_non_object", ["defineProperties"]);
   var props = ToObject(properties);
   var key_values = [];

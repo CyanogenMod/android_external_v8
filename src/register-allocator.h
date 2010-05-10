@@ -29,7 +29,7 @@
 #define V8_REGISTER_ALLOCATOR_H_
 
 #include "macro-assembler.h"
-#include "number-info.h"
+#include "type-info.h"
 
 #if V8_TARGET_ARCH_IA32
 #include "ia32/register-allocator-ia32.h"
@@ -65,12 +65,14 @@ class Result BASE_EMBEDDED {
   Result() { invalidate(); }
 
   // Construct a register Result.
-  explicit Result(Register reg, NumberInfo::Type info = NumberInfo::kUnknown);
+  explicit Result(Register reg, TypeInfo info = TypeInfo::Unknown());
 
   // Construct a Result whose value is a compile-time constant.
   explicit Result(Handle<Object> value) {
+    TypeInfo info = TypeInfo::TypeFromValue(value);
     value_ = TypeField::encode(CONSTANT)
-        | NumberInfoField::encode(NumberInfo::kUninitialized)
+        | TypeInfoField::encode(info.ToInt())
+        | IsUntaggedInt32Field::encode(false)
         | DataField::encode(ConstantList()->length());
     ConstantList()->Add(value);
   }
@@ -101,17 +103,29 @@ class Result BASE_EMBEDDED {
 
   void invalidate() { value_ = TypeField::encode(INVALID); }
 
-  NumberInfo::Type number_info();
-  void set_number_info(NumberInfo::Type info);
-  bool is_number() {
-    return (number_info() & NumberInfo::kNumber) != 0;
-  }
-  bool is_smi() { return number_info() == NumberInfo::kSmi; }
-  bool is_heap_number() { return number_info() == NumberInfo::kHeapNumber; }
+  inline TypeInfo type_info() const;
+  inline void set_type_info(TypeInfo info);
+  inline bool is_number() const;
+  inline bool is_smi() const;
+  inline bool is_integer32() const;
+  inline bool is_double() const;
 
   bool is_valid() const { return type() != INVALID; }
   bool is_register() const { return type() == REGISTER; }
   bool is_constant() const { return type() == CONSTANT; }
+
+  // An untagged int32 Result contains a signed int32 in a register
+  // or as a constant.  These are only allowed in a side-effect-free
+  // int32 calculation, and if a non-int32 input shows up or an overflow
+  // occurs, we bail out and drop all the int32 values.  Constants are
+  // not converted to int32 until they are loaded into a register.
+  bool is_untagged_int32() const {
+    return IsUntaggedInt32Field::decode(value_);
+  }
+  void set_untagged_int32(bool value) {
+    value_ &= ~IsUntaggedInt32Field::mask();
+    value_ |= IsUntaggedInt32Field::encode(value);
+  }
 
   Register reg() const {
     ASSERT(is_register());
@@ -139,9 +153,11 @@ class Result BASE_EMBEDDED {
  private:
   uint32_t value_;
 
+  // Declare BitFields with template parameters <type, start, size>.
   class TypeField: public BitField<Type, 0, 2> {};
-  class NumberInfoField : public BitField<NumberInfo::Type, 2, 3> {};
-  class DataField: public BitField<uint32_t, 5, 32 - 5> {};
+  class TypeInfoField : public BitField<int, 2, 6> {};
+  class IsUntaggedInt32Field : public BitField<bool, 8, 1> {};
+  class DataField: public BitField<uint32_t, 9, 32 - 9> {};
 
   inline void CopyTo(Result* destination) const;
 
@@ -197,7 +213,11 @@ class RegisterFile BASE_EMBEDDED {
   }
 
  private:
-  static const int kNumRegisters = RegisterAllocatorConstants::kNumRegisters;
+  // C++ doesn't like zero length arrays, so we make the array length 1 even if
+  // we don't need it.
+  static const int kNumRegisters =
+      (RegisterAllocatorConstants::kNumRegisters == 0) ?
+      1 : RegisterAllocatorConstants::kNumRegisters;
 
   int ref_counts_[kNumRegisters];
 

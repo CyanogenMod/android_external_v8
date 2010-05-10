@@ -28,23 +28,19 @@
 #ifndef V8_JUMP_TARGET_INL_H_
 #define V8_JUMP_TARGET_INL_H_
 
+#include "virtual-frame-inl.h"
+
+#if V8_TARGET_ARCH_IA32 || V8_TARGET_ARCH_X64
+#include "jump-target-heavy-inl.h"
+#else
+#include "jump-target-light-inl.h"
+#endif
+
 namespace v8 {
 namespace internal {
 
 CodeGenerator* JumpTarget::cgen() {
   return CodeGeneratorScope::Current();
-}
-
-void JumpTarget::InitializeEntryElement(int index, FrameElement* target) {
-  entry_frame_->elements_[index].clear_copied();
-  if (target->is_register()) {
-    entry_frame_->set_register_location(target->reg(), index);
-  } else if (target->is_copy()) {
-    entry_frame_->elements_[target->index()].set_copied();
-  }
-  if (direction_ == BIDIRECTIONAL && !target->is_copy()) {
-    entry_frame_->elements_[index].set_number_info(NumberInfo::kUnknown);
-  }
 }
 
 } }  // namespace v8::internal

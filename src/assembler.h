@@ -37,7 +37,6 @@
 
 #include "runtime.h"
 #include "top.h"
-#include "zone-inl.h"
 #include "token.h"
 
 namespace v8 {
@@ -399,7 +398,8 @@ class ExternalReference BASE_EMBEDDED {
   // ExternalReferenceTable in serialize.cc manually.
 
   static ExternalReference perform_gc_function();
-  static ExternalReference random_positive_smi_function();
+  static ExternalReference fill_heap_number_with_random_function();
+  static ExternalReference random_uint32_function();
   static ExternalReference transcendental_cache_array_address();
 
   // Static data in the keyed lookup cache.
@@ -444,6 +444,9 @@ class ExternalReference BASE_EMBEDDED {
 
   static ExternalReference scheduled_exception_address();
 
+  static ExternalReference compile_array_pop_call();
+  static ExternalReference compile_array_push_call();
+
   Address address() const {return reinterpret_cast<Address>(address_);}
 
 #ifdef ENABLE_DEBUGGER_SUPPORT
@@ -454,7 +457,7 @@ class ExternalReference BASE_EMBEDDED {
   static ExternalReference debug_step_in_fp_address();
 #endif
 
-#ifdef V8_NATIVE_REGEXP
+#ifndef V8_INTERPRETED_REGEXP
   // C functions called from RegExp generated code.
 
   // Function NativeRegExpMacroAssembler::CaseInsensitiveCompareUC16()

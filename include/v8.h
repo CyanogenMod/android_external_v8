@@ -261,6 +261,10 @@ template <class T> class V8EXPORT_INLINE Handle {
     return Handle<T>(T::Cast(*that));
   }
 
+  template <class S> inline Handle<S> As() {
+    return Handle<S>::Cast(*this);
+  }
+
  private:
   T* val_;
 };
@@ -293,6 +297,10 @@ template <class T> class V8EXPORT_INLINE Local : public Handle<T> {
     if (that.IsEmpty()) return Local<T>();
 #endif
     return Local<T>(T::Cast(*that));
+  }
+
+  template <class S> inline Local<S> As() {
+    return Local<S>::Cast(*this);
   }
 
   /** Create a local handle for the content of another handle.
@@ -366,6 +374,10 @@ template <class T> class V8EXPORT_INLINE Persistent : public Handle<T> {
     if (that.IsEmpty()) return Persistent<T>();
 #endif
     return Persistent<T>(T::Cast(*that));
+  }
+
+  template <class S> inline Persistent<S> As() {
+    return Persistent<S>::Cast(*this);
   }
 
   /**
@@ -538,13 +550,13 @@ class V8EXPORT Script {
    * Compiles the specified script (context-independent).
    *
    * \param source Script source code.
-   * \param origin Script origin, owned by caller, no references are kept 
+   * \param origin Script origin, owned by caller, no references are kept
    *   when New() returns
    * \param pre_data Pre-parsing data, as obtained by ScriptData::PreCompile()
    *   using pre_data speeds compilation if it's done multiple times.
    *   Owned by caller, no references are kept when New() returns.
    * \param script_data Arbitrary data associated with script. Using
-   *   this has same effect as calling SetData(), but allows data to be 
+   *   this has same effect as calling SetData(), but allows data to be
    *   available to compile event handlers.
    * \return Compiled script object (context independent; when run it
    *   will use the currently entered context).
@@ -559,7 +571,7 @@ class V8EXPORT Script {
    * object (typically a string) as the script's origin.
    *
    * \param source Script source code.
-   * \patam file_name file name object (typically a string) to be used 
+   * \param file_name file name object (typically a string) to be used
    *   as the script's origin.
    * \return Compiled script object (context independent; when run it
    *   will use the currently entered context).
@@ -571,7 +583,7 @@ class V8EXPORT Script {
    * Compiles the specified script (bound to current context).
    *
    * \param source Script source code.
-   * \param origin Script origin, owned by caller, no references are kept 
+   * \param origin Script origin, owned by caller, no references are kept
    *   when Compile() returns
    * \param pre_data Pre-parsing data, as obtained by ScriptData::PreCompile()
    *   using pre_data speeds compilation if it's done multiple times.
@@ -755,6 +767,11 @@ class V8EXPORT Value : public Data {
   bool IsInt32() const;
 
   /**
+   * Returns true if this value is a 32-bit unsigned integer.
+   */
+  bool IsUint32() const;
+
+  /**
    * Returns true if this value is a Date.
    */
   bool IsDate() const;
@@ -838,12 +855,29 @@ class V8EXPORT String : public Primitive {
    * \param start The starting position within the string at which
    * copying begins.
    * \param length The number of bytes to copy from the string.
-   * \return The number of characters copied to the buffer
+   * \param nchars_ref The number of characters written, can be NULL.
+   * \param hints Various hints that might affect performance of this or
+   *    subsequent operations.
+   * \return The number of bytes copied to the buffer
    * excluding the NULL terminator.
    */
-  int Write(uint16_t* buffer, int start = 0, int length = -1) const;  // UTF-16
-  int WriteAscii(char* buffer, int start = 0, int length = -1) const;  // ASCII
-  int WriteUtf8(char* buffer, int length = -1) const; // UTF-8
+  enum WriteHints {
+    NO_HINTS = 0,
+    HINT_MANY_WRITES_EXPECTED = 1
+  };
+
+  int Write(uint16_t* buffer,
+            int start = 0,
+            int length = -1,
+            WriteHints hints = NO_HINTS) const;  // UTF-16
+  int WriteAscii(char* buffer,
+                 int start = 0,
+                 int length = -1,
+                 WriteHints hints = NO_HINTS) const;  // ASCII
+  int WriteUtf8(char* buffer,
+                int length = -1,
+                int* nchars_ref = NULL,
+                WriteHints hints = NO_HINTS) const; // UTF-8
 
   /**
    * A zero length string.
@@ -1178,6 +1212,9 @@ class V8EXPORT Object : public Value {
            Handle<Value> value,
            PropertyAttribute attribs = None);
 
+  bool Set(uint32_t index,
+           Handle<Value> value);
+
   // Sets a local property on this object bypassing interceptors and
   // overriding accessors or read-only properties.
   //
@@ -1191,6 +1228,8 @@ class V8EXPORT Object : public Value {
                 PropertyAttribute attribs = None);
 
   Local<Value> Get(Handle<Value> key);
+
+  Local<Value> Get(uint32_t index);
 
   // TODO(1245389): Replace the type-specific versions of these
   // functions with generic ones that accept a Handle<Value> key.
@@ -2136,12 +2175,26 @@ typedef void (*FailedAccessCheckCallback)(Local<Object> target,
 // --- G a r b a g e C o l l e c t i o n  C a l l b a c k s
 
 /**
- * Applications can register a callback function which is called
- * before and after a major garbage collection.  Allocations are not
- * allowed in the callback function, you therefore cannot manipulate
+ * Applications can register callback functions which will be called
+ * before and after a garbage collection.  Allocations are not
+ * allowed in the callback functions, you therefore cannot manipulate
  * objects (set or delete properties for example) since it is possible
  * such operations will result in the allocation of objects.
  */
+enum GCType {
+  kGCTypeScavenge = 1 << 0,
+  kGCTypeMarkSweepCompact = 1 << 1,
+  kGCTypeAll = kGCTypeScavenge | kGCTypeMarkSweepCompact
+};
+
+enum GCCallbackFlags {
+  kNoGCCallbackFlags = 0,
+  kGCCallbackFlagCompacted = 1 << 0
+};
+
+typedef void (*GCPrologueCallback)(GCType type, GCCallbackFlags flags);
+typedef void (*GCEpilogueCallback)(GCType type, GCCallbackFlags flags);
+
 typedef void (*GCCallback)();
 
 
@@ -2277,7 +2330,27 @@ class V8EXPORT V8 {
 
   /**
    * Enables the host application to receive a notification before a
-   * major garbage colletion.  Allocations are not allowed in the
+   * garbage collection.  Allocations are not allowed in the
+   * callback function, you therefore cannot manipulate objects (set
+   * or delete properties for example) since it is possible such
+   * operations will result in the allocation of objects. It is possible
+   * to specify the GCType filter for your callback. But it is not possible to
+   * register the same callback function two times with different
+   * GCType filters.
+   */
+  static void AddGCPrologueCallback(
+      GCPrologueCallback callback, GCType gc_type_filter = kGCTypeAll);
+
+  /**
+   * This function removes callback which was installed by
+   * AddGCPrologueCallback function.
+   */
+  static void RemoveGCPrologueCallback(GCPrologueCallback callback);
+
+  /**
+   * The function is deprecated. Please use AddGCPrologueCallback instead.
+   * Enables the host application to receive a notification before a
+   * garbage collection.  Allocations are not allowed in the
    * callback function, you therefore cannot manipulate objects (set
    * or delete properties for example) since it is possible such
    * operations will result in the allocation of objects.
@@ -2285,6 +2358,26 @@ class V8EXPORT V8 {
   static void SetGlobalGCPrologueCallback(GCCallback);
 
   /**
+   * Enables the host application to receive a notification after a
+   * garbage collection.  Allocations are not allowed in the
+   * callback function, you therefore cannot manipulate objects (set
+   * or delete properties for example) since it is possible such
+   * operations will result in the allocation of objects. It is possible
+   * to specify the GCType filter for your callback. But it is not possible to
+   * register the same callback function two times with different
+   * GCType filters.
+   */
+  static void AddGCEpilogueCallback(
+      GCEpilogueCallback callback, GCType gc_type_filter = kGCTypeAll);
+
+  /**
+   * This function removes callback which was installed by
+   * AddGCEpilogueCallback function.
+   */
+  static void RemoveGCEpilogueCallback(GCEpilogueCallback callback);
+
+  /**
+   * The function is deprecated. Please use AddGCEpilogueCallback instead.
    * Enables the host application to receive a notification after a
    * major garbage collection.  Allocations are not allowed in the
    * callback function, you therefore cannot manipulate objects (set
@@ -2400,6 +2493,14 @@ class V8EXPORT V8 {
   static int GetLogLines(int from_pos, char* dest_buf, int max_size);
 
   /**
+   * The minimum allowed size for a log lines buffer.  If the size of
+   * the buffer given will not be enough to hold a line of the maximum
+   * length, an attempt to find a log line end in GetLogLines will
+   * fail, and an empty result will be returned.
+   */
+  static const int kMinimumSizeForLogLinesBuffer = 2048;
+
+  /**
    * Retrieve the V8 thread id of the calling thread.
    *
    * The thread id for a thread should only be retrieved after the V8
@@ -2442,6 +2543,16 @@ class V8EXPORT V8 {
   static void TerminateExecution();
 
   /**
+   * Is V8 terminating JavaScript execution.
+   *
+   * Returns true if JavaScript execution is currently terminating
+   * because of a call to TerminateExecution.  In that case there are
+   * still JavaScript frames on the stack and the termination
+   * exception is still active.
+   */
+  static bool IsExecutionTerminating();
+
+  /**
    * Releases any resources used by v8 and stops any utility threads
    * that may be running.  Note that disposing v8 is permanent, it
    * cannot be reinitialized.
@@ -2472,6 +2583,14 @@ class V8EXPORT V8 {
    * V8 uses these notifications to attempt to free memory.
    */
   static void LowMemoryNotification();
+
+  /**
+   * Optional notification that a context has been disposed. V8 uses
+   * these notifications to guide the GC heuristic. Returns the number
+   * of context disposals - including this one - since the last time
+   * V8 had a chance to clean up.
+   */
+  static int ContextDisposedNotification();
 
  private:
   V8();
@@ -2895,7 +3014,7 @@ template <> struct InternalConstants<4> {
 
 // Internal constants for 64-bit systems.
 template <> struct InternalConstants<8> {
-  static const int kStringResourceOffset = 2 * sizeof(void*);
+  static const int kStringResourceOffset = 3 * sizeof(void*);
 };
 
 /**
@@ -3259,7 +3378,7 @@ External* External::Cast(v8::Value* value) {
 
 
 Local<Value> AccessorInfo::Data() const {
-  return Local<Value>(reinterpret_cast<Value*>(&args_[-3]));
+  return Local<Value>(reinterpret_cast<Value*>(&args_[-2]));
 }
 
 

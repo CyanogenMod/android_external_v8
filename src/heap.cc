@@ -41,10 +41,11 @@
 #include "scopeinfo.h"
 #include "snapshot.h"
 #include "v8threads.h"
-#if V8_TARGET_ARCH_ARM && V8_NATIVE_REGEXP
+#if V8_TARGET_ARCH_ARM && !V8_INTERPRETED_REGEXP
 #include "regexp-macro-assembler.h"
 #include "arm/regexp-macro-assembler-arm.h"
 #endif
+
 
 namespace v8 {
 namespace internal {
@@ -97,6 +98,9 @@ size_t Heap::code_range_size_ = 0;
 // set up by ConfigureHeap otherwise.
 int Heap::reserved_semispace_size_ = Heap::max_semispace_size_;
 
+List<Heap::GCPrologueCallbackPair> Heap::gc_prologue_callbacks_;
+List<Heap::GCEpilogueCallbackPair> Heap::gc_epilogue_callbacks_;
+
 GCCallback Heap::global_gc_prologue_callback_ = NULL;
 GCCallback Heap::global_gc_epilogue_callback_ = NULL;
 
@@ -113,9 +117,11 @@ Heap::HeapState Heap::gc_state_ = NOT_IN_GC;
 int Heap::mc_count_ = 0;
 int Heap::gc_count_ = 0;
 
+int Heap::unflattened_strings_length_ = 0;
+
 int Heap::always_allocate_scope_depth_ = 0;
 int Heap::linear_allocation_scope_depth_ = 0;
-bool Heap::context_disposed_pending_ = false;
+int Heap::contexts_disposed_ = 0;
 
 #ifdef DEBUG
 bool Heap::allocation_allowed_ = true;
@@ -300,7 +306,9 @@ void Heap::ReportStatisticsAfterGC() {
 
 void Heap::GarbageCollectionPrologue() {
   TranscendentalCache::Clear();
+  ClearJSFunctionResultCaches();
   gc_count_++;
+  unflattened_strings_length_ = 0;
 #ifdef DEBUG
   ASSERT(allocation_allowed_ && gc_state_ == NOT_IN_GC);
   allow_allocation(false);
@@ -368,24 +376,6 @@ void Heap::CollectAllGarbage(bool force_compaction) {
   MarkCompactCollector::SetForceCompaction(force_compaction);
   CollectGarbage(0, OLD_POINTER_SPACE);
   MarkCompactCollector::SetForceCompaction(false);
-}
-
-
-void Heap::CollectAllGarbageIfContextDisposed() {
-  // If the garbage collector interface is exposed through the global
-  // gc() function, we avoid being clever about forcing GCs when
-  // contexts are disposed and leave it to the embedder to make
-  // informed decisions about when to force a collection.
-  if (!FLAG_expose_gc && context_disposed_pending_) {
-    HistogramTimerScope scope(&Counters::gc_context);
-    CollectAllGarbage(false);
-  }
-  context_disposed_pending_ = false;
-}
-
-
-void Heap::NotifyContextDisposed() {
-  context_disposed_pending_ = true;
 }
 
 
@@ -552,16 +542,51 @@ void Heap::EnsureFromSpaceIsCommitted() {
 }
 
 
+class ClearThreadJSFunctionResultCachesVisitor: public ThreadVisitor  {
+  virtual void VisitThread(ThreadLocalTop* top) {
+    Context* context = top->context_;
+    if (context == NULL) return;
+
+    FixedArray* caches =
+      context->global()->global_context()->jsfunction_result_caches();
+    int length = caches->length();
+    for (int i = 0; i < length; i++) {
+      JSFunctionResultCache::cast(caches->get(i))->Clear();
+    }
+  }
+};
+
+
+void Heap::ClearJSFunctionResultCaches() {
+  if (Bootstrapper::IsActive()) return;
+  ClearThreadJSFunctionResultCachesVisitor visitor;
+  ThreadManager::IterateThreads(&visitor);
+}
+
+
 void Heap::PerformGarbageCollection(AllocationSpace space,
                                     GarbageCollector collector,
                                     GCTracer* tracer) {
   VerifySymbolTable();
   if (collector == MARK_COMPACTOR && global_gc_prologue_callback_) {
     ASSERT(!allocation_allowed_);
+    GCTracer::ExternalScope scope(tracer);
     global_gc_prologue_callback_();
   }
+
+  GCType gc_type =
+      collector == MARK_COMPACTOR ? kGCTypeMarkSweepCompact : kGCTypeScavenge;
+
+  for (int i = 0; i < gc_prologue_callbacks_.length(); ++i) {
+    if (gc_type & gc_prologue_callbacks_[i].gc_type) {
+      gc_prologue_callbacks_[i].callback(gc_type, kNoGCCallbackFlags);
+    }
+  }
+
   EnsureFromSpaceIsCommitted();
+
   if (collector == MARK_COMPACTOR) {
+    // Perform mark-sweep with optional compaction.
     MarkCompact(tracer);
 
     int old_gen_size = PromotedSpaceSize();
@@ -570,13 +595,15 @@ void Heap::PerformGarbageCollection(AllocationSpace space,
     old_gen_allocation_limit_ =
         old_gen_size + Max(kMinimumAllocationLimit, old_gen_size / 2);
     old_gen_exhausted_ = false;
+  } else {
+    Scavenge();
   }
-  Scavenge();
 
   Counters::objs_since_last_young.Set(0);
 
   if (collector == MARK_COMPACTOR) {
     DisableAssertNoAllocation allow_allocation;
+    GCTracer::ExternalScope scope(tracer);
     GlobalHandles::PostGarbageCollectionProcessing();
   }
 
@@ -589,8 +616,18 @@ void Heap::PerformGarbageCollection(AllocationSpace space,
         amount_of_external_allocated_memory_;
   }
 
+  GCCallbackFlags callback_flags = tracer->is_compacting()
+      ? kGCCallbackFlagCompacted
+      : kNoGCCallbackFlags;
+  for (int i = 0; i < gc_epilogue_callbacks_.length(); ++i) {
+    if (gc_type & gc_epilogue_callbacks_[i].gc_type) {
+      gc_epilogue_callbacks_[i].callback(gc_type, callback_flags);
+    }
+  }
+
   if (collector == MARK_COMPACTOR && global_gc_epilogue_callback_) {
     ASSERT(!allocation_allowed_);
+    GCTracer::ExternalScope scope(tracer);
     global_gc_epilogue_callback_();
   }
   VerifySymbolTable();
@@ -620,7 +657,8 @@ void Heap::MarkCompact(GCTracer* tracer) {
   Shrink();
 
   Counters::objs_since_last_full.Set(0);
-  context_disposed_pending_ = false;
+
+  contexts_disposed_ = 0;
 }
 
 
@@ -744,6 +782,17 @@ static void VerifyNonPointerSpacePointers() {
 #endif
 
 
+void Heap::CheckNewSpaceExpansionCriteria() {
+  if (new_space_.Capacity() < new_space_.MaximumCapacity() &&
+      survived_since_last_expansion_ > new_space_.Capacity()) {
+    // Grow the size of new space if there is room to grow and enough
+    // data has survived scavenge since the last expansion.
+    new_space_.Grow();
+    survived_since_last_expansion_ = 0;
+  }
+}
+
+
 void Heap::Scavenge() {
 #ifdef DEBUG
   if (FLAG_enable_slow_asserts) VerifyNonPointerSpacePointers();
@@ -760,13 +809,7 @@ void Heap::Scavenge() {
   // Used for updating survived_since_last_expansion_ at function end.
   int survived_watermark = PromotedSpaceSize();
 
-  if (new_space_.Capacity() < new_space_.MaximumCapacity() &&
-      survived_since_last_expansion_ > new_space_.Capacity()) {
-    // Grow the size of new space if there is room to grow and enough
-    // data has survived scavenge since the last expansion.
-    new_space_.Grow();
-    survived_since_last_expansion_ = 0;
-  }
+  CheckNewSpaceExpansionCriteria();
 
   // Flip the semispaces.  After flipping, to space is empty, from space has
   // live objects.
@@ -817,15 +860,17 @@ void Heap::Scavenge() {
 
   new_space_front = DoScavenge(&scavenge_visitor, new_space_front);
 
-  ScavengeExternalStringTable();
+  UpdateNewSpaceReferencesInExternalStringTable(
+      &UpdateNewSpaceReferenceInExternalStringTableEntry);
+
   ASSERT(new_space_front == new_space_.top());
 
   // Set age mark.
   new_space_.set_age_mark(new_space_.top());
 
   // Update how much has survived scavenge.
-  survived_since_last_expansion_ +=
-      (PromotedSpaceSize() - survived_watermark) + new_space_.Size();
+  IncrementYoungSurvivorsCounter(
+      (PromotedSpaceSize() - survived_watermark) + new_space_.Size());
 
   LOG(ResourceEvent("scavenge", "end"));
 
@@ -833,7 +878,22 @@ void Heap::Scavenge() {
 }
 
 
-void Heap::ScavengeExternalStringTable() {
+String* Heap::UpdateNewSpaceReferenceInExternalStringTableEntry(Object** p) {
+  MapWord first_word = HeapObject::cast(*p)->map_word();
+
+  if (!first_word.IsForwardingAddress()) {
+    // Unreachable external string can be finalized.
+    FinalizeExternalString(String::cast(*p));
+    return NULL;
+  }
+
+  // String is still reachable.
+  return String::cast(first_word.ToForwardingAddress());
+}
+
+
+void Heap::UpdateNewSpaceReferencesInExternalStringTable(
+    ExternalStringTableUpdaterCallback updater_func) {
   ExternalStringTable::Verify();
 
   if (ExternalStringTable::new_space_strings_.is_empty()) return;
@@ -844,16 +904,10 @@ void Heap::ScavengeExternalStringTable() {
 
   for (Object** p = start; p < end; ++p) {
     ASSERT(Heap::InFromSpace(*p));
-    MapWord first_word = HeapObject::cast(*p)->map_word();
+    String* target = updater_func(p);
 
-    if (!first_word.IsForwardingAddress()) {
-      // Unreachable external string can be finalized.
-      FinalizeExternalString(String::cast(*p));
-      continue;
-    }
+    if (target == NULL) continue;
 
-    // String is still reachable.
-    String* target = String::cast(first_word.ToForwardingAddress());
     ASSERT(target->IsExternalString());
 
     if (Heap::InNewSpace(target)) {
@@ -1221,6 +1275,16 @@ Object* Heap::AllocateMap(InstanceType instance_type, int instance_size) {
 }
 
 
+Object* Heap::AllocateCodeCache() {
+  Object* result = AllocateStruct(CODE_CACHE_TYPE);
+  if (result->IsFailure()) return result;
+  CodeCache* code_cache = CodeCache::cast(result);
+  code_cache->set_default_cache(empty_fixed_array());
+  code_cache->set_normal_type_cache(undefined_value());
+  return code_cache;
+}
+
+
 const Heap::StringTypeTable Heap::string_type_table[] = {
 #define STRING_TYPE_ELEMENT(type, size, name, camel_name)                      \
   {type, size, k##camel_name##MapRootIndex},
@@ -1261,7 +1325,7 @@ bool Heap::CreateInitialMaps() {
   if (obj->IsFailure()) return false;
   set_oddball_map(Map::cast(obj));
 
-  // Allocate the empty array
+  // Allocate the empty array.
   obj = AllocateEmptyFixedArray();
   if (obj->IsFailure()) return false;
   set_empty_fixed_array(FixedArray::cast(obj));
@@ -1403,11 +1467,8 @@ bool Heap::CreateInitialMaps() {
   if (obj->IsFailure()) return false;
   set_global_context_map(Map::cast(obj));
 
-  obj = AllocateMap(JS_FUNCTION_TYPE, JSFunction::kSize);
-  if (obj->IsFailure()) return false;
-  set_boilerplate_function_map(Map::cast(obj));
-
-  obj = AllocateMap(SHARED_FUNCTION_INFO_TYPE, SharedFunctionInfo::kSize);
+  obj = AllocateMap(SHARED_FUNCTION_INFO_TYPE,
+                    SharedFunctionInfo::kAlignedSize);
   if (obj->IsFailure()) return false;
   set_shared_function_info_map(Map::cast(obj));
 
@@ -1456,10 +1517,9 @@ Object* Heap::AllocateJSGlobalPropertyCell(Object* value) {
 }
 
 
-Object* Heap::CreateOddball(Map* map,
-                            const char* to_string,
+Object* Heap::CreateOddball(const char* to_string,
                             Object* to_number) {
-  Object* result = Allocate(map, OLD_DATA_SPACE);
+  Object* result = Allocate(oddball_map(), OLD_DATA_SPACE);
   if (result->IsFailure()) return result;
   return Oddball::cast(result)->Initialize(to_string, to_number);
 }
@@ -1490,7 +1550,7 @@ void Heap::CreateCEntryStub() {
 }
 
 
-#if V8_TARGET_ARCH_ARM && V8_NATIVE_REGEXP
+#if V8_TARGET_ARCH_ARM && !V8_INTERPRETED_REGEXP
 void Heap::CreateRegExpCEntryStub() {
   RegExpCEntryStub stub;
   set_re_c_entry_code(*stub.GetCode());
@@ -1527,7 +1587,7 @@ void Heap::CreateFixedStubs() {
   Heap::CreateCEntryStub();
   Heap::CreateJSEntryStub();
   Heap::CreateJSConstructEntryStub();
-#if V8_TARGET_ARCH_ARM && V8_NATIVE_REGEXP
+#if V8_TARGET_ARCH_ARM && !V8_INTERPRETED_REGEXP
   Heap::CreateRegExpCEntryStub();
 #endif
 }
@@ -1563,34 +1623,27 @@ bool Heap::CreateInitialObjects() {
   Oddball::cast(undefined_value())->set_to_string(String::cast(symbol));
   Oddball::cast(undefined_value())->set_to_number(nan_value());
 
-  // Assign the print strings for oddballs after creating symboltable.
-  symbol = LookupAsciiSymbol("null");
-  if (symbol->IsFailure()) return false;
-  Oddball::cast(null_value())->set_to_string(String::cast(symbol));
-  Oddball::cast(null_value())->set_to_number(Smi::FromInt(0));
-
   // Allocate the null_value
   obj = Oddball::cast(null_value())->Initialize("null", Smi::FromInt(0));
   if (obj->IsFailure()) return false;
 
-  obj = CreateOddball(oddball_map(), "true", Smi::FromInt(1));
+  obj = CreateOddball("true", Smi::FromInt(1));
   if (obj->IsFailure()) return false;
   set_true_value(obj);
 
-  obj = CreateOddball(oddball_map(), "false", Smi::FromInt(0));
+  obj = CreateOddball("false", Smi::FromInt(0));
   if (obj->IsFailure()) return false;
   set_false_value(obj);
 
-  obj = CreateOddball(oddball_map(), "hole", Smi::FromInt(-1));
+  obj = CreateOddball("hole", Smi::FromInt(-1));
   if (obj->IsFailure()) return false;
   set_the_hole_value(obj);
 
-  obj = CreateOddball(
-      oddball_map(), "no_interceptor_result_sentinel", Smi::FromInt(-2));
+  obj = CreateOddball("no_interceptor_result_sentinel", Smi::FromInt(-2));
   if (obj->IsFailure()) return false;
   set_no_interceptor_result_sentinel(obj);
 
-  obj = CreateOddball(oddball_map(), "termination_exception", Smi::FromInt(-3));
+  obj = CreateOddball("termination_exception", Smi::FromInt(-3));
   if (obj->IsFailure()) return false;
   set_termination_exception(obj);
 
@@ -1636,8 +1689,8 @@ bool Heap::CreateInitialObjects() {
 
   if (InitializeNumberStringCache()->IsFailure()) return false;
 
-  // Allocate cache for single character strings.
-  obj = AllocateFixedArray(String::kMaxAsciiCharCode+1);
+  // Allocate cache for single character ASCII strings.
+  obj = AllocateFixedArray(String::kMaxAsciiCharCode + 1, TENURED);
   if (obj->IsFailure()) return false;
   set_single_character_string_cache(FixedArray::cast(obj));
 
@@ -1671,7 +1724,7 @@ Object* Heap::InitializeNumberStringCache() {
   // max_semispace_size_ ==   8 MB => number_string_cache_size = 16KB.
   int number_string_cache_size = max_semispace_size_ / 512;
   number_string_cache_size = Max(32, Min(16*KB, number_string_cache_size));
-  Object* obj = AllocateFixedArray(number_string_cache_size * 2);
+  Object* obj = AllocateFixedArray(number_string_cache_size * 2, TENURED);
   if (!obj->IsFailure()) set_number_string_cache(FixedArray::cast(obj));
   return obj;
 }
@@ -1731,46 +1784,13 @@ void Heap::SetNumberStringCache(Object* number, String* string) {
 }
 
 
-Object* Heap::SmiOrNumberFromDouble(double value,
-                                    bool new_object,
-                                    PretenureFlag pretenure) {
-  // We need to distinguish the minus zero value and this cannot be
-  // done after conversion to int. Doing this by comparing bit
-  // patterns is faster than using fpclassify() et al.
-  static const DoubleRepresentation plus_zero(0.0);
-  static const DoubleRepresentation minus_zero(-0.0);
-  static const DoubleRepresentation nan(OS::nan_value());
-  ASSERT(minus_zero_value() != NULL);
-  ASSERT(sizeof(plus_zero.value) == sizeof(plus_zero.bits));
-
-  DoubleRepresentation rep(value);
-  if (rep.bits == plus_zero.bits) return Smi::FromInt(0);  // not uncommon
-  if (rep.bits == minus_zero.bits) {
-    return new_object ? AllocateHeapNumber(-0.0, pretenure)
-                      : minus_zero_value();
-  }
-  if (rep.bits == nan.bits) {
-    return new_object
-        ? AllocateHeapNumber(OS::nan_value(), pretenure)
-        : nan_value();
-  }
-
-  // Try to represent the value as a tagged small integer.
-  int int_value = FastD2I(value);
-  if (value == FastI2D(int_value) && Smi::IsValid(int_value)) {
-    return Smi::FromInt(int_value);
-  }
-
-  // Materialize the value in the heap.
-  return AllocateHeapNumber(value, pretenure);
-}
-
-
-Object* Heap::NumberToString(Object* number) {
+Object* Heap::NumberToString(Object* number, bool check_number_string_cache) {
   Counters::number_to_string_runtime.Increment();
-  Object* cached = GetNumberStringCache(number);
-  if (cached != undefined_value()) {
-    return cached;
+  if (check_number_string_cache) {
+    Object* cached = GetNumberStringCache(number);
+    if (cached != undefined_value()) {
+      return cached;
+    }
   }
 
   char arr[100];
@@ -1821,17 +1841,24 @@ Heap::RootListIndex Heap::RootIndexForExternalArrayType(
 }
 
 
-Object* Heap::NewNumberFromDouble(double value, PretenureFlag pretenure) {
-  return SmiOrNumberFromDouble(value,
-                               true /* number object must be new */,
-                               pretenure);
-}
-
-
 Object* Heap::NumberFromDouble(double value, PretenureFlag pretenure) {
-  return SmiOrNumberFromDouble(value,
-                               false /* use preallocated NaN, -0.0 */,
-                               pretenure);
+  // We need to distinguish the minus zero value and this cannot be
+  // done after conversion to int. Doing this by comparing bit
+  // patterns is faster than using fpclassify() et al.
+  static const DoubleRepresentation minus_zero(-0.0);
+
+  DoubleRepresentation rep(value);
+  if (rep.bits == minus_zero.bits) {
+    return AllocateHeapNumber(-0.0, pretenure);
+  }
+
+  int int_value = FastD2I(value);
+  if (value == int_value && Smi::IsValid(int_value)) {
+    return Smi::FromInt(int_value);
+  }
+
+  // Materialize the value in the heap.
+  return AllocateHeapNumber(value, pretenure);
 }
 
 
@@ -1930,8 +1957,9 @@ Object* Heap::AllocateConsString(String* first, String* second) {
     return MakeOrFindTwoCharacterString(c1, c2);
   }
 
-  bool is_ascii = first->IsAsciiRepresentation()
-      && second->IsAsciiRepresentation();
+  bool first_is_ascii = first->IsAsciiRepresentation();
+  bool second_is_ascii = second->IsAsciiRepresentation();
+  bool is_ascii = first_is_ascii && second_is_ascii;
 
   // Make sure that an out of memory exception is thrown if the length
   // of the new cons string is too large.
@@ -1966,6 +1994,25 @@ Object* Heap::AllocateConsString(String* first, String* second) {
       for (int i = 0; i < second_length; i++) *dest++ = src[i];
       return result;
     } else {
+      // For short external two-byte strings we check whether they can
+      // be represented using ascii.
+      if (!first_is_ascii) {
+        first_is_ascii = first->IsExternalTwoByteStringWithAsciiChars();
+      }
+      if (first_is_ascii && !second_is_ascii) {
+        second_is_ascii = second->IsExternalTwoByteStringWithAsciiChars();
+      }
+      if (first_is_ascii && second_is_ascii) {
+        Object* result = AllocateRawAsciiString(length);
+        if (result->IsFailure()) return result;
+        // Copy the characters into the new object.
+        char* dest = SeqAsciiString::cast(result)->GetChars();
+        String::WriteToFlat(first, dest, 0, first_length);
+        String::WriteToFlat(second, dest + first_length, 0, second_length);
+        Counters::string_add_runtime_ext_to_ascii.Increment();
+        return result;
+      }
+
       Object* result = AllocateRawTwoByteString(length);
       if (result->IsFailure()) return result;
       // Copy the characters into the new object.
@@ -1994,7 +2041,8 @@ Object* Heap::AllocateConsString(String* first, String* second) {
 
 Object* Heap::AllocateSubString(String* buffer,
                                 int start,
-                                int end) {
+                                int end,
+                                PretenureFlag pretenure) {
   int length = end - start;
 
   if (length == 1) {
@@ -2010,16 +2058,13 @@ Object* Heap::AllocateSubString(String* buffer,
   }
 
   // Make an attempt to flatten the buffer to reduce access time.
-  if (!buffer->IsFlat()) {
-    buffer->TryFlatten();
-  }
+  buffer->TryFlatten();
 
   Object* result = buffer->IsAsciiRepresentation()
-      ? AllocateRawAsciiString(length)
-      : AllocateRawTwoByteString(length);
+      ? AllocateRawAsciiString(length, pretenure )
+      : AllocateRawTwoByteString(length, pretenure);
   if (result->IsFailure()) return result;
   String* string_result = String::cast(result);
-
   // Copy the characters into the new object.
   if (buffer->IsAsciiRepresentation()) {
     ASSERT(string_result->IsAsciiRepresentation());
@@ -2138,9 +2183,11 @@ void Heap::CreateFillerObjectAt(Address addr, int size) {
   if (size == 0) return;
   HeapObject* filler = HeapObject::FromAddress(addr);
   if (size == kPointerSize) {
-    filler->set_map(Heap::one_pointer_filler_map());
+    filler->set_map(one_pointer_filler_map());
+  } else if (size == 2 * kPointerSize) {
+    filler->set_map(two_pointer_filler_map());
   } else {
-    filler->set_map(Heap::byte_array_map());
+    filler->set_map(byte_array_map());
     ByteArray::cast(filler)->set_length(ByteArray::LengthFor(size));
   }
 }
@@ -2250,6 +2297,56 @@ Object* Heap::CopyCode(Code* code) {
   Code* new_code = Code::cast(result);
   ASSERT(!CodeRange::exists() || CodeRange::contains(code->address()));
   new_code->Relocate(new_addr - old_addr);
+  return new_code;
+}
+
+
+Object* Heap::CopyCode(Code* code, Vector<byte> reloc_info) {
+  int new_body_size = RoundUp(code->instruction_size() + reloc_info.length(),
+                              kObjectAlignment);
+
+  int sinfo_size = code->sinfo_size();
+
+  int new_obj_size = Code::SizeFor(new_body_size, sinfo_size);
+
+  Address old_addr = code->address();
+
+  size_t relocation_offset =
+      static_cast<size_t>(code->relocation_start() - old_addr);
+
+  Object* result;
+  if (new_obj_size > MaxObjectSizeInPagedSpace()) {
+    result = lo_space_->AllocateRawCode(new_obj_size);
+  } else {
+    result = code_space_->AllocateRaw(new_obj_size);
+  }
+
+  if (result->IsFailure()) return result;
+
+  // Copy code object.
+  Address new_addr = reinterpret_cast<HeapObject*>(result)->address();
+
+  // Copy header and instructions.
+  memcpy(new_addr, old_addr, relocation_offset);
+
+  // Copy patched rinfo.
+  memcpy(new_addr + relocation_offset,
+         reloc_info.start(),
+             reloc_info.length());
+
+  Code* new_code = Code::cast(result);
+  new_code->set_relocation_size(reloc_info.length());
+
+  // Copy sinfo.
+  memcpy(new_code->sinfo_start(), code->sinfo_start(), code->sinfo_size());
+
+  // Relocate the copy.
+  ASSERT(!CodeRange::exists() || CodeRange::contains(code->address()));
+  new_code->Relocate(new_addr - old_addr);
+
+#ifdef DEBUG
+  code->Verify();
+#endif
   return new_code;
 }
 
@@ -2568,11 +2665,9 @@ Object* Heap::CopyJSObject(JSObject* source) {
               reinterpret_cast<Object**>(source->address()),
               object_size);
     // Update write barrier for all fields that lie beyond the header.
-    for (int offset = JSObject::kHeaderSize;
-         offset < object_size;
-         offset += kPointerSize) {
-      RecordWrite(clone_address, offset);
-    }
+    RecordWrites(clone_address,
+                 JSObject::kHeaderSize,
+                 (object_size - JSObject::kHeaderSize) / kPointerSize);
   } else {
     clone = new_space_.AllocateRaw(object_size);
     if (clone->IsFailure()) return clone;
@@ -2587,7 +2682,7 @@ Object* Heap::CopyJSObject(JSObject* source) {
   FixedArray* elements = FixedArray::cast(source->elements());
   FixedArray* properties = FixedArray::cast(source->properties());
   // Update elements if necessary.
-  if (elements->length()> 0) {
+  if (elements->length() > 0) {
     Object* elem = CopyFixedArray(elements);
     if (elem->IsFailure()) return elem;
     JSObject::cast(clone)->set_elements(FixedArray::cast(elem));
@@ -2903,24 +2998,18 @@ Object* Heap::AllocateFixedArray(int length) {
     reinterpret_cast<Array*>(result)->set_map(fixed_array_map());
     FixedArray* array = FixedArray::cast(result);
     array->set_length(length);
-    Object* value = undefined_value();
     // Initialize body.
-    for (int index = 0; index < length; index++) {
-      ASSERT(!Heap::InNewSpace(value));  // value = undefined
-      array->set(index, value, SKIP_WRITE_BARRIER);
-    }
+    ASSERT(!Heap::InNewSpace(undefined_value()));
+    MemsetPointer(array->data_start(), undefined_value(), length);
   }
   return result;
 }
 
 
-Object* Heap::AllocateFixedArray(int length, PretenureFlag pretenure) {
-  ASSERT(length >= 0);
-  ASSERT(empty_fixed_array()->IsFixedArray());
+Object* Heap::AllocateRawFixedArray(int length, PretenureFlag pretenure) {
   if (length < 0 || length > FixedArray::kMaxLength) {
     return Failure::OutOfMemoryException();
   }
-  if (length == 0) return empty_fixed_array();
 
   AllocationSpace space =
       (pretenure == TENURED) ? OLD_POINTER_SPACE : NEW_SPACE;
@@ -2954,42 +3043,53 @@ Object* Heap::AllocateFixedArray(int length, PretenureFlag pretenure) {
     ASSERT(space == LO_SPACE);
     result = lo_space_->AllocateRawFixedArray(size);
   }
-  if (result->IsFailure()) return result;
-
-  // Initialize the object.
-  reinterpret_cast<Array*>(result)->set_map(fixed_array_map());
-  FixedArray* array = FixedArray::cast(result);
-  array->set_length(length);
-  Object* value = undefined_value();
-  for (int index = 0; index < length; index++) {
-    ASSERT(!Heap::InNewSpace(value));  // value = undefined
-    array->set(index, value, SKIP_WRITE_BARRIER);
-  }
-  return array;
-}
-
-
-Object* Heap::AllocateFixedArrayWithHoles(int length) {
-  if (length == 0) return empty_fixed_array();
-  Object* result = AllocateRawFixedArray(length);
-  if (!result->IsFailure()) {
-    // Initialize header.
-    reinterpret_cast<Array*>(result)->set_map(fixed_array_map());
-    FixedArray* array = FixedArray::cast(result);
-    array->set_length(length);
-    // Initialize body.
-    Object* value = the_hole_value();
-    for (int index = 0; index < length; index++)  {
-      ASSERT(!Heap::InNewSpace(value));  // value = the hole
-      array->set(index, value, SKIP_WRITE_BARRIER);
-    }
-  }
   return result;
 }
 
 
-Object* Heap::AllocateHashTable(int length) {
-  Object* result = Heap::AllocateFixedArray(length);
+static Object* AllocateFixedArrayWithFiller(int length,
+                                            PretenureFlag pretenure,
+                                            Object* filler) {
+  ASSERT(length >= 0);
+  ASSERT(Heap::empty_fixed_array()->IsFixedArray());
+  if (length == 0) return Heap::empty_fixed_array();
+
+  ASSERT(!Heap::InNewSpace(filler));
+  Object* result = Heap::AllocateRawFixedArray(length, pretenure);
+  if (result->IsFailure()) return result;
+
+  HeapObject::cast(result)->set_map(Heap::fixed_array_map());
+  FixedArray* array = FixedArray::cast(result);
+  array->set_length(length);
+  MemsetPointer(array->data_start(), filler, length);
+  return array;
+}
+
+
+Object* Heap::AllocateFixedArray(int length, PretenureFlag pretenure) {
+  return AllocateFixedArrayWithFiller(length, pretenure, undefined_value());
+}
+
+
+Object* Heap::AllocateFixedArrayWithHoles(int length, PretenureFlag pretenure) {
+  return AllocateFixedArrayWithFiller(length, pretenure, the_hole_value());
+}
+
+
+Object* Heap::AllocateUninitializedFixedArray(int length) {
+  if (length == 0) return empty_fixed_array();
+
+  Object* obj = AllocateRawFixedArray(length);
+  if (obj->IsFailure()) return obj;
+
+  reinterpret_cast<FixedArray*>(obj)->set_map(fixed_array_map());
+  FixedArray::cast(obj)->set_length(length);
+  return obj;
+}
+
+
+Object* Heap::AllocateHashTable(int length, PretenureFlag pretenure) {
+  Object* result = Heap::AllocateFixedArray(length, pretenure);
   if (result->IsFailure()) return result;
   reinterpret_cast<Array*>(result)->set_map(hash_table_map());
   ASSERT(result->IsHashTable());
@@ -3072,6 +3172,7 @@ bool Heap::IdleNotification() {
   static int number_idle_notifications = 0;
   static int last_gc_count = gc_count_;
 
+  bool uncommit = true;
   bool finished = false;
 
   if (last_gc_count == gc_count_) {
@@ -3082,7 +3183,12 @@ bool Heap::IdleNotification() {
   }
 
   if (number_idle_notifications == kIdlesBeforeScavenge) {
-    CollectGarbage(0, NEW_SPACE);
+    if (contexts_disposed_ > 0) {
+      HistogramTimerScope scope(&Counters::gc_context);
+      CollectAllGarbage(false);
+    } else {
+      CollectGarbage(0, NEW_SPACE);
+    }
     new_space_.Shrink();
     last_gc_count = gc_count_;
 
@@ -3102,10 +3208,29 @@ bool Heap::IdleNotification() {
     last_gc_count = gc_count_;
     number_idle_notifications = 0;
     finished = true;
+
+  } else if (contexts_disposed_ > 0) {
+    if (FLAG_expose_gc) {
+      contexts_disposed_ = 0;
+    } else {
+      HistogramTimerScope scope(&Counters::gc_context);
+      CollectAllGarbage(false);
+      last_gc_count = gc_count_;
+    }
+    // If this is the first idle notification, we reset the
+    // notification count to avoid letting idle notifications for
+    // context disposal garbage collections start a potentially too
+    // aggressive idle GC cycle.
+    if (number_idle_notifications <= 1) {
+      number_idle_notifications = 0;
+      uncommit = false;
+    }
   }
 
-  // Uncommit unused memory in new space.
-  Heap::UncommitFromSpace();
+  // Make sure that we have no pending context disposals and
+  // conditionally uncommit from space.
+  ASSERT(contexts_disposed_ == 0);
+  if (uncommit) Heap::UncommitFromSpace();
   return finished;
 }
 
@@ -3370,7 +3495,7 @@ void Heap::IterateStrongRoots(ObjectVisitor* v, VisitMode mode) {
   v->VisitPointers(&roots_[0], &roots_[kStrongRootListLength]);
   v->Synchronize("strong_root_list");
 
-  v->VisitPointer(bit_cast<Object**, String**>(&hidden_symbol_));
+  v->VisitPointer(BitCast<Object**, String**>(&hidden_symbol_));
   v->Synchronize("symbol");
 
   Bootstrapper::Iterate(v);
@@ -3703,6 +3828,46 @@ void Heap::Unprotect() {
 }
 
 #endif
+
+
+void Heap::AddGCPrologueCallback(GCPrologueCallback callback, GCType gc_type) {
+  ASSERT(callback != NULL);
+  GCPrologueCallbackPair pair(callback, gc_type);
+  ASSERT(!gc_prologue_callbacks_.Contains(pair));
+  return gc_prologue_callbacks_.Add(pair);
+}
+
+
+void Heap::RemoveGCPrologueCallback(GCPrologueCallback callback) {
+  ASSERT(callback != NULL);
+  for (int i = 0; i < gc_prologue_callbacks_.length(); ++i) {
+    if (gc_prologue_callbacks_[i].callback == callback) {
+      gc_prologue_callbacks_.Remove(i);
+      return;
+    }
+  }
+  UNREACHABLE();
+}
+
+
+void Heap::AddGCEpilogueCallback(GCEpilogueCallback callback, GCType gc_type) {
+  ASSERT(callback != NULL);
+  GCEpilogueCallbackPair pair(callback, gc_type);
+  ASSERT(!gc_epilogue_callbacks_.Contains(pair));
+  return gc_epilogue_callbacks_.Add(pair);
+}
+
+
+void Heap::RemoveGCEpilogueCallback(GCEpilogueCallback callback) {
+  ASSERT(callback != NULL);
+  for (int i = 0; i < gc_epilogue_callbacks_.length(); ++i) {
+    if (gc_epilogue_callbacks_[i].callback == callback) {
+      gc_epilogue_callbacks_.Remove(i);
+      return;
+    }
+  }
+  UNREACHABLE();
+}
 
 
 #ifdef DEBUG
@@ -4067,6 +4232,7 @@ void Heap::TracePathToGlobal() {
 GCTracer::GCTracer()
     : start_time_(0.0),
       start_size_(0.0),
+      external_time_(0.0),
       gc_count_(0),
       full_gc_count_(0),
       is_compacting_(false),
@@ -4084,10 +4250,12 @@ GCTracer::GCTracer()
 GCTracer::~GCTracer() {
   if (!FLAG_trace_gc) return;
   // Printf ONE line iff flag is set.
-  PrintF("%s %.1f -> %.1f MB, %d ms.\n",
-         CollectorString(),
-         start_size_, SizeOfHeapObjects(),
-         static_cast<int>(OS::TimeCurrentMillis() - start_time_));
+  int time = static_cast<int>(OS::TimeCurrentMillis() - start_time_);
+  int external_time = static_cast<int>(external_time_);
+  PrintF("%s %.1f -> %.1f MB, ",
+         CollectorString(), start_size_, SizeOfHeapObjects());
+  if (external_time > 0) PrintF("%d / ", external_time);
+  PrintF("%d ms.\n", time);
 
 #if defined(ENABLE_LOGGING_AND_PROFILING)
   Heap::PrintShortHeapStatistics();

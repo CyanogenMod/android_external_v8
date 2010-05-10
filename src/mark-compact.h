@@ -37,7 +37,11 @@ namespace internal {
 typedef bool (*IsAliveFunction)(HeapObject* obj, int* size, int* offset);
 
 // Callback function for non-live blocks in the old generation.
-typedef void (*DeallocateFunction)(Address start, int size_in_bytes);
+// If add_to_freelist is false then just accounting stats are updated and
+// no attempt to add area to free list is made.
+typedef void (*DeallocateFunction)(Address start,
+                                   int size_in_bytes,
+                                   bool add_to_freelist);
 
 
 // Forward declarations.
@@ -313,11 +317,25 @@ class MarkCompactCollector: public AllStatic {
 
   // Callback functions for deallocating non-live blocks in the old
   // generation.
-  static void DeallocateOldPointerBlock(Address start, int size_in_bytes);
-  static void DeallocateOldDataBlock(Address start, int size_in_bytes);
-  static void DeallocateCodeBlock(Address start, int size_in_bytes);
-  static void DeallocateMapBlock(Address start, int size_in_bytes);
-  static void DeallocateCellBlock(Address start, int size_in_bytes);
+  static void DeallocateOldPointerBlock(Address start,
+                                        int size_in_bytes,
+                                        bool add_to_freelist);
+
+  static void DeallocateOldDataBlock(Address start,
+                                     int size_in_bytes,
+                                     bool add_to_freelist);
+
+  static void DeallocateCodeBlock(Address start,
+                                  int size_in_bytes,
+                                  bool add_to_freelist);
+
+  static void DeallocateMapBlock(Address start,
+                                 int size_in_bytes,
+                                 bool add_to_freelist);
+
+  static void DeallocateCellBlock(Address start,
+                                  int size_in_bytes,
+                                  bool add_to_freelist);
 
   // If we are not compacting the heap, we simply sweep the spaces except
   // for the large object space, clearing mark bits and adding unmarked
@@ -407,26 +425,26 @@ class MarkCompactCollector: public AllStatic {
   // Counters used for debugging the marking phase of mark-compact or
   // mark-sweep collection.
 
-  // Number of live objects in Heap::to_space_.
-  static int live_young_objects_;
+  // Size of live objects in Heap::to_space_.
+  static int live_young_objects_size_;
 
-  // Number of live objects in Heap::old_pointer_space_.
-  static int live_old_pointer_objects_;
+  // Size of live objects in Heap::old_pointer_space_.
+  static int live_old_pointer_objects_size_;
 
-  // Number of live objects in Heap::old_data_space_.
-  static int live_old_data_objects_;
+  // Size of live objects in Heap::old_data_space_.
+  static int live_old_data_objects_size_;
 
-  // Number of live objects in Heap::code_space_.
-  static int live_code_objects_;
+  // Size of live objects in Heap::code_space_.
+  static int live_code_objects_size_;
 
-  // Number of live objects in Heap::map_space_.
-  static int live_map_objects_;
+  // Size of live objects in Heap::map_space_.
+  static int live_map_objects_size_;
 
-  // Number of live objects in Heap::cell_space_.
-  static int live_cell_objects_;
+  // Size of live objects in Heap::cell_space_.
+  static int live_cell_objects_size_;
 
-  // Number of live objects in Heap::lo_space_.
-  static int live_lo_objects_;
+  // Size of live objects in Heap::lo_space_.
+  static int live_lo_objects_size_;
 
   // Number of live bytes in this collection.
   static int live_bytes_;

@@ -52,6 +52,7 @@ enum BuiltinExtraArguments {
   V(ArrayUnshift, NO_EXTRA_ARGUMENTS)                               \
   V(ArraySlice, NO_EXTRA_ARGUMENTS)                                 \
   V(ArraySplice, NO_EXTRA_ARGUMENTS)                                \
+  V(ArrayConcat, NO_EXTRA_ARGUMENTS)                                \
                                                                     \
   V(HandleApiCall, NEEDS_CALLED_FUNCTION)                           \
   V(FastHandleApiCall, NO_EXTRA_ARGUMENTS)                          \
@@ -96,6 +97,7 @@ enum BuiltinExtraArguments {
   V(KeyedLoadIC_IndexedInterceptor,         KEYED_LOAD_IC, MEGAMORPHIC)   \
                                                                           \
   V(StoreIC_Initialize,         STORE_IC, UNINITIALIZED)                  \
+  V(StoreIC_ArrayLength,        STORE_IC, MONOMORPHIC)                    \
   V(StoreIC_Megamorphic,        STORE_IC, MEGAMORPHIC)                    \
                                                                           \
   V(KeyedStoreIC_Initialize,    KEYED_STORE_IC, UNINITIALIZED)            \
@@ -124,7 +126,9 @@ enum BuiltinExtraArguments {
   V(LoadIC_DebugBreak,          LOAD_IC, DEBUG_BREAK)          \
   V(KeyedLoadIC_DebugBreak,     KEYED_LOAD_IC, DEBUG_BREAK)    \
   V(StoreIC_DebugBreak,         STORE_IC, DEBUG_BREAK)         \
-  V(KeyedStoreIC_DebugBreak,    KEYED_STORE_IC, DEBUG_BREAK)
+  V(KeyedStoreIC_DebugBreak,    KEYED_STORE_IC, DEBUG_BREAK)   \
+  V(PlainReturn_LiveEdit,       BUILTIN, DEBUG_BREAK)          \
+  V(FrameDropper_LiveEdit,      BUILTIN, DEBUG_BREAK)
 #else
 #define BUILTIN_LIST_DEBUG_A(V)
 #endif
@@ -160,8 +164,7 @@ enum BuiltinExtraArguments {
   V(STRING_ADD_LEFT, 1)                  \
   V(STRING_ADD_RIGHT, 1)                 \
   V(APPLY_PREPARE, 1)                    \
-  V(APPLY_OVERFLOW, 1)                   \
-  V(STRING_CHAR_AT, 1)
+  V(APPLY_OVERFLOW, 1)
 
 
 class ObjectVisitor;

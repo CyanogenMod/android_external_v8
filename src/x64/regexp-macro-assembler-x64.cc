@@ -39,7 +39,7 @@
 namespace v8 {
 namespace internal {
 
-#ifdef V8_NATIVE_REGEXP
+#ifndef V8_INTERPRETED_REGEXP
 
 /*
  * This assembler uses the following register assignment convention
@@ -335,7 +335,7 @@ void RegExpMacroAssemblerX64::CheckNotBackReferenceIgnoreCase(
 #endif
     __ push(backtrack_stackpointer());
 
-    int num_arguments = 3;
+    static const int num_arguments = 3;
     __ PrepareCallCFunction(num_arguments);
 
     // Put arguments into parameter registers. Parameters are
@@ -711,9 +711,15 @@ Handle<Object> RegExpMacroAssemblerX64::GetCode(Handle<String> source) {
   __ movq(rdi, Operand(rbp, kInputStart));
   // Set up rdi to be negative offset from string end.
   __ subq(rdi, rsi);
-  // Set rax to address of char before start of input
+  // Set rax to address of char before start of the string
   // (effectively string position -1).
-  __ lea(rax, Operand(rdi, -char_size()));
+  __ movq(rbx, Operand(rbp, kStartIndex));
+  __ neg(rbx);
+  if (mode_ == UC16) {
+    __ lea(rax, Operand(rdi, rbx, times_2, -char_size()));
+  } else {
+    __ lea(rax, Operand(rdi, rbx, times_1, -char_size()));
+  }
   // Store this value in a local variable, for use when clearing
   // position registers.
   __ movq(Operand(rbp, kInputStartMinusOne), rax);
@@ -770,9 +776,15 @@ Handle<Object> RegExpMacroAssemblerX64::GetCode(Handle<String> source) {
     __ bind(&success_label_);
     if (num_saved_registers_ > 0) {
       // copy captures to output
+      __ movq(rdx, Operand(rbp, kStartIndex));
       __ movq(rbx, Operand(rbp, kRegisterOutput));
       __ movq(rcx, Operand(rbp, kInputEnd));
       __ subq(rcx, Operand(rbp, kInputStart));
+      if (mode_ == UC16) {
+        __ lea(rcx, Operand(rcx, rdx, times_2, 0));
+      } else {
+        __ addq(rcx, rdx);
+      }
       for (int i = 0; i < num_saved_registers_; i++) {
         __ movq(rax, register_location(i));
         __ addq(rax, rcx);  // Convert to index from start, not end.
@@ -849,7 +861,7 @@ Handle<Object> RegExpMacroAssemblerX64::GetCode(Handle<String> source) {
 #endif
 
     // Call GrowStack(backtrack_stackpointer())
-    int num_arguments = 2;
+    static const int num_arguments = 2;
     __ PrepareCallCFunction(num_arguments);
 #ifdef _WIN64
     // Microsoft passes parameters in rcx, rdx.
@@ -893,7 +905,7 @@ Handle<Object> RegExpMacroAssemblerX64::GetCode(Handle<String> source) {
                                        NULL,
                                        Code::ComputeFlags(Code::REGEXP),
                                        masm_->CodeObject());
-  LOG(RegExpCodeCreateEvent(*code, *source));
+  PROFILE(RegExpCodeCreateEvent(*code, *source));
   return Handle<Object>::cast(code);
 }
 
@@ -1029,7 +1041,7 @@ void RegExpMacroAssemblerX64::WriteStackPointerToRegister(int reg) {
 void RegExpMacroAssemblerX64::CallCheckStackGuardState() {
   // This function call preserves no register values. Caller should
   // store anything volatile in a C call or overwritten by this function.
-  int num_arguments = 3;
+  static const int num_arguments = 3;
   __ PrepareCallCFunction(num_arguments);
 #ifdef _WIN64
   // Second argument: Code* of self. (Do this before overwriting r8).
@@ -1298,6 +1310,6 @@ void RegExpMacroAssemblerX64::LoadCurrentCharacterUnchecked(int cp_offset,
 
 #undef __
 
-#endif  // V8_NATIVE_REGEXP
+#endif  // V8_INTERPRETED_REGEXP
 
 }}  // namespace v8::internal

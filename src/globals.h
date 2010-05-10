@@ -50,15 +50,32 @@ namespace internal {
 #define V8_HOST_ARCH_MIPS 1
 #define V8_HOST_ARCH_32_BIT 1
 #else
-#error Your host architecture was not detected as supported by v8
+#error Host architecture was not detected as supported by v8
 #endif
 
+// Check for supported combinations of host and target architectures.
+#if defined(V8_TARGET_ARCH_IA32) && !defined(V8_HOST_ARCH_IA32)
+#error Target architecture ia32 is only supported on ia32 host
+#endif
+#if defined(V8_TARGET_ARCH_X64) && !defined(V8_HOST_ARCH_X64)
+#error Target architecture x64 is only supported on x64 host
+#endif
+#if (defined(V8_TARGET_ARCH_ARM) && \
+    !(defined(V8_HOST_ARCH_IA32) || defined(V8_HOST_ARCH_ARM)))
+#error Target architecture arm is only supported on arm and ia32 host
+#endif
+#if (defined(V8_TARGET_ARCH_MIPS) && \
+    !(defined(V8_HOST_ARCH_IA32) || defined(V8_HOST_ARCH_MIPS)))
+#error Target architecture mips is only supported on mips and ia32 host
+#endif
+
+// Define unaligned read for the target architectures supporting it.
 #if defined(V8_TARGET_ARCH_X64) || defined(V8_TARGET_ARCH_IA32)
 #define V8_TARGET_CAN_READ_UNALIGNED 1
 #elif V8_TARGET_ARCH_ARM
 #elif V8_TARGET_ARCH_MIPS
 #else
-#error Your target architecture is not supported by v8
+#error Target architecture is not supported by v8
 #endif
 
 // Support for alternative bool type. This is only enabled if the code is
@@ -98,6 +115,11 @@ typedef byte* Address;
 #define V8_PTR_PREFIX ""
 #endif  // V8_HOST_ARCH_64_BIT
 
+// The following macro works on both 32 and 64-bit platforms.
+// Usage: instead of writing 0x1234567890123456
+//      write V8_2PART_UINT64_C(0x12345678,90123456);
+#define V8_2PART_UINT64_C(a, b) (((static_cast<uint64_t>(a) << 32) + 0x##b##u))
+
 #define V8PRIxPTR V8_PTR_PREFIX "x"
 #define V8PRIdPTR V8_PTR_PREFIX "d"
 
@@ -107,8 +129,9 @@ typedef byte* Address;
 #define V8PRIxPTR "lx"
 #endif
 
-#if defined(__APPLE__) && defined(__MACH__)
-#define USING_MAC_ABI
+#if (defined(__APPLE__) && defined(__MACH__)) || \
+    defined(__FreeBSD__) || defined(__OpenBSD__)
+#define USING_BSD_ABI
 #endif
 
 // Code-point values in Unicode 4.0 are 21 bits wide.
@@ -141,6 +164,9 @@ const int kPointerSizeLog2 = 2;
 const intptr_t kIntptrSignBit = 0x80000000;
 #endif
 
+// Mask for the sign bit in a smi.
+const intptr_t kSmiSignMask = kIntptrSignBit;
+
 const int kObjectAlignmentBits = kPointerSizeLog2;
 const intptr_t kObjectAlignment = 1 << kObjectAlignmentBits;
 const intptr_t kObjectAlignmentMask = kObjectAlignment - 1;
@@ -169,6 +195,15 @@ const int kBitsPerByteLog2 = 3;
 const int kBitsPerPointer = kPointerSize * kBitsPerByte;
 const int kBitsPerInt = kIntSize * kBitsPerByte;
 
+// IEEE 754 single precision floating point number bit layout.
+const uint32_t kBinary32SignMask = 0x80000000u;
+const uint32_t kBinary32ExponentMask = 0x7f800000u;
+const uint32_t kBinary32MantissaMask = 0x007fffffu;
+const int kBinary32ExponentBias = 127;
+const int kBinary32MaxExponent  = 0xFE;
+const int kBinary32MinExponent  = 0x01;
+const int kBinary32MantissaBits = 23;
+const int kBinary32ExponentShift = 23;
 
 // Zap-value: The value used for zapping dead objects.
 // Should be a recognizable hex value tagged as a heap object pointer.
@@ -190,6 +225,10 @@ const Address kFromSpaceZapValue = reinterpret_cast<Address>(0xbeefdad);
 // gives 8K bytes per page.
 const int kPageSizeBits = 13;
 
+// On Intel architecture, cache line size is 64 bytes.
+// On ARM it may be less (32 bytes), but as far this constant is
+// used for aligning data, it doesn't hurt to align on a greater value.
+const int kProcessorCacheLineSize = 64;
 
 // Constants relevant to double precision floating point numbers.
 
@@ -261,6 +300,8 @@ template<class Allocator = FreeStoreAllocationPolicy> class ScopeInfo;
 class Script;
 class Slot;
 class Smi;
+template <typename Config, class Allocator = FreeStoreAllocationPolicy>
+    class SplayTree;
 class Statement;
 class String;
 class Struct;
@@ -314,8 +355,7 @@ enum Executability { NOT_EXECUTABLE, EXECUTABLE };
 
 enum VisitMode { VISIT_ALL, VISIT_ALL_IN_SCAVENGE, VISIT_ONLY_STRONG };
 
-// Flag indicating whether code is built in to the VM (one of the natives
-// files).
+// Flag indicating whether code is built into the VM (one of the natives files).
 enum NativesFlag { NOT_NATIVES_CODE, NATIVES_CODE };
 
 
@@ -408,7 +448,11 @@ enum PropertyType {
   CONSTANT_TRANSITION = 6,  // only in fast mode
   NULL_DESCRIPTOR     = 7,  // only in fast mode
   // All properties before MAP_TRANSITION are real.
-  FIRST_PHANTOM_PROPERTY_TYPE = MAP_TRANSITION
+  FIRST_PHANTOM_PROPERTY_TYPE = MAP_TRANSITION,
+  // There are no IC stubs for NULL_DESCRIPTORS. Therefore,
+  // NULL_DESCRIPTOR can be used as the type flag for IC stubs for
+  // nonexistent properties.
+  NONEXISTENT = NULL_DESCRIPTOR
 };
 
 
@@ -438,7 +482,7 @@ struct AccessorDescriptor {
 
 // Logging and profiling.
 // A StateTag represents a possible state of the VM.  When compiled with
-// ENABLE_LOGGING_AND_PROFILING, the logger maintains a stack of these.
+// ENABLE_VMSTATE_TRACKING, the logger maintains a stack of these.
 // Creating a VMState object enters a state by pushing on the stack, and
 // destroying a VMState object leaves a state by popping the current state
 // from the stack.
@@ -570,42 +614,6 @@ F FUNCTION_CAST(Address addr) {
 #else
 #define INLINE(header) inline header
 #endif
-
-// The type-based aliasing rule allows the compiler to assume that pointers of
-// different types (for some definition of different) never alias each other.
-// Thus the following code does not work:
-//
-// float f = foo();
-// int fbits = *(int*)(&f);
-//
-// The compiler 'knows' that the int pointer can't refer to f since the types
-// don't match, so the compiler may cache f in a register, leaving random data
-// in fbits.  Using C++ style casts makes no difference, however a pointer to
-// char data is assumed to alias any other pointer.  This is the 'memcpy
-// exception'.
-//
-// Bit_cast uses the memcpy exception to move the bits from a variable of one
-// type of a variable of another type.  Of course the end result is likely to
-// be implementation dependent.  Most compilers (gcc-4.2 and MSVC 2005)
-// will completely optimize bit_cast away.
-//
-// There is an additional use for bit_cast.
-// Recent gccs will warn when they see casts that may result in breakage due to
-// the type-based aliasing rule.  If you have checked that there is no breakage
-// you can use bit_cast to cast one pointer type to another.  This confuses gcc
-// enough that it can no longer see that you have cast one pointer type to
-// another thus avoiding the warning.
-template <class Dest, class Source>
-inline Dest bit_cast(const Source& source) {
-  // Compile time assertion: sizeof(Dest) == sizeof(Source)
-  // A compile error here means your Dest and Source have different sizes.
-  typedef char VerifySizesAreEqual[sizeof(Dest) == sizeof(Source) ? 1 : -1];
-
-  Dest dest;
-  memcpy(&dest, &source, sizeof(dest));
-  return dest;
-}
-
 
 // Feature flags bit positions. They are mostly based on the CPUID spec.
 // (We assign CPUID itself to one of the currently reserved bits --

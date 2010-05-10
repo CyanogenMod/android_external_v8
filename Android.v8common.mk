@@ -16,15 +16,19 @@ V8_LOCAL_SRC_FILES := \
 	src/contexts.cc \
 	src/conversions.cc \
 	src/counters.cc \
+	src/cpu-profiler.cc \
 	src/data-flow.cc \
 	src/dateparser.cc \
 	src/debug.cc \
 	src/debug-agent.cc \
 	src/disassembler.cc \
+	src/diy-fp.cc \
 	src/execution.cc \
 	src/factory.cc \
 	src/fast-codegen.cc \
+	src/fast-dtoa.cc \
 	src/flags.cc \
+	src/flow-graph.cc \
 	src/frame-element.cc \
 	src/frames.cc \
 	src/full-codegen.cc \
@@ -38,6 +42,7 @@ V8_LOCAL_SRC_FILES := \
 	src/interpreter-irregexp.cc \
 	src/jsregexp.cc \
 	src/jump-target.cc \
+	src/jump-target-light.cc \
 	src/liveedit.cc \
 	src/log.cc \
 	src/log-utils.cc \
@@ -64,13 +69,13 @@ V8_LOCAL_SRC_FILES := \
 	src/token.cc \
 	src/top.cc \
 	src/unicode.cc \
-	src/usage-analyzer.cc \
 	src/utils.cc \
 	src/v8-counters.cc \
 	src/v8.cc \
 	src/v8threads.cc \
 	src/variables.cc \
 	src/virtual-frame.cc \
+	src/virtual-frame-light.cc \
 	src/version.cc \
 	src/zone.cc
 

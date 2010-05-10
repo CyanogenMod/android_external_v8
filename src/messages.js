@@ -137,6 +137,7 @@ function FormatMessage(message) {
       malformed_regexp:             "Invalid regular expression: /%0/: %1",
       unterminated_regexp:          "Invalid regular expression: missing /",
       regexp_flags:                 "Cannot supply flags when constructing one RegExp from another",
+      incompatible_method_receiver: "Method %0 called on incompatible receiver %1",
       invalid_lhs_in_assignment:    "Invalid left-hand side in assignment",
       invalid_lhs_in_for_in:        "Invalid left-hand side in for-in",
       invalid_lhs_in_postfix_op:    "Invalid left-hand side expression in postfix operation",
@@ -191,7 +192,8 @@ function FormatMessage(message) {
       invalid_json:                 "String '%0' is not valid JSON",
       circular_structure:           "Converting circular structure to JSON",
       obj_ctor_property_non_object: "Object.%0 called on non-object",
-      array_indexof_not_defined:    "Array.getIndexOf: Argument undefined"
+      array_indexof_not_defined:    "Array.getIndexOf: Argument undefined",
+      illegal_access:               "illegal access"
     };
   }
   var format = kMessages[message.type];
@@ -428,6 +430,30 @@ Script.prototype.lineCount = function() {
   // Return number of source lines.
   return this.line_ends.length;
 };
+
+
+/**
+ * Returns the name of script if available, contents of sourceURL comment
+ * otherwise. See 
+ * http://fbug.googlecode.com/svn/branches/firebug1.1/docs/ReleaseNotes_1.1.txt
+ * for details on using //@ sourceURL comment to identify scritps that don't
+ * have name.
+ * 
+ * @return {?string} script name if present, value for //@ sourceURL comment
+ * otherwise.
+ */
+Script.prototype.nameOrSourceURL = function() {
+  if (this.name)
+    return this.name;
+  // TODO(608): the spaces in a regexp below had to be escaped as \040 
+  // because this file is being processed by js2c whose handling of spaces
+  // in regexps is broken. Also, ['"] are excluded from allowed URLs to
+  // avoid matches against sources that invoke evals with sourceURL.
+  var sourceUrlPattern =
+    /\/\/@[\040\t]sourceURL=[\040\t]*([^\s'"]*)[\040\t]*$/m;
+  var match = sourceUrlPattern.exec(this.source);
+  return match ? match[1] : this.name;
+}
 
 
 /**
@@ -741,7 +767,7 @@ function FormatEvalOrigin(script) {
   } else {
     eval_origin +=  "<anonymous>";
   }
-  
+
   var eval_from_script = script.eval_from_script;
   if (eval_from_script) {
     if (eval_from_script.compilation_type == COMPILATION_TYPE_EVAL) {
@@ -762,7 +788,7 @@ function FormatEvalOrigin(script) {
       }
     }
   }
-  
+
   return eval_origin;
 };
 

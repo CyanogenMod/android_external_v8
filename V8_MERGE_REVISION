@@ -1,4 +1,7 @@
-http://v8.googlecode.com/svn/branches/bleeding_edge@3784
+We use a V8 revision that has been used for a Chromium release.
 
-Note: We are currently not syncing with chromium release revisions
-while we identify v8 performance problems.
+We're using WebKit r58033, as used by
+http://src.chromium.org/svn/releases/5.0.387.0/DEPS
+This requires http://v8.googlecode.com/svn/trunk@4465 but this version has a
+crashing bug for ARM. Instead we use http://v8.googlecode.com/svn/trunk@4588,
+which is used by http://src.chromium.org/svn/releases/6.0.399.0/DEPS

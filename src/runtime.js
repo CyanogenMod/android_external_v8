@@ -471,17 +471,6 @@ function TO_STRING() {
 }
 
 
-// Specialized version of String.charAt. It assumes string as
-// the receiver type and that the index is a number.
-function STRING_CHAR_AT(pos) {
-  var char_code = %_FastCharCodeAt(this, pos);
-  if (!%_IsSmi(char_code)) {
-    return %StringCharAt(this, pos);
-  }
-  return %CharFromCode(char_code);
-}
-
-
 /* -------------------------------------
    - - -   C o n v e r s i o n s   - - -
    -------------------------------------
@@ -530,7 +519,7 @@ function ToString(x) {
 }
 
 function NonStringToString(x) {
-  if (IS_NUMBER(x)) return %NumberToString(x);
+  if (IS_NUMBER(x)) return %_NumberToString(x);
   if (IS_BOOLEAN(x)) return x ? 'true' : 'false';
   if (IS_UNDEFINED(x)) return 'undefined';
   return (IS_NULL(x)) ? 'null' : %ToString(%DefaultString(x));
@@ -577,11 +566,11 @@ function SameValue(x, y) {
   if (IS_NUMBER(x)) {
     if (NUMBER_IS_NAN(x) && NUMBER_IS_NAN(y)) return true;
     // x is +0 and y is -0 or vice versa
-    if (x === 0 && y === 0 && !%_IsSmi(x) && !%_IsSmi(y) && 
+    if (x === 0 && y === 0 && !%_IsSmi(x) && !%_IsSmi(y) &&
         ((1 / x < 0 && 1 / y > 0) || (1 / x > 0 && 1 / y < 0))) {
       return false;
     }
-    return x == y;    
+    return x == y;
   }
   if (IS_STRING(x)) return %StringEquals(x, y);
   if (IS_BOOLEAN(x))return %NumberEquals(%ToNumber(x),%ToNumber(y));

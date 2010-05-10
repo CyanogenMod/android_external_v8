@@ -166,6 +166,7 @@ namespace internal {
   SC(generic_binary_stub_calls_regs, V8.GenericBinaryStubCallsRegs)   \
   SC(string_add_runtime, V8.StringAddRuntime)                         \
   SC(string_add_native, V8.StringAddNative)                           \
+  SC(string_add_runtime_ext_to_ascii, V8.StringAddRuntimeExtToAscii)  \
   SC(sub_string_runtime, V8.SubStringRuntime)                         \
   SC(sub_string_native, V8.SubStringNative)                           \
   SC(string_compare_native, V8.StringCompareNative)                   \
@@ -174,7 +175,6 @@ namespace internal {
   SC(regexp_entry_native, V8.RegExpEntryNative)                       \
   SC(number_to_string_native, V8.NumberToStringNative)                \
   SC(number_to_string_runtime, V8.NumberToStringRuntime)              \
-  SC(math_abs, V8.MathAbs)                                            \
   SC(math_acos, V8.MathAcos)                                          \
   SC(math_asin, V8.MathAsin)                                          \
   SC(math_atan, V8.MathAtan)                                          \

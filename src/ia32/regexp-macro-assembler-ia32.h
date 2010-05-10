@@ -31,14 +31,14 @@
 namespace v8 {
 namespace internal {
 
-#ifndef V8_NATIVE_REGEXP
+#ifdef V8_INTERPRETED_REGEXP
 class RegExpMacroAssemblerIA32: public RegExpMacroAssembler {
  public:
   RegExpMacroAssemblerIA32() { }
   virtual ~RegExpMacroAssemblerIA32() { }
 };
 
-#else
+#else  // V8_INTERPRETED_REGEXP
 class RegExpMacroAssemblerIA32: public NativeRegExpMacroAssembler {
  public:
   RegExpMacroAssemblerIA32(Mode mode, int registers_to_save);
@@ -187,21 +187,6 @@ class RegExpMacroAssemblerIA32: public NativeRegExpMacroAssembler {
   // (ecx) and increments it by a word size.
   inline void Pop(Register target);
 
-  // Before calling a C-function from generated code, align arguments on stack.
-  // After aligning the frame, arguments must be stored in esp[0], esp[4],
-  // etc., not pushed. The argument count assumes all arguments are word sized.
-  // Some compilers/platforms require the stack to be aligned when calling
-  // C++ code.
-  // Needs a scratch register to do some arithmetic. This register will be
-  // trashed.
-  inline void FrameAlign(int num_arguments, Register scratch);
-
-  // Calls a C function and cleans up the space for arguments allocated
-  // by FrameAlign. The called function is not allowed to trigger a garbage
-  // collection, since that might move the code and invalidate the return
-  // address (unless this is somehow accounted for).
-  inline void CallCFunction(ExternalReference function, int num_arguments);
-
   MacroAssembler* masm_;
 
   // Which mode to generate code for (ASCII or UC16).
@@ -223,7 +208,7 @@ class RegExpMacroAssemblerIA32: public NativeRegExpMacroAssembler {
   Label check_preempt_label_;
   Label stack_overflow_label_;
 };
-#endif  // V8_NATIVE_REGEXP
+#endif  // V8_INTERPRETED_REGEXP
 
 }}  // namespace v8::internal
 

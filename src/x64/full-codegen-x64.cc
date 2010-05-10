@@ -32,6 +32,7 @@
 #include "debug.h"
 #include "full-codegen.h"
 #include "parser.h"
+#include "scopes.h"
 
 namespace v8 {
 namespace internal {
@@ -55,6 +56,7 @@ void FullCodeGenerator::Generate(CompilationInfo* info, Mode mode) {
   ASSERT(info_ == NULL);
   info_ = info;
   SetFunctionPosition(function());
+  Comment cmnt(masm_, "[ function compiled by full code generator");
 
   if (mode == PRIMARY) {
     __ push(rbp);  // Caller's frame pointer.
@@ -778,16 +780,15 @@ void FullCodeGenerator::DeclareGlobals(Handle<FixedArray> pairs) {
 void FullCodeGenerator::VisitFunctionLiteral(FunctionLiteral* expr) {
   Comment cmnt(masm_, "[ FunctionLiteral");
 
-  // Build the function boilerplate and instantiate it.
-  Handle<JSFunction> boilerplate =
-      Compiler::BuildBoilerplate(expr, script(), this);
+  // Build the shared function info and instantiate the function based
+  // on it.
+  Handle<SharedFunctionInfo> function_info =
+      Compiler::BuildFunctionInfo(expr, script(), this);
   if (HasStackOverflow()) return;
-
-  ASSERT(boilerplate->IsBoilerplate());
 
   // Create a new closure.
   __ push(rsi);
-  __ Push(boilerplate);
+  __ Push(function_info);
   __ CallRuntime(Runtime::kNewClosure, 2);
   Apply(context_, rax);
 }
@@ -901,10 +902,11 @@ void FullCodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
   __ push(FieldOperand(rdi, JSFunction::kLiteralsOffset));
   __ Push(Smi::FromInt(expr->literal_index()));
   __ Push(expr->constant_properties());
+  __ Push(Smi::FromInt(expr->fast_elements() ? 1 : 0));
   if (expr->depth() > 1) {
-    __ CallRuntime(Runtime::kCreateObjectLiteral, 3);
+    __ CallRuntime(Runtime::kCreateObjectLiteral, 4);
   } else {
-    __ CallRuntime(Runtime::kCreateObjectLiteralShallow, 3);
+    __ CallRuntime(Runtime::kCreateObjectLiteralShallow, 4);
   }
 
   // If result_saved is true the result is on top of the stack.  If

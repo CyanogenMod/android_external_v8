@@ -56,6 +56,8 @@ class StubCache : public AllStatic {
 
   // Computes the right stub matching. Inserts the result in the
   // cache before returning.  This might compile a stub if needed.
+  static Object* ComputeLoadNonexistent(String* name, JSObject* receiver);
+
   static Object* ComputeLoadField(String* name,
                                   JSObject* receiver,
                                   JSObject* holder,
@@ -326,8 +328,7 @@ class StubCompiler BASE_EMBEDDED {
     RECEIVER_MAP_CHECK,
     STRING_CHECK,
     NUMBER_CHECK,
-    BOOLEAN_CHECK,
-    JSARRAY_HAS_FAST_ELEMENTS_CHECK
+    BOOLEAN_CHECK
   };
 
   StubCompiler() : scope_(), masm_(NULL, 256), failure_(NULL) { }
@@ -462,18 +463,25 @@ class StubCompiler BASE_EMBEDDED {
 
 class LoadStubCompiler: public StubCompiler {
  public:
+  Object* CompileLoadNonexistent(String* name,
+                                 JSObject* object,
+                                 JSObject* last);
+
   Object* CompileLoadField(JSObject* object,
                            JSObject* holder,
                            int index,
                            String* name);
+
   Object* CompileLoadCallback(String* name,
                               JSObject* object,
                               JSObject* holder,
                               AccessorInfo* callback);
+
   Object* CompileLoadConstant(JSObject* object,
                               JSObject* holder,
                               Object* value,
                               String* name);
+
   Object* CompileLoadInterceptor(JSObject* object,
                                  JSObject* holder,
                                  String* name);
@@ -495,17 +503,21 @@ class KeyedLoadStubCompiler: public StubCompiler {
                            JSObject* object,
                            JSObject* holder,
                            int index);
+
   Object* CompileLoadCallback(String* name,
                               JSObject* object,
                               JSObject* holder,
                               AccessorInfo* callback);
+
   Object* CompileLoadConstant(String* name,
                               JSObject* object,
                               JSObject* holder,
                               Object* value);
+
   Object* CompileLoadInterceptor(JSObject* object,
                                  JSObject* holder,
                                  String* name);
+
   Object* CompileLoadArrayLength(String* name);
   Object* CompileLoadStringLength(String* name);
   Object* CompileLoadFunctionPrototype(String* name);
@@ -549,7 +561,7 @@ class KeyedStoreStubCompiler: public StubCompiler {
 
 class CallStubCompiler: public StubCompiler {
  public:
-  explicit CallStubCompiler(int argc, InLoopFlag in_loop)
+  CallStubCompiler(int argc, InLoopFlag in_loop)
       : arguments_(argc), in_loop_(in_loop) { }
 
   Object* CompileCallField(JSObject* object,
@@ -570,6 +582,18 @@ class CallStubCompiler: public StubCompiler {
                             JSFunction* function,
                             String* name);
 
+  Object* CompileArrayPushCall(Object* object,
+                               JSObject* holder,
+                               JSFunction* function,
+                               String* name,
+                               CheckType check);
+
+  Object* CompileArrayPopCall(Object* object,
+                              JSObject* holder,
+                              JSFunction* function,
+                              String* name,
+                              CheckType check);
+
  private:
   const ParameterCount arguments_;
   const InLoopFlag in_loop_;
@@ -589,6 +613,79 @@ class ConstructStubCompiler: public StubCompiler {
  private:
   Object* GetCode();
 };
+
+
+// Holds information about possible function call optimizations.
+class CallOptimization BASE_EMBEDDED {
+ public:
+  explicit CallOptimization(LookupResult* lookup);
+
+  explicit CallOptimization(JSFunction* function);
+
+  bool is_constant_call() const {
+    return constant_function_ != NULL;
+  }
+
+  JSFunction* constant_function() const {
+    ASSERT(constant_function_ != NULL);
+    return constant_function_;
+  }
+
+  bool is_simple_api_call() const {
+    return is_simple_api_call_;
+  }
+
+  FunctionTemplateInfo* expected_receiver_type() const {
+    ASSERT(is_simple_api_call_);
+    return expected_receiver_type_;
+  }
+
+  CallHandlerInfo* api_call_info() const {
+    ASSERT(is_simple_api_call_);
+    return api_call_info_;
+  }
+
+  // Returns the depth of the object having the expected type in the
+  // prototype chain between the two arguments.
+  int GetPrototypeDepthOfExpectedType(JSObject* object,
+                                      JSObject* holder) const;
+
+ private:
+  void Initialize(JSFunction* function);
+
+  // Determines whether the given function can be called using the
+  // fast api call builtin.
+  void AnalyzePossibleApiFunction(JSFunction* function);
+
+  JSFunction* constant_function_;
+  bool is_simple_api_call_;
+  FunctionTemplateInfo* expected_receiver_type_;
+  CallHandlerInfo* api_call_info_;
+};
+
+
+typedef Object* (*CustomCallGenerator)(CallStubCompiler* compiler,
+                                       Object* object,
+                                       JSObject* holder,
+                                       JSFunction* function,
+                                       String* name,
+                                       StubCompiler::CheckType check);
+
+
+Object* CompileArrayPushCall(CallStubCompiler* compiler,
+                             Object* object,
+                             JSObject* holder,
+                             JSFunction* function,
+                             String* name,
+                             StubCompiler::CheckType check);
+
+
+Object* CompileArrayPopCall(CallStubCompiler* compiler,
+                            Object* object,
+                            JSObject* holder,
+                            JSFunction* function,
+                            String* name,
+                            StubCompiler::CheckType check);
 
 
 } }  // namespace v8::internal

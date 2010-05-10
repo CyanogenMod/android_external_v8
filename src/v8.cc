@@ -43,7 +43,7 @@ bool V8::has_been_setup_ = false;
 bool V8::has_been_disposed_ = false;
 bool V8::has_fatal_error_ = false;
 
-bool V8::Initialize(Deserializer *des) {
+bool V8::Initialize(Deserializer* des) {
   bool create_heap_objects = des == NULL;
   if (has_been_disposed_ || has_fatal_error_) return false;
   if (IsRunning()) return true;
@@ -59,6 +59,8 @@ bool V8::Initialize(Deserializer *des) {
 
   // Enable logging before setting up the heap
   Logger::Setup();
+
+  CpuProfiler::Setup();
 
   // Setup the platform OS support.
   OS::Setup();
@@ -148,10 +150,21 @@ void V8::TearDown() {
   Top::TearDown();
 
   Heap::TearDown();
+
+  CpuProfiler::TearDown();
+
   Logger::TearDown();
 
   is_running_ = false;
   has_been_disposed_ = true;
+}
+
+
+static uint32_t random_seed() {
+  if (FLAG_random_seed == 0) {
+    return random();
+  }
+  return FLAG_random_seed;
 }
 
 
@@ -164,8 +177,8 @@ uint32_t V8::Random() {
   // should ever become zero again, or if random() returns zero, we
   // avoid getting stuck with zero bits in hi or lo by re-initializing
   // them on demand.
-  if (hi == 0) hi = random();
-  if (lo == 0) lo = random();
+  if (hi == 0) hi = random_seed();
+  if (lo == 0) lo = random_seed();
 
   // Mix the bits.
   hi = 36969 * (hi & 0xFFFF) + (hi >> 16);
@@ -183,14 +196,29 @@ bool V8::IdleNotification() {
   return Heap::IdleNotification();
 }
 
-static const uint32_t kRandomPositiveSmiMax = 0x3fffffff;
 
-Smi* V8::RandomPositiveSmi() {
-  uint32_t random = Random();
-  ASSERT(static_cast<uint32_t>(Smi::kMaxValue) >= kRandomPositiveSmiMax);
-  // kRandomPositiveSmiMax must match the value being divided
-  // by in math.js.
-  return Smi::FromInt(random & kRandomPositiveSmiMax);
+// Use a union type to avoid type-aliasing optimizations in GCC.
+typedef union {
+  double double_value;
+  uint64_t uint64_t_value;
+} double_int_union;
+
+
+Object* V8::FillHeapNumberWithRandom(Object* heap_number) {
+  uint64_t random_bits = Random();
+  // Make a double* from address (heap_number + sizeof(double)).
+  double_int_union* r = reinterpret_cast<double_int_union*>(
+      reinterpret_cast<char*>(heap_number) +
+      HeapNumber::kValueOffset - kHeapObjectTag);
+  // Convert 32 random bits to 0.(32 random bits) in a double
+  // by computing:
+  // ( 1.(20 0s)(32 random bits) x 2^20 ) - (1.0 x 2^20)).
+  const double binary_million = 1048576.0;
+  r->double_value = binary_million;
+  r->uint64_t_value |=  random_bits;
+  r->double_value -= binary_million;
+
+  return heap_number;
 }
 
 } }  // namespace v8::internal

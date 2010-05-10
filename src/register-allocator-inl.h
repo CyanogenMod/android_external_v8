@@ -30,7 +30,6 @@
 
 #include "codegen.h"
 #include "register-allocator.h"
-#include "virtual-frame.h"
 
 #if V8_TARGET_ARCH_IA32
 #include "ia32/register-allocator-ia32-inl.h"
@@ -102,6 +101,39 @@ void RegisterAllocator::Use(Register reg) {
 
 void RegisterAllocator::Unuse(Register reg) {
   registers_.Unuse(ToNumber(reg));
+}
+
+
+TypeInfo Result::type_info() const {
+  ASSERT(is_valid());
+  return TypeInfo::FromInt(TypeInfoField::decode(value_));
+}
+
+
+void Result::set_type_info(TypeInfo info) {
+  ASSERT(is_valid());
+  value_ &= ~TypeInfoField::mask();
+  value_ |= TypeInfoField::encode(info.ToInt());
+}
+
+
+bool Result::is_number() const {
+  return type_info().IsNumber();
+}
+
+
+bool Result::is_smi() const {
+  return type_info().IsSmi();
+}
+
+
+bool Result::is_integer32() const {
+  return type_info().IsInteger32();
+}
+
+
+bool Result::is_double() const {
+  return type_info().IsDouble();
 }
 
 } }  // namespace v8::internal

@@ -84,25 +84,24 @@ struct Register {
   int code_;
 };
 
+const Register no_reg = { -1 };
 
-extern Register no_reg;
-extern Register r0;
-extern Register r1;
-extern Register r2;
-extern Register r3;
-extern Register r4;
-extern Register r5;
-extern Register r6;
-extern Register r7;
-extern Register r8;
-extern Register r9;
-extern Register r10;
-extern Register fp;
-extern Register ip;
-extern Register sp;
-extern Register lr;
-extern Register pc;
-
+const Register r0  = {  0 };
+const Register r1  = {  1 };
+const Register r2  = {  2 };
+const Register r3  = {  3 };
+const Register r4  = {  4 };
+const Register r5  = {  5 };
+const Register r6  = {  6 };
+const Register r7  = {  7 };
+const Register r8  = {  8 };  // Used as context register.
+const Register r9  = {  9 };
+const Register r10 = { 10 };  // Used as roots register.
+const Register fp  = { 11 };
+const Register ip  = { 12 };
+const Register sp  = { 13 };
+const Register lr  = { 14 };
+const Register pc  = { 15 };
 
 // Single word VFP register.
 struct SwVfpRegister {
@@ -139,57 +138,57 @@ struct DwVfpRegister {
 };
 
 
-// Support for VFP registers s0 to s31 (d0 to d15).
+// Support for the VFP registers s0 to s31 (d0 to d15).
 // Note that "s(N):s(N+1)" is the same as "d(N/2)".
-extern SwVfpRegister s0;
-extern SwVfpRegister s1;
-extern SwVfpRegister s2;
-extern SwVfpRegister s3;
-extern SwVfpRegister s4;
-extern SwVfpRegister s5;
-extern SwVfpRegister s6;
-extern SwVfpRegister s7;
-extern SwVfpRegister s8;
-extern SwVfpRegister s9;
-extern SwVfpRegister s10;
-extern SwVfpRegister s11;
-extern SwVfpRegister s12;
-extern SwVfpRegister s13;
-extern SwVfpRegister s14;
-extern SwVfpRegister s15;
-extern SwVfpRegister s16;
-extern SwVfpRegister s17;
-extern SwVfpRegister s18;
-extern SwVfpRegister s19;
-extern SwVfpRegister s20;
-extern SwVfpRegister s21;
-extern SwVfpRegister s22;
-extern SwVfpRegister s23;
-extern SwVfpRegister s24;
-extern SwVfpRegister s25;
-extern SwVfpRegister s26;
-extern SwVfpRegister s27;
-extern SwVfpRegister s28;
-extern SwVfpRegister s29;
-extern SwVfpRegister s30;
-extern SwVfpRegister s31;
+const SwVfpRegister s0  = {  0 };
+const SwVfpRegister s1  = {  1 };
+const SwVfpRegister s2  = {  2 };
+const SwVfpRegister s3  = {  3 };
+const SwVfpRegister s4  = {  4 };
+const SwVfpRegister s5  = {  5 };
+const SwVfpRegister s6  = {  6 };
+const SwVfpRegister s7  = {  7 };
+const SwVfpRegister s8  = {  8 };
+const SwVfpRegister s9  = {  9 };
+const SwVfpRegister s10 = { 10 };
+const SwVfpRegister s11 = { 11 };
+const SwVfpRegister s12 = { 12 };
+const SwVfpRegister s13 = { 13 };
+const SwVfpRegister s14 = { 14 };
+const SwVfpRegister s15 = { 15 };
+const SwVfpRegister s16 = { 16 };
+const SwVfpRegister s17 = { 17 };
+const SwVfpRegister s18 = { 18 };
+const SwVfpRegister s19 = { 19 };
+const SwVfpRegister s20 = { 20 };
+const SwVfpRegister s21 = { 21 };
+const SwVfpRegister s22 = { 22 };
+const SwVfpRegister s23 = { 23 };
+const SwVfpRegister s24 = { 24 };
+const SwVfpRegister s25 = { 25 };
+const SwVfpRegister s26 = { 26 };
+const SwVfpRegister s27 = { 27 };
+const SwVfpRegister s28 = { 28 };
+const SwVfpRegister s29 = { 29 };
+const SwVfpRegister s30 = { 30 };
+const SwVfpRegister s31 = { 31 };
 
-extern DwVfpRegister d0;
-extern DwVfpRegister d1;
-extern DwVfpRegister d2;
-extern DwVfpRegister d3;
-extern DwVfpRegister d4;
-extern DwVfpRegister d5;
-extern DwVfpRegister d6;
-extern DwVfpRegister d7;
-extern DwVfpRegister d8;
-extern DwVfpRegister d9;
-extern DwVfpRegister d10;
-extern DwVfpRegister d11;
-extern DwVfpRegister d12;
-extern DwVfpRegister d13;
-extern DwVfpRegister d14;
-extern DwVfpRegister d15;
+const DwVfpRegister d0  = {  0 };
+const DwVfpRegister d1  = {  1 };
+const DwVfpRegister d2  = {  2 };
+const DwVfpRegister d3  = {  3 };
+const DwVfpRegister d4  = {  4 };
+const DwVfpRegister d5  = {  5 };
+const DwVfpRegister d6  = {  6 };
+const DwVfpRegister d7  = {  7 };
+const DwVfpRegister d8  = {  8 };
+const DwVfpRegister d9  = {  9 };
+const DwVfpRegister d10 = { 10 };
+const DwVfpRegister d11 = { 11 };
+const DwVfpRegister d12 = { 12 };
+const DwVfpRegister d13 = { 13 };
+const DwVfpRegister d14 = { 14 };
+const DwVfpRegister d15 = { 15 };
 
 
 // Coprocessor register
@@ -210,23 +209,24 @@ struct CRegister {
 };
 
 
-extern CRegister no_creg;
-extern CRegister cr0;
-extern CRegister cr1;
-extern CRegister cr2;
-extern CRegister cr3;
-extern CRegister cr4;
-extern CRegister cr5;
-extern CRegister cr6;
-extern CRegister cr7;
-extern CRegister cr8;
-extern CRegister cr9;
-extern CRegister cr10;
-extern CRegister cr11;
-extern CRegister cr12;
-extern CRegister cr13;
-extern CRegister cr14;
-extern CRegister cr15;
+const CRegister no_creg = { -1 };
+
+const CRegister cr0  = {  0 };
+const CRegister cr1  = {  1 };
+const CRegister cr2  = {  2 };
+const CRegister cr3  = {  3 };
+const CRegister cr4  = {  4 };
+const CRegister cr5  = {  5 };
+const CRegister cr6  = {  6 };
+const CRegister cr7  = {  7 };
+const CRegister cr8  = {  8 };
+const CRegister cr9  = {  9 };
+const CRegister cr10 = { 10 };
+const CRegister cr11 = { 11 };
+const CRegister cr12 = { 12 };
+const CRegister cr13 = { 13 };
+const CRegister cr14 = { 14 };
+const CRegister cr15 = { 15 };
 
 
 // Coprocessor number
@@ -509,7 +509,10 @@ typedef int32_t Instr;
 
 
 extern const Instr kMovLrPc;
+extern const Instr kLdrPCMask;
 extern const Instr kLdrPCPattern;
+extern const Instr kBlxRegMask;
+extern const Instr kBlxRegPattern;
 
 
 class Assembler : public Malloced {
@@ -590,12 +593,34 @@ class Assembler : public Malloced {
   static const int kInstrSize = sizeof(Instr);
 
   // Distance between the instruction referring to the address of the call
-  // target (ldr pc, [target addr in const pool]) and the return address
+  // target and the return address.
+#ifdef USE_BLX
+  // Call sequence is:
+  //  ldr  ip, [pc, #...] @ call address
+  //  blx  ip
+  //                      @ return address
+  static const int kCallTargetAddressOffset = 2 * kInstrSize;
+#else
+  // Call sequence is:
+  //  mov  lr, pc
+  //  ldr  pc, [pc, #...] @ call address
+  //                      @ return address
   static const int kCallTargetAddressOffset = kInstrSize;
+#endif
 
   // Distance between start of patched return sequence and the emitted address
   // to jump to.
-  static const int kPatchReturnSequenceAddressOffset = kInstrSize;
+#ifdef USE_BLX
+  // Return sequence is:
+  //  ldr  ip, [pc, #0]   @ emited address and start
+  //  blx  ip
+  static const int kPatchReturnSequenceAddressOffset =  0 * kInstrSize;
+#else
+  // Return sequence is:
+  //  mov  lr, pc         @ start of sequence
+  //  ldr  pc, [pc, #-4]  @ emited address
+  static const int kPatchReturnSequenceAddressOffset =  kInstrSize;
+#endif
 
   // Difference between address of current opcode and value read from pc
   // register.
@@ -801,6 +826,12 @@ class Assembler : public Malloced {
             const Register base,
             int offset,  // Offset must be a multiple of 4.
             const Condition cond = al);
+
+  void vldr(const SwVfpRegister dst,
+            const Register base,
+            int offset,  // Offset must be a multiple of 4.
+            const Condition cond = al);
+
   void vstr(const DwVfpRegister src,
             const Register base,
             int offset,  // Offset must be a multiple of 4.
@@ -819,12 +850,27 @@ class Assembler : public Malloced {
   void vmov(const Register dst,
             const SwVfpRegister src,
             const Condition cond = al);
-  void vcvt(const DwVfpRegister dst,
-            const SwVfpRegister src,
-            const Condition cond = al);
-  void vcvt(const SwVfpRegister dst,
-            const DwVfpRegister src,
-            const Condition cond = al);
+  void vcvt_f64_s32(const DwVfpRegister dst,
+                    const SwVfpRegister src,
+                    const Condition cond = al);
+  void vcvt_f32_s32(const SwVfpRegister dst,
+                    const SwVfpRegister src,
+                    const Condition cond = al);
+  void vcvt_f64_u32(const DwVfpRegister dst,
+                    const SwVfpRegister src,
+                    const Condition cond = al);
+  void vcvt_s32_f64(const SwVfpRegister dst,
+                    const DwVfpRegister src,
+                    const Condition cond = al);
+  void vcvt_u32_f64(const SwVfpRegister dst,
+                    const DwVfpRegister src,
+                    const Condition cond = al);
+  void vcvt_f64_f32(const DwVfpRegister dst,
+                    const SwVfpRegister src,
+                    const Condition cond = al);
+  void vcvt_f32_f64(const SwVfpRegister dst,
+                    const DwVfpRegister src,
+                    const Condition cond = al);
 
   void vadd(const DwVfpRegister dst,
             const DwVfpRegister src1,
@@ -850,7 +896,7 @@ class Assembler : public Malloced {
             const Condition cond = al);
 
   // Pseudo instructions
-  void nop()  { mov(r0, Operand(r0)); }
+  void nop(int type = 0);
 
   void push(Register src, Condition cond = al) {
     str(src, MemOperand(sp, 4, NegPreIndex), cond);
@@ -879,6 +925,22 @@ class Assembler : public Malloced {
   // Check whether an immediate fits an addressing mode 1 instruction.
   bool ImmediateFitsAddrMode1Instruction(int32_t imm32);
 
+  // Class for scoping postponing the constant pool generation.
+  class BlockConstPoolScope {
+   public:
+    explicit BlockConstPoolScope(Assembler* assem) : assem_(assem) {
+      assem_->StartBlockConstPool();
+    }
+    ~BlockConstPoolScope() {
+      assem_->EndBlockConstPool();
+    }
+
+   private:
+    Assembler* assem_;
+
+    DISALLOW_IMPLICIT_CONSTRUCTORS(BlockConstPoolScope);
+  };
+
   // Postpone the generation of the constant pool for the specified number of
   // instructions.
   void BlockConstPoolFor(int instructions);
@@ -898,16 +960,25 @@ class Assembler : public Malloced {
 
   int pc_offset() const { return pc_ - buffer_; }
   int current_position() const { return current_position_; }
-  int current_statement_position() const { return current_position_; }
+  int current_statement_position() const { return current_statement_position_; }
+
+  // Read/patch instructions
+  static Instr instr_at(byte* pc) { return *reinterpret_cast<Instr*>(pc); }
+  static void instr_at_put(byte* pc, Instr instr) {
+    *reinterpret_cast<Instr*>(pc) = instr;
+  }
+  static bool IsNop(Instr instr, int type = 0);
+  static bool IsBranch(Instr instr);
+  static int GetBranchOffset(Instr instr);
+  static bool IsLdrRegisterImmediate(Instr instr);
+  static int GetLdrRegisterImmediateOffset(Instr instr);
+  static Instr SetLdrRegisterImmediateOffset(Instr instr, int offset);
+
 
  protected:
   int buffer_space() const { return reloc_info_writer.pos() - pc_; }
 
   // Read/patch instructions
-  static Instr instr_at(byte* pc) { return *reinterpret_cast<Instr*>(pc); }
-  void instr_at_put(byte* pc, Instr instr) {
-    *reinterpret_cast<Instr*>(pc) = instr;
-  }
   Instr instr_at(int pos) { return *reinterpret_cast<Instr*>(buffer_ + pos); }
   void instr_at_put(int pos, Instr instr) {
     *reinterpret_cast<Instr*>(buffer_ + pos) = instr;
@@ -925,6 +996,13 @@ class Assembler : public Malloced {
   // Block the emission of the constant pool before pc_offset
   void BlockConstPoolBefore(int pc_offset) {
     if (no_const_pool_before_ < pc_offset) no_const_pool_before_ = pc_offset;
+  }
+
+  void StartBlockConstPool() {
+    const_pool_blocked_nesting_++;
+  }
+  void EndBlockConstPool() {
+    const_pool_blocked_nesting_--;
   }
 
  private:
@@ -976,8 +1054,9 @@ class Assembler : public Malloced {
   // distance between pools.
   static const int kMaxDistBetweenPools = 4*KB - 2*kBufferCheckInterval;
 
-  // Emission of the constant pool may be blocked in some code sequences
-  int no_const_pool_before_;  // block emission before this pc offset
+  // Emission of the constant pool may be blocked in some code sequences.
+  int const_pool_blocked_nesting_;  // Block emission if this is not zero.
+  int no_const_pool_before_;  // Block emission before this pc offset.
 
   // Keep track of the last emitted pool to guarantee a maximal distance
   int last_const_pool_end_;  // pc offset following the last constant pool
@@ -1029,6 +1108,7 @@ class Assembler : public Malloced {
   friend class RegExpMacroAssemblerARM;
   friend class RelocInfo;
   friend class CodePatcher;
+  friend class BlockConstPoolScope;
 };
 
 } }  // namespace v8::internal
