@@ -142,4 +142,5 @@ V8_LOCAL_JS_LIBRARY_FILES := \
 	src/json.js \
 	src/mirror-debugger.js \
 	src/debug-debugger.js \
+	src/liveedit-debugger.js \
 	src/macros.py
