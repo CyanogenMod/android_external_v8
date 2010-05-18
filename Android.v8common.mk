@@ -128,6 +128,9 @@ endif
 V8_LOCAL_SRC_FILES += \
 	src/dtoa-config.c
 
+# The order of these JS library sources is important. The order here determines
+# the ordering of the JS code in libraries.cc, which must be in a specific order
+# to meet compiler dependency requirements.
 V8_LOCAL_JS_LIBRARY_FILES := \
 	src/runtime.js \
 	src/v8natives.js \
@@ -136,11 +139,17 @@ V8_LOCAL_JS_LIBRARY_FILES := \
 	src/uri.js \
 	src/math.js \
 	src/messages.js \
-	src/apinatives.js \
+	src/apinatives.js
+
+# These JS library sources must follow the above sources but their order is not
+# important.
+V8_LOCAL_JS_LIBRARY_FILES += \
 	src/date.js \
-	src/regexp.js \
-	src/json.js \
-	src/mirror-debugger.js \
 	src/debug-debugger.js \
+	src/json.js \
 	src/liveedit-debugger.js \
+	src/mirror-debugger.js \
+	src/regexp.js
+
+V8_LOCAL_JS_LIBRARY_FILES += \
 	src/macros.py
