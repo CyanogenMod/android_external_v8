@@ -84,6 +84,7 @@ ANDROID_FLAGS = ['-march=armv7-a',
                  '-finline-limit=64',
                  '-DCAN_USE_VFP_INSTRUCTIONS=1',
                  '-DCAN_USE_ARMV7_INSTRUCTIONS=1',
+                 '-DCAN_USE_UNALIGNED_ACCESSES=1',
                  '-MD']
 
 ANDROID_INCLUDES = [ANDROID_TOP + '/bionic/libc/arch-arm/include',
@@ -178,6 +179,9 @@ LIBRARY_FLAGS = {
       'CCFLAGS':      ['-ansi'],
     },
     'os:solaris': {
+      # On Solaris, to get isinf, INFINITY, fpclassify and other macros one
+      # needs to define __C99FEATURES__.
+      'CPPDEFINES': ['__C99FEATURES__'],
       'CPPPATH' : ['/usr/local/include'],
       'LIBPATH' : ['/usr/local/lib'],
       'CCFLAGS':      ['-ansi'],
@@ -203,7 +207,7 @@ LIBRARY_FLAGS = {
       'CPPDEFINES':   ['V8_TARGET_ARCH_ARM']
     },
     'simulator:arm': {
-      'CCFLAGS':      ['-m32'],
+      'CCFLAGS':      ['-m32', '-DCAN_USE_UNALIGNED_ACCESSES=1'],
       'LINKFLAGS':    ['-m32']
     },
     'armvariant:thumb2': {

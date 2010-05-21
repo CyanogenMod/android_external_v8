@@ -33,6 +33,7 @@
 #include "debug.h"
 #include "ic-inl.h"
 #include "jsregexp.h"
+#include "jump-target-light-inl.h"
 #include "parser.h"
 #include "regexp-macro-assembler.h"
 #include "regexp-stack.h"
@@ -40,9 +41,11 @@
 #include "runtime.h"
 #include "scopes.h"
 #include "virtual-frame-inl.h"
+#include "virtual-frame-arm-inl.h"
 
 namespace v8 {
 namespace internal {
+
 
 #define __ ACCESS_MASM(masm_)
 
@@ -191,7 +194,7 @@ void CodeGenerator::Generate(CompilationInfo* info) {
       frame_->AllocateStackSlots();
 
       VirtualFrame::SpilledScope spilled_scope(frame_);
-      int heap_slots = scope()->num_heap_slots();
+      int heap_slots = scope()->num_heap_slots() - Context::MIN_CONTEXT_SLOTS;
       if (heap_slots > 0) {
         // Allocate local context.
         // Get outer context and create a new context based on it.
@@ -274,7 +277,7 @@ void CodeGenerator::Generate(CompilationInfo* info) {
 
     // Initialize the function return target after the locals are set
     // up, because it needs the expected frame height from the frame.
-    function_return_.set_direction(JumpTarget::BIDIRECTIONAL);
+    function_return_.SetExpectedHeight();
     function_return_is_shadowed_ = false;
 
     // Generate code to 'execute' declarations and initialize functions
@@ -1143,44 +1146,66 @@ void CodeGenerator::SmiOperation(Token::Value op,
       int shift_value = int_value & 0x1f;  // least significant 5 bits
       DeferredCode* deferred =
         new DeferredInlineSmiOperation(op, shift_value, false, mode, tos);
-      __ tst(tos, Operand(kSmiTagMask));
-      deferred->Branch(ne);
-      __ mov(scratch, Operand(tos, ASR, kSmiTagSize));  // remove tags
+      uint32_t problematic_mask = kSmiTagMask;
+      // For unsigned shift by zero all negative smis are problematic.
+      if (shift_value == 0 && op == Token::SHR) problematic_mask |= 0x80000000;
+      __ tst(tos, Operand(problematic_mask));
+      deferred->Branch(ne);  // Go slow for problematic input.
       switch (op) {
         case Token::SHL: {
           if (shift_value != 0) {
-            __ mov(scratch, Operand(scratch, LSL, shift_value));
+            int adjusted_shift = shift_value - kSmiTagSize;
+            ASSERT(adjusted_shift >= 0);
+            if (adjusted_shift != 0) {
+              __ mov(scratch, Operand(tos, LSL, adjusted_shift));
+              // Check that the *signed* result fits in a smi.
+              __ add(scratch2, scratch, Operand(0x40000000), SetCC);
+              deferred->Branch(mi);
+              __ mov(tos, Operand(scratch, LSL, kSmiTagSize));
+            } else {
+              // Check that the *signed* result fits in a smi.
+              __ add(scratch2, tos, Operand(0x40000000), SetCC);
+              deferred->Branch(mi);
+              __ mov(tos, Operand(tos, LSL, kSmiTagSize));
+            }
           }
-          // check that the *signed* result fits in a smi
-          __ add(scratch2, scratch, Operand(0x40000000), SetCC);
-          deferred->Branch(mi);
           break;
         }
         case Token::SHR: {
-          // LSR by immediate 0 means shifting 32 bits.
           if (shift_value != 0) {
+            __ mov(scratch, Operand(tos, ASR, kSmiTagSize));  // Remove tag.
+            // LSR by immediate 0 means shifting 32 bits.
             __ mov(scratch, Operand(scratch, LSR, shift_value));
+            if (shift_value == 1) {
+              // check that the *unsigned* result fits in a smi
+              // neither of the two high-order bits can be set:
+              // - 0x80000000: high bit would be lost when smi tagging
+              // - 0x40000000: this number would convert to negative when
+              // smi tagging these two cases can only happen with shifts
+              // by 0 or 1 when handed a valid smi
+              __ tst(scratch, Operand(0xc0000000));
+              deferred->Branch(ne);
+            }
+            __ mov(tos, Operand(scratch, LSL, kSmiTagSize));
           }
-          // check that the *unsigned* result fits in a smi
-          // neither of the two high-order bits can be set:
-          // - 0x80000000: high bit would be lost when smi tagging
-          // - 0x40000000: this number would convert to negative when
-          // smi tagging these two cases can only happen with shifts
-          // by 0 or 1 when handed a valid smi
-          __ tst(scratch, Operand(0xc0000000));
-          deferred->Branch(ne);
           break;
         }
         case Token::SAR: {
+          // In the ARM instructions set, ASR by immediate 0 means shifting 32
+          // bits.
           if (shift_value != 0) {
-            // ASR by immediate 0 means shifting 32 bits.
-            __ mov(scratch, Operand(scratch, ASR, shift_value));
+            // Do the shift and the tag removal in one operation.  If the shift
+            // is 31 bits (the highest possible value) then we emit the
+            // instruction as a shift by 0 which means shift arithmetically by
+            // 32.
+            __ mov(tos, Operand(tos, ASR, (kSmiTagSize + shift_value) & 0x1f));
+            // Put tag back.
+            __ mov(tos, Operand(tos, LSL, kSmiTagSize));
           }
           break;
         }
         default: UNREACHABLE();
       }
-      __ mov(tos, Operand(scratch, LSL, kSmiTagSize));
       deferred->BindExit();
       frame_->EmitPush(tos);
       break;
@@ -1486,8 +1511,7 @@ void CodeGenerator::CallApplyLazy(Expression* applicand,
   // Then process it as a normal function call.
   __ ldr(r0, MemOperand(sp, 3 * kPointerSize));
   __ ldr(r1, MemOperand(sp, 2 * kPointerSize));
-  __ str(r0, MemOperand(sp, 2 * kPointerSize));
-  __ str(r1, MemOperand(sp, 3 * kPointerSize));
+  __ strd(r0, MemOperand(sp, 2 * kPointerSize));
 
   CallFunctionStub call_function(2, NOT_IN_LOOP, NO_CALL_FUNCTION_FLAGS);
   frame_->CallStub(&call_function, 3);
@@ -1550,7 +1574,7 @@ void CodeGenerator::VisitBlock(Block* node) {
   VirtualFrame::SpilledScope spilled_scope(frame_);
   Comment cmnt(masm_, "[ Block");
   CodeForStatementPosition(node);
-  node->break_target()->set_direction(JumpTarget::FORWARD_ONLY);
+  node->break_target()->SetExpectedHeight();
   VisitStatementsAndSpill(node->statements());
   if (node->break_target()->is_linked()) {
     node->break_target()->Bind();
@@ -1837,7 +1861,7 @@ void CodeGenerator::VisitSwitchStatement(SwitchStatement* node) {
   VirtualFrame::SpilledScope spilled_scope(frame_);
   Comment cmnt(masm_, "[ SwitchStatement");
   CodeForStatementPosition(node);
-  node->break_target()->set_direction(JumpTarget::FORWARD_ONLY);
+  node->break_target()->SetExpectedHeight();
 
   LoadAndSpill(node->tag());
 
@@ -1926,7 +1950,7 @@ void CodeGenerator::VisitDoWhileStatement(DoWhileStatement* node) {
   VirtualFrame::SpilledScope spilled_scope(frame_);
   Comment cmnt(masm_, "[ DoWhileStatement");
   CodeForStatementPosition(node);
-  node->break_target()->set_direction(JumpTarget::FORWARD_ONLY);
+  node->break_target()->SetExpectedHeight();
   JumpTarget body(JumpTarget::BIDIRECTIONAL);
   IncrementLoopNesting();
 
@@ -1936,14 +1960,14 @@ void CodeGenerator::VisitDoWhileStatement(DoWhileStatement* node) {
   ConditionAnalysis info = AnalyzeCondition(node->cond());
   switch (info) {
     case ALWAYS_TRUE:
-      node->continue_target()->set_direction(JumpTarget::BIDIRECTIONAL);
+      node->continue_target()->SetExpectedHeight();
       node->continue_target()->Bind();
       break;
     case ALWAYS_FALSE:
-      node->continue_target()->set_direction(JumpTarget::FORWARD_ONLY);
+      node->continue_target()->SetExpectedHeight();
       break;
     case DONT_KNOW:
-      node->continue_target()->set_direction(JumpTarget::FORWARD_ONLY);
+      node->continue_target()->SetExpectedHeight();
       body.Bind();
       break;
   }
@@ -2007,12 +2031,12 @@ void CodeGenerator::VisitWhileStatement(WhileStatement* node) {
   ConditionAnalysis info = AnalyzeCondition(node->cond());
   if (info == ALWAYS_FALSE) return;
 
-  node->break_target()->set_direction(JumpTarget::FORWARD_ONLY);
+  node->break_target()->SetExpectedHeight();
   IncrementLoopNesting();
 
   // Label the top of the loop with the continue target for the backward
   // CFG edge.
-  node->continue_target()->set_direction(JumpTarget::BIDIRECTIONAL);
+  node->continue_target()->SetExpectedHeight();
   node->continue_target()->Bind();
 
   if (info == DONT_KNOW) {
@@ -2061,17 +2085,17 @@ void CodeGenerator::VisitForStatement(ForStatement* node) {
   ConditionAnalysis info = AnalyzeCondition(node->cond());
   if (info == ALWAYS_FALSE) return;
 
-  node->break_target()->set_direction(JumpTarget::FORWARD_ONLY);
+  node->break_target()->SetExpectedHeight();
   IncrementLoopNesting();
 
   // If there is no update statement, label the top of the loop with the
   // continue target, otherwise with the loop target.
   JumpTarget loop(JumpTarget::BIDIRECTIONAL);
   if (node->next() == NULL) {
-    node->continue_target()->set_direction(JumpTarget::BIDIRECTIONAL);
+    node->continue_target()->SetExpectedHeight();
     node->continue_target()->Bind();
   } else {
-    node->continue_target()->set_direction(JumpTarget::FORWARD_ONLY);
+    node->continue_target()->SetExpectedHeight();
     loop.Bind();
   }
 
@@ -2276,11 +2300,11 @@ void CodeGenerator::VisitForInStatement(ForInStatement* node) {
   // sp[4] : enumerable
   // Grab the current frame's height for the break and continue
   // targets only after all the state is pushed on the frame.
-  node->break_target()->set_direction(JumpTarget::FORWARD_ONLY);
-  node->continue_target()->set_direction(JumpTarget::FORWARD_ONLY);
+  node->break_target()->SetExpectedHeight();
+  node->continue_target()->SetExpectedHeight();
 
-  __ ldr(r0, frame_->ElementAt(0));  // load the current count
-  __ ldr(r1, frame_->ElementAt(1));  // load the length
+  // Load the current count to r0, load the length to r1.
+  __ ldrd(r0, frame_->ElementAt(0));
   __ cmp(r0, r1);  // compare to the array length
   node->break_target()->Branch(hs);
 
@@ -2767,44 +2791,13 @@ void CodeGenerator::LoadFromSlot(Slot* slot, TypeofState typeof_state) {
     JumpTarget slow;
     JumpTarget done;
 
-    // Generate fast-case code for variables that might be shadowed by
-    // eval-introduced variables.  Eval is used a lot without
-    // introducing variables.  In those cases, we do not want to
-    // perform a runtime call for all variables in the scope
-    // containing the eval.
-    if (slot->var()->mode() == Variable::DYNAMIC_GLOBAL) {
-      LoadFromGlobalSlotCheckExtensions(slot, typeof_state, &slow);
-      // If there was no control flow to slow, we can exit early.
-      if (!slow.is_linked()) {
-        frame_->EmitPush(r0);
-        return;
-      }
-      frame_->SpillAll();
-
-      done.Jump();
-
-    } else if (slot->var()->mode() == Variable::DYNAMIC_LOCAL) {
-      frame_->SpillAll();
-      Slot* potential_slot = slot->var()->local_if_not_shadowed()->slot();
-      // Only generate the fast case for locals that rewrite to slots.
-      // This rules out argument loads.
-      if (potential_slot != NULL) {
-        __ ldr(r0,
-               ContextSlotOperandCheckExtensions(potential_slot,
-                                                 r1,
-                                                 r2,
-                                                 &slow));
-        if (potential_slot->var()->mode() == Variable::CONST) {
-          __ LoadRoot(ip, Heap::kTheHoleValueRootIndex);
-          __ cmp(r0, ip);
-          __ LoadRoot(r0, Heap::kUndefinedValueRootIndex, eq);
-        }
-        // There is always control flow to slow from
-        // ContextSlotOperandCheckExtensions so we have to jump around
-        // it.
-        done.Jump();
-      }
-    }
+    // Generate fast case for loading from slots that correspond to
+    // local/global variables or arguments unless they are shadowed by
+    // eval-introduced bindings.
+    EmitDynamicLoadFromSlotFastCase(slot,
+                                    typeof_state,
+                                    &slow,
+                                    &done);
 
     slow.Bind();
     VirtualFrame::SpilledScope spilled_scope(frame_);
@@ -3016,6 +3009,67 @@ void CodeGenerator::LoadFromGlobalSlotCheckExtensions(Slot* slot,
                          : RelocInfo::CODE_TARGET_CONTEXT);
   // Drop the global object. The result is in r0.
   frame_->Drop();
+}
+
+
+void CodeGenerator::EmitDynamicLoadFromSlotFastCase(Slot* slot,
+                                                    TypeofState typeof_state,
+                                                    JumpTarget* slow,
+                                                    JumpTarget* done) {
+  // Generate fast-case code for variables that might be shadowed by
+  // eval-introduced variables.  Eval is used a lot without
+  // introducing variables.  In those cases, we do not want to
+  // perform a runtime call for all variables in the scope
+  // containing the eval.
+  if (slot->var()->mode() == Variable::DYNAMIC_GLOBAL) {
+    LoadFromGlobalSlotCheckExtensions(slot, typeof_state, slow);
+    frame_->SpillAll();
+    done->Jump();
+
+  } else if (slot->var()->mode() == Variable::DYNAMIC_LOCAL) {
+    frame_->SpillAll();
+    Slot* potential_slot = slot->var()->local_if_not_shadowed()->slot();
+    Expression* rewrite = slot->var()->local_if_not_shadowed()->rewrite();
+    if (potential_slot != NULL) {
+      // Generate fast case for locals that rewrite to slots.
+      __ ldr(r0,
+             ContextSlotOperandCheckExtensions(potential_slot,
+                                               r1,
+                                               r2,
+                                               slow));
+      if (potential_slot->var()->mode() == Variable::CONST) {
+        __ LoadRoot(ip, Heap::kTheHoleValueRootIndex);
+        __ cmp(r0, ip);
+        __ LoadRoot(r0, Heap::kUndefinedValueRootIndex, eq);
+      }
+      done->Jump();
+    } else if (rewrite != NULL) {
+      // Generate fast case for argument loads.
+      Property* property = rewrite->AsProperty();
+      if (property != NULL) {
+        VariableProxy* obj_proxy = property->obj()->AsVariableProxy();
+        Literal* key_literal = property->key()->AsLiteral();
+        if (obj_proxy != NULL &&
+            key_literal != NULL &&
+            obj_proxy->IsArguments() &&
+            key_literal->handle()->IsSmi()) {
+          // Load arguments object if there are no eval-introduced
+          // variables. Then load the argument from the arguments
+          // object using keyed load.
+          __ ldr(r0,
+                 ContextSlotOperandCheckExtensions(obj_proxy->var()->slot(),
+                                                   r1,
+                                                   r2,
+                                                   slow));
+          frame_->EmitPush(r0);
+          __ mov(r1, Operand(key_literal->handle()));
+          frame_->EmitPush(r1);
+          EmitKeyedLoad();
+          done->Jump();
+        }
+      }
+    }
+  }
 }
 
 
@@ -3473,7 +3527,8 @@ void CodeGenerator::EmitKeyedPropertyAssignment(Assignment* node) {
   if (node->is_compound()) {
     // For a compound assignment the right-hand side is a binary operation
     // between the current property value and the actual right-hand side.
-    // Load of the current value leaves receiver and key on the stack.
+    // Duplicate receiver and key for loading the current property value.
+    frame_->Dup2();
     EmitKeyedLoad();
     frame_->EmitPush(r0);
 
@@ -3702,9 +3757,30 @@ void CodeGenerator::VisitCall(Call* node) {
   } else if (var != NULL && var->slot() != NULL &&
              var->slot()->type() == Slot::LOOKUP) {
     // ----------------------------------
-    // JavaScript example: 'with (obj) foo(1, 2, 3)'  // foo is in obj
+    // JavaScript examples:
+    //
+    //  with (obj) foo(1, 2, 3)  // foo may be in obj.
+    //
+    //  function f() {};
+    //  function g() {
+    //    eval(...);
+    //    f();  // f could be in extension object.
+    //  }
     // ----------------------------------
 
+    // JumpTargets do not yet support merging frames so the frame must be
+    // spilled when jumping to these targets.
+    JumpTarget slow, done;
+
+    // Generate fast case for loading functions from slots that
+    // correspond to local/global variables or arguments unless they
+    // are shadowed by eval-introduced bindings.
+    EmitDynamicLoadFromSlotFastCase(var->slot(),
+                                    NOT_INSIDE_TYPEOF,
+                                    &slow,
+                                    &done);
+
+    slow.Bind();
     // Load the function
     frame_->EmitPush(cp);
     __ mov(r0, Operand(var->name()));
@@ -3716,7 +3792,20 @@ void CodeGenerator::VisitCall(Call* node) {
     frame_->EmitPush(r0);  // function
     frame_->EmitPush(r1);  // receiver
 
-    // Call the function.
+    // If fast case code has been generated, emit code to push the
+    // function and receiver and have the slow path jump around this
+    // code.
+    if (done.is_linked()) {
+      JumpTarget call;
+      call.Jump();
+      done.Bind();
+      frame_->EmitPush(r0);  // function
+      LoadGlobalReceiver(r1);  // receiver
+      call.Bind();
+    }
+
+    // Call the function. At this point, everything is spilled but the
+    // function and receiver are in r0 and r1.
     CallWithArguments(args, NO_CALL_FUNCTION_FLAGS, node->position());
     frame_->EmitPush(r0);
 
@@ -3767,19 +3856,23 @@ void CodeGenerator::VisitCall(Call* node) {
       // -------------------------------------------
 
       LoadAndSpill(property->obj());
+      if (!property->is_synthetic()) {
+        // Duplicate receiver for later use.
+        __ ldr(r0, MemOperand(sp, 0));
+        frame_->EmitPush(r0);
+      }
       LoadAndSpill(property->key());
       EmitKeyedLoad();
-      frame_->Drop();  // key
       // Put the function below the receiver.
       if (property->is_synthetic()) {
         // Use the global receiver.
-        frame_->Drop();
-        frame_->EmitPush(r0);
+        frame_->EmitPush(r0);  // Function.
         LoadGlobalReceiver(r0);
       } else {
-        frame_->EmitPop(r1);  // receiver
-        frame_->EmitPush(r0);  // function
-        frame_->EmitPush(r1);  // receiver
+        // Switch receiver and function.
+        frame_->EmitPop(r1);  // Receiver.
+        frame_->EmitPush(r0);  // Function.
+        frame_->EmitPush(r1);  // Receiver.
       }
 
       // Call the function.
@@ -4359,12 +4452,13 @@ void CodeGenerator::GenerateRegExpConstructResult(ZoneList<Expression*>* args) {
         (JSRegExpResult::kSize + FixedArray::kHeaderSize) / kPointerSize;
     __ mov(r5, Operand(r1, LSR, kSmiTagSize + kSmiShiftSize));
     __ add(r2, r5, Operand(objects_size));
-    __ AllocateInNewSpace(r2,  // In: Size, in words.
-                          r0,  // Out: Start of allocation (tagged).
-                          r3,  // Scratch register.
-                          r4,  // Scratch register.
-                          &slowcase,
-                          TAG_OBJECT);
+    __ AllocateInNewSpace(
+        r2,  // In: Size, in words.
+        r0,  // Out: Start of allocation (tagged).
+        r3,  // Scratch register.
+        r4,  // Scratch register.
+        &slowcase,
+        static_cast<AllocationFlags>(TAG_OBJECT | SIZE_IN_WORDS));
     // r0: Start of allocated area, object-tagged.
     // r1: Number of elements in array, as smi.
     // r5: Number of elements, untagged.
@@ -4837,7 +4931,6 @@ void CodeGenerator::VisitCountOperation(CountOperation* node) {
 #ifdef DEBUG
   int original_height = frame_->height();
 #endif
-  VirtualFrame::SpilledScope spilled_scope(frame_);
   Comment cmnt(masm_, "[ CountOperation");
 
   bool is_postfix = node->is_postfix();
@@ -4846,10 +4939,8 @@ void CodeGenerator::VisitCountOperation(CountOperation* node) {
   Variable* var = node->expression()->AsVariableProxy()->AsVariable();
   bool is_const = (var != NULL && var->mode() == Variable::CONST);
 
-  // Postfix: Make room for the result.
   if (is_postfix) {
-     __ mov(r0, Operand(0));
-     frame_->EmitPush(r0);
+    frame_->EmitPush(Operand(Smi::FromInt(0)));
   }
 
   // A constant reference is not saved to, so a constant reference is not a
@@ -4859,35 +4950,33 @@ void CodeGenerator::VisitCountOperation(CountOperation* node) {
       // Spoof the virtual frame to have the expected height (one higher
       // than on entry).
       if (!is_postfix) {
-        __ mov(r0, Operand(Smi::FromInt(0)));
-        frame_->EmitPush(r0);
+        frame_->EmitPush(Operand(Smi::FromInt(0)));
       }
       ASSERT_EQ(original_height + 1, frame_->height());
       return;
     }
+    // This pushes 0, 1 or 2 words on the object to be used later when updating
+    // the target.  It also pushes the current value of the target.
     target.GetValue();
-    frame_->EmitPop(r0);
 
     JumpTarget slow;
     JumpTarget exit;
 
-    // Load the value (1) into register r1.
-    __ mov(r1, Operand(Smi::FromInt(1)));
-
     // Check for smi operand.
-    __ tst(r0, Operand(kSmiTagMask));
+    Register value = frame_->PopToRegister();
+    __ tst(value, Operand(kSmiTagMask));
     slow.Branch(ne);
 
     // Postfix: Store the old value as the result.
     if (is_postfix) {
-      __ str(r0, frame_->ElementAt(target.size()));
+      frame_->SetElementAt(value, target.size());
     }
 
     // Perform optimistic increment/decrement.
     if (is_increment) {
-      __ add(r0, r0, Operand(r1), SetCC);
+      __ add(value, value, Operand(Smi::FromInt(1)), SetCC);
     } else {
-      __ sub(r0, r0, Operand(r1), SetCC);
+      __ sub(value, value, Operand(Smi::FromInt(1)), SetCC);
     }
 
     // If the increment/decrement didn't overflow, we're done.
@@ -4895,41 +4984,50 @@ void CodeGenerator::VisitCountOperation(CountOperation* node) {
 
     // Revert optimistic increment/decrement.
     if (is_increment) {
-      __ sub(r0, r0, Operand(r1));
+      __ sub(value, value, Operand(Smi::FromInt(1)));
     } else {
-      __ add(r0, r0, Operand(r1));
+      __ add(value, value, Operand(Smi::FromInt(1)));
     }
 
-    // Slow case: Convert to number.
+    // Slow case: Convert to number.  At this point the
+    // value to be incremented is in the value register..
     slow.Bind();
+
+    // Convert the operand to a number.
+    frame_->EmitPush(value);
+
     {
-      // Convert the operand to a number.
-      frame_->EmitPush(r0);
+      VirtualFrame::SpilledScope spilled(frame_);
       frame_->InvokeBuiltin(Builtins::TO_NUMBER, CALL_JS, 1);
-    }
-    if (is_postfix) {
-      // Postfix: store to result (on the stack).
-      __ str(r0, frame_->ElementAt(target.size()));
+
+      if (is_postfix) {
+        // Postfix: store to result (on the stack).
+        __ str(r0, frame_->ElementAt(target.size()));
+      }
+
+      // Compute the new value.
+      frame_->EmitPush(r0);
+      frame_->EmitPush(Operand(Smi::FromInt(1)));
+      if (is_increment) {
+        frame_->CallRuntime(Runtime::kNumberAdd, 2);
+      } else {
+        frame_->CallRuntime(Runtime::kNumberSub, 2);
+      }
     }
 
-    // Compute the new value.
-    __ mov(r1, Operand(Smi::FromInt(1)));
-    frame_->EmitPush(r0);
-    frame_->EmitPush(r1);
-    if (is_increment) {
-      frame_->CallRuntime(Runtime::kNumberAdd, 2);
-    } else {
-      frame_->CallRuntime(Runtime::kNumberSub, 2);
-    }
-
+    __ Move(value, r0);
     // Store the new value in the target if not const.
+    // At this point the answer is in the value register.
     exit.Bind();
-    frame_->EmitPush(r0);
+    frame_->EmitPush(value);
+    // Set the target with the result, leaving the result on
+    // top of the stack.  Removes the target from the stack if
+    // it has a non-zero size.
     if (!is_const) target.SetValue(NOT_CONST_INIT);
   }
 
   // Postfix: Discard the new value and use the old.
-  if (is_postfix) frame_->EmitPop(r0);
+  if (is_postfix) frame_->Pop();
   ASSERT_EQ(original_height + 1, frame_->height());
 }
 
@@ -5372,24 +5470,37 @@ void DeferredReferenceGetNamedValue::Generate() {
 
 class DeferredReferenceGetKeyedValue: public DeferredCode {
  public:
-  DeferredReferenceGetKeyedValue() {
+  DeferredReferenceGetKeyedValue(Register key, Register receiver)
+      : key_(key), receiver_(receiver) {
     set_comment("[ DeferredReferenceGetKeyedValue");
   }
 
   virtual void Generate();
+
+ private:
+  Register key_;
+  Register receiver_;
 };
 
 
 void DeferredReferenceGetKeyedValue::Generate() {
+  ASSERT((key_.is(r0) && receiver_.is(r1)) ||
+         (key_.is(r1) && receiver_.is(r0)));
+
   Register scratch1 = VirtualFrame::scratch0();
   Register scratch2 = VirtualFrame::scratch1();
   __ DecrementCounter(&Counters::keyed_load_inline, 1, scratch1, scratch2);
   __ IncrementCounter(&Counters::keyed_load_inline_miss, 1, scratch1, scratch2);
 
+  // Ensure key in r0 and receiver in r1 to match keyed load ic calling
+  // convention.
+  if (key_.is(r1)) {
+    __ Swap(r0, r1, ip);
+  }
+
   // The rest of the instructions in the deferred code must be together.
   { Assembler::BlockConstPoolScope block_const_pool(masm_);
-    // Call keyed load IC. It has all arguments on the stack and the key in r0.
-    __ ldr(r0, MemOperand(sp, 0));
+    // Call keyed load IC. It has the arguments key and receiver in r0 and r1.
     Handle<Code> ic(Builtins::builtin(Builtins::KeyedLoadIC_Initialize));
     __ Call(ic, RelocInfo::CODE_TARGET);
     // The call must be followed by a nop instruction to indicate that the
@@ -5522,14 +5633,14 @@ void CodeGenerator::EmitKeyedLoad() {
     __ IncrementCounter(&Counters::keyed_load_inline, 1,
                         frame_->scratch0(), frame_->scratch1());
 
-    // Load the receiver and key from the stack.
-    frame_->SpillAllButCopyTOSToR1R0();
-    Register receiver = r0;
-    Register key = r1;
+    // Load the key and receiver from the stack.
+    Register key = frame_->PopToRegister();
+    Register receiver = frame_->PopToRegister(key);
     VirtualFrame::SpilledScope spilled(frame_);
 
+    // The deferred code expects key and receiver in registers.
     DeferredReferenceGetKeyedValue* deferred =
-        new DeferredReferenceGetKeyedValue();
+        new DeferredReferenceGetKeyedValue(key, receiver);
 
     // Check that the receiver is a heap object.
     __ tst(receiver, Operand(kSmiTagMask));
@@ -5539,17 +5650,16 @@ void CodeGenerator::EmitKeyedLoad() {
     // property code which can be patched. Therefore the exact number of
     // instructions generated need to be fixed, so the constant pool is blocked
     // while generating this code.
-#ifdef DEBUG
-    int kInlinedKeyedLoadInstructions = 19;
-    Label check_inlined_codesize;
-    masm_->bind(&check_inlined_codesize);
-#endif
     { Assembler::BlockConstPoolScope block_const_pool(masm_);
       Register scratch1 = VirtualFrame::scratch0();
       Register scratch2 = VirtualFrame::scratch1();
       // Check the map. The null map used below is patched by the inline cache
       // code.
       __ ldr(scratch1, FieldMemOperand(receiver, HeapObject::kMapOffset));
+#ifdef DEBUG
+    Label check_inlined_codesize;
+    masm_->bind(&check_inlined_codesize);
+#endif
       __ mov(scratch2, Operand(Factory::null_value()));
       __ cmp(scratch1, scratch2);
       deferred->Branch(ne);
@@ -5577,17 +5687,15 @@ void CodeGenerator::EmitKeyedLoad() {
       __ add(scratch1,
              scratch1,
              Operand(FixedArray::kHeaderSize - kHeapObjectTag));
-      __ ldr(r0,
+      __ ldr(scratch1,
              MemOperand(scratch1, key, LSL,
                         kPointerSizeLog2 - (kSmiTagSize + kSmiShiftSize)));
-      __ cmp(r0, scratch2);
-      // This is the only branch to deferred where r0 and r1 do not contain the
-      // receiver and key.  We can't just load undefined here because we have to
-      // check the prototype.
+      __ cmp(scratch1, scratch2);
       deferred->Branch(eq);
 
+      __ mov(r0, scratch1);
       // Make sure that the expected number of instructions are generated.
-      ASSERT_EQ(kInlinedKeyedLoadInstructions,
+      ASSERT_EQ(kInlinedKeyedLoadInstructionsAfterPatchSize,
                 masm_->InstructionsGeneratedSince(&check_inlined_codesize));
     }
 
@@ -5721,6 +5829,9 @@ void Reference::GetValue() {
       Slot* slot = expression_->AsVariableProxy()->AsVariable()->slot();
       ASSERT(slot != NULL);
       cgen_->LoadFromSlotCheckForArguments(slot, NOT_INSIDE_TYPEOF);
+      if (!persist_after_get_) {
+        cgen_->UnloadReference(this);
+      }
       break;
     }
 
@@ -5730,22 +5841,25 @@ void Reference::GetValue() {
       ASSERT(!is_global || var->is_global());
       cgen_->EmitNamedLoad(GetName(), is_global);
       cgen_->frame()->EmitPush(r0);
+      if (!persist_after_get_) {
+        cgen_->UnloadReference(this);
+      }
       break;
     }
 
     case KEYED: {
+      if (persist_after_get_) {
+        cgen_->frame()->Dup2();
+      }
       ASSERT(property != NULL);
       cgen_->EmitKeyedLoad();
       cgen_->frame()->EmitPush(r0);
+      if (!persist_after_get_) set_unloaded();
       break;
     }
 
     default:
       UNREACHABLE();
-  }
-
-  if (!persist_after_get_) {
-    cgen_->UnloadReference(this);
   }
 }
 
@@ -5806,7 +5920,7 @@ void FastNewClosureStub::Generate(MacroAssembler* masm) {
   __ pop(r3);
 
   // Attempt to allocate new JSFunction in new space.
-  __ AllocateInNewSpace(JSFunction::kSize / kPointerSize,
+  __ AllocateInNewSpace(JSFunction::kSize,
                         r0,
                         r1,
                         r2,
@@ -5847,7 +5961,7 @@ void FastNewContextStub::Generate(MacroAssembler* masm) {
   int length = slots_ + Context::MIN_CONTEXT_SLOTS;
 
   // Attempt to allocate the context in new space.
-  __ AllocateInNewSpace(length + (FixedArray::kHeaderSize / kPointerSize),
+  __ AllocateInNewSpace(FixedArray::SizeFor(length),
                         r0,
                         r1,
                         r2,
@@ -5915,7 +6029,7 @@ void FastCloneShallowArrayStub::Generate(MacroAssembler* masm) {
 
   // Allocate both the JS array and the elements array in one big
   // allocation. This avoids multiple limit checks.
-  __ AllocateInNewSpace(size / kPointerSize,
+  __ AllocateInNewSpace(size,
                         r0,
                         r1,
                         r2,
@@ -6248,8 +6362,7 @@ static void EmitSmiNonsmiComparison(MacroAssembler* masm,
     ConvertToDoubleStub stub1(r3, r2, r7, r6);
     __ Call(stub1.GetCode(), RelocInfo::CODE_TARGET);
     // Load rhs to a double in r0, r1.
-    __ ldr(r1, FieldMemOperand(r0, HeapNumber::kValueOffset + kPointerSize));
-    __ ldr(r0, FieldMemOperand(r0, HeapNumber::kValueOffset));
+    __ ldrd(r0, FieldMemOperand(r0, HeapNumber::kValueOffset));
     __ pop(lr);
   }
 
@@ -6284,8 +6397,7 @@ static void EmitSmiNonsmiComparison(MacroAssembler* masm,
   } else {
     __ push(lr);
     // Load lhs to a double in r2, r3.
-    __ ldr(r3, FieldMemOperand(r1, HeapNumber::kValueOffset + kPointerSize));
-    __ ldr(r2, FieldMemOperand(r1, HeapNumber::kValueOffset));
+    __ ldrd(r2, FieldMemOperand(r1, HeapNumber::kValueOffset));
     // Convert rhs to a double in r0, r1.
     __ mov(r7, Operand(r0));
     ConvertToDoubleStub stub2(r1, r0, r7, r6);
@@ -6449,10 +6561,8 @@ static void EmitCheckForTwoHeapNumbers(MacroAssembler* masm,
     __ sub(r7, r1, Operand(kHeapObjectTag));
     __ vldr(d7, r7, HeapNumber::kValueOffset);
   } else {
-    __ ldr(r2, FieldMemOperand(r1, HeapNumber::kValueOffset));
-    __ ldr(r3, FieldMemOperand(r1, HeapNumber::kValueOffset + kPointerSize));
-    __ ldr(r1, FieldMemOperand(r0, HeapNumber::kValueOffset + kPointerSize));
-    __ ldr(r0, FieldMemOperand(r0, HeapNumber::kValueOffset));
+    __ ldrd(r2, FieldMemOperand(r1, HeapNumber::kValueOffset));
+    __ ldrd(r0, FieldMemOperand(r0, HeapNumber::kValueOffset));
   }
   __ jmp(both_loaded_as_doubles);
 }
@@ -6829,8 +6939,7 @@ void GenericBinaryOpStub::HandleBinaryOpSlowCases(
       __ vldr(d7, r7, HeapNumber::kValueOffset);
     } else {
       // Calling convention says that second double is in r2 and r3.
-      __ ldr(r2, FieldMemOperand(r0, HeapNumber::kValueOffset));
-      __ ldr(r3, FieldMemOperand(r0, HeapNumber::kValueOffset + 4));
+      __ ldrd(r2, FieldMemOperand(r0, HeapNumber::kValueOffset));
     }
     __ jmp(&finished_loading_r0);
     __ bind(&r0_is_smi);
@@ -6882,8 +6991,7 @@ void GenericBinaryOpStub::HandleBinaryOpSlowCases(
       __ vldr(d6, r7, HeapNumber::kValueOffset);
     } else {
       // Calling convention says that first double is in r0 and r1.
-      __ ldr(r0, FieldMemOperand(r1, HeapNumber::kValueOffset));
-      __ ldr(r1, FieldMemOperand(r1, HeapNumber::kValueOffset + 4));
+      __ ldrd(r0, FieldMemOperand(r1, HeapNumber::kValueOffset));
     }
     __ jmp(&finished_loading_r1);
     __ bind(&r1_is_smi);
@@ -6954,8 +7062,7 @@ void GenericBinaryOpStub::HandleBinaryOpSlowCases(
       __ stc(p1, cr8, MemOperand(r4, HeapNumber::kValueOffset));
   #else
       // Double returned in registers 0 and 1.
-      __ str(r0, FieldMemOperand(r5, HeapNumber::kValueOffset));
-      __ str(r1, FieldMemOperand(r5, HeapNumber::kValueOffset + 4));
+      __ strd(r0, FieldMemOperand(r5, HeapNumber::kValueOffset));
   #endif
       __ mov(r0, Operand(r5));
       // And we are done.
@@ -8206,6 +8313,22 @@ void InstanceofStub::Generate(MacroAssembler* masm) {
 
   // Get the prototype of the function (r4 is result, r2 is scratch).
   __ ldr(r1, MemOperand(sp, 0));
+  // r1 is function, r3 is map.
+
+  // Look up the function and the map in the instanceof cache.
+  Label miss;
+  __ LoadRoot(ip, Heap::kInstanceofCacheFunctionRootIndex);
+  __ cmp(r1, ip);
+  __ b(ne, &miss);
+  __ LoadRoot(ip, Heap::kInstanceofCacheMapRootIndex);
+  __ cmp(r3, ip);
+  __ b(ne, &miss);
+  __ LoadRoot(r0, Heap::kInstanceofCacheAnswerRootIndex);
+  __ pop();
+  __ pop();
+  __ mov(pc, Operand(lr));
+
+  __ bind(&miss);
   __ TryGetFunctionPrototype(r1, r4, r2, &slow);
 
   // Check that the function prototype is a JS object.
@@ -8214,6 +8337,9 @@ void InstanceofStub::Generate(MacroAssembler* masm) {
   __ b(lt, &slow);
   __ cmp(r5, Operand(LAST_JS_OBJECT_TYPE));
   __ b(gt, &slow);
+
+  __ StoreRoot(r1, Heap::kInstanceofCacheFunctionRootIndex);
+  __ StoreRoot(r3, Heap::kInstanceofCacheMapRootIndex);
 
   // Register mapping: r3 is object map and r4 is function prototype.
   // Get prototype of object into r2.
@@ -8232,12 +8358,14 @@ void InstanceofStub::Generate(MacroAssembler* masm) {
 
   __ bind(&is_instance);
   __ mov(r0, Operand(Smi::FromInt(0)));
+  __ StoreRoot(r0, Heap::kInstanceofCacheAnswerRootIndex);
   __ pop();
   __ pop();
   __ mov(pc, Operand(lr));  // Return.
 
   __ bind(&is_not_instance);
   __ mov(r0, Operand(Smi::FromInt(1)));
+  __ StoreRoot(r0, Heap::kInstanceofCacheAnswerRootIndex);
   __ pop();
   __ pop();
   __ mov(pc, Operand(lr));  // Return.
@@ -8324,8 +8452,7 @@ void ArgumentsAccessStub::GenerateNewObject(MacroAssembler* masm) {
   __ str(r3, MemOperand(sp, 1 * kPointerSize));
 
   // Try the new space allocation. Start out with computing the size
-  // of the arguments object and the elements array (in words, not
-  // bytes because AllocateInNewSpace expects words).
+  // of the arguments object and the elements array in words.
   Label add_arguments_object;
   __ bind(&try_allocate);
   __ cmp(r1, Operand(0));
@@ -8336,7 +8463,13 @@ void ArgumentsAccessStub::GenerateNewObject(MacroAssembler* masm) {
   __ add(r1, r1, Operand(Heap::kArgumentsObjectSize / kPointerSize));
 
   // Do the allocation of both objects in one go.
-  __ AllocateInNewSpace(r1, r0, r2, r3, &runtime, TAG_OBJECT);
+  __ AllocateInNewSpace(
+      r1,
+      r0,
+      r2,
+      r3,
+      &runtime,
+      static_cast<AllocationFlags>(TAG_OBJECT | SIZE_IN_WORDS));
 
   // Get the arguments boilerplate from the current (global) context.
   int offset = Context::SlotOffset(Context::ARGUMENTS_BOILERPLATE_INDEX);
@@ -8406,9 +8539,9 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   // Just jump directly to runtime if native RegExp is not selected at compile
   // time or if regexp entry in generated code is turned off runtime switch or
   // at compilation.
-#ifndef V8_NATIVE_REGEXP
+#ifdef V8_INTERPRETED_REGEXP
   __ TailCallRuntime(Runtime::kRegExpExec, 4, 1);
-#else  // V8_NATIVE_REGEXP
+#else  // V8_INTERPRETED_REGEXP
   if (!FLAG_regexp_entry_native) {
     __ TailCallRuntime(Runtime::kRegExpExec, 4, 1);
     return;
@@ -8501,9 +8634,9 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   // string length. A negative value will be greater (unsigned comparison).
   __ ldr(r0, MemOperand(sp, kPreviousIndexOffset));
   __ tst(r0, Operand(kSmiTagMask));
-  __ b(eq, &runtime);
+  __ b(ne, &runtime);
   __ cmp(r3, Operand(r0));
-  __ b(le, &runtime);
+  __ b(ls, &runtime);
 
   // r2: Number of capture registers
   // subject: Subject string
@@ -8518,11 +8651,7 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   __ ldr(last_match_info_elements,
          FieldMemOperand(r0, JSArray::kElementsOffset));
   __ ldr(r0, FieldMemOperand(last_match_info_elements, HeapObject::kMapOffset));
-#if ANDROID
   __ LoadRoot(ip, Heap::kFixedArrayMapRootIndex);
-#else
-  __ LoadRoot(ip, kFixedArrayMapRootIndex);
-#endif
   __ cmp(r0, ip);
   __ b(ne, &runtime);
   // Check that the last match info has space for the capture registers and the
@@ -8745,7 +8874,7 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   // Do the runtime call to execute the regexp.
   __ bind(&runtime);
   __ TailCallRuntime(Runtime::kRegExpExec, 4, 1);
-#endif  // V8_NATIVE_REGEXP
+#endif  // V8_INTERPRETED_REGEXP
 }
 
 

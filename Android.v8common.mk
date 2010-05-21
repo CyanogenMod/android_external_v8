@@ -23,10 +23,12 @@ V8_LOCAL_SRC_FILES := \
 	src/debug-agent.cc \
 	src/disassembler.cc \
 	src/diy-fp.cc \
+	src/dtoa.cc \
 	src/execution.cc \
 	src/factory.cc \
 	src/fast-codegen.cc \
 	src/fast-dtoa.cc \
+	src/fixed-dtoa.cc \
 	src/flags.cc \
 	src/flow-graph.cc \
 	src/frame-element.cc \
