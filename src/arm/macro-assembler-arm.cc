@@ -27,6 +27,8 @@
 
 #include "v8.h"
 
+#if defined(V8_TARGET_ARCH_ARM)
+
 #include "bootstrapper.h"
 #include "codegen-inl.h"
 #include "debug.h"
@@ -348,6 +350,51 @@ void MacroAssembler::RecordWrite(Register object, Register offset,
     mov(object, Operand(BitCast<int32_t>(kZapValue)));
     mov(offset, Operand(BitCast<int32_t>(kZapValue)));
     mov(scratch, Operand(BitCast<int32_t>(kZapValue)));
+  }
+}
+
+
+void MacroAssembler::Ldrd(Register dst1, Register dst2,
+                          const MemOperand& src, Condition cond) {
+  ASSERT(src.rm().is(no_reg));
+  ASSERT(!dst1.is(lr));  // r14.
+  ASSERT_EQ(0, dst1.code() % 2);
+  ASSERT_EQ(dst1.code() + 1, dst2.code());
+
+  // Generate two ldr instructions if ldrd is not available.
+  if (CpuFeatures::IsSupported(ARMv7)) {
+    CpuFeatures::Scope scope(ARMv7);
+    ldrd(dst1, dst2, src, cond);
+  } else {
+    MemOperand src2(src);
+    src2.set_offset(src2.offset() + 4);
+    if (dst1.is(src.rn())) {
+      ldr(dst2, src2, cond);
+      ldr(dst1, src, cond);
+    } else {
+      ldr(dst1, src, cond);
+      ldr(dst2, src2, cond);
+    }
+  }
+}
+
+
+void MacroAssembler::Strd(Register src1, Register src2,
+                          const MemOperand& dst, Condition cond) {
+  ASSERT(dst.rm().is(no_reg));
+  ASSERT(!src1.is(lr));  // r14.
+  ASSERT_EQ(0, src1.code() % 2);
+  ASSERT_EQ(src1.code() + 1, src2.code());
+
+  // Generate two str instructions if strd is not available.
+  if (CpuFeatures::IsSupported(ARMv7)) {
+    CpuFeatures::Scope scope(ARMv7);
+    strd(src1, src2, dst, cond);
+  } else {
+    MemOperand dst2(dst);
+    dst2.set_offset(dst2.offset() + 4);
+    str(src1, dst, cond);
+    str(src2, dst2, cond);
   }
 }
 
@@ -1725,3 +1772,5 @@ void CodePatcher::Emit(Address addr) {
 
 
 } }  // namespace v8::internal
+
+#endif  // V8_TARGET_ARCH_ARM

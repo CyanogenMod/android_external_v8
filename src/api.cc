@@ -48,7 +48,7 @@
 
 #define LOG_API(expr) LOG(ApiEntryCall(expr))
 
-#ifdef ENABLE_HEAP_PROTECTION
+#ifdef ENABLE_VMSTATE_TRACKING
 #define ENTER_V8 i::VMState __state__(i::OTHER)
 #define LEAVE_V8 i::VMState __state__(i::EXTERNAL)
 #else
@@ -58,11 +58,10 @@
 
 namespace v8 {
 
-
-#define ON_BAILOUT(location, code)              \
-  if (IsDeadCheck(location)) {                  \
-    code;                                       \
-    UNREACHABLE();                              \
+#define ON_BAILOUT(location, code)                                 \
+  if (IsDeadCheck(location) || v8::V8::IsExecutionTerminating()) { \
+    code;                                                          \
+    UNREACHABLE();                                                 \
   }
 
 
@@ -776,6 +775,28 @@ void FunctionTemplate::SetCallHandler(InvocationCallback callback,
 }
 
 
+static i::Handle<i::AccessorInfo> MakeAccessorInfo(
+      v8::Handle<String> name,
+      AccessorGetter getter,
+      AccessorSetter setter,
+      v8::Handle<Value> data,
+      v8::AccessControl settings,
+      v8::PropertyAttribute attributes) {
+  i::Handle<i::AccessorInfo> obj = i::Factory::NewAccessorInfo();
+  ASSERT(getter != NULL);
+  obj->set_getter(*FromCData(getter));
+  obj->set_setter(*FromCData(setter));
+  if (data.IsEmpty()) data = v8::Undefined();
+  obj->set_data(*Utils::OpenHandle(*data));
+  obj->set_name(*Utils::OpenHandle(*name));
+  if (settings & ALL_CAN_READ) obj->set_all_can_read(true);
+  if (settings & ALL_CAN_WRITE) obj->set_all_can_write(true);
+  if (settings & PROHIBITS_OVERWRITING) obj->set_prohibits_overwriting(true);
+  obj->set_property_attributes(static_cast<PropertyAttributes>(attributes));
+  return obj;
+}
+
+
 void FunctionTemplate::AddInstancePropertyAccessor(
       v8::Handle<String> name,
       AccessorGetter getter,
@@ -788,18 +809,10 @@ void FunctionTemplate::AddInstancePropertyAccessor(
   }
   ENTER_V8;
   HandleScope scope;
-  i::Handle<i::AccessorInfo> obj = i::Factory::NewAccessorInfo();
-  ASSERT(getter != NULL);
-  obj->set_getter(*FromCData(getter));
-  obj->set_setter(*FromCData(setter));
-  if (data.IsEmpty()) data = v8::Undefined();
-  obj->set_data(*Utils::OpenHandle(*data));
-  obj->set_name(*Utils::OpenHandle(*name));
-  if (settings & ALL_CAN_READ) obj->set_all_can_read(true);
-  if (settings & ALL_CAN_WRITE) obj->set_all_can_write(true);
-  if (settings & PROHIBITS_OVERWRITING) obj->set_prohibits_overwriting(true);
-  obj->set_property_attributes(static_cast<PropertyAttributes>(attributes));
 
+  i::Handle<i::AccessorInfo> obj = MakeAccessorInfo(name,
+                                                    getter, setter, data,
+                                                    settings, attributes);
   i::Handle<i::Object> list(Utils::OpenHandle(this)->property_accessors());
   if (list->IsUndefined()) {
     list = NeanderArray().value();
@@ -1106,8 +1119,19 @@ ScriptData* ScriptData::PreCompile(const char* input, int length) {
 }
 
 
-ScriptData* ScriptData::New(unsigned* data, int length) {
-  return new i::ScriptDataImpl(i::Vector<unsigned>(data, length));
+ScriptData* ScriptData::New(const char* data, int length) {
+  // Return an empty ScriptData if the length is obviously invalid.
+  if (length % sizeof(unsigned) != 0) {
+    return new i::ScriptDataImpl(i::Vector<unsigned>());
+  }
+
+  // Copy the data to ensure it is properly aligned.
+  int deserialized_data_length = length / sizeof(unsigned);
+  unsigned* deserialized_data = i::NewArray<unsigned>(deserialized_data_length);
+  memcpy(deserialized_data, data, length);
+
+  return new i::ScriptDataImpl(
+      i::Vector<unsigned>(deserialized_data, deserialized_data_length));
 }
 
 
@@ -2351,6 +2375,23 @@ bool v8::Object::Has(uint32_t index) {
   ON_BAILOUT("v8::Object::HasProperty()", return false);
   i::Handle<i::JSObject> self = Utils::OpenHandle(this);
   return self->HasElement(index);
+}
+
+
+bool Object::SetAccessor(Handle<String> name,
+                         AccessorGetter getter,
+                         AccessorSetter setter,
+                         v8::Handle<Value> data,
+                         AccessControl settings,
+                         PropertyAttribute attributes) {
+  ON_BAILOUT("v8::Object::SetAccessor()", return false);
+  ENTER_V8;
+  HandleScope scope;
+  i::Handle<i::AccessorInfo> info = MakeAccessorInfo(name,
+                                                     getter, setter, data,
+                                                     settings, attributes);
+  i::Handle<i::Object> result = i::SetAccessor(Utils::OpenHandle(this), info);
+  return !result.is_null() && !result->IsUndefined();
 }
 
 
@@ -3992,9 +4033,39 @@ Local<Value> Exception::Error(v8::Handle<v8::String> raw_message) {
 // --- D e b u g   S u p p o r t ---
 
 #ifdef ENABLE_DEBUGGER_SUPPORT
+
+static v8::Debug::EventCallback event_callback = NULL;
+
+static void EventCallbackWrapper(const v8::Debug::EventDetails& event_details) {
+  if (event_callback) {
+    event_callback(event_details.GetEvent(),
+                   event_details.GetExecutionState(),
+                   event_details.GetEventData(),
+                   event_details.GetCallbackData());
+  }
+}
+
+
 bool Debug::SetDebugEventListener(EventCallback that, Handle<Value> data) {
   EnsureInitialized("v8::Debug::SetDebugEventListener()");
   ON_BAILOUT("v8::Debug::SetDebugEventListener()", return false);
+  ENTER_V8;
+
+  event_callback = that;
+
+  HandleScope scope;
+  i::Handle<i::Object> proxy = i::Factory::undefined_value();
+  if (that != NULL) {
+    proxy = i::Factory::NewProxy(FUNCTION_ADDR(EventCallbackWrapper));
+  }
+  i::Debugger::SetEventListener(proxy, Utils::OpenHandle(*data));
+  return true;
+}
+
+
+bool Debug::SetDebugEventListener2(EventCallback2 that, Handle<Value> data) {
+  EnsureInitialized("v8::Debug::SetDebugEventListener2()");
+  ON_BAILOUT("v8::Debug::SetDebugEventListener2()", return false);
   ENTER_V8;
   HandleScope scope;
   i::Handle<i::Object> proxy = i::Factory::undefined_value();
@@ -4250,15 +4321,23 @@ int CpuProfiler::GetProfilesCount() {
 }
 
 
-const CpuProfile* CpuProfiler::GetProfile(int index) {
+const CpuProfile* CpuProfiler::GetProfile(int index,
+                                          Handle<Value> security_token) {
   IsDeadCheck("v8::CpuProfiler::GetProfile");
-  return reinterpret_cast<const CpuProfile*>(i::CpuProfiler::GetProfile(index));
+  return reinterpret_cast<const CpuProfile*>(
+      i::CpuProfiler::GetProfile(
+          security_token.IsEmpty() ? NULL : *Utils::OpenHandle(*security_token),
+          index));
 }
 
 
-const CpuProfile* CpuProfiler::FindProfile(unsigned uid) {
+const CpuProfile* CpuProfiler::FindProfile(unsigned uid,
+                                           Handle<Value> security_token) {
   IsDeadCheck("v8::CpuProfiler::FindProfile");
-  return reinterpret_cast<const CpuProfile*>(i::CpuProfiler::FindProfile(uid));
+  return reinterpret_cast<const CpuProfile*>(
+      i::CpuProfiler::FindProfile(
+          security_token.IsEmpty() ? NULL : *Utils::OpenHandle(*security_token),
+          uid));
 }
 
 
@@ -4268,10 +4347,13 @@ void CpuProfiler::StartProfiling(Handle<String> title) {
 }
 
 
-const CpuProfile* CpuProfiler::StopProfiling(Handle<String> title) {
+const CpuProfile* CpuProfiler::StopProfiling(Handle<String> title,
+                                             Handle<Value> security_token) {
   IsDeadCheck("v8::CpuProfiler::StopProfiling");
   return reinterpret_cast<const CpuProfile*>(
-      i::CpuProfiler::StopProfiling(*Utils::OpenHandle(*title)));
+      i::CpuProfiler::StopProfiling(
+          security_token.IsEmpty() ? NULL : *Utils::OpenHandle(*security_token),
+          *Utils::OpenHandle(*title)));
 }
 
 #endif  // ENABLE_LOGGING_AND_PROFILING

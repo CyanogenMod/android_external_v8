@@ -300,12 +300,16 @@ class Operand BASE_EMBEDDED {
           ScaleFactor scale,
           int32_t disp);
 
+  // Offset from existing memory operand.
+  // Offset is added to existing displacement as 32-bit signed values and
+  // this must not overflow.
+  Operand(const Operand& base, int32_t offset);
+
  private:
   byte rex_;
   byte buf_[10];
   // The number of bytes in buf_.
   unsigned int len_;
-  RelocInfo::Mode rmode_;
 
   // Set the ModR/M byte without an encoded 'reg' register. The
   // register is encoded later as part of the emit_operand operation.
@@ -567,11 +571,7 @@ class Assembler : public Malloced {
 
   // Arithmetics
   void addl(Register dst, Register src) {
-    if (dst.low_bits() == 4) {  // Forces SIB byte.
-      arithmetic_op_32(0x01, src, dst);
-    } else {
-      arithmetic_op_32(0x03, dst, src);
-    }
+    arithmetic_op_32(0x03, dst, src);
   }
 
   void addl(Register dst, Immediate src) {
@@ -607,11 +607,7 @@ class Assembler : public Malloced {
   }
 
   void sbbl(Register dst, Register src) {
-    if (dst.low_bits() == 4) {  // Forces SIB byte if dst is base register.
-      arithmetic_op_32(0x19, src, dst);
-    } else {
-      arithmetic_op_32(0x1b, dst, src);
-    }
+    arithmetic_op_32(0x1b, dst, src);
   }
 
   void cmpb(Register dst, Immediate src) {

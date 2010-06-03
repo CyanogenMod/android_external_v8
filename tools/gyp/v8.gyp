@@ -39,19 +39,28 @@
       'ENABLE_VMSTATE_TRACKING',
     ],
     'conditions': [
-      ['v8_target_arch=="arm"', {
-        'defines': [
-          'V8_TARGET_ARCH_ARM',
-        ],
-      }],
-      ['v8_target_arch=="ia32"', {
-        'defines': [
-          'V8_TARGET_ARCH_IA32',
-        ],
-      }],
-      ['v8_target_arch=="x64"', {
-        'defines': [
-          'V8_TARGET_ARCH_X64',
+      ['OS!="mac"', {
+        # TODO(mark): The OS!="mac" conditional is temporary. It can be
+        # removed once the Mac Chromium build stops setting target_arch to
+        # ia32 and instead sets it to mac. Other checks in this file for
+        # OS=="mac" can be removed at that time as well. This can be cleaned
+        # up once http://crbug.com/44205 is fixed.
+        'conditions': [
+          ['v8_target_arch=="arm"', {
+            'defines': [
+              'V8_TARGET_ARCH_ARM',
+            ],
+          }],
+          ['v8_target_arch=="ia32"', {
+            'defines': [
+              'V8_TARGET_ARCH_IA32',
+            ],
+          }],
+          ['v8_target_arch=="x64"', {
+            'defines': [
+              'V8_TARGET_ARCH_X64',
+            ],
+          }],
         ],
       }],
     ],
@@ -403,6 +412,8 @@
         '../../src/top.h',
         '../../src/type-info.cc',
         '../../src/type-info.h',
+        '../../src/unbound-queue-inl.h',
+        '../../src/unbound-queue.h',
         '../../src/unicode-inl.h',
         '../../src/unicode.cc',
         '../../src/unicode.h',
@@ -477,7 +488,7 @@
             }]
           ]
         }],
-        ['v8_target_arch=="ia32"', {
+        ['v8_target_arch=="ia32" or v8_target_arch=="mac" or OS=="mac"', {
           'include_dirs+': [
             '../../src/ia32',
           ],
@@ -513,7 +524,7 @@
             '../../src/ia32/virtual-frame-ia32.h',
           ],
         }],
-        ['v8_target_arch=="x64"', {
+        ['v8_target_arch=="x64" or v8_target_arch=="mac" or OS=="mac"', {
           'include_dirs+': [
             '../../src/x64',
           ],
