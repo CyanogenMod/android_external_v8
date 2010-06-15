@@ -291,7 +291,7 @@ static Handle<Object> CreateObjectLiteralBoilerplate(
         Handle<String> name(String::cast(*key));
         ASSERT(!name->AsArrayIndex(&element_index));
         result = SetProperty(boilerplate, name, value, NONE);
-      } else if (Array::IndexFromObject(*key, &element_index)) {
+      } else if (key->ToArrayIndex(&element_index)) {
         // Array index (uint32).
         result = SetElement(boilerplate, element_index, value);
       } else {
@@ -569,6 +569,18 @@ static void GetOwnPropertyImplementation(JSObject* obj,
 }
 
 
+// Enumerator used as indices into the array returned from GetOwnProperty
+enum PropertyDescriptorIndices {
+  IS_ACCESSOR_INDEX,
+  VALUE_INDEX,
+  GETTER_INDEX,
+  SETTER_INDEX,
+  WRITABLE_INDEX,
+  ENUMERABLE_INDEX,
+  CONFIGURABLE_INDEX,
+  DESCRIPTOR_SIZE
+};
+
 // Returns an array with the property description:
 //  if args[1] is not a property on args[0]
 //          returns undefined
@@ -579,18 +591,63 @@ static void GetOwnPropertyImplementation(JSObject* obj,
 static Object* Runtime_GetOwnProperty(Arguments args) {
   ASSERT(args.length() == 2);
   HandleScope scope;
-  Handle<FixedArray> elms = Factory::NewFixedArray(5);
+  Handle<FixedArray> elms = Factory::NewFixedArray(DESCRIPTOR_SIZE);
   Handle<JSArray> desc = Factory::NewJSArrayWithElements(elms);
   LookupResult result;
   CONVERT_CHECKED(JSObject, obj, args[0]);
   CONVERT_CHECKED(String, name, args[1]);
 
+  // This could be an element.
+  uint32_t index;
+  if (name->AsArrayIndex(&index)) {
+    if (!obj->HasLocalElement(index)) {
+      return Heap::undefined_value();
+    }
+
+    // Special handling of string objects according to ECMAScript 5 15.5.5.2.
+    // Note that this might be a string object with elements other than the
+    // actual string value. This is covered by the subsequent cases.
+    if (obj->IsStringObjectWithCharacterAt(index)) {
+      JSValue* js_value = JSValue::cast(obj);
+      String* str = String::cast(js_value->value());
+      elms->set(IS_ACCESSOR_INDEX, Heap::false_value());
+      elms->set(VALUE_INDEX, str->SubString(index, index+1));
+      elms->set(WRITABLE_INDEX, Heap::false_value());
+      elms->set(ENUMERABLE_INDEX,  Heap::false_value());
+      elms->set(CONFIGURABLE_INDEX, Heap::false_value());
+      return *desc;
+    }
+
+    // This can potentially be an element in the elements dictionary or
+    // a fast element.
+    if (obj->HasDictionaryElements()) {
+      NumberDictionary* dictionary = obj->element_dictionary();
+      int entry = dictionary->FindEntry(index);
+      PropertyDetails details = dictionary->DetailsAt(entry);
+      elms->set(IS_ACCESSOR_INDEX, Heap::false_value());
+      elms->set(VALUE_INDEX, dictionary->ValueAt(entry));
+      elms->set(WRITABLE_INDEX, Heap::ToBoolean(!details.IsDontDelete()));
+      elms->set(ENUMERABLE_INDEX, Heap::ToBoolean(!details.IsDontEnum()));
+      elms->set(CONFIGURABLE_INDEX, Heap::ToBoolean(!details.IsReadOnly()));
+      return *desc;
+    } else {
+      // Elements that are stored as array elements always has:
+      // writable: true, configurable: true, enumerable: true.
+      elms->set(IS_ACCESSOR_INDEX, Heap::false_value());
+      elms->set(VALUE_INDEX, obj->GetElement(index));
+      elms->set(WRITABLE_INDEX, Heap::true_value());
+      elms->set(ENUMERABLE_INDEX,  Heap::true_value());
+      elms->set(CONFIGURABLE_INDEX, Heap::true_value());
+      return *desc;
+    }
+  }
+
   // Use recursive implementation to also traverse hidden prototypes
   GetOwnPropertyImplementation(obj, name, &result);
 
-  if (!result.IsProperty())
+  if (!result.IsProperty()) {
     return Heap::undefined_value();
-
+  }
   if (result.type() == CALLBACKS) {
     Object* structure = result.GetCallbackObject();
     if (structure->IsProxy() || structure->IsAccessorInfo()) {
@@ -598,25 +655,25 @@ static Object* Runtime_GetOwnProperty(Arguments args) {
       // an API defined callback.
       Object* value = obj->GetPropertyWithCallback(
           obj, structure, name, result.holder());
-      elms->set(0, Heap::false_value());
-      elms->set(1, value);
-      elms->set(2, Heap::ToBoolean(!result.IsReadOnly()));
+      elms->set(IS_ACCESSOR_INDEX, Heap::false_value());
+      elms->set(VALUE_INDEX, value);
+      elms->set(WRITABLE_INDEX, Heap::ToBoolean(!result.IsReadOnly()));
     } else if (structure->IsFixedArray()) {
       // __defineGetter__/__defineSetter__ callback.
-      elms->set(0, Heap::true_value());
-      elms->set(1, FixedArray::cast(structure)->get(0));
-      elms->set(2, FixedArray::cast(structure)->get(1));
+      elms->set(IS_ACCESSOR_INDEX, Heap::true_value());
+      elms->set(GETTER_INDEX, FixedArray::cast(structure)->get(0));
+      elms->set(SETTER_INDEX, FixedArray::cast(structure)->get(1));
     } else {
       return Heap::undefined_value();
     }
   } else {
-    elms->set(0, Heap::false_value());
-    elms->set(1, result.GetLazyValue());
-    elms->set(2, Heap::ToBoolean(!result.IsReadOnly()));
+    elms->set(IS_ACCESSOR_INDEX, Heap::false_value());
+    elms->set(VALUE_INDEX, result.GetLazyValue());
+    elms->set(WRITABLE_INDEX, Heap::ToBoolean(!result.IsReadOnly()));
   }
 
-  elms->set(3, Heap::ToBoolean(!result.IsDontEnum()));
-  elms->set(4, Heap::ToBoolean(!result.IsDontDelete()));
+  elms->set(ENUMERABLE_INDEX, Heap::ToBoolean(!result.IsDontEnum()));
+  elms->set(CONFIGURABLE_INDEX, Heap::ToBoolean(!result.IsDontDelete()));
   return *desc;
 }
 
@@ -1581,25 +1638,9 @@ static Object* Runtime_SetCode(Arguments args) {
 }
 
 
-static Object* CharCodeAt(String* subject, Object* index) {
-  uint32_t i = 0;
-  if (!Array::IndexFromObject(index, &i)) return Heap::nan_value();
-  // Flatten the string.  If someone wants to get a char at an index
-  // in a cons string, it is likely that more indices will be
-  // accessed.
-  Object* flat = subject->TryFlatten();
-  if (flat->IsFailure()) return flat;
-  subject = String::cast(flat);
-  if (i >= static_cast<uint32_t>(subject->length())) {
-    return Heap::nan_value();
-  }
-  return Smi::FromInt(subject->Get(i));
-}
-
-
 static Object* CharFromCode(Object* char_code) {
   uint32_t code;
-  if (Array::IndexFromObject(char_code, &code)) {
+  if (char_code->ToArrayIndex(&code)) {
     if (code <= 0xffff) {
       return Heap::LookupSingleCharacterStringFromCode(code);
     }
@@ -1614,21 +1655,31 @@ static Object* Runtime_StringCharCodeAt(Arguments args) {
 
   CONVERT_CHECKED(String, subject, args[0]);
   Object* index = args[1];
-  return CharCodeAt(subject, index);
-}
+  RUNTIME_ASSERT(index->IsNumber());
 
-
-static Object* Runtime_StringCharAt(Arguments args) {
-  NoHandleAllocation ha;
-  ASSERT(args.length() == 2);
-
-  CONVERT_CHECKED(String, subject, args[0]);
-  Object* index = args[1];
-  Object* code = CharCodeAt(subject, index);
-  if (code == Heap::nan_value()) {
-    return Heap::undefined_value();
+  uint32_t i = 0;
+  if (index->IsSmi()) {
+    int value = Smi::cast(index)->value();
+    if (value < 0) return Heap::nan_value();
+    i = value;
+  } else {
+    ASSERT(index->IsHeapNumber());
+    double value = HeapNumber::cast(index)->value();
+    i = static_cast<uint32_t>(DoubleToInteger(value));
   }
-  return CharFromCode(code);
+
+  // Flatten the string.  If someone wants to get a char at an index
+  // in a cons string, it is likely that more indices will be
+  // accessed.
+  Object* flat = subject->TryFlatten();
+  if (flat->IsFailure()) return flat;
+  subject = String::cast(flat);
+
+  if (i >= static_cast<uint32_t>(subject->length())) {
+    return Heap::nan_value();
+  }
+
+  return Smi::FromInt(subject->Get(i));
 }
 
 
@@ -2780,7 +2831,7 @@ static Object* Runtime_StringIndexOf(Arguments args) {
 
   Object* index = args[2];
   uint32_t start_index;
-  if (!Array::IndexFromObject(index, &start_index)) return Smi::FromInt(-1);
+  if (!index->ToArrayIndex(&start_index)) return Smi::FromInt(-1);
 
   RUNTIME_ASSERT(start_index <= static_cast<uint32_t>(sub->length()));
   int position = Runtime::StringMatch(sub, pat, start_index);
@@ -2830,7 +2881,7 @@ static Object* Runtime_StringLastIndexOf(Arguments args) {
 
   Object* index = args[2];
   uint32_t start_index;
-  if (!Array::IndexFromObject(index, &start_index)) return Smi::FromInt(-1);
+  if (!index->ToArrayIndex(&start_index)) return Smi::FromInt(-1);
 
   uint32_t pat_length = pat->length();
   uint32_t sub_length = sub->length();
@@ -3657,7 +3708,7 @@ Object* Runtime::GetObjectProperty(Handle<Object> object, Handle<Object> key) {
 
   // Check if the given key is an array index.
   uint32_t index;
-  if (Array::IndexFromObject(*key, &index)) {
+  if (key->ToArrayIndex(&index)) {
     return GetElementOrCharAt(object, index);
   }
 
@@ -3843,7 +3894,7 @@ Object* Runtime::SetObjectProperty(Handle<Object> object,
 
   // Check if the given key is an array index.
   uint32_t index;
-  if (Array::IndexFromObject(*key, &index)) {
+  if (key->ToArrayIndex(&index)) {
     // In Firefox/SpiderMonkey, Safari and Opera you can access the characters
     // of a string using [] notation.  We need to support this too in
     // JavaScript.
@@ -3895,7 +3946,7 @@ Object* Runtime::ForceSetObjectProperty(Handle<JSObject> js_object,
 
   // Check if the given key is an array index.
   uint32_t index;
-  if (Array::IndexFromObject(*key, &index)) {
+  if (key->ToArrayIndex(&index)) {
     // In Firefox/SpiderMonkey, Safari and Opera you can access the characters
     // of a string using [] notation.  We need to support this too in
     // JavaScript.
@@ -3942,7 +3993,7 @@ Object* Runtime::ForceDeleteObjectProperty(Handle<JSObject> js_object,
 
   // Check if the given key is an array index.
   uint32_t index;
-  if (Array::IndexFromObject(*key, &index)) {
+  if (key->ToArrayIndex(&index)) {
     // In Firefox/SpiderMonkey, Safari and Opera you can access the
     // characters of a string using [] notation.  In the case of a
     // String object we just need to redirect the deletion to the
@@ -4355,7 +4406,7 @@ static Object* Runtime_GetArgumentsProperty(Arguments args) {
   // Try to convert the key to an index. If successful and within
   // index return the the argument from the frame.
   uint32_t index;
-  if (Array::IndexFromObject(args[0], &index) && index < n) {
+  if (args[0]->ToArrayIndex(&index) && index < n) {
     return frame->GetParameter(index);
   }
 
@@ -5284,6 +5335,28 @@ static Object* Runtime_NumberToInteger(Arguments args) {
     return Smi::FromInt(static_cast<int>(number));
   }
   return Heap::NumberFromDouble(DoubleToInteger(number));
+}
+
+
+
+
+
+static Object* Runtime_NumberToIntegerMapMinusZero(Arguments args) {
+  NoHandleAllocation ha;
+  ASSERT(args.length() == 1);
+
+  CONVERT_DOUBLE_CHECKED(number, args[0]);
+
+  // We do not include 0 so that we don't have to treat +0 / -0 cases.
+  if (number > 0 && number <= Smi::kMaxValue) {
+    return Smi::FromInt(static_cast<int>(number));
+  }
+
+  double double_value = DoubleToInteger(number);
+  // Map both -0 and +0 to +0.
+  if (double_value == 0) double_value = 0;
+
+  return Heap::NumberFromDouble(double_value);
 }
 
 
@@ -6457,8 +6530,8 @@ static Object* Runtime_NewArgumentsFast(Arguments args) {
     if (obj->IsFailure()) return obj;
 
     AssertNoAllocation no_gc;
-    reinterpret_cast<Array*>(obj)->set_map(Heap::fixed_array_map());
-    FixedArray* array = FixedArray::cast(obj);
+    FixedArray* array = reinterpret_cast<FixedArray*>(obj);
+    array->set_map(Heap::fixed_array_map());
     array->set_length(length);
 
     WriteBarrierMode mode = array->GetWriteBarrierMode(no_gc);
@@ -7172,6 +7245,24 @@ static Object* Runtime_CompileString(Arguments args) {
 }
 
 
+static ObjectPair CompileGlobalEval(Handle<String> source,
+                                    Handle<Object> receiver) {
+  // Deal with a normal eval call with a string argument. Compile it
+  // and return the compiled function bound in the local context.
+  Handle<SharedFunctionInfo> shared = Compiler::CompileEval(
+      source,
+      Handle<Context>(Top::context()),
+      Top::context()->IsGlobalContext(),
+      Compiler::DONT_VALIDATE_JSON);
+  if (shared.is_null()) return MakePair(Failure::Exception(), NULL);
+  Handle<JSFunction> compiled = Factory::NewFunctionFromSharedFunctionInfo(
+      shared,
+      Handle<Context>(Top::context()),
+      NOT_TENURED);
+  return MakePair(*compiled, *receiver);
+}
+
+
 static ObjectPair Runtime_ResolvePossiblyDirectEval(Arguments args) {
   ASSERT(args.length() == 3);
   if (!args[0]->IsJSFunction()) {
@@ -7237,20 +7328,27 @@ static ObjectPair Runtime_ResolvePossiblyDirectEval(Arguments args) {
     return MakePair(*callee, Top::context()->global()->global_receiver());
   }
 
-  // Deal with a normal eval call with a string argument. Compile it
-  // and return the compiled function bound in the local context.
-  Handle<String> source = args.at<String>(1);
-  Handle<SharedFunctionInfo> shared = Compiler::CompileEval(
-      source,
-      Handle<Context>(Top::context()),
-      Top::context()->IsGlobalContext(),
-      Compiler::DONT_VALIDATE_JSON);
-  if (shared.is_null()) return MakePair(Failure::Exception(), NULL);
-  callee = Factory::NewFunctionFromSharedFunctionInfo(
-      shared,
-      Handle<Context>(Top::context()),
-      NOT_TENURED);
-  return MakePair(*callee, args[2]);
+  return CompileGlobalEval(args.at<String>(1), args.at<Object>(2));
+}
+
+
+static ObjectPair Runtime_ResolvePossiblyDirectEvalNoLookup(Arguments args) {
+  ASSERT(args.length() == 3);
+  if (!args[0]->IsJSFunction()) {
+    return MakePair(Top::ThrowIllegalOperation(), NULL);
+  }
+
+  HandleScope scope;
+  Handle<JSFunction> callee = args.at<JSFunction>(0);
+
+  // 'eval' is bound in the global context, but it may have been overwritten.
+  // Compare it to the builtin 'GlobalEval' function to make sure.
+  if (*callee != Top::global_context()->global_eval_fun() ||
+      !args[1]->IsString()) {
+    return MakePair(*callee, Top::context()->global()->global_receiver());
+  }
+
+  return CompileGlobalEval(args.at<String>(1), args.at<Object>(2));
 }
 
 
@@ -7747,8 +7845,8 @@ static Object* Runtime_SwapElements(Arguments args) {
   Handle<Object> key2 = args.at<Object>(2);
 
   uint32_t index1, index2;
-  if (!Array::IndexFromObject(*key1, &index1)
-      || !Array::IndexFromObject(*key2, &index2)) {
+  if (!key1->ToArrayIndex(&index1)
+      || !key2->ToArrayIndex(&index2)) {
     return Top::ThrowIllegalOperation();
   }
 
@@ -7779,17 +7877,19 @@ static Object* Runtime_GetArrayKeys(Arguments args) {
     for (int i = 0; i < keys_length; i++) {
       Object* key = keys->get(i);
       uint32_t index;
-      if (!Array::IndexFromObject(key, &index) || index >= length) {
+      if (!key->ToArrayIndex(&index) || index >= length) {
         // Zap invalid keys.
         keys->set_undefined(i);
       }
     }
     return *Factory::NewJSArrayWithElements(keys);
   } else {
+    ASSERT(array->HasFastElements());
     Handle<FixedArray> single_interval = Factory::NewFixedArray(2);
     // -1 means start of array.
     single_interval->set(0, Smi::FromInt(-1));
-    uint32_t actual_length = static_cast<uint32_t>(array->elements()->length());
+    uint32_t actual_length =
+        static_cast<uint32_t>(FixedArray::cast(array->elements())->length());
     uint32_t min_length = actual_length < length ? actual_length : length;
     Handle<Object> length_object =
         Factory::NewNumber(static_cast<double>(min_length));
@@ -8143,8 +8243,9 @@ static const int kFrameDetailsArgumentCountIndex = 3;
 static const int kFrameDetailsLocalCountIndex = 4;
 static const int kFrameDetailsSourcePositionIndex = 5;
 static const int kFrameDetailsConstructCallIndex = 6;
-static const int kFrameDetailsDebuggerFrameIndex = 7;
-static const int kFrameDetailsFirstDynamicIndex = 8;
+static const int kFrameDetailsAtReturnIndex = 7;
+static const int kFrameDetailsDebuggerFrameIndex = 8;
+static const int kFrameDetailsFirstDynamicIndex = 9;
 
 // Return an array with frame details
 // args[0]: number: break id
@@ -8158,9 +8259,11 @@ static const int kFrameDetailsFirstDynamicIndex = 8;
 // 4: Local count
 // 5: Source position
 // 6: Constructor call
-// 7: Debugger frame
+// 7: Is at return
+// 8: Debugger frame
 // Arguments name, value
 // Locals name, value
+// Return value if any
 static Object* Runtime_GetFrameDetails(Arguments args) {
   HandleScope scope;
   ASSERT(args.length() == 2);
@@ -8236,8 +8339,39 @@ static Object* Runtime_GetFrameDetails(Arguments args) {
     }
   }
 
-  // Now advance to the arguments adapter frame (if any). If contains all
-  // the provided parameters and
+  // Check whether this frame is positioned at return.
+  int at_return = (index == 0) ? Debug::IsBreakAtReturn(it.frame()) : false;
+
+  // If positioned just before return find the value to be returned and add it
+  // to the frame information.
+  Handle<Object> return_value = Factory::undefined_value();
+  if (at_return) {
+    StackFrameIterator it2;
+    Address internal_frame_sp = NULL;
+    while (!it2.done()) {
+      if (it2.frame()->is_internal()) {
+        internal_frame_sp = it2.frame()->sp();
+      } else {
+        if (it2.frame()->is_java_script()) {
+          if (it2.frame()->id() == it.frame()->id()) {
+            // The internal frame just before the JavaScript frame contains the
+            // value to return on top. A debug break at return will create an
+            // internal frame to store the return value (eax/rax/r0) before
+            // entering the debug break exit frame.
+            if (internal_frame_sp != NULL) {
+              return_value =
+                  Handle<Object>(Memory::Object_at(internal_frame_sp));
+              break;
+            }
+          }
+        }
+
+        // Indicate that the previous frame was not an internal frame.
+        internal_frame_sp = NULL;
+      }
+      it2.Advance();
+    }
+  }
 
   // Now advance to the arguments adapter frame (if any). It contains all
   // the provided parameters whereas the function frame always have the number
@@ -8254,7 +8388,8 @@ static Object* Runtime_GetFrameDetails(Arguments args) {
 
   // Calculate the size of the result.
   int details_size = kFrameDetailsFirstDynamicIndex +
-                     2 * (argument_count + info.NumberOfLocals());
+                     2 * (argument_count + info.NumberOfLocals()) +
+                     (at_return ? 1 : 0);
   Handle<FixedArray> details = Factory::NewFixedArray(details_size);
 
   // Add the frame id.
@@ -8279,6 +8414,9 @@ static Object* Runtime_GetFrameDetails(Arguments args) {
 
   // Add the constructor information.
   details->set(kFrameDetailsConstructCallIndex, Heap::ToBoolean(constructor));
+
+  // Add the at return information.
+  details->set(kFrameDetailsAtReturnIndex, Heap::ToBoolean(at_return));
 
   // Add information on whether this frame is invoked in the debugger context.
   details->set(kFrameDetailsDebuggerFrameIndex,
@@ -8307,6 +8445,11 @@ static Object* Runtime_GetFrameDetails(Arguments args) {
   // Add locals name and value from the temporary copy from the function frame.
   for (int i = 0; i < info.NumberOfLocals() * 2; i++) {
     details->set(details_index++, locals->get(i));
+  }
+
+  // Add the value being returned.
+  if (at_return) {
+    details->set(details_index++, *return_value);
   }
 
   // Add the receiver (same as in function frame).

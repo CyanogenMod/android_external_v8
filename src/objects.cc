@@ -2013,19 +2013,25 @@ PropertyAttributes JSObject::GetPropertyAttributeWithInterceptor(
   CustomArguments args(interceptor->data(), receiver, this);
   v8::AccessorInfo info(args.end());
   if (!interceptor->query()->IsUndefined()) {
-    v8::NamedPropertyQuery query =
-        v8::ToCData<v8::NamedPropertyQuery>(interceptor->query());
+    v8::NamedPropertyQueryImpl query =
+        v8::ToCData<v8::NamedPropertyQueryImpl>(interceptor->query());
     LOG(ApiNamedPropertyAccess("interceptor-named-has", *holder_handle, name));
-    v8::Handle<v8::Boolean> result;
+    v8::Handle<v8::Value> result;
     {
       // Leaving JavaScript.
       VMState state(EXTERNAL);
       result = query(v8::Utils::ToLocal(name_handle), info);
     }
     if (!result.IsEmpty()) {
-      // Convert the boolean result to a property attribute
-      // specification.
-      return result->IsTrue() ? NONE : ABSENT;
+      // Temporary complicated logic, would be removed soon.
+      if (result->IsBoolean()) {
+        // Convert the boolean result to a property attribute
+        // specification.
+        return result->IsTrue() ? NONE : ABSENT;
+      } else {
+        ASSERT(result->IsInt32());
+        return static_cast<PropertyAttributes>(result->Int32Value());
+      }
     }
   } else if (!interceptor->getter()->IsUndefined()) {
     v8::NamedPropertyGetter getter =
@@ -2037,7 +2043,7 @@ PropertyAttributes JSObject::GetPropertyAttributeWithInterceptor(
       VMState state(EXTERNAL);
       result = getter(v8::Utils::ToLocal(name_handle), info);
     }
-    if (!result.IsEmpty()) return NONE;
+    if (!result.IsEmpty()) return DONT_ENUM;
   }
   return holder_handle->GetPropertyAttributePostInterceptor(*receiver_handle,
                                                             *name_handle,
@@ -2700,7 +2706,7 @@ Object* JSObject::DefineGetterSetter(String* name,
     return Heap::undefined_value();
   }
 
-  uint32_t index;
+  uint32_t index = 0;
   bool is_element = name->AsArrayIndex(&index);
   if (is_element && IsJSArray()) return Heap::undefined_value();
 
@@ -2958,7 +2964,7 @@ Object* JSObject::LookupAccessor(String* name, bool is_getter) {
 
   // Make the lookup and include prototypes.
   int accessor_index = is_getter ? kGetterIndex : kSetterIndex;
-  uint32_t index;
+  uint32_t index = 0;
   if (name->AsArrayIndex(&index)) {
     for (Object* obj = this;
          obj != Heap::null_value();
@@ -4784,7 +4790,7 @@ static inline uint32_t HashSequentialString(const schar* chars, int length) {
 
 uint32_t String::ComputeAndSetHash() {
   // Should only be called if hash code has not yet been computed.
-  ASSERT(!(hash_field() & kHashComputedMask));
+  ASSERT(!HasHashCode());
 
   const int len = length();
 
@@ -4803,7 +4809,7 @@ uint32_t String::ComputeAndSetHash() {
   set_hash_field(field);
 
   // Check the hash code is there.
-  ASSERT(hash_field() & kHashComputedMask);
+  ASSERT(HasHashCode());
   uint32_t result = field >> kHashShift;
   ASSERT(result != 0);  // Ensure that the hash value of 0 is never computed.
   return result;
@@ -4844,7 +4850,7 @@ bool String::SlowAsArrayIndex(uint32_t* index) {
   if (length() <= kMaxCachedArrayIndexLength) {
     Hash();  // force computation of hash code
     uint32_t field = hash_field();
-    if ((field & kIsArrayIndexMask) == 0) return false;
+    if ((field & kIsNotArrayIndexMask) != 0) return false;
     // Isolate the array index form the full hash field.
     *index = (kArrayIndexHashMask & field) >> kHashShift;
     return true;
@@ -4858,16 +4864,19 @@ bool String::SlowAsArrayIndex(uint32_t* index) {
 static inline uint32_t HashField(uint32_t hash,
                                  bool is_array_index,
                                  int length = -1) {
-  uint32_t result =
-      (hash << String::kHashShift) | String::kHashComputedMask;
+  uint32_t result = (hash << String::kHashShift);
   if (is_array_index) {
     // For array indexes mix the length into the hash as an array index could
     // be zero.
     ASSERT(length > 0);
+    ASSERT(length <= String::kMaxArrayIndexSize);
     ASSERT(TenToThe(String::kMaxCachedArrayIndexLength) <
            (1 << String::kArrayIndexValueBits));
-    result |= String::kIsArrayIndexMask;
+    ASSERT(String::kMaxArrayIndexSize < (1 << String::kArrayIndexValueBits));
+    result &= ~String::kIsNotArrayIndexMask;
     result |= length << String::kArrayIndexHashLengthShift;
+  } else {
+    result |= String::kIsNotArrayIndexMask;
   }
   return result;
 }
@@ -5255,8 +5264,10 @@ void ObjectVisitor::VisitCodeTarget(RelocInfo* rinfo) {
 
 
 void ObjectVisitor::VisitDebugTarget(RelocInfo* rinfo) {
-  ASSERT(RelocInfo::IsJSReturn(rinfo->rmode()) &&
-         rinfo->IsPatchedReturnSequence());
+  ASSERT((RelocInfo::IsJSReturn(rinfo->rmode()) &&
+          rinfo->IsPatchedReturnSequence()) ||
+         (RelocInfo::IsDebugBreakSlot(rinfo->rmode()) &&
+          rinfo->IsPatchedDebugBreakSlotSequence()));
   Object* target = Code::GetCodeFromTargetAddress(rinfo->call_address());
   Object* old_target = target;
   VisitPointer(&target);
@@ -5269,6 +5280,7 @@ void Code::CodeIterateBody(ObjectVisitor* v) {
                   RelocInfo::ModeMask(RelocInfo::EMBEDDED_OBJECT) |
                   RelocInfo::ModeMask(RelocInfo::EXTERNAL_REFERENCE) |
                   RelocInfo::ModeMask(RelocInfo::JS_RETURN) |
+                  RelocInfo::ModeMask(RelocInfo::DEBUG_BREAK_SLOT) |
                   RelocInfo::ModeMask(RelocInfo::RUNTIME_ENTRY);
 
   for (RelocIterator it(this, mode_mask); !it.done(); it.next()) {
@@ -5397,6 +5409,7 @@ const char* Code::Kind2String(Kind kind) {
     case STORE_IC: return "STORE_IC";
     case KEYED_STORE_IC: return "KEYED_STORE_IC";
     case CALL_IC: return "CALL_IC";
+    case KEYED_CALL_IC: return "KEYED_CALL_IC";
     case BINARY_OP_IC: return "BINARY_OP_IC";
   }
   UNREACHABLE();
@@ -5639,7 +5652,7 @@ Object* JSObject::SetElementsLength(Object* len) {
   // General slow case.
   if (len->IsNumber()) {
     uint32_t length;
-    if (Array::IndexFromObject(len, &length)) {
+    if (len->ToArrayIndex(&length)) {
       return SetSlowElements(len);
     } else {
       return ArrayLengthRangeError();
@@ -6063,8 +6076,7 @@ Object* JSObject::SetFastElement(uint32_t index, Object* value) {
     if (IsJSArray()) {
       // Update the length of the array if needed.
       uint32_t array_length = 0;
-      CHECK(Array::IndexFromObject(JSArray::cast(this)->length(),
-                                   &array_length));
+      CHECK(JSArray::cast(this)->length()->ToArrayIndex(&array_length));
       if (index >= array_length) {
         JSArray::cast(this)->set_length(Smi::FromInt(index + 1));
       }
@@ -6202,8 +6214,7 @@ Object* JSObject::SetElementWithoutInterceptor(uint32_t index, Object* value) {
       if (ShouldConvertToFastElements()) {
         uint32_t new_length = 0;
         if (IsJSArray()) {
-          CHECK(Array::IndexFromObject(JSArray::cast(this)->length(),
-                                       &new_length));
+          CHECK(JSArray::cast(this)->length()->ToArrayIndex(&new_length));
           JSArray::cast(this)->set_length(Smi::FromInt(new_length));
         } else {
           new_length = NumberDictionary::cast(elements())->max_number_key() + 1;
@@ -6234,7 +6245,7 @@ Object* JSObject::SetElementWithoutInterceptor(uint32_t index, Object* value) {
 
 Object* JSArray::JSArrayUpdateLengthFromIndex(uint32_t index, Object* value) {
   uint32_t old_len = 0;
-  CHECK(Array::IndexFromObject(length(), &old_len));
+  CHECK(length()->ToArrayIndex(&old_len));
   // Check to see if we need to update the length. For now, we make
   // sure that the length stays within 32-bits (unsigned).
   if (index >= old_len && index != 0xffffffff) {
@@ -6516,7 +6527,7 @@ bool JSObject::ShouldConvertToFastElements() {
   // fast elements.
   uint32_t length = 0;
   if (IsJSArray()) {
-    CHECK(Array::IndexFromObject(JSArray::cast(this)->length(), &length));
+    CHECK(JSArray::cast(this)->length()->ToArrayIndex(&length));
   } else {
     length = dictionary->max_number_key();
   }

@@ -59,8 +59,8 @@ class MacroAssembler: public Assembler {
   // ---------------------------------------------------------------------------
   // GC Support
 
-  // Set the remebered set bit for an address which points into an
-  // object. RecordWriteHelper only works if the object is not in new
+  // For page containing |object| mark region covering |addr| dirty.
+  // RecordWriteHelper only works if the object is not in new
   // space.
   void RecordWriteHelper(Register object,
                          Register addr,
@@ -73,7 +73,7 @@ class MacroAssembler: public Assembler {
                   Condition cc,  // equal for new space, not_equal otherwise.
                   Label* branch);
 
-  // Set the remembered set bit for [object+offset].
+  // For page containing |object| mark region covering [object+offset] dirty.
   // object is the object being stored into, value is the object being stored.
   // If offset is zero, then the scratch register contains the array index into
   // the elements array represented as a Smi.
@@ -187,6 +187,18 @@ class MacroAssembler: public Assembler {
   Condition IsObjectStringType(Register heap_object,
                                Register map,
                                Register instance_type);
+
+  // Check if a heap object's type is in the JSObject range, not including
+  // JSFunction.  The object's map will be loaded in the map register.
+  // Any or all of the three registers may be the same.
+  // The contents of the scratch register will always be overwritten.
+  void IsObjectJSObjectType(Register heap_object,
+                            Register map,
+                            Register scratch,
+                            Label* fail);
+
+  // The contents of the scratch register will be overwritten.
+  void IsInstanceJSObjectType(Register map, Register scratch, Label* fail);
 
   // FCmp is similar to integer cmp, but requires unsigned
   // jcc instructions (je, ja, jae, jb, jbe, je, and jz).

@@ -88,7 +88,10 @@ class MacroAssembler: public Assembler {
 
   // Swap two registers.  If the scratch register is omitted then a slightly
   // less efficient form using xor instead of mov is emitted.
-  void Swap(Register reg1, Register reg2, Register scratch = no_reg);
+  void Swap(Register reg1,
+            Register reg2,
+            Register scratch = no_reg,
+            Condition cond = al);
 
   void Call(Label* target);
   void Move(Register dst, Handle<Object> value);
@@ -114,16 +117,14 @@ class MacroAssembler: public Assembler {
                   Label* branch);
 
 
-  // Set the remebered set bit for an offset into an
-  // object. RecordWriteHelper only works if the object is not in new
-  // space.
-  void RecordWriteHelper(Register object, Register offset, Register scracth);
+  // For the page containing |object| mark the region covering [object+offset]
+  // dirty. The object address must be in the first 8K of an allocated page.
+  void RecordWriteHelper(Register object, Register offset, Register scratch);
 
-  // Sets the remembered set bit for [address+offset], where address is the
-  // address of the heap object 'object'.  The address must be in the first 8K
-  // of an allocated page. The 'scratch' register is used in the
-  // implementation and all 3 registers are clobbered by the operation, as
-  // well as the ip register.
+  // For the page containing |object| mark the region covering [object+offset]
+  // dirty. The object address must be in the first 8K of an allocated page.
+  // The 'scratch' register is used in the implementation and all 3 registers
+  // are clobbered by the operation, as well as the ip register.
   void RecordWrite(Register object, Register offset, Register scratch);
 
   // Push two registers.  Pushes leftmost register first (to highest address).
@@ -400,14 +401,22 @@ class MacroAssembler: public Assembler {
                            InstanceType type);
 
 
-  // Check if the map of an object is equal to a specified map and
-  // branch to label if not. Skip the smi check if not required
-  // (object is known to be a heap object)
+  // Check if the map of an object is equal to a specified map (either
+  // given directly or as an index into the root list) and branch to
+  // label if not. Skip the smi check if not required (object is known
+  // to be a heap object)
   void CheckMap(Register obj,
                 Register scratch,
                 Handle<Map> map,
                 Label* fail,
                 bool is_heap_object);
+
+  void CheckMap(Register obj,
+                Register scratch,
+                Heap::RootListIndex index,
+                Label* fail,
+                bool is_heap_object);
+
 
   // Load and check the instance type of an object for being a string.
   // Loads the type into the second argument register.

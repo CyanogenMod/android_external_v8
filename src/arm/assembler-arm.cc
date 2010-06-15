@@ -903,20 +903,6 @@ void Assembler::bx(Register target, Condition cond) {  // v5 and above, plus v4t
 
 // Data-processing instructions.
 
-// UBFX <Rd>,<Rn>,#<lsb>,#<width - 1>
-// Instruction details available in ARM DDI 0406A, A8-464.
-// cond(31-28) | 01111(27-23)| 1(22) | 1(21) | widthm1(20-16) |
-//  Rd(15-12) | lsb(11-7) | 101(6-4) | Rn(3-0)
-void Assembler::ubfx(Register dst, Register src1, const Operand& src2,
-                     const Operand& src3, Condition cond) {
-  ASSERT(!src2.rm_.is_valid() && !src3.rm_.is_valid());
-  ASSERT(static_cast<uint32_t>(src2.imm32_) <= 0x1f);
-  ASSERT(static_cast<uint32_t>(src3.imm32_) <= 0x1f);
-  emit(cond | 0x3F*B21 | src3.imm32_*B16 |
-       dst.code()*B12 | src2.imm32_*B7 | 0x5*B4 | src1.code());
-}
-
-
 void Assembler::and_(Register dst, Register src1, const Operand& src2,
                      SBit s, Condition cond) {
   addrmod1(cond | 0*B21 | s, src1, dst, src2);
@@ -1106,6 +1092,82 @@ void Assembler::clz(Register dst, Register src, Condition cond) {
 }
 
 
+// Bitfield manipulation instructions.
+
+// Unsigned bit field extract.
+// Extracts #width adjacent bits from position #lsb in a register, and
+// writes them to the low bits of a destination register.
+//   ubfx dst, src, #lsb, #width
+void Assembler::ubfx(Register dst,
+                     Register src,
+                     int lsb,
+                     int width,
+                     Condition cond) {
+  // v7 and above.
+  ASSERT(CpuFeatures::IsSupported(ARMv7));
+  ASSERT(!dst.is(pc) && !src.is(pc));
+  ASSERT((lsb >= 0) && (lsb <= 31));
+  ASSERT((width >= 1) && (width <= (32 - lsb)));
+  emit(cond | 0xf*B23 | B22 | B21 | (width - 1)*B16 | dst.code()*B12 |
+       lsb*B7 | B6 | B4 | src.code());
+}
+
+
+// Signed bit field extract.
+// Extracts #width adjacent bits from position #lsb in a register, and
+// writes them to the low bits of a destination register. The extracted
+// value is sign extended to fill the destination register.
+//   sbfx dst, src, #lsb, #width
+void Assembler::sbfx(Register dst,
+                     Register src,
+                     int lsb,
+                     int width,
+                     Condition cond) {
+  // v7 and above.
+  ASSERT(CpuFeatures::IsSupported(ARMv7));
+  ASSERT(!dst.is(pc) && !src.is(pc));
+  ASSERT((lsb >= 0) && (lsb <= 31));
+  ASSERT((width >= 1) && (width <= (32 - lsb)));
+  emit(cond | 0xf*B23 | B21 | (width - 1)*B16 | dst.code()*B12 |
+       lsb*B7 | B6 | B4 | src.code());
+}
+
+
+// Bit field clear.
+// Sets #width adjacent bits at position #lsb in the destination register
+// to zero, preserving the value of the other bits.
+//   bfc dst, #lsb, #width
+void Assembler::bfc(Register dst, int lsb, int width, Condition cond) {
+  // v7 and above.
+  ASSERT(CpuFeatures::IsSupported(ARMv7));
+  ASSERT(!dst.is(pc));
+  ASSERT((lsb >= 0) && (lsb <= 31));
+  ASSERT((width >= 1) && (width <= (32 - lsb)));
+  int msb = lsb + width - 1;
+  emit(cond | 0x1f*B22 | msb*B16 | dst.code()*B12 | lsb*B7 | B4 | 0xf);
+}
+
+
+// Bit field insert.
+// Inserts #width adjacent bits from the low bits of the source register
+// into position #lsb of the destination register.
+//   bfi dst, src, #lsb, #width
+void Assembler::bfi(Register dst,
+                    Register src,
+                    int lsb,
+                    int width,
+                    Condition cond) {
+  // v7 and above.
+  ASSERT(CpuFeatures::IsSupported(ARMv7));
+  ASSERT(!dst.is(pc) && !src.is(pc));
+  ASSERT((lsb >= 0) && (lsb <= 31));
+  ASSERT((width >= 1) && (width <= (32 - lsb)));
+  int msb = lsb + width - 1;
+  emit(cond | 0x1f*B22 | msb*B16 | dst.code()*B12 | lsb*B7 | B4 |
+       src.code());
+}
+
+
 // Status register access instructions.
 void Assembler::mrs(Register dst, SRegister s, Condition cond) {
   ASSERT(!dst.is(pc));
@@ -1151,31 +1213,32 @@ void Assembler::ldr(Register dst, const MemOperand& src, Condition cond) {
   // Both instructions can be eliminated if ry = rx.
   // If ry != rx, a register copy from ry to rx is inserted
   // after eliminating the push and the pop instructions.
-  Instr push_instr = instr_at(pc_ - 2 * kInstrSize);
-  Instr pop_instr = instr_at(pc_ - 1 * kInstrSize);
+  if (can_peephole_optimize(2)) {
+    Instr push_instr = instr_at(pc_ - 2 * kInstrSize);
+    Instr pop_instr = instr_at(pc_ - 1 * kInstrSize);
 
-  if (can_peephole_optimize(2) &&
-      IsPush(push_instr) &&
-      IsPop(pop_instr)) {
-    if ((pop_instr & kRdMask) != (push_instr & kRdMask)) {
-      // For consecutive push and pop on different registers,
-      // we delete both the push & pop and insert a register move.
-      // push ry, pop rx --> mov rx, ry
-      Register reg_pushed, reg_popped;
-      reg_pushed = GetRd(push_instr);
-      reg_popped = GetRd(pop_instr);
-      pc_ -= 2 * kInstrSize;
-      // Insert a mov instruction, which is better than a pair of push & pop
-      mov(reg_popped, reg_pushed);
-      if (FLAG_print_peephole_optimization) {
-        PrintF("%x push/pop (diff reg) replaced by a reg move\n", pc_offset());
-      }
-    } else {
-      // For consecutive push and pop on the same register,
-      // both the push and the pop can be deleted.
-      pc_ -= 2 * kInstrSize;
-      if (FLAG_print_peephole_optimization) {
-        PrintF("%x push/pop (same reg) eliminated\n", pc_offset());
+    if (IsPush(push_instr) && IsPop(pop_instr)) {
+      if ((pop_instr & kRdMask) != (push_instr & kRdMask)) {
+        // For consecutive push and pop on different registers,
+        // we delete both the push & pop and insert a register move.
+        // push ry, pop rx --> mov rx, ry
+        Register reg_pushed, reg_popped;
+        reg_pushed = GetRd(push_instr);
+        reg_popped = GetRd(pop_instr);
+        pc_ -= 2 * kInstrSize;
+        // Insert a mov instruction, which is better than a pair of push & pop
+        mov(reg_popped, reg_pushed);
+        if (FLAG_print_peephole_optimization) {
+          PrintF("%x push/pop (diff reg) replaced by a reg move\n",
+                 pc_offset());
+        }
+      } else {
+        // For consecutive push and pop on the same register,
+        // both the push and the pop can be deleted.
+        pc_ -= 2 * kInstrSize;
+        if (FLAG_print_peephole_optimization) {
+          PrintF("%x push/pop (same reg) eliminated\n", pc_offset());
+        }
       }
     }
   }
@@ -1977,6 +2040,13 @@ void Assembler::RecordJSReturn() {
 }
 
 
+void Assembler::RecordDebugBreakSlot() {
+  WriteRecordedPositions();
+  CheckBuffer();
+  RecordRelocInfo(RelocInfo::DEBUG_BREAK_SLOT);
+}
+
+
 void Assembler::RecordComment(const char* msg) {
   if (FLAG_debug_code) {
     CheckBuffer();
@@ -1999,13 +2069,16 @@ void Assembler::RecordStatementPosition(int pos) {
 }
 
 
-void Assembler::WriteRecordedPositions() {
+bool Assembler::WriteRecordedPositions() {
+  bool written = false;
+
   // Write the statement position if it is different from what was written last
   // time.
   if (current_statement_position_ != written_statement_position_) {
     CheckBuffer();
     RecordRelocInfo(RelocInfo::STATEMENT_POSITION, current_statement_position_);
     written_statement_position_ = current_statement_position_;
+    written = true;
   }
 
   // Write the position if it is different from what was written last time and
@@ -2015,7 +2088,11 @@ void Assembler::WriteRecordedPositions() {
     CheckBuffer();
     RecordRelocInfo(RelocInfo::POSITION, current_position_);
     written_position_ = current_position_;
+    written = true;
   }
+
+  // Return whether something was written.
+  return written;
 }
 
 
@@ -2072,9 +2149,10 @@ void Assembler::GrowBuffer() {
 
 void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data) {
   RelocInfo rinfo(pc_, rmode, data);  // we do not try to reuse pool constants
-  if (rmode >= RelocInfo::JS_RETURN && rmode <= RelocInfo::STATEMENT_POSITION) {
+  if (rmode >= RelocInfo::JS_RETURN && rmode <= RelocInfo::DEBUG_BREAK_SLOT) {
     // Adjust code for new modes.
-    ASSERT(RelocInfo::IsJSReturn(rmode)
+    ASSERT(RelocInfo::IsDebugBreakSlot(rmode)
+           || RelocInfo::IsJSReturn(rmode)
            || RelocInfo::IsComment(rmode)
            || RelocInfo::IsPosition(rmode));
     // These modes do not need an entry in the constant pool.

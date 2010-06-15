@@ -360,6 +360,9 @@ class VirtualFrame: public ZoneObject {
   // include the receiver.
   Result CallCallIC(RelocInfo::Mode mode, int arg_count, int loop_nesting);
 
+  // Call keyed call IC.  Same calling convention as CallCallIC.
+  Result CallKeyedCallIC(RelocInfo::Mode mode, int arg_count, int loop_nesting);
+
   // Allocate and call JS function as constructor.  Arguments,
   // receiver (global object), and function are found on top of the
   // frame.  Function is not dropped.  The argument count does not
@@ -615,7 +618,7 @@ class VirtualFrame: public ZoneObject {
   inline bool Equals(VirtualFrame* other);
 
   // Classes that need raw access to the elements_ array.
-  friend class DeferredCode;
+  friend class FrameRegisterState;
   friend class JumpTarget;
 };
 

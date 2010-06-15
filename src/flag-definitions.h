@@ -191,6 +191,8 @@ DEFINE_bool(trace_gc_verbose, false,
             "print more details following each garbage collection")
 DEFINE_bool(collect_maps, true,
             "garbage collect maps from which no objects can be reached")
+DEFINE_bool(flush_code, false,
+            "flush code that we expect not to use again before full gc")
 
 // v8.cc
 DEFINE_bool(use_idle_notification, true,
@@ -277,7 +279,7 @@ DEFINE_string(testing_serialization_file, "/tmp/serdes",
 
 DEFINE_bool(help, false, "Print usage message, including flags, on console")
 DEFINE_bool(dump_counters, false, "Dump counters on exit")
-DEFINE_bool(debugger, true, "Enable JavaScript debugger")
+DEFINE_bool(debugger, false, "Enable JavaScript debugger")
 DEFINE_bool(remote_debugger, false, "Connect JavaScript debugger to the "
                                     "debugger agent in another process")
 DEFINE_bool(debugger_agent, false, "Enable debugger agent")
@@ -333,7 +335,6 @@ DEFINE_bool(code_stats, false, "report code statistics after GC")
 DEFINE_bool(verify_heap, false, "verify heap pointers before and after GC")
 DEFINE_bool(print_handles, false, "report handles after GC")
 DEFINE_bool(print_global_handles, false, "report global handles after GC")
-DEFINE_bool(print_rset, false, "print remembered sets before GC")
 
 // ic.cc
 DEFINE_bool(trace_ic, false, "trace inline cache state transitions")

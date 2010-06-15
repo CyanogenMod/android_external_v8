@@ -629,22 +629,39 @@ class Assembler : public Malloced {
   // Distance between start of patched return sequence and the emitted address
   // to jump to.
 #ifdef USE_BLX
-  // Return sequence is:
+  // Patched return sequence is:
   //  ldr  ip, [pc, #0]   @ emited address and start
   //  blx  ip
   static const int kPatchReturnSequenceAddressOffset =  0 * kInstrSize;
 #else
-  // Return sequence is:
+  // Patched return sequence is:
   //  mov  lr, pc         @ start of sequence
   //  ldr  pc, [pc, #-4]  @ emited address
   static const int kPatchReturnSequenceAddressOffset =  kInstrSize;
+#endif
+
+  // Distance between start of patched debug break slot and the emitted address
+  // to jump to.
+#ifdef USE_BLX
+  // Patched debug break slot code is:
+  //  ldr  ip, [pc, #0]   @ emited address and start
+  //  blx  ip
+  static const int kPatchDebugBreakSlotAddressOffset =  0 * kInstrSize;
+#else
+  // Patched debug break slot code is:
+  //  mov  lr, pc         @ start of sequence
+  //  ldr  pc, [pc, #-4]  @ emited address
+  static const int kPatchDebugBreakSlotAddressOffset =  kInstrSize;
 #endif
 
   // Difference between address of current opcode and value read from pc
   // register.
   static const int kPcLoadDelta = 8;
 
-  static const int kJSReturnSequenceLength = 4;
+  static const int kJSReturnSequenceInstructions = 4;
+  static const int kDebugBreakSlotInstructions = 3;
+  static const int kDebugBreakSlotLength =
+      kDebugBreakSlotInstructions * kInstrSize;
 
   // ---------------------------------------------------------------------------
   // Code generation
@@ -671,8 +688,6 @@ class Assembler : public Malloced {
   void blx(Label* L)  { blx(branch_offset(L, false)); }  // v5 and above
 
   // Data-processing instructions
-  void ubfx(Register dst, Register src1, const Operand& src2,
-            const Operand& src3, Condition cond = al);
 
   void and_(Register dst, Register src1, const Operand& src2,
             SBit s = LeaveCC, Condition cond = al);
@@ -692,6 +707,10 @@ class Assembler : public Malloced {
 
   void add(Register dst, Register src1, const Operand& src2,
            SBit s = LeaveCC, Condition cond = al);
+  void add(Register dst, Register src1, Register src2,
+           SBit s = LeaveCC, Condition cond = al) {
+    add(dst, src1, Operand(src2), s, cond);
+  }
 
   void adc(Register dst, Register src1, const Operand& src2,
            SBit s = LeaveCC, Condition cond = al);
@@ -758,6 +777,19 @@ class Assembler : public Malloced {
   // Miscellaneous arithmetic instructions
 
   void clz(Register dst, Register src, Condition cond = al);  // v5 and above
+
+  // Bitfield manipulation instructions. v7 and above.
+
+  void ubfx(Register dst, Register src, int lsb, int width,
+            Condition cond = al);
+
+  void sbfx(Register dst, Register src, int lsb, int width,
+            Condition cond = al);
+
+  void bfc(Register dst, int lsb, int width, Condition cond = al);
+
+  void bfi(Register dst, Register src, int lsb, int width,
+           Condition cond = al);
 
   // Status register access instructions
 
@@ -966,13 +998,16 @@ class Assembler : public Malloced {
   // Mark address of the ExitJSFrame code.
   void RecordJSReturn();
 
+  // Mark address of a debug break slot.
+  void RecordDebugBreakSlot();
+
   // Record a comment relocation entry that can be used by a disassembler.
   // Use --debug_code to enable.
   void RecordComment(const char* msg);
 
   void RecordPosition(int pos);
   void RecordStatementPosition(int pos);
-  void WriteRecordedPositions();
+  bool WriteRecordedPositions();
 
   int pc_offset() const { return pc_ - buffer_; }
   int current_position() const { return current_position_; }

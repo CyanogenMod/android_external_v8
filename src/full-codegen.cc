@@ -439,6 +439,231 @@ void FullCodeGenSyntaxChecker::VisitThisFunction(ThisFunction* expr) {
 #undef CHECK_BAILOUT
 
 
+void BreakableStatementChecker::Check(Statement* stmt) {
+  Visit(stmt);
+}
+
+
+void BreakableStatementChecker::Check(Expression* expr) {
+  Visit(expr);
+}
+
+
+void BreakableStatementChecker::VisitDeclaration(Declaration* decl) {
+}
+
+
+void BreakableStatementChecker::VisitBlock(Block* stmt) {
+}
+
+
+void BreakableStatementChecker::VisitExpressionStatement(
+    ExpressionStatement* stmt) {
+  // Check if expression is breakable.
+  Visit(stmt->expression());
+}
+
+
+void BreakableStatementChecker::VisitEmptyStatement(EmptyStatement* stmt) {
+}
+
+
+void BreakableStatementChecker::VisitIfStatement(IfStatement* stmt) {
+  // If the condition is breakable the if statement is breakable.
+  Visit(stmt->condition());
+}
+
+
+void BreakableStatementChecker::VisitContinueStatement(
+    ContinueStatement* stmt) {
+}
+
+
+void BreakableStatementChecker::VisitBreakStatement(BreakStatement* stmt) {
+}
+
+
+void BreakableStatementChecker::VisitReturnStatement(ReturnStatement* stmt) {
+  // Return is breakable if the expression is.
+  Visit(stmt->expression());
+}
+
+
+void BreakableStatementChecker::VisitWithEnterStatement(
+    WithEnterStatement* stmt) {
+  Visit(stmt->expression());
+}
+
+
+void BreakableStatementChecker::VisitWithExitStatement(
+    WithExitStatement* stmt) {
+}
+
+
+void BreakableStatementChecker::VisitSwitchStatement(SwitchStatement* stmt) {
+  // Switch statements breakable if the tag expression is.
+  Visit(stmt->tag());
+}
+
+
+void BreakableStatementChecker::VisitDoWhileStatement(DoWhileStatement* stmt) {
+  // Mark do while as breakable to avoid adding a break slot in front of it.
+  is_breakable_ = true;
+}
+
+
+void BreakableStatementChecker::VisitWhileStatement(WhileStatement* stmt) {
+  // Mark while statements breakable if the condition expression is.
+  Visit(stmt->cond());
+}
+
+
+void BreakableStatementChecker::VisitForStatement(ForStatement* stmt) {
+  // Mark for statements breakable if the condition expression is.
+  if (stmt->cond() != NULL) {
+    Visit(stmt->cond());
+  }
+}
+
+
+void BreakableStatementChecker::VisitForInStatement(ForInStatement* stmt) {
+  // Mark for in statements breakable if the enumerable expression is.
+  Visit(stmt->enumerable());
+}
+
+
+void BreakableStatementChecker::VisitTryCatchStatement(
+    TryCatchStatement* stmt) {
+  // Mark try catch as breakable to avoid adding a break slot in front of it.
+  is_breakable_ = true;
+}
+
+
+void BreakableStatementChecker::VisitTryFinallyStatement(
+    TryFinallyStatement* stmt) {
+  // Mark try finally as breakable to avoid adding a break slot in front of it.
+  is_breakable_ = true;
+}
+
+
+void BreakableStatementChecker::VisitDebuggerStatement(
+    DebuggerStatement* stmt) {
+  // The debugger statement is breakable.
+  is_breakable_ = true;
+}
+
+
+void BreakableStatementChecker::VisitFunctionLiteral(FunctionLiteral* expr) {
+}
+
+
+void BreakableStatementChecker::VisitSharedFunctionInfoLiteral(
+    SharedFunctionInfoLiteral* expr) {
+}
+
+
+void BreakableStatementChecker::VisitConditional(Conditional* expr) {
+}
+
+
+void BreakableStatementChecker::VisitSlot(Slot* expr) {
+}
+
+
+void BreakableStatementChecker::VisitVariableProxy(VariableProxy* expr) {
+}
+
+
+void BreakableStatementChecker::VisitLiteral(Literal* expr) {
+}
+
+
+void BreakableStatementChecker::VisitRegExpLiteral(RegExpLiteral* expr) {
+}
+
+
+void BreakableStatementChecker::VisitObjectLiteral(ObjectLiteral* expr) {
+}
+
+
+void BreakableStatementChecker::VisitArrayLiteral(ArrayLiteral* expr) {
+}
+
+
+void BreakableStatementChecker::VisitCatchExtensionObject(
+    CatchExtensionObject* expr) {
+}
+
+
+void BreakableStatementChecker::VisitAssignment(Assignment* expr) {
+  // If assigning to a property (including a global property) the assignment is
+  // breakable.
+  Variable* var = expr->target()->AsVariableProxy()->AsVariable();
+  Property* prop = expr->target()->AsProperty();
+  if (prop != NULL || (var != NULL && var->is_global())) {
+    is_breakable_ = true;
+    return;
+  }
+
+  // Otherwise the assignment is breakable if the assigned value is.
+  Visit(expr->value());
+}
+
+
+void BreakableStatementChecker::VisitThrow(Throw* expr) {
+  // Throw is breakable if the expression is.
+  Visit(expr->exception());
+}
+
+
+void BreakableStatementChecker::VisitProperty(Property* expr) {
+  // Property load is breakable.
+  is_breakable_ = true;
+}
+
+
+void BreakableStatementChecker::VisitCall(Call* expr) {
+  // Function calls both through IC and call stub are breakable.
+  is_breakable_ = true;
+}
+
+
+void BreakableStatementChecker::VisitCallNew(CallNew* expr) {
+  // Function calls through new are breakable.
+  is_breakable_ = true;
+}
+
+
+void BreakableStatementChecker::VisitCallRuntime(CallRuntime* expr) {
+}
+
+
+void BreakableStatementChecker::VisitUnaryOperation(UnaryOperation* expr) {
+  Visit(expr->expression());
+}
+
+
+void BreakableStatementChecker::VisitCountOperation(CountOperation* expr) {
+  Visit(expr->expression());
+}
+
+
+void BreakableStatementChecker::VisitBinaryOperation(BinaryOperation* expr) {
+  Visit(expr->left());
+  Visit(expr->right());
+}
+
+
+void BreakableStatementChecker::VisitCompareOperation(CompareOperation* expr) {
+  Visit(expr->left());
+  Visit(expr->right());
+}
+
+
+void BreakableStatementChecker::VisitThisFunction(ThisFunction* expr) {
+}
+
+
 #define __ ACCESS_MASM(masm())
 
 Handle<Code> FullCodeGenerator::MakeCode(CompilationInfo* info) {
@@ -552,7 +777,60 @@ void FullCodeGenerator::SetReturnPosition(FunctionLiteral* fun) {
 
 void FullCodeGenerator::SetStatementPosition(Statement* stmt) {
   if (FLAG_debug_info) {
+#ifdef ENABLE_DEBUGGER_SUPPORT
+    if (!Debugger::IsDebuggerActive()) {
+      CodeGenerator::RecordPositions(masm_, stmt->statement_pos());
+    } else {
+      // Check if the statement will be breakable without adding a debug break
+      // slot.
+      BreakableStatementChecker checker;
+      checker.Check(stmt);
+      // Record the statement position right here if the statement is not
+      // breakable. For breakable statements the actual recording of the
+      // position will be postponed to the breakable code (typically an IC).
+      bool position_recorded = CodeGenerator::RecordPositions(
+          masm_, stmt->statement_pos(), !checker.is_breakable());
+      // If the position recording did record a new position generate a debug
+      // break slot to make the statement breakable.
+      if (position_recorded) {
+        Debug::GenerateSlot(masm_);
+      }
+    }
+#else
     CodeGenerator::RecordPositions(masm_, stmt->statement_pos());
+#endif
+  }
+}
+
+
+void FullCodeGenerator::SetExpressionPosition(Expression* expr, int pos) {
+  if (FLAG_debug_info) {
+#ifdef ENABLE_DEBUGGER_SUPPORT
+    if (!Debugger::IsDebuggerActive()) {
+      CodeGenerator::RecordPositions(masm_, pos);
+    } else {
+      // Check if the expression will be breakable without adding a debug break
+      // slot.
+      BreakableStatementChecker checker;
+      checker.Check(expr);
+      // Record a statement position right here if the expression is not
+      // breakable. For breakable expressions the actual recording of the
+      // position will be postponed to the breakable code (typically an IC).
+      // NOTE this will record a statement position for something which might
+      // not be a statement. As stepping in the debugger will only stop at
+      // statement positions this is used for e.g. the condition expression of
+      // a do while loop.
+      bool position_recorded = CodeGenerator::RecordPositions(
+          masm_, pos, !checker.is_breakable());
+      // If the position recording did record a new position generate a debug
+      // break slot to make the statement breakable.
+      if (position_recorded) {
+        Debug::GenerateSlot(masm_);
+      }
+    }
+#else
+    CodeGenerator::RecordPositions(masm_, pos);
+#endif
   }
 }
 
@@ -567,6 +845,78 @@ void FullCodeGenerator::SetStatementPosition(int pos) {
 void FullCodeGenerator::SetSourcePosition(int pos) {
   if (FLAG_debug_info && pos != RelocInfo::kNoPosition) {
     masm_->RecordPosition(pos);
+  }
+}
+
+
+void FullCodeGenerator::EmitInlineRuntimeCall(CallRuntime* expr) {
+  Handle<String> name = expr->name();
+  if (strcmp("_IsSmi", *name->ToCString()) == 0) {
+    EmitIsSmi(expr->arguments());
+  } else if (strcmp("_IsNonNegativeSmi", *name->ToCString()) == 0) {
+    EmitIsNonNegativeSmi(expr->arguments());
+  } else if (strcmp("_IsObject", *name->ToCString()) == 0) {
+    EmitIsObject(expr->arguments());
+  } else if (strcmp("_IsUndetectableObject", *name->ToCString()) == 0) {
+    EmitIsUndetectableObject(expr->arguments());
+  } else if (strcmp("_IsFunction", *name->ToCString()) == 0) {
+    EmitIsFunction(expr->arguments());
+  } else if (strcmp("_IsArray", *name->ToCString()) == 0) {
+    EmitIsArray(expr->arguments());
+  } else if (strcmp("_IsRegExp", *name->ToCString()) == 0) {
+    EmitIsRegExp(expr->arguments());
+  } else if (strcmp("_IsConstructCall", *name->ToCString()) == 0) {
+    EmitIsConstructCall(expr->arguments());
+  } else if (strcmp("_ObjectEquals", *name->ToCString()) == 0) {
+    EmitObjectEquals(expr->arguments());
+  } else if (strcmp("_Arguments", *name->ToCString()) == 0) {
+    EmitArguments(expr->arguments());
+  } else if (strcmp("_ArgumentsLength", *name->ToCString()) == 0) {
+    EmitArgumentsLength(expr->arguments());
+  } else if (strcmp("_ClassOf", *name->ToCString()) == 0) {
+    EmitClassOf(expr->arguments());
+  } else if (strcmp("_Log", *name->ToCString()) == 0) {
+    EmitLog(expr->arguments());
+  } else if (strcmp("_RandomHeapNumber", *name->ToCString()) == 0) {
+    EmitRandomHeapNumber(expr->arguments());
+  } else if (strcmp("_SubString", *name->ToCString()) == 0) {
+    EmitSubString(expr->arguments());
+  } else if (strcmp("_RegExpExec", *name->ToCString()) == 0) {
+    EmitRegExpExec(expr->arguments());
+  } else if (strcmp("_ValueOf", *name->ToCString()) == 0) {
+    EmitValueOf(expr->arguments());
+  } else if (strcmp("_SetValueOf", *name->ToCString()) == 0) {
+    EmitSetValueOf(expr->arguments());
+  } else if (strcmp("_NumberToString", *name->ToCString()) == 0) {
+    EmitNumberToString(expr->arguments());
+  } else if (strcmp("_StringCharFromCode", *name->ToCString()) == 0) {
+    EmitStringCharFromCode(expr->arguments());
+  } else if (strcmp("_StringCharCodeAt", *name->ToCString()) == 0) {
+    EmitStringCharCodeAt(expr->arguments());
+  } else if (strcmp("_StringCharAt", *name->ToCString()) == 0) {
+    EmitStringCharAt(expr->arguments());
+  } else if (strcmp("_StringAdd", *name->ToCString()) == 0) {
+    EmitStringAdd(expr->arguments());
+  } else if (strcmp("_StringCompare", *name->ToCString()) == 0) {
+    EmitStringCompare(expr->arguments());
+  } else if (strcmp("_MathPow", *name->ToCString()) == 0) {
+    EmitMathPow(expr->arguments());
+  } else if (strcmp("_MathSin", *name->ToCString()) == 0) {
+    EmitMathSin(expr->arguments());
+  } else if (strcmp("_MathCos", *name->ToCString()) == 0) {
+    EmitMathCos(expr->arguments());
+  } else if (strcmp("_MathSqrt", *name->ToCString()) == 0) {
+    EmitMathSqrt(expr->arguments());
+  } else if (strcmp("_CallFunction", *name->ToCString()) == 0) {
+    EmitCallFunction(expr->arguments());
+  } else if (strcmp("_RegExpConstructResult", *name->ToCString()) == 0) {
+    EmitRegExpConstructResult(expr->arguments());
+  } else if (strcmp("_SwapElements", *name->ToCString()) == 0) {
+    EmitSwapElements(expr->arguments());
+  } else if (strcmp("_GetFromCache", *name->ToCString()) == 0) {
+    EmitGetFromCache(expr->arguments());
+  } else {
+    UNREACHABLE();
   }
 }
 
@@ -727,7 +1077,7 @@ void FullCodeGenerator::VisitReturnStatement(ReturnStatement* stmt) {
   }
   __ Drop(stack_depth);
 
-  EmitReturnSequence(stmt->statement_pos());
+  EmitReturnSequence();
 }
 
 
@@ -776,7 +1126,11 @@ void FullCodeGenerator::VisitDoWhileStatement(DoWhileStatement* stmt) {
   __ bind(&stack_check_success);
 
   __ bind(loop_statement.continue_target());
-  SetStatementPosition(stmt->condition_position());
+
+  // Record the position of the do while condition and make sure it is possible
+  // to break on the condition.
+  SetExpressionPosition(stmt->cond(), stmt->condition_position());
+
   VisitForControl(stmt->cond(), &body, loop_statement.break_target());
 
   __ bind(&stack_limit_hit);
@@ -792,7 +1146,6 @@ void FullCodeGenerator::VisitDoWhileStatement(DoWhileStatement* stmt) {
 
 void FullCodeGenerator::VisitWhileStatement(WhileStatement* stmt) {
   Comment cmnt(masm_, "[ WhileStatement");
-  SetStatementPosition(stmt);
   Label body, stack_limit_hit, stack_check_success;
 
   Iteration loop_statement(this, stmt);
@@ -805,6 +1158,9 @@ void FullCodeGenerator::VisitWhileStatement(WhileStatement* stmt) {
   Visit(stmt->body());
 
   __ bind(loop_statement.continue_target());
+  // Emit the statement position here as this is where the while statement code
+  // starts.
+  SetStatementPosition(stmt);
 
   // Check stack before looping.
   __ StackLimitCheck(&stack_limit_hit);
@@ -824,7 +1180,6 @@ void FullCodeGenerator::VisitWhileStatement(WhileStatement* stmt) {
 
 void FullCodeGenerator::VisitForStatement(ForStatement* stmt) {
   Comment cmnt(masm_, "[ ForStatement");
-  SetStatementPosition(stmt);
   Label test, body, stack_limit_hit, stack_check_success;
 
   Iteration loop_statement(this, stmt);
@@ -847,6 +1202,9 @@ void FullCodeGenerator::VisitForStatement(ForStatement* stmt) {
   }
 
   __ bind(&test);
+  // Emit the statement position here as this is where the for statement code
+  // starts.
+  SetStatementPosition(stmt);
 
   // Check stack before looping.
   __ StackLimitCheck(&stack_limit_hit);
@@ -992,6 +1350,8 @@ void FullCodeGenerator::VisitConditional(Conditional* expr) {
   VisitForControl(expr->condition(), &true_case, &false_case);
 
   __ bind(&true_case);
+  SetExpressionPosition(expr->then_expression(),
+                        expr->then_expression_position());
   Visit(expr->then_expression());
   // If control flow falls through Visit, jump to done.
   if (context_ == Expression::kEffect || context_ == Expression::kValue) {
@@ -999,6 +1359,8 @@ void FullCodeGenerator::VisitConditional(Conditional* expr) {
   }
 
   __ bind(&false_case);
+  SetExpressionPosition(expr->else_expression(),
+                        expr->else_expression_position());
   Visit(expr->else_expression());
   // If control flow falls through Visit, merge it with true case here.
   if (context_ == Expression::kEffect || context_ == Expression::kValue) {

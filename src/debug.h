@@ -146,6 +146,11 @@ class BreakLocationIterator {
   void SetDebugBreakAtReturn();
   void ClearDebugBreakAtReturn();
 
+  bool IsDebugBreakSlot();
+  bool IsDebugBreakAtSlot();
+  void SetDebugBreakAtSlot();
+  void ClearDebugBreakAtSlot();
+
   DISALLOW_COPY_AND_ASSIGN(BreakLocationIterator);
 };
 
@@ -265,6 +270,9 @@ class Debug {
   // Check whether a global object is the debug global object.
   static bool IsDebugGlobal(GlobalObject* global);
 
+  // Check whether this frame is just about to return.
+  static bool IsBreakAtReturn(JavaScriptFrame* frame);
+
   // Fast check to see if any break points are active.
   inline static bool has_break_points() { return has_break_points_; }
 
@@ -323,6 +331,7 @@ class Debug {
   enum AddressId {
     k_after_break_target_address,
     k_debug_break_return_address,
+    k_debug_break_slot_address,
     k_register_address
   };
 
@@ -340,6 +349,12 @@ class Debug {
   static Code* debug_break_return() { return debug_break_return_; }
   static Code** debug_break_return_address() {
     return &debug_break_return_;
+  }
+
+  // Access to the debug break in debug break slot code.
+  static Code* debug_break_slot() { return debug_break_slot_; }
+  static Code** debug_break_slot_address() {
+    return &debug_break_slot_;
   }
 
   static const int kEstimatedNofDebugInfoEntries = 16;
@@ -370,6 +385,7 @@ class Debug {
   static void AfterGarbageCollection();
 
   // Code generator routines.
+  static void GenerateSlot(MacroAssembler* masm);
   static void GenerateLoadICDebugBreak(MacroAssembler* masm);
   static void GenerateStoreICDebugBreak(MacroAssembler* masm);
   static void GenerateKeyedLoadICDebugBreak(MacroAssembler* masm);
@@ -377,6 +393,7 @@ class Debug {
   static void GenerateConstructCallDebugBreak(MacroAssembler* masm);
   static void GenerateReturnDebugBreak(MacroAssembler* masm);
   static void GenerateStubNoRegistersDebugBreak(MacroAssembler* masm);
+  static void GenerateSlotDebugBreak(MacroAssembler* masm);
   static void GeneratePlainReturnLiveEdit(MacroAssembler* masm);
   static void GenerateFrameDropperLiveEdit(MacroAssembler* masm);
 
@@ -471,6 +488,9 @@ class Debug {
 
   // Code to call for handling debug break on return.
   static Code* debug_break_return_;
+
+  // Code to call for handling debug break in debug break slots.
+  static Code* debug_break_slot_;
 
   DISALLOW_COPY_AND_ASSIGN(Debug);
 };
@@ -895,6 +915,8 @@ class Debug_Address {
         return reinterpret_cast<Address>(Debug::after_break_target_address());
       case Debug::k_debug_break_return_address:
         return reinterpret_cast<Address>(Debug::debug_break_return_address());
+      case Debug::k_debug_break_slot_address:
+        return reinterpret_cast<Address>(Debug::debug_break_slot_address());
       case Debug::k_register_address:
         return reinterpret_cast<Address>(Debug::register_address(reg_));
       default:

@@ -1,4 +1,4 @@
-// Copyright 2009 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,24 +25,22 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+// idx is a valid array index but is too big to be cached in hash field.
+var idx = 10000000;
 
-#ifndef V8_ARM_CODEGEN_ARM_INL_H_
-#define V8_ARM_CODEGEN_ARM_INL_H_
+// Create a JSObject with NumberDictionary as a backing store for elements.
+var obj = { };
+for (var i = 0; i < 100000; i += 100) { obj[i] = "obj" + i; }
 
-#include "virtual-frame-arm.h"
+// Set value using numeric index.
+obj[idx] = "obj" + idx;
 
-namespace v8 {
-namespace internal {
+// Make a string from index.
+var str = "" + idx;
 
-#define __ ACCESS_MASM(masm_)
+// Force hash computation for the string representation of index.
+for (var i = 0; i < 10; i++) { ({})[str]; }
 
-// Platform-specific inline functions.
-
-void DeferredCode::Jump() { __ jmp(&entry_label_); }
-void DeferredCode::Branch(Condition cc) { __ b(cc, &entry_label_); }
-
-#undef __
-
-} }  // namespace v8::internal
-
-#endif  // V8_ARM_CODEGEN_ARM_INL_H_
+// Try getting value back using string and number representations of
+// the same index.
+assertEquals(obj[str], obj[idx])

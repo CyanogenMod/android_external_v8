@@ -123,8 +123,17 @@ namespace internal {
   /* How is the generic keyed-load stub used? */                      \
   SC(keyed_load_generic_smi, V8.KeyedLoadGenericSmi)                  \
   SC(keyed_load_generic_symbol, V8.KeyedLoadGenericSymbol)            \
+  SC(keyed_load_generic_lookup_cache, V8.KeyedLoadGenericLookupCache) \
   SC(keyed_load_generic_slow, V8.KeyedLoadGenericSlow)                \
   SC(keyed_load_external_array_slow, V8.KeyedLoadExternalArraySlow)   \
+  /* How is the generic keyed-call stub used? */                      \
+  SC(keyed_call_generic_smi_fast, V8.KeyedCallGenericSmiFast)         \
+  SC(keyed_call_generic_smi_dict, V8.KeyedCallGenericSmiDict)         \
+  SC(keyed_call_generic_lookup_cache, V8.KeyedCallGenericLookupCache) \
+  SC(keyed_call_generic_lookup_dict, V8.KeyedCallGenericLookupDict)   \
+  SC(keyed_call_generic_value_type, V8.KeyedCallGenericValueType)     \
+  SC(keyed_call_generic_slow, V8.KeyedCallGenericSlow)                \
+  SC(keyed_call_generic_slow_load, V8.KeyedCallGenericSlowLoad)       \
   /* Count how much the monomorphic keyed-load stubs are hit. */      \
   SC(keyed_load_function_prototype, V8.KeyedLoadFunctionPrototype)    \
   SC(keyed_load_string_length, V8.KeyedLoadStringLength)              \
@@ -156,6 +165,9 @@ namespace internal {
   SC(array_function_runtime, V8.ArrayFunctionRuntime)                 \
   SC(array_function_native, V8.ArrayFunctionNative)                   \
   SC(for_in, V8.ForIn)                                                \
+  SC(memcopy_aligned, V8.MemCopyAligned)                              \
+  SC(memcopy_unaligned, V8.MemCopyUnaligned)                          \
+  SC(memcopy_noxmm, V8.MemCopyNoXMM)                                  \
   SC(enum_cache_hits, V8.EnumCacheHits)                               \
   SC(enum_cache_misses, V8.EnumCacheMisses)                           \
   SC(reloc_info_count, V8.RelocInfoCount)                             \

@@ -226,8 +226,9 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
     // edx: number of elements
     // ecx: start of next object
     __ mov(eax, Factory::fixed_array_map());
-    __ mov(Operand(edi, JSObject::kMapOffset), eax);  // setup the map
-    __ mov(Operand(edi, Array::kLengthOffset), edx);  // and length
+    __ mov(Operand(edi, FixedArray::kMapOffset), eax);  // setup the map
+    __ SmiTag(edx);
+    __ mov(Operand(edi, FixedArray::kLengthOffset), edx);  // and length
 
     // Initialize the fields to undefined.
     // ebx: JSObject
@@ -330,10 +331,8 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
 
   // If the type of the result (stored in its map) is less than
   // FIRST_JS_OBJECT_TYPE, it is not an object in the ECMA sense.
-  __ mov(ecx, FieldOperand(eax, HeapObject::kMapOffset));
-  __ movzx_b(ecx, FieldOperand(ecx, Map::kInstanceTypeOffset));
-  __ cmp(ecx, FIRST_JS_OBJECT_TYPE);
-  __ j(greater_equal, &exit, not_taken);
+  __ CmpObjectType(eax, FIRST_JS_OBJECT_TYPE, ecx);
+  __ j(above_equal, &exit, not_taken);
 
   // Throw away the result of the constructor invocation and use the
   // on-stack receiver as the result.
@@ -468,11 +467,11 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
     __ cmp(ebx, Factory::undefined_value());
     __ j(equal, &use_global_receiver);
 
+    // We don't use IsObjectJSObjectType here because we jump on success.
     __ mov(ecx, FieldOperand(ebx, HeapObject::kMapOffset));
     __ movzx_b(ecx, FieldOperand(ecx, Map::kInstanceTypeOffset));
-    __ cmp(ecx, FIRST_JS_OBJECT_TYPE);
-    __ j(below, &convert_to_object);
-    __ cmp(ecx, LAST_JS_OBJECT_TYPE);
+    __ sub(Operand(ecx), Immediate(FIRST_JS_OBJECT_TYPE));
+    __ cmp(ecx, LAST_JS_OBJECT_TYPE - FIRST_JS_OBJECT_TYPE);
     __ j(below_equal, &shift_arguments);
 
     __ bind(&convert_to_object);
@@ -548,6 +547,7 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
   __ mov(edx, FieldOperand(edi, JSFunction::kSharedFunctionInfoOffset));
   __ mov(ebx,
          FieldOperand(edx, SharedFunctionInfo::kFormalParameterCountOffset));
+  __ SmiUntag(ebx);
   __ mov(edx, FieldOperand(edx, SharedFunctionInfo::kCodeOffset));
   __ lea(edx, FieldOperand(edx, Code::kHeaderSize));
   __ cmp(eax, Operand(ebx));
@@ -615,12 +615,12 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
 
   // If given receiver is already a JavaScript object then there's no
   // reason for converting it.
+  // We don't use IsObjectJSObjectType here because we jump on success.
   __ mov(ecx, FieldOperand(ebx, HeapObject::kMapOffset));
   __ movzx_b(ecx, FieldOperand(ecx, Map::kInstanceTypeOffset));
-  __ cmp(ecx, FIRST_JS_OBJECT_TYPE);
-  __ j(less, &call_to_object);
-  __ cmp(ecx, LAST_JS_OBJECT_TYPE);
-  __ j(less_equal, &push_receiver);
+  __ sub(Operand(ecx), Immediate(FIRST_JS_OBJECT_TYPE));
+  __ cmp(ecx, LAST_JS_OBJECT_TYPE - FIRST_JS_OBJECT_TYPE);
+  __ j(below_equal, &push_receiver);
 
   // Convert the receiver to an object.
   __ bind(&call_to_object);
@@ -752,15 +752,15 @@ static void AllocateEmptyJSArray(MacroAssembler* masm,
   __ lea(scratch1, Operand(result, JSArray::kSize));
   __ mov(FieldOperand(result, JSArray::kElementsOffset), scratch1);
 
-  // Initialize the FixedArray and fill it with holes. FixedArray length is not
+  // Initialize the FixedArray and fill it with holes. FixedArray length is
   // stored as a smi.
   // result: JSObject
   // scratch1: elements array
   // scratch2: start of next object
-  __ mov(FieldOperand(scratch1, JSObject::kMapOffset),
+  __ mov(FieldOperand(scratch1, FixedArray::kMapOffset),
          Factory::fixed_array_map());
-  __ mov(FieldOperand(scratch1, Array::kLengthOffset),
-         Immediate(initial_capacity));
+  __ mov(FieldOperand(scratch1, FixedArray::kLengthOffset),
+         Immediate(Smi::FromInt(initial_capacity)));
 
   // Fill the FixedArray with the hole value. Inline the code if short.
   // Reconsider loop unfolding if kPreallocatedArrayElements gets changed.
@@ -847,23 +847,22 @@ static void AllocateJSArray(MacroAssembler* masm,
   __ lea(elements_array, Operand(result, JSArray::kSize));
   __ mov(FieldOperand(result, JSArray::kElementsOffset), elements_array);
 
-  // Initialize the fixed array. FixedArray length is not stored as a smi.
+  // Initialize the fixed array. FixedArray length is stored as a smi.
   // result: JSObject
   // elements_array: elements array
   // elements_array_end: start of next object
   // array_size: size of array (smi)
-  ASSERT(kSmiTag == 0);
-  __ SmiUntag(array_size);  // Convert from smi to value.
-  __ mov(FieldOperand(elements_array, JSObject::kMapOffset),
+  __ mov(FieldOperand(elements_array, FixedArray::kMapOffset),
          Factory::fixed_array_map());
   // For non-empty JSArrays the length of the FixedArray and the JSArray is the
   // same.
-  __ mov(FieldOperand(elements_array, Array::kLengthOffset), array_size);
+  __ mov(FieldOperand(elements_array, FixedArray::kLengthOffset), array_size);
 
   // Fill the allocated FixedArray with the hole value if requested.
   // result: JSObject
   // elements_array: elements array
   if (fill_with_hole) {
+    __ SmiUntag(array_size);
     __ lea(edi, Operand(elements_array,
                         FixedArray::kHeaderSize - kHeapObjectTag));
     __ mov(eax, Factory::the_hole_value());

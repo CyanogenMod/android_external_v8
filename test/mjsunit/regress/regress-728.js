@@ -1,4 +1,4 @@
-// Copyright 2009 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,24 +25,18 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+var obj = { 0: "obj0" };
 
-#ifndef V8_ARM_CODEGEN_ARM_INL_H_
-#define V8_ARM_CODEGEN_ARM_INL_H_
+// Array index k is to big to fit into the string hash field.
+var k = 16777217;
+var h = "" + k;
 
-#include "virtual-frame-arm.h"
+obj[k] = "obj" + k;
 
-namespace v8 {
-namespace internal {
+// Force computation of hash for the string representation of array index.
+for (var i = 0; i < 10; i++) { ({})[h]; }
 
-#define __ ACCESS_MASM(masm_)
+function get(idx) { return obj[idx]; }
 
-// Platform-specific inline functions.
-
-void DeferredCode::Jump() { __ jmp(&entry_label_); }
-void DeferredCode::Branch(Condition cc) { __ b(cc, &entry_label_); }
-
-#undef __
-
-} }  // namespace v8::internal
-
-#endif  // V8_ARM_CODEGEN_ARM_INL_H_
+assertEquals(get(0), "obj0");
+assertEquals(get(h), "obj" + h);

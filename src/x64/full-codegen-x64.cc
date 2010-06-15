@@ -187,12 +187,12 @@ void FullCodeGenerator::Generate(CompilationInfo* info, Mode mode) {
   { Comment cmnt(masm_, "[ return <undefined>;");
     // Emit a 'return undefined' in case control fell off the end of the body.
     __ LoadRoot(rax, Heap::kUndefinedValueRootIndex);
-    EmitReturnSequence(function()->end_position());
+    EmitReturnSequence();
   }
 }
 
 
-void FullCodeGenerator::EmitReturnSequence(int position) {
+void FullCodeGenerator::EmitReturnSequence() {
   Comment cmnt(masm_, "[ Return sequence");
   if (return_label_.is_bound()) {
     __ jmp(&return_label_);
@@ -207,7 +207,7 @@ void FullCodeGenerator::EmitReturnSequence(int position) {
     Label check_exit_codesize;
     masm_->bind(&check_exit_codesize);
 #endif
-    CodeGenerator::RecordPositions(masm_, position);
+    CodeGenerator::RecordPositions(masm_, function()->end_position());
     __ RecordJSReturn();
     // Do not use the leave instruction here because it is too short to
     // patch with the code required by the debugger.
@@ -1010,7 +1010,6 @@ void FullCodeGenerator::VisitForInStatement(ForInStatement* stmt) {
   __ push(rax);  // Map.
   __ push(rdx);  // Enumeration cache.
   __ movq(rax, FieldOperand(rdx, FixedArray::kLengthOffset));
-  __ Integer32ToSmi(rax, rax);
   __ push(rax);  // Enumeration cache length (as smi).
   __ Push(Smi::FromInt(0));  // Initial index.
   __ jmp(&loop);
@@ -1020,7 +1019,6 @@ void FullCodeGenerator::VisitForInStatement(ForInStatement* stmt) {
   __ Push(Smi::FromInt(0));  // Map (0) - force slow check.
   __ push(rax);
   __ movq(rax, FieldOperand(rax, FixedArray::kLengthOffset));
-  __ Integer32ToSmi(rax, rax);
   __ push(rax);  // Fixed array length (as smi).
   __ Push(Smi::FromInt(0));  // Initial index.
 
@@ -1129,15 +1127,15 @@ void FullCodeGenerator::EmitVariableLoad(Variable* var,
     Comment cmnt(masm_, "Global variable");
     // Use inline caching. Variable name is passed in rcx and the global
     // object on the stack.
-    __ push(CodeGenerator::GlobalObject());
     __ Move(rcx, var->name());
+    __ movq(rax, CodeGenerator::GlobalObject());
     Handle<Code> ic(Builtins::builtin(Builtins::LoadIC_Initialize));
     __ Call(ic, RelocInfo::CODE_TARGET_CONTEXT);
     // A test rax instruction following the call is used by the IC to
     // indicate that the inobject property case was inlined.  Ensure there
     // is no test rax instruction here.
     __ nop();
-    DropAndApply(1, context, rax);
+    Apply(context, rax);
 
   } else if (slot != NULL && slot->type() == Slot::LOOKUP) {
     Comment cmnt(masm_, "Lookup slot");
@@ -1178,7 +1176,7 @@ void FullCodeGenerator::EmitVariableLoad(Variable* var,
 
     // Load the object.
     MemOperand object_loc = EmitSlotSearch(object_slot, rax);
-    __ push(object_loc);
+    __ movq(rdx, object_loc);
 
     // Assert that the key is a smi.
     Literal* key_literal = property->key()->AsLiteral();
@@ -1186,7 +1184,7 @@ void FullCodeGenerator::EmitVariableLoad(Variable* var,
     ASSERT(key_literal->handle()->IsSmi());
 
     // Load the key.
-    __ Push(key_literal->handle());
+    __ Move(rax, key_literal->handle());
 
     // Do a keyed property load.
     Handle<Code> ic(Builtins::builtin(Builtins::KeyedLoadIC_Initialize));
@@ -1194,8 +1192,7 @@ void FullCodeGenerator::EmitVariableLoad(Variable* var,
     // Notice: We must not have a "test rax, ..." instruction after the
     // call. It is treated specially by the LoadIC code.
     __ nop();
-    // Drop key and object left on the stack by IC, and push the result.
-    DropAndApply(2, context, rax);
+    Apply(context, rax);
   }
 }
 
@@ -1695,18 +1692,16 @@ void FullCodeGenerator::VisitProperty(Property* expr) {
   Comment cmnt(masm_, "[ Property");
   Expression* key = expr->key();
 
-  // Evaluate receiver.
-  VisitForValue(expr->obj(), kStack);
-
   if (key->IsPropertyName()) {
+    VisitForValue(expr->obj(), kAccumulator);
     EmitNamedPropertyLoad(expr);
-    // Drop receiver left on the stack by IC.
-    DropAndApply(1, context_, rax);
+    Apply(context_, rax);
   } else {
-    VisitForValue(expr->key(), kStack);
+    VisitForValue(expr->obj(), kStack);
+    VisitForValue(expr->key(), kAccumulator);
+    __ pop(rdx);
     EmitKeyedPropertyLoad(expr);
-    // Drop key and receiver left on the stack by IC.
-    DropAndApply(2, context_, rax);
+    Apply(context_, rax);
   }
 }
 
@@ -1828,7 +1823,8 @@ void FullCodeGenerator::VisitCall(Call* expr) {
       // Call to a keyed property, use keyed load IC followed by function
       // call.
       VisitForValue(prop->obj(), kStack);
-      VisitForValue(prop->key(), kStack);
+      VisitForValue(prop->key(), kAccumulator);
+      __ movq(rdx, Operand(rsp, 0));
       // Record source code position for IC call.
       SetSourcePosition(prop->position());
       Handle<Code> ic(Builtins::builtin(Builtins::KeyedLoadIC_Initialize));
@@ -1836,8 +1832,6 @@ void FullCodeGenerator::VisitCall(Call* expr) {
       // By emitting a nop we make sure that we do not have a "test rax,..."
       // instruction after the call it is treated specially by the LoadIC code.
       __ nop();
-      // Drop key left on the stack by IC.
-      __ Drop(1);
       // Pop receiver.
       __ pop(rbx);
       // Push result (function).
@@ -1903,76 +1897,6 @@ void FullCodeGenerator::VisitCallNew(CallNew* expr) {
 
   // Replace function on TOS with result in rax, or pop it.
   DropAndApply(1, context_, rax);
-}
-
-
-void FullCodeGenerator::EmitInlineRuntimeCall(CallRuntime* expr) {
-  Handle<String> name = expr->name();
-  if (strcmp("_IsSmi", *name->ToCString()) == 0) {
-    EmitIsSmi(expr->arguments());
-  } else if (strcmp("_IsNonNegativeSmi", *name->ToCString()) == 0) {
-    EmitIsNonNegativeSmi(expr->arguments());
-  } else if (strcmp("_IsObject", *name->ToCString()) == 0) {
-    EmitIsObject(expr->arguments());
-  } else if (strcmp("_IsUndetectableObject", *name->ToCString()) == 0) {
-    EmitIsUndetectableObject(expr->arguments());
-  } else if (strcmp("_IsFunction", *name->ToCString()) == 0) {
-    EmitIsFunction(expr->arguments());
-  } else if (strcmp("_IsArray", *name->ToCString()) == 0) {
-    EmitIsArray(expr->arguments());
-  } else if (strcmp("_IsRegExp", *name->ToCString()) == 0) {
-    EmitIsRegExp(expr->arguments());
-  } else if (strcmp("_IsConstructCall", *name->ToCString()) == 0) {
-    EmitIsConstructCall(expr->arguments());
-  } else if (strcmp("_ObjectEquals", *name->ToCString()) == 0) {
-    EmitObjectEquals(expr->arguments());
-  } else if (strcmp("_Arguments", *name->ToCString()) == 0) {
-    EmitArguments(expr->arguments());
-  } else if (strcmp("_ArgumentsLength", *name->ToCString()) == 0) {
-    EmitArgumentsLength(expr->arguments());
-  } else if (strcmp("_ClassOf", *name->ToCString()) == 0) {
-    EmitClassOf(expr->arguments());
-  } else if (strcmp("_Log", *name->ToCString()) == 0) {
-    EmitLog(expr->arguments());
-  } else if (strcmp("_RandomHeapNumber", *name->ToCString()) == 0) {
-    EmitRandomHeapNumber(expr->arguments());
-  } else if (strcmp("_SubString", *name->ToCString()) == 0) {
-    EmitSubString(expr->arguments());
-  } else if (strcmp("_RegExpExec", *name->ToCString()) == 0) {
-    EmitRegExpExec(expr->arguments());
-  } else if (strcmp("_ValueOf", *name->ToCString()) == 0) {
-    EmitValueOf(expr->arguments());
-  } else if (strcmp("_SetValueOf", *name->ToCString()) == 0) {
-    EmitSetValueOf(expr->arguments());
-  } else if (strcmp("_NumberToString", *name->ToCString()) == 0) {
-    EmitNumberToString(expr->arguments());
-  } else if (strcmp("_CharFromCode", *name->ToCString()) == 0) {
-    EmitCharFromCode(expr->arguments());
-  } else if (strcmp("_FastCharCodeAt", *name->ToCString()) == 0) {
-    EmitFastCharCodeAt(expr->arguments());
-  } else if (strcmp("_StringAdd", *name->ToCString()) == 0) {
-    EmitStringAdd(expr->arguments());
-  } else if (strcmp("_StringCompare", *name->ToCString()) == 0) {
-    EmitStringCompare(expr->arguments());
-  } else if (strcmp("_MathPow", *name->ToCString()) == 0) {
-    EmitMathPow(expr->arguments());
-  } else if (strcmp("_MathSin", *name->ToCString()) == 0) {
-    EmitMathSin(expr->arguments());
-  } else if (strcmp("_MathCos", *name->ToCString()) == 0) {
-    EmitMathCos(expr->arguments());
-  } else if (strcmp("_MathSqrt", *name->ToCString()) == 0) {
-    EmitMathSqrt(expr->arguments());
-  } else if (strcmp("_CallFunction", *name->ToCString()) == 0) {
-    EmitCallFunction(expr->arguments());
-  } else if (strcmp("_RegExpConstructResult", *name->ToCString()) == 0) {
-    EmitRegExpConstructResult(expr->arguments());
-  } else if (strcmp("_SwapElements", *name->ToCString()) == 0) {
-    EmitSwapElements(expr->arguments());
-  } else if (strcmp("_GetFromCache", *name->ToCString()) == 0) {
-    EmitGetFromCache(expr->arguments());
-  } else {
-    UNREACHABLE();
-  }
 }
 
 
@@ -2414,45 +2338,119 @@ void FullCodeGenerator::EmitNumberToString(ZoneList<Expression*>* args) {
 }
 
 
-void FullCodeGenerator::EmitCharFromCode(ZoneList<Expression*>* args) {
+void FullCodeGenerator::EmitStringCharFromCode(ZoneList<Expression*>* args) {
   ASSERT(args->length() == 1);
 
   VisitForValue(args->at(0), kAccumulator);
 
-  Label slow_case, done;
-  // Fast case of Heap::LookupSingleCharacterStringFromCode.
-  __ JumpIfNotSmi(rax, &slow_case);
-  __ SmiToInteger32(rcx, rax);
-  __ cmpl(rcx, Immediate(String::kMaxAsciiCharCode));
-  __ j(above, &slow_case);
-
-  __ Move(rbx, Factory::single_character_string_cache());
-  __ movq(rbx, FieldOperand(rbx,
-                            rcx,
-                            times_pointer_size,
-                            FixedArray::kHeaderSize));
-
-  __ CompareRoot(rbx, Heap::kUndefinedValueRootIndex);
-  __ j(equal, &slow_case);
-  __ movq(rax, rbx);
+  Label done;
+  StringCharFromCodeGenerator generator(rax, rbx);
+  generator.GenerateFast(masm_);
   __ jmp(&done);
 
-  __ bind(&slow_case);
-  __ push(rax);
-  __ CallRuntime(Runtime::kCharFromCode, 1);
+  NopRuntimeCallHelper call_helper;
+  generator.GenerateSlow(masm_, call_helper);
 
   __ bind(&done);
-  Apply(context_, rax);
+  Apply(context_, rbx);
 }
 
 
-void FullCodeGenerator::EmitFastCharCodeAt(ZoneList<Expression*>* args) {
-  // TODO(fsc): Port the complete implementation from the classic back-end.
+void FullCodeGenerator::EmitStringCharCodeAt(ZoneList<Expression*>* args) {
+  ASSERT(args->length() == 2);
+
+  VisitForValue(args->at(0), kStack);
+  VisitForValue(args->at(1), kAccumulator);
+
+  Register object = rbx;
+  Register index = rax;
+  Register scratch = rcx;
+  Register result = rdx;
+
+  __ pop(object);
+
+  Label need_conversion;
+  Label index_out_of_range;
+  Label done;
+  StringCharCodeAtGenerator generator(object,
+                                      index,
+                                      scratch,
+                                      result,
+                                      &need_conversion,
+                                      &need_conversion,
+                                      &index_out_of_range,
+                                      STRING_INDEX_IS_NUMBER);
+  generator.GenerateFast(masm_);
+  __ jmp(&done);
+
+  __ bind(&index_out_of_range);
+  // When the index is out of range, the spec requires us to return
+  // NaN.
+  __ LoadRoot(result, Heap::kNanValueRootIndex);
+  __ jmp(&done);
+
+  __ bind(&need_conversion);
   // Move the undefined value into the result register, which will
-  // trigger the slow case.
-  __ LoadRoot(rax, Heap::kUndefinedValueRootIndex);
-  Apply(context_, rax);
+  // trigger conversion.
+  __ LoadRoot(result, Heap::kUndefinedValueRootIndex);
+  __ jmp(&done);
+
+  NopRuntimeCallHelper call_helper;
+  generator.GenerateSlow(masm_, call_helper);
+
+  __ bind(&done);
+  Apply(context_, result);
 }
+
+
+void FullCodeGenerator::EmitStringCharAt(ZoneList<Expression*>* args) {
+  ASSERT(args->length() == 2);
+
+  VisitForValue(args->at(0), kStack);
+  VisitForValue(args->at(1), kAccumulator);
+
+  Register object = rbx;
+  Register index = rax;
+  Register scratch1 = rcx;
+  Register scratch2 = rdx;
+  Register result = rax;
+
+  __ pop(object);
+
+  Label need_conversion;
+  Label index_out_of_range;
+  Label done;
+  StringCharAtGenerator generator(object,
+                                  index,
+                                  scratch1,
+                                  scratch2,
+                                  result,
+                                  &need_conversion,
+                                  &need_conversion,
+                                  &index_out_of_range,
+                                  STRING_INDEX_IS_NUMBER);
+  generator.GenerateFast(masm_);
+  __ jmp(&done);
+
+  __ bind(&index_out_of_range);
+  // When the index is out of range, the spec requires us to return
+  // the empty string.
+  __ LoadRoot(result, Heap::kEmptyStringRootIndex);
+  __ jmp(&done);
+
+  __ bind(&need_conversion);
+  // Move smi zero into the result register, which will trigger
+  // conversion.
+  __ Move(result, Smi::FromInt(0));
+  __ jmp(&done);
+
+  NopRuntimeCallHelper call_helper;
+  generator.GenerateSlow(masm_, call_helper);
+
+  __ bind(&done);
+  Apply(context_, result);
+}
+
 
 void FullCodeGenerator::EmitStringAdd(ZoneList<Expression*>* args) {
   ASSERT_EQ(2, args->length());
@@ -2743,13 +2741,13 @@ void FullCodeGenerator::VisitUnaryOperation(UnaryOperation* expr) {
           !proxy->var()->is_this() &&
           proxy->var()->is_global()) {
         Comment cmnt(masm_, "Global variable");
-        __ push(CodeGenerator::GlobalObject());
         __ Move(rcx, proxy->name());
+        __ movq(rax, CodeGenerator::GlobalObject());
         Handle<Code> ic(Builtins::builtin(Builtins::LoadIC_Initialize));
         // Use a regular load, not a contextual load, to avoid a reference
         // error.
         __ Call(ic, RelocInfo::CODE_TARGET);
-        __ movq(Operand(rsp, 0), rax);
+        __ push(rax);
       } else if (proxy != NULL &&
                  proxy->var()->slot() != NULL &&
                  proxy->var()->slot()->type() == Slot::LOOKUP) {
@@ -2859,11 +2857,15 @@ void FullCodeGenerator::VisitCountOperation(CountOperation* expr) {
     if (expr->is_postfix() && context_ != Expression::kEffect) {
       __ Push(Smi::FromInt(0));
     }
-    VisitForValue(prop->obj(), kStack);
     if (assign_type == NAMED_PROPERTY) {
+      VisitForValue(prop->obj(), kAccumulator);
+      __ push(rax);  // Copy of receiver, needed for later store.
       EmitNamedPropertyLoad(prop);
     } else {
-      VisitForValue(prop->key(), kStack);
+      VisitForValue(prop->obj(), kStack);
+      VisitForValue(prop->key(), kAccumulator);
+      __ movq(rdx, Operand(rsp, 0));  // Leave receiver on stack
+      __ push(rax);  // Copy of key, needed for later store.
       EmitKeyedPropertyLoad(prop);
     }
   }

@@ -314,7 +314,9 @@ class CodeGenerator: public AstVisitor {
   static bool ShouldGenerateLog(Expression* type);
 #endif
 
-  static void RecordPositions(MacroAssembler* masm, int pos);
+  static bool RecordPositions(MacroAssembler* masm,
+                              int pos,
+                              bool right_here = false);
 
   // Accessors
   MacroAssembler* masm() { return masm_; }
@@ -475,6 +477,22 @@ class CodeGenerator: public AstVisitor {
   void GenericBinaryOperation(BinaryOperation* expr,
                               OverwriteMode overwrite_mode);
 
+  // Emits code sequence that jumps to deferred code if the input
+  // is not a smi.  Cannot be in MacroAssembler because it takes
+  // advantage of TypeInfo to skip unneeded checks.
+  void JumpIfNotSmiUsingTypeInfo(Register reg,
+                                 TypeInfo type,
+                                 DeferredCode* deferred);
+
+  // Emits code sequence that jumps to deferred code if the inputs
+  // are not both smis.  Cannot be in MacroAssembler because it takes
+  // advantage of TypeInfo to skip unneeded checks.
+  void JumpIfNotBothSmiUsingTypeInfo(Register left,
+                                     Register right,
+                                     TypeInfo left_info,
+                                     TypeInfo right_info,
+                                     DeferredCode* deferred);
+
   // If possible, combine two constant smi values using op to produce
   // a smi result, and push it on the virtual frame, all at compile time.
   // Returns true if it succeeds.  Otherwise it has no effect.
@@ -542,6 +560,8 @@ class CodeGenerator: public AstVisitor {
 
   static Handle<Code> ComputeCallInitialize(int argc, InLoopFlag in_loop);
 
+  static Handle<Code> ComputeKeyedCallInitialize(int argc, InLoopFlag in_loop);
+
   // Declare global variables and functions in the given array of
   // name/value pairs.
   void DeclareGlobals(Handle<FixedArray> pairs);
@@ -571,10 +591,13 @@ class CodeGenerator: public AstVisitor {
   void GenerateSetValueOf(ZoneList<Expression*>* args);
 
   // Fast support for charCodeAt(n).
-  void GenerateFastCharCodeAt(ZoneList<Expression*>* args);
+  void GenerateStringCharCodeAt(ZoneList<Expression*>* args);
 
   // Fast support for string.charAt(n) and string[n].
-  void GenerateCharFromCode(ZoneList<Expression*>* args);
+  void GenerateStringCharFromCode(ZoneList<Expression*>* args);
+
+  // Fast support for string.charAt(n) and string[n].
+  void GenerateStringCharAt(ZoneList<Expression*>* args);
 
   // Fast support for object equality testing.
   void GenerateObjectEquals(ZoneList<Expression*>* args);
@@ -846,38 +869,6 @@ class GenericBinaryOpStub: public CodeStub {
 
 class StringHelper : public AllStatic {
  public:
-  // Generates fast code for getting a char code out of a string
-  // object at the given index. May bail out for four reasons (in the
-  // listed order):
-  //   * Receiver is not a string (receiver_not_string label).
-  //   * Index is not a smi (index_not_smi label).
-  //   * Index is out of range (index_out_of_range).
-  //   * Some other reason (slow_case label). In this case it's
-  //     guaranteed that the above conditions are not violated,
-  //     e.g. it's safe to assume the receiver is a string and the
-  //     index is a non-negative smi < length.
-  // When successful, object, index, and scratch are clobbered.
-  // Otherwise, scratch and result are clobbered.
-  static void GenerateFastCharCodeAt(MacroAssembler* masm,
-                                     Register object,
-                                     Register index,
-                                     Register scratch,
-                                     Register result,
-                                     Label* receiver_not_string,
-                                     Label* index_not_smi,
-                                     Label* index_out_of_range,
-                                     Label* slow_case);
-
-  // Generates code for creating a one-char string from the given char
-  // code. May do a runtime call, so any register can be clobbered
-  // and, if the given invoke flag specifies a call, an internal frame
-  // is required. In tail call mode the result must be rax register.
-  static void GenerateCharFromCode(MacroAssembler* masm,
-                                   Register code,
-                                   Register result,
-                                   Register scratch,
-                                   InvokeFlag flag);
-
   // Generate code for copying characters using a simple loop. This should only
   // be used in places where the number of characters is small and the
   // additional setup and checking in GenerateCopyCharactersREP adds too much

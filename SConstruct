@@ -204,10 +204,16 @@ LIBRARY_FLAGS = {
       'LINKFLAGS':    ['-m32']
     },
     'arch:arm': {
-      'CPPDEFINES':   ['V8_TARGET_ARCH_ARM']
+      'CPPDEFINES':   ['V8_TARGET_ARCH_ARM'],
+      'unalignedaccesses:on' : {
+        'CPPDEFINES' : ['CAN_USE_UNALIGNED_ACCESSES=1']
+      },
+      'unalignedaccesses:off' : {
+        'CPPDEFINES' : ['CAN_USE_UNALIGNED_ACCESSES=0']
+      }
     },
     'simulator:arm': {
-      'CCFLAGS':      ['-m32', '-DCAN_USE_UNALIGNED_ACCESSES=1'],
+      'CCFLAGS':      ['-m32'],
       'LINKFLAGS':    ['-m32']
     },
     'arch:mips': {
@@ -734,6 +740,11 @@ SIMPLE_OPTIONS = {
     'default': 'none',
     'help': 'build with simulator'
   },
+  'unalignedaccesses': {
+    'values': ['default', 'on', 'off'],
+    'default': 'default',
+    'help': 'set whether the ARM target supports unaligned accesses'
+  },
   'disassembler': {
     'values': ['on', 'off'],
     'default': 'off',
@@ -771,6 +782,7 @@ def GetOptions():
   result = Options()
   result.Add('mode', 'compilation mode (debug, release)', 'release')
   result.Add('sample', 'build sample (shell, process, lineprocessor)', '')
+  result.Add('cache', 'directory to use for scons build cache', '')
   result.Add('env', 'override environment settings (NAME0:value0,NAME1:value1,...)', '')
   result.Add('importenv', 'import environment settings (NAME0,NAME1,...)', '')
   for (name, option) in SIMPLE_OPTIONS.iteritems():
@@ -852,6 +864,12 @@ def VerifyOptions(env):
     Abort("Shared Object soname not applicable for static library.")
   if env['os'] != 'win32' and env['pgo'] != 'off':
     Abort("Profile guided optimization only supported on Windows.")
+  if env['cache'] and not os.path.isdir(env['cache']):
+    Abort("The specified cache directory does not exist.")
+  if not (env['arch'] == 'arm' or env['simulator'] == 'arm') and ('unalignedaccesses' in ARGUMENTS):
+    print env['arch']
+    print env['simulator']
+    Abort("Option unalignedaccesses only supported for the ARM architecture.")
   for (name, option) in SIMPLE_OPTIONS.iteritems():
     if (not option.get('default')) and (name not in ARGUMENTS):
       message = ("A value for option %s must be specified (%s)." %
@@ -1116,6 +1134,8 @@ def Build():
   else:
     env.Default('library')
 
+  if env['cache']:
+    CacheDir(env['cache'])
 
 # We disable deprecation warnings because we need to be able to use
 # env.Copy without getting warnings for compatibility with older
