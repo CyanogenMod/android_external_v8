@@ -110,10 +110,10 @@ void FullCodeGenerator::Generate(CompilationInfo* info, Mode mode) {
           __ mov(r1, Operand(Context::SlotOffset(slot->index())));
           __ str(r0, MemOperand(cp, r1));
           // Update the write barrier. This clobbers all involved
-          // registers, so we have use a third register to avoid
+          // registers, so we have to use two more registers to avoid
           // clobbering cp.
           __ mov(r2, Operand(cp));
-          __ RecordWrite(r2, r1, r0);
+          __ RecordWrite(r2, Operand(r1), r3, r0);
         }
       }
     }
@@ -666,8 +666,10 @@ void FullCodeGenerator::Move(Slot* dst,
   __ str(src, location);
   // Emit the write barrier code if the location is in the heap.
   if (dst->type() == Slot::CONTEXT) {
-    __ mov(scratch2, Operand(Context::SlotOffset(dst->index())));
-    __ RecordWrite(scratch1, scratch2, src);
+    __ RecordWrite(scratch1,
+                   Operand(Context::SlotOffset(dst->index())),
+                   scratch2,
+                   src);
   }
 }
 
@@ -715,10 +717,9 @@ void FullCodeGenerator::EmitDeclaration(Variable* variable,
           __ str(result_register(),
                  CodeGenerator::ContextOperand(cp, slot->index()));
           int offset = Context::SlotOffset(slot->index());
-          __ mov(r2, Operand(offset));
           // We know that we have written a function, which is not a smi.
           __ mov(r1, Operand(cp));
-          __ RecordWrite(r1, r2, result_register());
+          __ RecordWrite(r1, Operand(offset), r2, result_register());
         }
         break;
 
@@ -1252,8 +1253,7 @@ void FullCodeGenerator::VisitArrayLiteral(ArrayLiteral* expr) {
 
     // Update the write barrier for the array store with r0 as the scratch
     // register.
-    __ mov(r2, Operand(offset));
-    __ RecordWrite(r1, r2, result_register());
+    __ RecordWrite(r1, Operand(offset), r2, result_register());
   }
 
   if (result_saved) {
@@ -1493,8 +1493,7 @@ void FullCodeGenerator::EmitVariableAssignment(Variable* var,
         // RecordWrite may destroy all its register arguments.
         __ mov(r3, result_register());
         int offset = FixedArray::kHeaderSize + slot->index() * kPointerSize;
-        __ mov(r2, Operand(offset));
-        __ RecordWrite(r1, r2, r3);
+        __ RecordWrite(r1, Operand(offset), r2, r3);
         break;
       }
 
@@ -1648,6 +1647,30 @@ void FullCodeGenerator::EmitCallWithIC(Call* expr,
 }
 
 
+void FullCodeGenerator::EmitKeyedCallWithIC(Call* expr,
+                                            Expression* key,
+                                            RelocInfo::Mode mode) {
+  // Code common for calls using the IC.
+  ZoneList<Expression*>* args = expr->arguments();
+  int arg_count = args->length();
+  for (int i = 0; i < arg_count; i++) {
+    VisitForValue(args->at(i), kStack);
+  }
+  VisitForValue(key, kAccumulator);
+  __ mov(r2, r0);
+  // Record source position for debugger.
+  SetSourcePosition(expr->position());
+  // Call the IC initialization code.
+  InLoopFlag in_loop = (loop_depth() > 0) ? IN_LOOP : NOT_IN_LOOP;
+  Handle<Code> ic = CodeGenerator::ComputeKeyedCallInitialize(arg_count,
+                                                              in_loop);
+  __ Call(ic, mode);
+  // Restore context register.
+  __ ldr(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
+  Apply(context_, r0);
+}
+
+
 void FullCodeGenerator::EmitCallWithStub(Call* expr) {
   // Code common for calls using the call stub.
   ZoneList<Expression*>* args = expr->arguments();
@@ -1743,35 +1766,28 @@ void FullCodeGenerator::VisitCall(Call* expr) {
       VisitForValue(prop->obj(), kStack);
       EmitCallWithIC(expr, key->handle(), RelocInfo::CODE_TARGET);
     } else {
-      // Call to a keyed property, use keyed load IC followed by function
-      // call.
+      // Call to a keyed property.
+      // For a synthetic property use keyed load IC followed by function call,
+      // for a regular property use keyed CallIC.
       VisitForValue(prop->obj(), kStack);
-      VisitForValue(prop->key(), kAccumulator);
-      // Record source code position for IC call.
-      SetSourcePosition(prop->position());
       if (prop->is_synthetic()) {
+        VisitForValue(prop->key(), kAccumulator);
+        // Record source code position for IC call.
+        SetSourcePosition(prop->position());
         __ pop(r1);  // We do not need to keep the receiver.
-      } else {
-        __ ldr(r1, MemOperand(sp, 0));  // Keep receiver, to call function on.
-      }
 
-      Handle<Code> ic(Builtins::builtin(Builtins::KeyedLoadIC_Initialize));
-      __ Call(ic, RelocInfo::CODE_TARGET);
-      if (prop->is_synthetic()) {
+        Handle<Code> ic(Builtins::builtin(Builtins::KeyedLoadIC_Initialize));
+        __ Call(ic, RelocInfo::CODE_TARGET);
         // Push result (function).
         __ push(r0);
         // Push Global receiver.
         __ ldr(r1, CodeGenerator::GlobalObject());
         __ ldr(r1, FieldMemOperand(r1, GlobalObject::kGlobalReceiverOffset));
         __ push(r1);
+        EmitCallWithStub(expr);
       } else {
-        // Pop receiver.
-        __ pop(r1);
-        // Push result (function).
-        __ push(r0);
-        __ push(r1);
+        EmitKeyedCallWithIC(expr, prop->key(), RelocInfo::CODE_TARGET);
       }
-      EmitCallWithStub(expr);
     }
   } else {
     // Call to some other expression.  If the expression is an anonymous
@@ -2140,7 +2156,8 @@ void FullCodeGenerator::EmitRandomHeapNumber(ZoneList<Expression*>* args) {
   Label slow_allocate_heapnumber;
   Label heapnumber_allocated;
 
-  __ AllocateHeapNumber(r4, r1, r2, &slow_allocate_heapnumber);
+  __ LoadRoot(r6, Heap::kHeapNumberMapRootIndex);
+  __ AllocateHeapNumber(r4, r1, r2, r6, &slow_allocate_heapnumber);
   __ jmp(&heapnumber_allocated);
 
   __ bind(&slow_allocate_heapnumber);
@@ -2259,8 +2276,7 @@ void FullCodeGenerator::EmitSetValueOf(ZoneList<Expression*>* args) {
   __ str(r0, FieldMemOperand(r1, JSValue::kValueOffset));
   // Update the write barrier.  Save the value as it will be
   // overwritten by the write barrier code and is needed afterward.
-  __ mov(r2, Operand(JSValue::kValueOffset - kHeapObjectTag));
-  __ RecordWrite(r1, r2, r3);
+  __ RecordWrite(r1, Operand(JSValue::kValueOffset - kHeapObjectTag), r2, r3);
 
   __ bind(&done);
   Apply(context_, r0);

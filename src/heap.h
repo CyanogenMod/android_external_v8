@@ -69,10 +69,12 @@ class ZoneScopeInfo;
   V(Map, cons_symbol_map, ConsSymbolMap)                                       \
   V(Map, cons_ascii_symbol_map, ConsAsciiSymbolMap)                            \
   V(Map, external_symbol_map, ExternalSymbolMap)                               \
+  V(Map, external_symbol_with_ascii_data_map, ExternalSymbolWithAsciiDataMap)  \
   V(Map, external_ascii_symbol_map, ExternalAsciiSymbolMap)                    \
   V(Map, cons_string_map, ConsStringMap)                                       \
   V(Map, cons_ascii_string_map, ConsAsciiStringMap)                            \
   V(Map, external_string_map, ExternalStringMap)                               \
+  V(Map, external_string_with_ascii_data_map, ExternalStringWithAsciiDataMap)  \
   V(Map, external_ascii_string_map, ExternalAsciiStringMap)                    \
   V(Map, undetectable_string_map, UndetectableStringMap)                       \
   V(Map, undetectable_ascii_string_map, UndetectableAsciiStringMap)            \
@@ -1882,8 +1884,8 @@ class TranscendentalCache {
   };
   inline static int Hash(const Converter& c) {
     uint32_t hash = (c.integers[0] ^ c.integers[1]);
-    hash ^= hash >> 16;
-    hash ^= hash >> 8;
+    hash ^= static_cast<int32_t>(hash) >> 16;
+    hash ^= static_cast<int32_t>(hash) >> 8;
     return (hash & (kCacheSize - 1));
   }
 

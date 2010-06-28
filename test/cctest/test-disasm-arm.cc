@@ -248,6 +248,72 @@ TEST(Type0) {
   COMPARE(mvn(r5, Operand(r4), SetCC, cc),
           "31f05004       mvnccs r5, r4");
 
+  // Instructions autotransformed by the assembler.
+  // mov -> mvn.
+  COMPARE(mov(r3, Operand(-1), LeaveCC, al),
+          "e3e03000       mvn r3, #0");
+  COMPARE(mov(r4, Operand(-2), SetCC, al),
+          "e3f04001       mvns r4, #1");
+  COMPARE(mov(r5, Operand(0x0ffffff0), SetCC, ne),
+          "13f052ff       mvnnes r5, #-268435441");
+  COMPARE(mov(r6, Operand(-1), LeaveCC, ne),
+          "13e06000       mvnne r6, #0");
+
+  // mvn -> mov.
+  COMPARE(mvn(r3, Operand(-1), LeaveCC, al),
+          "e3a03000       mov r3, #0");
+  COMPARE(mvn(r4, Operand(-2), SetCC, al),
+          "e3b04001       movs r4, #1");
+  COMPARE(mvn(r5, Operand(0x0ffffff0), SetCC, ne),
+          "13b052ff       movnes r5, #-268435441");
+  COMPARE(mvn(r6, Operand(-1), LeaveCC, ne),
+          "13a06000       movne r6, #0");
+
+  // mov -> movw.
+  if (CpuFeatures::IsSupported(ARMv7)) {
+    COMPARE(mov(r5, Operand(0x01234), LeaveCC, ne),
+            "13015234       movwne r5, #4660");
+    // We only disassemble one instruction so the eor instruction is not here.
+    COMPARE(eor(r5, r4, Operand(0x1234), LeaveCC, ne),
+            "1301c234       movwne ip, #4660");
+    // Movw can't do setcc so we don't get that here.  Mov immediate with setcc
+    // is pretty strange anyway.
+    COMPARE(mov(r5, Operand(0x01234), SetCC, ne),
+            "159fc000       ldrne ip, [pc, #+0]");
+    // We only disassemble one instruction so the eor instruction is not here.
+    // The eor does the setcc so we get a movw here.
+    COMPARE(eor(r5, r4, Operand(0x1234), SetCC, ne),
+            "1301c234       movwne ip, #4660");
+
+    COMPARE(movt(r5, 0x4321, ne),
+            "13445321       movtne r5, #17185");
+    COMPARE(movw(r5, 0xabcd, eq),
+            "030a5bcd       movweq r5, #43981");
+  }
+
+  // Eor doesn't have an eor-negative variant, but we can do an mvn followed by
+  // an eor to get the same effect.
+  COMPARE(eor(r5, r4, Operand(0xffffff34), SetCC, ne),
+          "13e0c0cb       mvnne ip, #203");
+
+  // and <-> bic.
+  COMPARE(and_(r3, r5, Operand(0xfc03ffff)),
+          "e3c537ff       bic r3, r5, #66846720");
+  COMPARE(bic(r3, r5, Operand(0xfc03ffff)),
+          "e20537ff       and r3, r5, #66846720");
+
+  // sub <-> add.
+  COMPARE(add(r3, r5, Operand(-1024)),
+          "e2453b01       sub r3, r5, #1024");
+  COMPARE(sub(r3, r5, Operand(-1024)),
+          "e2853b01       add r3, r5, #1024");
+
+  // cmp <-> cmn.
+  COMPARE(cmp(r3, Operand(-1024)),
+          "e3730b01       cmn r3, #1024");
+  COMPARE(cmn(r3, Operand(-1024)),
+          "e3530b01       cmp r3, #1024");
+
   // Miscellaneous instructions encoded as type 0.
   COMPARE(blx(ip),
           "e12fff3c       blx ip");

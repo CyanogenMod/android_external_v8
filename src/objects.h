@@ -320,6 +320,10 @@ enum PropertyNormalizationMode {
     ExternalTwoByteString::kSize,                                              \
     external_symbol,                                                           \
     ExternalSymbol)                                                            \
+  V(EXTERNAL_SYMBOL_WITH_ASCII_DATA_TYPE,                                      \
+    ExternalTwoByteString::kSize,                                              \
+    external_symbol_with_ascii_data,                                           \
+    ExternalSymbolWithAsciiData)                                               \
   V(EXTERNAL_ASCII_SYMBOL_TYPE,                                                \
     ExternalAsciiString::kSize,                                                \
     external_ascii_symbol,                                                     \
@@ -344,6 +348,10 @@ enum PropertyNormalizationMode {
     ExternalTwoByteString::kSize,                                              \
     external_string,                                                           \
     ExternalString)                                                            \
+  V(EXTERNAL_STRING_WITH_ASCII_DATA_TYPE,                                      \
+    ExternalTwoByteString::kSize,                                              \
+    external_string_with_ascii_data,                                           \
+    ExternalStringWithAsciiData)                                               \
   V(EXTERNAL_ASCII_STRING_TYPE,                                                \
     ExternalAsciiString::kSize,                                                \
     external_ascii_string,                                                     \
@@ -412,6 +420,11 @@ enum StringRepresentationTag {
 };
 const uint32_t kIsConsStringMask = 0x1;
 
+// If bit 7 is clear, then bit 3 indicates whether this two-byte
+// string actually contains ascii data.
+const uint32_t kAsciiDataHintMask = 0x08;
+const uint32_t kAsciiDataHintTag = 0x08;
+
 
 // A ConsString with an empty string as the right side is a candidate
 // for being shortcut by the garbage collector unless it is a
@@ -427,18 +440,22 @@ const uint32_t kShortcutTypeTag = kConsStringTag;
 
 enum InstanceType {
   // String types.
-  SYMBOL_TYPE = kSymbolTag | kSeqStringTag,
+  SYMBOL_TYPE = kTwoByteStringTag | kSymbolTag | kSeqStringTag,
   ASCII_SYMBOL_TYPE = kAsciiStringTag | kSymbolTag | kSeqStringTag,
-  CONS_SYMBOL_TYPE = kSymbolTag | kConsStringTag,
+  CONS_SYMBOL_TYPE = kTwoByteStringTag | kSymbolTag | kConsStringTag,
   CONS_ASCII_SYMBOL_TYPE = kAsciiStringTag | kSymbolTag | kConsStringTag,
-  EXTERNAL_SYMBOL_TYPE = kSymbolTag | kExternalStringTag,
+  EXTERNAL_SYMBOL_TYPE = kTwoByteStringTag | kSymbolTag | kExternalStringTag,
+  EXTERNAL_SYMBOL_WITH_ASCII_DATA_TYPE =
+      kTwoByteStringTag | kSymbolTag | kExternalStringTag | kAsciiDataHintTag,
   EXTERNAL_ASCII_SYMBOL_TYPE =
       kAsciiStringTag | kSymbolTag | kExternalStringTag,
-  STRING_TYPE = kSeqStringTag,
+  STRING_TYPE = kTwoByteStringTag | kSeqStringTag,
   ASCII_STRING_TYPE = kAsciiStringTag | kSeqStringTag,
-  CONS_STRING_TYPE = kConsStringTag,
+  CONS_STRING_TYPE = kTwoByteStringTag | kConsStringTag,
   CONS_ASCII_STRING_TYPE = kAsciiStringTag | kConsStringTag,
-  EXTERNAL_STRING_TYPE = kExternalStringTag,
+  EXTERNAL_STRING_TYPE = kTwoByteStringTag | kExternalStringTag,
+  EXTERNAL_STRING_WITH_ASCII_DATA_TYPE =
+      kTwoByteStringTag | kExternalStringTag | kAsciiDataHintTag,
   EXTERNAL_ASCII_STRING_TYPE = kAsciiStringTag | kExternalStringTag,
   PRIVATE_EXTERNAL_ASCII_STRING_TYPE = EXTERNAL_ASCII_STRING_TYPE,
 
@@ -474,10 +491,12 @@ enum InstanceType {
   TYPE_SWITCH_INFO_TYPE,
   SCRIPT_TYPE,
   CODE_CACHE_TYPE,
-#ifdef ENABLE_DEBUGGER_SUPPORT
+  // The following two instance types are only used when ENABLE_DEBUGGER_SUPPORT
+  // is defined. However as include/v8.h contain some of the instance type
+  // constants always having them avoids them getting different numbers
+  // depending on whether ENABLE_DEBUGGER_SUPPORT is defined or not.
   DEBUG_INFO_TYPE,
   BREAK_POINT_INFO_TYPE,
-#endif
 
   FIXED_ARRAY_TYPE,
   SHARED_FUNCTION_INFO_TYPE,
@@ -509,6 +528,11 @@ enum InstanceType {
   FIRST_JS_OBJECT_TYPE = JS_VALUE_TYPE,
   LAST_JS_OBJECT_TYPE = JS_REGEXP_TYPE
 };
+
+
+STATIC_CHECK(JS_OBJECT_TYPE == Internals::kJSObjectType);
+STATIC_CHECK(FIRST_NONSTRING_TYPE == Internals::kFirstNonstringType);
+STATIC_CHECK(PROXY_TYPE == Internals::kProxyType);
 
 
 enum CompareResult {
@@ -1123,7 +1147,7 @@ class HeapNumber: public HeapObject {
   static const uint32_t kExponentMask = 0x7ff00000u;
   static const uint32_t kMantissaMask = 0xfffffu;
   static const int kMantissaBits = 52;
-  static const int KExponentBits = 11;
+  static const int kExponentBits = 11;
   static const int kExponentBias = 1023;
   static const int kExponentShift = 20;
   static const int kMantissaBitsInTopWord = 20;
@@ -2151,6 +2175,11 @@ class Dictionary: public HashTable<Shape, Key> {
 
   // Set the value for entry.
   void ValueAtPut(int entry, Object* value) {
+    // Check that this value can actually be written.
+    PropertyDetails details = DetailsAt(entry);
+    // If a value has not been initilized we allow writing to it even if
+    // it is read only (a declared const that has not been initialized).
+    if (details.IsReadOnly() && !ValueAt(entry)->IsTheHole()) return;
     this->set(HashTable<Shape, Key>::EntryToIndex(entry)+1, value);
   }
 
@@ -2832,14 +2861,14 @@ class Code: public HeapObject {
   // Flags layout.
   static const int kFlagsICStateShift        = 0;
   static const int kFlagsICInLoopShift       = 3;
-  static const int kFlagsKindShift           = 4;
-  static const int kFlagsTypeShift           = 8;
+  static const int kFlagsTypeShift           = 4;
+  static const int kFlagsKindShift           = 7;
   static const int kFlagsArgumentsCountShift = 11;
 
   static const int kFlagsICStateMask        = 0x00000007;  // 00000000111
   static const int kFlagsICInLoopMask       = 0x00000008;  // 00000001000
-  static const int kFlagsKindMask           = 0x000000F0;  // 00011110000
-  static const int kFlagsTypeMask           = 0x00000700;  // 11100000000
+  static const int kFlagsTypeMask           = 0x00000070;  // 00001110000
+  static const int kFlagsKindMask           = 0x00000780;  // 11110000000
   static const int kFlagsArgumentsCountMask = 0xFFFFF800;
 
   static const int kFlagsNotUsedInLookup =
@@ -4064,12 +4093,14 @@ class String: public HeapObject {
   inline bool IsAsciiRepresentation();
   inline bool IsTwoByteRepresentation();
 
-  // Check whether this string is an external two-byte string that in
-  // fact contains only ascii characters.
+  // Returns whether this string has ascii chars, i.e. all of them can
+  // be ascii encoded.  This might be the case even if the string is
+  // two-byte.  Such strings may appear when the embedder prefers
+  // two-byte external representations even for ascii data.
   //
-  // Such strings may appear when the embedder prefers two-byte
-  // representations even for ascii data.
-  inline bool IsExternalTwoByteStringWithAsciiChars();
+  // NOTE: this should be considered only a hint.  False negatives are
+  // possible.
+  inline bool HasOnlyAsciiChars();
 
   // Get and set individual two byte chars in the string.
   inline void Set(int index, uint16_t value);

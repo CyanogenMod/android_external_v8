@@ -429,9 +429,10 @@ class HeapEntry;
 class HeapGraphEdge {
  public:
   enum Type {
-    CONTEXT_VARIABLE,
-    ELEMENT,
-    PROPERTY
+    CONTEXT_VARIABLE = v8::HeapGraphEdge::CONTEXT_VARIABLE,
+    ELEMENT = v8::HeapGraphEdge::ELEMENT,
+    PROPERTY = v8::HeapGraphEdge::PROPERTY,
+    INTERNAL = v8::HeapGraphEdge::INTERNAL
   };
 
   HeapGraphEdge(Type type, const char* name, HeapEntry* from, HeapEntry* to);
@@ -443,7 +444,7 @@ class HeapGraphEdge {
     return index_;
   }
   const char* name() const {
-    ASSERT(type_ == CONTEXT_VARIABLE || type_ == PROPERTY);
+    ASSERT(type_ == CONTEXT_VARIABLE || type_ == PROPERTY || type_ == INTERNAL);
     return name_;
   }
   HeapEntry* from() const { return from_; }
@@ -468,12 +469,12 @@ class CachedHeapGraphPath;
 class HeapEntry {
  public:
   enum Type {
-    INTERNAL,
-    ARRAY,
-    STRING,
-    JS_OBJECT,
-    CODE,
-    CLOSURE
+    INTERNAL = v8::HeapGraphNode::INTERNAL,
+    ARRAY = v8::HeapGraphNode::ARRAY,
+    STRING = v8::HeapGraphNode::STRING,
+    OBJECT = v8::HeapGraphNode::OBJECT,
+    CODE = v8::HeapGraphNode::CODE,
+    CLOSURE = v8::HeapGraphNode::CLOSURE
   };
 
   explicit HeapEntry(HeapSnapshot* snapshot)
@@ -533,6 +534,7 @@ class HeapEntry {
   void PaintReachableFromOthers() { painted_ = kPaintReachableFromOthers; }
   void SetClosureReference(const char* name, HeapEntry* entry);
   void SetElementReference(int index, HeapEntry* entry);
+  void SetInternalReference(const char* name, HeapEntry* entry);
   void SetPropertyReference(const char* name, HeapEntry* entry);
   void SetAutoIndexReference(HeapEntry* entry);
 
@@ -542,6 +544,7 @@ class HeapEntry {
   void Print(int max_depth, int indent);
 
  private:
+  void AddEdge(HeapGraphEdge* edge);
   int CalculateTotalSize();
   int CalculateNonSharedTotalSize();
   void FindRetainingPaths(HeapEntry* node, CachedHeapGraphPath* prev_path);
@@ -641,6 +644,8 @@ class HeapSnapshot {
   void SetClosureReference(
       HeapEntry* parent, String* reference_name, Object* child);
   void SetElementReference(HeapEntry* parent, int index, Object* child);
+  void SetInternalReference(
+      HeapEntry* parent, const char* reference_name, Object* child);
   void SetPropertyReference(
       HeapEntry* parent, String* reference_name, Object* child);
 

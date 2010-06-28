@@ -818,7 +818,7 @@ HeapGraphEdge::HeapGraphEdge(Type type,
                              HeapEntry* from,
                              HeapEntry* to)
     : type_(type), name_(name), from_(from), to_(to) {
-  ASSERT(type_ == CONTEXT_VARIABLE || type_ == PROPERTY);
+  ASSERT(type_ == CONTEXT_VARIABLE || type_ == PROPERTY || type_ == INTERNAL);
 }
 
 
@@ -845,26 +845,30 @@ HeapEntry::~HeapEntry() {
 }
 
 
-void HeapEntry::SetClosureReference(const char* name, HeapEntry* entry) {
-  HeapGraphEdge* edge =
-      new HeapGraphEdge(HeapGraphEdge::CONTEXT_VARIABLE, name, this, entry);
+void HeapEntry::AddEdge(HeapGraphEdge* edge) {
   children_.Add(edge);
-  entry->retainers_.Add(edge);
+  edge->to()->retainers_.Add(edge);
+}
+
+
+void HeapEntry::SetClosureReference(const char* name, HeapEntry* entry) {
+  AddEdge(
+      new HeapGraphEdge(HeapGraphEdge::CONTEXT_VARIABLE, name, this, entry));
 }
 
 
 void HeapEntry::SetElementReference(int index, HeapEntry* entry) {
-  HeapGraphEdge* edge = new HeapGraphEdge(index, this, entry);
-  children_.Add(edge);
-  entry->retainers_.Add(edge);
+  AddEdge(new HeapGraphEdge(index, this, entry));
+}
+
+
+void HeapEntry::SetInternalReference(const char* name, HeapEntry* entry) {
+  AddEdge(new HeapGraphEdge(HeapGraphEdge::INTERNAL, name, this, entry));
 }
 
 
 void HeapEntry::SetPropertyReference(const char* name, HeapEntry* entry) {
-  HeapGraphEdge* edge =
-      new HeapGraphEdge(HeapGraphEdge::PROPERTY, name, this, entry);
-  children_.Add(edge);
-  entry->retainers_.Add(edge);
+  AddEdge(new HeapGraphEdge(HeapGraphEdge::PROPERTY, name, this, entry));
 }
 
 
@@ -1074,7 +1078,7 @@ void HeapEntry::CutEdges() {
 
 
 void HeapEntry::Print(int max_depth, int indent) {
-  OS::Print("%6d %6d %6d", self_size_, TotalSize(), NonSharedTotalSize());
+  OS::Print("%6d %6d %6d ", self_size_, TotalSize(), NonSharedTotalSize());
   if (type_ != STRING) {
     OS::Print("%s %.40s\n", TypeAsString(), name_);
   } else {
@@ -1100,6 +1104,9 @@ void HeapEntry::Print(int max_depth, int indent) {
       case HeapGraphEdge::ELEMENT:
         OS::Print("  %*c %d: ", indent, ' ', edge->index());
         break;
+      case HeapGraphEdge::INTERNAL:
+        OS::Print("  %*c $%s: ", indent, ' ', edge->name());
+        break;
       case HeapGraphEdge::PROPERTY:
         OS::Print("  %*c %s: ", indent, ' ', edge->name());
         break;
@@ -1114,7 +1121,7 @@ void HeapEntry::Print(int max_depth, int indent) {
 const char* HeapEntry::TypeAsString() {
   switch (type_) {
     case INTERNAL: return "/internal/";
-    case JS_OBJECT: return "/object/";
+    case OBJECT: return "/object/";
     case CLOSURE: return "/closure/";
     case STRING: return "/string/";
     case CODE: return "/code/";
@@ -1144,6 +1151,9 @@ void HeapGraphPath::Print() {
         break;
       case HeapGraphEdge::ELEMENT:
         OS::Print("[%d] ", edge->index());
+        break;
+      case HeapGraphEdge::INTERNAL:
+        OS::Print("[$%s] ", edge->name());
         break;
       case HeapGraphEdge::PROPERTY:
         OS::Print("[%s] ", edge->name());
@@ -1262,7 +1272,7 @@ HeapEntry* HeapSnapshot::GetEntry(Object* obj) {
     return AddEntry(object, HeapEntry::CLOSURE, collection_->GetName(name));
   } else if (object->IsJSObject()) {
     return AddEntry(object,
-                    HeapEntry::JS_OBJECT,
+                    HeapEntry::OBJECT,
                     collection_->GetName(
                         JSObject::cast(object)->constructor_name()));
   } else if (object->IsJSGlobalPropertyCell()) {
@@ -1276,10 +1286,19 @@ HeapEntry* HeapSnapshot::GetEntry(Object* obj) {
     return AddEntry(object,
                     HeapEntry::STRING,
                     collection_->GetName(String::cast(object)));
-  } else if (object->IsCode()
-             || object->IsSharedFunctionInfo()
-             || object->IsScript()) {
+  } else if (object->IsCode()) {
     return AddEntry(object, HeapEntry::CODE);
+  } else if (object->IsSharedFunctionInfo()) {
+    SharedFunctionInfo* shared = SharedFunctionInfo::cast(object);
+    String* name = String::cast(shared->name())->length() > 0 ?
+        String::cast(shared->name()) : shared->inferred_name();
+    return AddEntry(object, HeapEntry::CODE, collection_->GetName(name));
+  } else if (object->IsScript()) {
+    Script* script = Script::cast(object);
+    return AddEntry(object,
+                    HeapEntry::CODE,
+                    script->name()->IsString() ?
+                    collection_->GetName(String::cast(script->name())) : "");
   } else if (object->IsFixedArray()) {
     return AddEntry(object, HeapEntry::ARRAY);
   }
@@ -1305,6 +1324,16 @@ void HeapSnapshot::SetElementReference(HeapEntry* parent,
   HeapEntry* child_entry = GetEntry(child);
   if (child_entry != NULL) {
     parent->SetElementReference(index, child_entry);
+  }
+}
+
+
+void HeapSnapshot::SetInternalReference(HeapEntry* parent,
+                                        const char* reference_name,
+                                        Object* child) {
+  HeapEntry* child_entry = GetEntry(child);
+  if (child_entry != NULL) {
+    parent->SetInternalReference(reference_name, child_entry);
   }
 }
 
@@ -1537,6 +1566,7 @@ void HeapSnapshotGenerator::ExtractClosureReferences(JSObject* js_obj,
         snapshot_->SetClosureReference(entry, local_name, context->get(idx));
       }
     }
+    snapshot_->SetInternalReference(entry, "code", func->shared());
   }
 }
 

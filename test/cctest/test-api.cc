@@ -27,8 +27,6 @@
 
 #include <limits.h>
 
-#define USE_NEW_QUERY_CALLBACKS
-
 #include "v8.h"
 
 #include "api.h"
@@ -9637,6 +9635,45 @@ THREADED_TEST(PixelArray) {
 }
 
 
+THREADED_TEST(PixelArrayInfo) {
+  v8::HandleScope scope;
+  LocalContext context;
+  for (int size = 0; size < 100; size += 10) {
+    uint8_t* pixel_data = reinterpret_cast<uint8_t*>(malloc(size));
+    v8::Handle<v8::Object> obj = v8::Object::New();
+    obj->SetIndexedPropertiesToPixelData(pixel_data, size);
+    CHECK(obj->HasIndexedPropertiesInPixelData());
+    CHECK_EQ(pixel_data, obj->GetIndexedPropertiesPixelData());
+    CHECK_EQ(size, obj->GetIndexedPropertiesPixelDataLength());
+    free(pixel_data);
+  }
+}
+
+
+static int ExternalArrayElementSize(v8::ExternalArrayType array_type) {
+  switch (array_type) {
+    case v8::kExternalByteArray:
+    case v8::kExternalUnsignedByteArray:
+      return 1;
+      break;
+    case v8::kExternalShortArray:
+    case v8::kExternalUnsignedShortArray:
+      return 2;
+      break;
+    case v8::kExternalIntArray:
+    case v8::kExternalUnsignedIntArray:
+    case v8::kExternalFloatArray:
+      return 4;
+      break;
+    default:
+      UNREACHABLE();
+      return -1;
+  }
+  UNREACHABLE();
+  return -1;
+}
+
+
 template <class ExternalArrayClass, class ElementType>
 static void ExternalArrayTestHelper(v8::ExternalArrayType array_type,
                                     int64_t low,
@@ -9644,25 +9681,7 @@ static void ExternalArrayTestHelper(v8::ExternalArrayType array_type,
   v8::HandleScope scope;
   LocalContext context;
   const int kElementCount = 40;
-  int element_size = 0;
-  switch (array_type) {
-    case v8::kExternalByteArray:
-    case v8::kExternalUnsignedByteArray:
-      element_size = 1;
-      break;
-    case v8::kExternalShortArray:
-    case v8::kExternalUnsignedShortArray:
-      element_size = 2;
-      break;
-    case v8::kExternalIntArray:
-    case v8::kExternalUnsignedIntArray:
-    case v8::kExternalFloatArray:
-      element_size = 4;
-      break;
-    default:
-      UNREACHABLE();
-      break;
-  }
+  int element_size = ExternalArrayElementSize(array_type);
   ElementType* array_data =
       static_cast<ElementType*>(malloc(kElementCount * element_size));
   i::Handle<ExternalArrayClass> array =
@@ -10043,6 +10062,35 @@ THREADED_TEST(ExternalArrays) {
 }
 
 
+void ExternalArrayInfoTestHelper(v8::ExternalArrayType array_type) {
+  v8::HandleScope scope;
+  LocalContext context;
+  for (int size = 0; size < 100; size += 10) {
+    int element_size = ExternalArrayElementSize(array_type);
+    void* external_data = malloc(size * element_size);
+    v8::Handle<v8::Object> obj = v8::Object::New();
+    obj->SetIndexedPropertiesToExternalArrayData(
+        external_data, array_type, size);
+    CHECK(obj->HasIndexedPropertiesInExternalArrayData());
+    CHECK_EQ(external_data, obj->GetIndexedPropertiesExternalArrayData());
+    CHECK_EQ(array_type, obj->GetIndexedPropertiesExternalArrayDataType());
+    CHECK_EQ(size, obj->GetIndexedPropertiesExternalArrayDataLength());
+    free(external_data);
+  }
+}
+
+
+THREADED_TEST(ExternalArrayInfo) {
+  ExternalArrayInfoTestHelper(v8::kExternalByteArray);
+  ExternalArrayInfoTestHelper(v8::kExternalUnsignedByteArray);
+  ExternalArrayInfoTestHelper(v8::kExternalShortArray);
+  ExternalArrayInfoTestHelper(v8::kExternalUnsignedShortArray);
+  ExternalArrayInfoTestHelper(v8::kExternalIntArray);
+  ExternalArrayInfoTestHelper(v8::kExternalUnsignedIntArray);
+  ExternalArrayInfoTestHelper(v8::kExternalFloatArray);
+}
+
+
 THREADED_TEST(ScriptContextDependence) {
   v8::HandleScope scope;
   LocalContext c1;
@@ -10127,7 +10175,13 @@ v8::Handle<Value> AnalyzeStackInNativeCode(const v8::Arguments& args) {
                     stackTrace->GetFrame(0));
     checkStackFrame(origin, "baz", 8, 3, false, true,
                     stackTrace->GetFrame(1));
-    checkStackFrame(NULL, "", 1, 1, true, false,
+#ifdef ENABLE_DEBUGGER_SUPPORT
+    bool is_eval = true;
+#else  // ENABLE_DEBUGGER_SUPPORT
+    bool is_eval = false;
+#endif  // ENABLE_DEBUGGER_SUPPORT
+
+    checkStackFrame(NULL, "", 1, 1, is_eval, false,
                     stackTrace->GetFrame(2));
     // The last frame is an anonymous function that has the initial call to foo.
     checkStackFrame(origin, "", 10, 1, false, false,

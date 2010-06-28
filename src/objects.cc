@@ -678,6 +678,9 @@ Object* String::SlowTryFlatten(PretenureFlag pretenure) {
 
 
 bool String::MakeExternal(v8::String::ExternalStringResource* resource) {
+  // Externalizing twice leaks the external resouce, so it's
+  // prohibited by the API.
+  ASSERT(!this->IsExternalString());
 #ifdef DEBUG
   if (FLAG_enable_slow_asserts) {
     // Assert that the resource and the string are equivalent.
@@ -697,13 +700,16 @@ bool String::MakeExternal(v8::String::ExternalStringResource* resource) {
     return false;
   }
   ASSERT(size >= ExternalString::kSize);
+  bool is_ascii = this->IsAsciiRepresentation();
   bool is_symbol = this->IsSymbol();
   int length = this->length();
   int hash_field = this->hash_field();
 
   // Morph the object to an external string by adjusting the map and
   // reinitializing the fields.
-  this->set_map(Heap::external_string_map());
+  this->set_map(is_ascii ?
+                Heap::external_string_with_ascii_data_map() :
+                Heap::external_string_map());
   ExternalTwoByteString* self = ExternalTwoByteString::cast(this);
   self->set_length(length);
   self->set_hash_field(hash_field);
@@ -713,7 +719,9 @@ bool String::MakeExternal(v8::String::ExternalStringResource* resource) {
   if (is_symbol) {
     self->Hash();  // Force regeneration of the hash value.
     // Now morph this external string into a external symbol.
-    this->set_map(Heap::external_symbol_map());
+    this->set_map(is_ascii ?
+                  Heap::external_symbol_with_ascii_data_map() :
+                  Heap::external_symbol_map());
   }
 
   // Fill the remainder of the string with dead wood.
@@ -2013,25 +2021,18 @@ PropertyAttributes JSObject::GetPropertyAttributeWithInterceptor(
   CustomArguments args(interceptor->data(), receiver, this);
   v8::AccessorInfo info(args.end());
   if (!interceptor->query()->IsUndefined()) {
-    v8::NamedPropertyQueryImpl query =
-        v8::ToCData<v8::NamedPropertyQueryImpl>(interceptor->query());
+    v8::NamedPropertyQuery query =
+        v8::ToCData<v8::NamedPropertyQuery>(interceptor->query());
     LOG(ApiNamedPropertyAccess("interceptor-named-has", *holder_handle, name));
-    v8::Handle<v8::Value> result;
+    v8::Handle<v8::Integer> result;
     {
       // Leaving JavaScript.
       VMState state(EXTERNAL);
       result = query(v8::Utils::ToLocal(name_handle), info);
     }
     if (!result.IsEmpty()) {
-      // Temporary complicated logic, would be removed soon.
-      if (result->IsBoolean()) {
-        // Convert the boolean result to a property attribute
-        // specification.
-        return result->IsTrue() ? NONE : ABSENT;
-      } else {
-        ASSERT(result->IsInt32());
-        return static_cast<PropertyAttributes>(result->Int32Value());
-      }
+      ASSERT(result->IsInt32());
+      return static_cast<PropertyAttributes>(result->Int32Value());
     }
   } else if (!interceptor->getter()->IsUndefined()) {
     v8::NamedPropertyGetter getter =
@@ -8154,7 +8155,7 @@ Object* Dictionary<Shape, Key>::DeleteProperty(int entry,
 
 template<typename Shape, typename Key>
 Object* Dictionary<Shape, Key>::AtPut(Key key, Object* value) {
-  int entry = FindEntry(key);
+  int entry = this->FindEntry(key);
 
   // If the entry is present set the value;
   if (entry != Dictionary<Shape, Key>::kNotFound) {
@@ -8179,7 +8180,7 @@ Object* Dictionary<Shape, Key>::Add(Key key,
                                     Object* value,
                                     PropertyDetails details) {
   // Valdate key is absent.
-  SLOW_ASSERT((FindEntry(key) == Dictionary<Shape, Key>::kNotFound));
+  SLOW_ASSERT((this->FindEntry(key) == Dictionary<Shape, Key>::kNotFound));
   // Check whether the dictionary should be extended.
   Object* obj = EnsureCapacity(1, key);
   if (obj->IsFailure()) return obj;
@@ -8238,7 +8239,7 @@ Object* NumberDictionary::AddNumberEntry(uint32_t key,
                                          Object* value,
                                          PropertyDetails details) {
   UpdateMaxNumberKey(key);
-  SLOW_ASSERT(FindEntry(key) == kNotFound);
+  SLOW_ASSERT(this->FindEntry(key) == kNotFound);
   return Add(key, value, details);
 }
 

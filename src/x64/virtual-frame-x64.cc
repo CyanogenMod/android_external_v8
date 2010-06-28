@@ -961,16 +961,18 @@ void VirtualFrame::SyncRange(int begin, int end) {
   // Sync elements below the range if they have not been materialized
   // on the stack.
   int start = Min(begin, stack_pointer_ + 1);
+  int end_or_stack_pointer = Min(stack_pointer_, end);
+  // Emit normal push instructions for elements above stack pointer
+  // and use mov instructions if we are below stack pointer.
+  int i = start;
 
-  // If positive we have to adjust the stack pointer.
-  int delta = end - stack_pointer_;
-  if (delta > 0) {
-    stack_pointer_ = end;
-    __ subq(rsp, Immediate(delta * kPointerSize));
-  }
-
-  for (int i = start; i <= end; i++) {
+  while (i <= end_or_stack_pointer) {
     if (!elements_[i].is_synced()) SyncElementBelowStackPointer(i);
+    i++;
+  }
+  while (i <= end) {
+    SyncElementByPushing(i);
+    i++;
   }
 }
 
@@ -1154,6 +1156,25 @@ Result VirtualFrame::CallCallIC(RelocInfo::Mode mode,
   // on the stack, and drops them all.
   InLoopFlag in_loop = loop_nesting > 0 ? IN_LOOP : NOT_IN_LOOP;
   Handle<Code> ic = cgen()->ComputeCallInitialize(arg_count, in_loop);
+  Result name = Pop();
+  // Spill args, receiver, and function.  The call will drop args and
+  // receiver.
+  PrepareForCall(arg_count + 1, arg_count + 1);
+  name.ToRegister(rcx);
+  name.Unuse();
+  return RawCallCodeObject(ic, mode);
+}
+
+
+Result VirtualFrame::CallKeyedCallIC(RelocInfo::Mode mode,
+                                     int arg_count,
+                                     int loop_nesting) {
+  // Function name, arguments, and receiver are found on top of the frame
+  // and dropped by the call.  The IC expects the name in rcx and the rest
+  // on the stack, and drops them all.
+  InLoopFlag in_loop = loop_nesting > 0 ? IN_LOOP : NOT_IN_LOOP;
+  Handle<Code> ic =
+      cgen()->ComputeKeyedCallInitialize(arg_count, in_loop);
   Result name = Pop();
   // Spill args, receiver, and function.  The call will drop args and
   // receiver.

@@ -336,9 +336,8 @@ void StubCompiler::GenerateStoreField(MacroAssembler* masm,
     __ b(eq, &exit);
 
     // Update the write barrier for the array address.
-    // Pass the value being stored in the now unused name_reg.
-    __ mov(name_reg, Operand(offset));
-    __ RecordWrite(receiver_reg, name_reg, scratch);
+    // Pass the now unused name_reg as a scratch register.
+    __ RecordWrite(receiver_reg, Operand(offset), name_reg, scratch);
   } else {
     // Write to the properties array.
     int offset = index * kPointerSize + FixedArray::kHeaderSize;
@@ -352,8 +351,7 @@ void StubCompiler::GenerateStoreField(MacroAssembler* masm,
 
     // Update the write barrier for the array address.
     // Ok to clobber receiver_reg and name_reg, since we return.
-    __ mov(name_reg, Operand(offset));
-    __ RecordWrite(scratch, name_reg, receiver_reg);
+    __ RecordWrite(scratch, Operand(offset), name_reg, receiver_reg);
   }
 
   // Return the value (register r0).
@@ -1019,6 +1017,14 @@ Object* StubCompiler::CompileLazyCompile(Code::Flags flags) {
 }
 
 
+void CallStubCompiler::GenerateNameCheck(String* name, Label* miss) {
+  if (kind_ == Code::KEYED_CALL_IC) {
+    __ cmp(r2, Operand(Handle<String>(name)));
+    __ b(ne, miss);
+  }
+}
+
+
 void CallStubCompiler::GenerateMissBranch() {
   Handle<Code> ic = ComputeCallMiss(arguments().immediate(), kind_);
   __ Jump(ic, RelocInfo::CODE_TARGET);
@@ -1034,6 +1040,8 @@ Object* CallStubCompiler::CompileCallField(JSObject* object,
   //  -- lr    : return address
   // -----------------------------------
   Label miss;
+
+  GenerateNameCheck(name, &miss);
 
   const int argc = arguments().immediate();
 
@@ -1077,6 +1085,8 @@ Object* CallStubCompiler::CompileArrayPushCall(Object* object,
   ASSERT(check == RECEIVER_MAP_CHECK);
 
   Label miss;
+
+  GenerateNameCheck(name, &miss);
 
   // Get the receiver from the stack
   const int argc = arguments().immediate();
@@ -1126,6 +1136,8 @@ Object* CallStubCompiler::CompileArrayPopCall(Object* object,
   ASSERT(check == RECEIVER_MAP_CHECK);
 
   Label miss;
+
+  GenerateNameCheck(name, &miss);
 
   // Get the receiver from the stack
   const int argc = arguments().immediate();
@@ -1197,6 +1209,8 @@ Object* CallStubCompiler::CompileCallConstant(Object* object,
   }
 
   Label miss_in_smi_check;
+
+  GenerateNameCheck(name, &miss_in_smi_check);
 
   // Get the receiver from the stack
   const int argc = arguments().immediate();
@@ -1337,6 +1351,8 @@ Object* CallStubCompiler::CompileCallInterceptor(JSObject* object,
 
   Label miss;
 
+  GenerateNameCheck(name, &miss);
+
   // Get the number of arguments.
   const int argc = arguments().immediate();
 
@@ -1383,6 +1399,8 @@ Object* CallStubCompiler::CompileCallGlobal(JSObject* object,
   //  -- lr    : return address
   // -----------------------------------
   Label miss;
+
+  GenerateNameCheck(name, &miss);
 
   // Get the number of arguments.
   const int argc = arguments().immediate();
