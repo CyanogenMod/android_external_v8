@@ -58,13 +58,16 @@ LOCAL_SRC_FILES += \
   src/snapshot-empty.cc
 endif
 
+# The -fvisibility=hidden option below prevents exporting of symbols from
+# libv8.a in libwebcore.so.  That reduces size of libwebcore.so by 500k.
 LOCAL_CFLAGS += \
 	-Wno-endif-labels \
 	-Wno-import \
 	-Wno-format \
 	-fno-exceptions \
 	-DENABLE_DEBUGGER_SUPPORT \
-	-DV8_NATIVE_REGEXP
+	-DV8_NATIVE_REGEXP \
+	-fvisibility=hidden
 
 ifeq ($(TARGET_ARCH),arm)
 	LOCAL_CFLAGS += -DARM -DV8_TARGET_ARCH_ARM
