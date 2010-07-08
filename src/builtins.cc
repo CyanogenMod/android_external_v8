@@ -195,6 +195,7 @@ BUILTIN(ArrayCodeGeneric) {
   }
 
   // 'array' now contains the JSArray we should initialize.
+  ASSERT(array->HasFastElements());
 
   // Optimize the case where there is one argument and the argument is a
   // small smi.
@@ -1259,6 +1260,11 @@ static void Generate_StoreIC_Initialize(MacroAssembler* masm) {
 
 static void Generate_StoreIC_Miss(MacroAssembler* masm) {
   StoreIC::GenerateMiss(masm);
+}
+
+
+static void Generate_StoreIC_Normal(MacroAssembler* masm) {
+  StoreIC::GenerateNormal(masm);
 }
 
 

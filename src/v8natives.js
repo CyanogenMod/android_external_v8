@@ -677,9 +677,20 @@ function ObjectGetOwnPropertyNames(obj) {
     }
   }
 
-  // Property names are expected to be strings.
-  for (var i = 0; i < propertyNames.length; ++i)
-    propertyNames[i] = ToString(propertyNames[i]);
+  // Property names are expected to be unique strings.
+  var propertySet = {};
+  var j = 0;
+  for (var i = 0; i < propertyNames.length; ++i) {
+    var name = ToString(propertyNames[i]);
+    // We need to check for the exact property value since for intrinsic
+    // properties like toString if(propertySet["toString"]) will always
+    // succeed.
+    if (propertySet[name] === true)
+      continue;
+    propertySet[name] = true;
+    propertyNames[j++] = name;
+  }
+  propertyNames.length = j;
 
   return propertyNames;
 }
@@ -734,6 +745,27 @@ function ObjectDefineProperties(obj, properties) {
 }
 
 
+// ES5 section 15.2.3.10
+function ObjectPreventExtension(obj) {
+  if ((!IS_SPEC_OBJECT_OR_NULL(obj) || IS_NULL_OR_UNDEFINED(obj)) &&
+      !IS_UNDETECTABLE(obj)) {
+    throw MakeTypeError("obj_ctor_property_non_object", ["preventExtension"]);
+  }
+  %PreventExtensions(obj);
+  return obj;
+}
+
+
+// ES5 section 15.2.3.13
+function ObjectIsExtensible(obj) {
+  if ((!IS_SPEC_OBJECT_OR_NULL(obj) || IS_NULL_OR_UNDEFINED(obj)) &&
+      !IS_UNDETECTABLE(obj)) {
+    throw MakeTypeError("obj_ctor_property_non_object", ["preventExtension"]);
+  }
+  return %IsExtensible(obj);
+}
+
+
 %SetCode($Object, function(x) {
   if (%_IsConstructCall()) {
     if (x == null) return this;
@@ -769,7 +801,9 @@ function SetupObject() {
     "defineProperties", ObjectDefineProperties,
     "getPrototypeOf", ObjectGetPrototypeOf,
     "getOwnPropertyDescriptor", ObjectGetOwnPropertyDescriptor,
-    "getOwnPropertyNames", ObjectGetOwnPropertyNames
+    "getOwnPropertyNames", ObjectGetOwnPropertyNames,
+    "isExtensible", ObjectIsExtensible,
+    "preventExtensions", ObjectPreventExtension
   ));
 }
 

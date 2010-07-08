@@ -26,6 +26,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <stdlib.h>
+#include <math.h>
 #include <cstdarg>
 #include "v8.h"
 
@@ -2262,7 +2263,8 @@ static int GlueRegCode(bool last_bit, int vm, int m) {
 // Dd = vmul(Dn, Dm)
 // Dd = vdiv(Dn, Dm)
 // vcmp(Dd, Dm)
-// VMRS
+// vmrs
+// Dd = vsqrt(Dm)
 void Simulator::DecodeTypeVFP(Instr* instr) {
   ASSERT((instr->TypeField() == 7) && (instr->Bit(24) == 0x0) );
   ASSERT(instr->Bits(11, 9) == 0x5);
@@ -2274,7 +2276,14 @@ void Simulator::DecodeTypeVFP(Instr* instr) {
   if (instr->Bit(4) == 0) {
     if (instr->Opc1Field() == 0x7) {
       // Other data processing instructions
-      if ((instr->Opc2Field() == 0x7) && (instr->Opc3Field() == 0x3)) {
+      if ((instr->Opc2Field() == 0x0) && (instr->Opc3Field() == 0x1)) {
+        // vmov register to register.
+        if (instr->SzField() == 0x1) {
+          set_d_register_from_double(vd, get_double_from_d_register(vm));
+        } else {
+          UNREACHABLE();  // Not used by V8.
+        }
+      } else if ((instr->Opc2Field() == 0x7) && (instr->Opc3Field() == 0x3)) {
         DecodeVCVTBetweenDoubleAndSingle(instr);
       } else if ((instr->Opc2Field() == 0x8) && (instr->Opc3Field() & 0x1)) {
         DecodeVCVTBetweenFloatingPointAndInteger(instr);
@@ -2284,6 +2293,11 @@ void Simulator::DecodeTypeVFP(Instr* instr) {
       } else if (((instr->Opc2Field() == 0x4) || (instr->Opc2Field() == 0x5)) &&
                  (instr->Opc3Field() & 0x1)) {
         DecodeVCMP(instr);
+      } else if (((instr->Opc2Field() == 0x1)) && (instr->Opc3Field() == 0x3)) {
+        // vsqrt
+        double dm_value = get_double_from_d_register(vm);
+        double dd_value = sqrt(dm_value);
+        set_d_register_from_double(vd, dd_value);
       } else {
         UNREACHABLE();  // Not used by V8.
       }

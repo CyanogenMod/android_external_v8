@@ -1038,7 +1038,8 @@ void Decoder::DecodeUnconditional(Instr* instr) {
 // Dd = vmul(Dn, Dm)
 // Dd = vdiv(Dn, Dm)
 // vcmp(Dd, Dm)
-// VMRS
+// vmrs
+// Dd = vsqrt(Dm)
 void Decoder::DecodeTypeVFP(Instr* instr) {
   ASSERT((instr->TypeField() == 7) && (instr->Bit(24) == 0x0) );
   ASSERT(instr->Bits(11, 9) == 0x5);
@@ -1046,7 +1047,14 @@ void Decoder::DecodeTypeVFP(Instr* instr) {
   if (instr->Bit(4) == 0) {
     if (instr->Opc1Field() == 0x7) {
       // Other data processing instructions
-      if ((instr->Opc2Field() == 0x7) && (instr->Opc3Field() == 0x3)) {
+      if ((instr->Opc2Field() == 0x0) && (instr->Opc3Field() == 0x1)) {
+        // vmov register to register.
+        if (instr->SzField() == 0x1) {
+          Format(instr, "vmov.f64'cond 'Dd, 'Dm");
+        } else {
+          Unknown(instr);  // Not used by V8.
+        }
+      } else if ((instr->Opc2Field() == 0x7) && (instr->Opc3Field() == 0x3)) {
         DecodeVCVTBetweenDoubleAndSingle(instr);
       } else if ((instr->Opc2Field() == 0x8) && (instr->Opc3Field() & 0x1)) {
         DecodeVCVTBetweenFloatingPointAndInteger(instr);
@@ -1056,6 +1064,8 @@ void Decoder::DecodeTypeVFP(Instr* instr) {
       } else if (((instr->Opc2Field() == 0x4) || (instr->Opc2Field() == 0x5)) &&
                  (instr->Opc3Field() & 0x1)) {
         DecodeVCMP(instr);
+      } else if (((instr->Opc2Field() == 0x1)) && (instr->Opc3Field() == 0x3)) {
+        Format(instr, "vsqrt.f64'cond 'Dd, 'Dm");
       } else {
         Unknown(instr);  // Not used by V8.
       }

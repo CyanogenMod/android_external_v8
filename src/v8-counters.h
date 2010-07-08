@@ -153,6 +153,12 @@ namespace internal {
   SC(keyed_store_inline_miss, V8.KeyedStoreInlineMiss)                \
   SC(named_store_global_inline, V8.NamedStoreGlobalInline)            \
   SC(named_store_global_inline_miss, V8.NamedStoreGlobalInlineMiss)   \
+  SC(store_normal_miss, V8.StoreNormalMiss)                           \
+  SC(store_normal_hit, V8.StoreNormalHit)                             \
+  SC(call_miss, V8.CallMiss)                                          \
+  SC(keyed_call_miss, V8.KeyedCallMiss)                               \
+  SC(load_miss, V8.LoadMiss)                                          \
+  SC(keyed_load_miss, V8.KeyedLoadMiss)                               \
   SC(call_const, V8.CallConst)                                        \
   SC(call_const_fast_api, V8.CallConstFastApi)                        \
   SC(call_const_interceptor, V8.CallConstInterceptor)                 \
@@ -162,6 +168,8 @@ namespace internal {
   SC(constructed_objects, V8.ConstructedObjects)                      \
   SC(constructed_objects_runtime, V8.ConstructedObjectsRuntime)       \
   SC(constructed_objects_stub, V8.ConstructedObjectsStub)             \
+  SC(negative_lookups, V8.NegativeLookups)                            \
+  SC(negative_lookups_miss, V8.NegativeLookupsMiss)                  \
   SC(array_function_runtime, V8.ArrayFunctionRuntime)                 \
   SC(array_function_native, V8.ArrayFunctionNative)                   \
   SC(for_in, V8.ForIn)                                                \

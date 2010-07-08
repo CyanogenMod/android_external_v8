@@ -678,6 +678,12 @@ static Object* Runtime_GetOwnProperty(Arguments args) {
 }
 
 
+static Object* Runtime_PreventExtensions(Arguments args) {
+  ASSERT(args.length() == 1);
+  CONVERT_CHECKED(JSObject, obj, args[0]);
+  return obj->PreventExtensions();
+}
+
 static Object* Runtime_IsExtensible(Arguments args) {
   ASSERT(args.length() == 1);
   CONVERT_CHECKED(JSObject, obj, args[0]);
@@ -2782,13 +2788,17 @@ int Runtime::StringMatch(Handle<String> sub,
   // algorithm is unnecessary overhead.
   if (pattern_length == 1) {
     AssertNoAllocation no_heap_allocation;  // ensure vectors stay valid
-    if (sub->IsAsciiRepresentation()) {
+    String* seq_sub = *sub;
+    if (seq_sub->IsConsString()) {
+      seq_sub = ConsString::cast(seq_sub)->first();
+    }
+    if (seq_sub->IsAsciiRepresentation()) {
       uc16 pchar = pat->Get(0);
       if (pchar > String::kMaxAsciiCharCode) {
         return -1;
       }
       Vector<const char> ascii_vector =
-        sub->ToAsciiVector().SubVector(start_index, subject_length);
+          seq_sub->ToAsciiVector().SubVector(start_index, subject_length);
       const void* pos = memchr(ascii_vector.start(),
                                static_cast<const char>(pchar),
                                static_cast<size_t>(ascii_vector.length()));
@@ -2798,7 +2808,9 @@ int Runtime::StringMatch(Handle<String> sub,
       return static_cast<int>(reinterpret_cast<const char*>(pos)
           - ascii_vector.start() + start_index);
     }
-    return SingleCharIndexOf(sub->ToUC16Vector(), pat->Get(0), start_index);
+    return SingleCharIndexOf(seq_sub->ToUC16Vector(),
+                             pat->Get(0),
+                             start_index);
   }
 
   if (!pat->IsFlat()) {
@@ -2806,19 +2818,29 @@ int Runtime::StringMatch(Handle<String> sub,
   }
 
   AssertNoAllocation no_heap_allocation;  // ensure vectors stay valid
+  // Extract flattened substrings of cons strings before determining asciiness.
+  String* seq_sub = *sub;
+  if (seq_sub->IsConsString()) {
+    seq_sub = ConsString::cast(seq_sub)->first();
+  }
+  String* seq_pat = *pat;
+  if (seq_pat->IsConsString()) {
+    seq_pat = ConsString::cast(seq_pat)->first();
+  }
+
   // dispatch on type of strings
-  if (pat->IsAsciiRepresentation()) {
-    Vector<const char> pat_vector = pat->ToAsciiVector();
-    if (sub->IsAsciiRepresentation()) {
-      return StringSearch(sub->ToAsciiVector(), pat_vector, start_index);
+  if (seq_pat->IsAsciiRepresentation()) {
+    Vector<const char> pat_vector = seq_pat->ToAsciiVector();
+    if (seq_sub->IsAsciiRepresentation()) {
+      return StringSearch(seq_sub->ToAsciiVector(), pat_vector, start_index);
     }
-    return StringSearch(sub->ToUC16Vector(), pat_vector, start_index);
+    return StringSearch(seq_sub->ToUC16Vector(), pat_vector, start_index);
   }
-  Vector<const uc16> pat_vector = pat->ToUC16Vector();
-  if (sub->IsAsciiRepresentation()) {
-    return StringSearch(sub->ToAsciiVector(), pat_vector, start_index);
+  Vector<const uc16> pat_vector = seq_pat->ToUC16Vector();
+  if (seq_sub->IsAsciiRepresentation()) {
+    return StringSearch(seq_sub->ToAsciiVector(), pat_vector, start_index);
   }
-  return StringSearch(sub->ToUC16Vector(), pat_vector, start_index);
+  return StringSearch(seq_sub->ToUC16Vector(), pat_vector, start_index);
 }
 
 
@@ -5346,9 +5368,6 @@ static Object* Runtime_NumberToInteger(Arguments args) {
 }
 
 
-
-
-
 static Object* Runtime_NumberToIntegerMapMinusZero(Arguments args) {
   NoHandleAllocation ha;
   ASSERT(args.length() == 1);
@@ -7449,7 +7468,7 @@ class ArrayConcatVisitor {
   uint32_t index_limit_;
   // Index after last seen index. Always less than or equal to index_limit_.
   uint32_t index_offset_;
-  bool fast_elements_;
+  const bool fast_elements_;
 };
 
 
@@ -7766,13 +7785,14 @@ static Object* Runtime_ArrayConcat(Arguments args) {
     // The backing storage array must have non-existing elements to
     // preserve holes across concat operations.
     storage = Factory::NewFixedArrayWithHoles(result_length);
-
+    result->set_map(*Factory::GetFastElementsMap(Handle<Map>(result->map())));
   } else {
     // TODO(126): move 25% pre-allocation logic into Dictionary::Allocate
     uint32_t at_least_space_for = estimate_nof_elements +
                                   (estimate_nof_elements >> 2);
     storage = Handle<FixedArray>::cast(
                   Factory::NewNumberDictionary(at_least_space_for));
+    result->set_map(*Factory::GetSlowElementsMap(Handle<Map>(result->map())));
   }
 
   Handle<Object> len = Factory::NewNumber(static_cast<double>(result_length));
@@ -7822,9 +7842,19 @@ static Object* Runtime_MoveArrayContents(Arguments args) {
   ASSERT(args.length() == 2);
   CONVERT_CHECKED(JSArray, from, args[0]);
   CONVERT_CHECKED(JSArray, to, args[1]);
-  to->SetContent(FixedArray::cast(from->elements()));
+  HeapObject* new_elements = from->elements();
+  Object* new_map;
+  if (new_elements->map() == Heap::fixed_array_map()) {
+    new_map = to->map()->GetFastElementsMap();
+  } else {
+    new_map = to->map()->GetSlowElementsMap();
+  }
+  if (new_map->IsFailure()) return new_map;
+  to->set_map(Map::cast(new_map));
+  to->set_elements(new_elements);
   to->set_length(from->length());
-  from->SetContent(Heap::empty_fixed_array());
+  Object* obj = from->ResetElements();
+  if (obj->IsFailure()) return obj;
   from->set_length(Smi::FromInt(0));
   return to;
 }
@@ -9052,7 +9082,7 @@ static Object* Runtime_SetFunctionBreakPoint(Arguments args) {
   // Set break point.
   Debug::SetBreakPoint(shared, break_point_object_arg, &source_position);
 
-  return Heap::undefined_value();
+  return Smi::FromInt(source_position);
 }
 
 

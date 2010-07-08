@@ -200,7 +200,7 @@ class VirtualFrame : public ZoneObject {
   inline void PrepareForReturn();
 
   // Number of local variables after when we use a loop for allocating.
-  static const int kLocalVarBound = 7;
+  static const int kLocalVarBound = 14;
 
   // Allocate and initialize the frame-allocated locals.
   void AllocateStackSlots();
@@ -387,6 +387,13 @@ class VirtualFrame : public ZoneObject {
 
   // Duplicate the top element of the frame.
   void Dup() { PushFrameSlotAt(element_count() - 1); }
+
+  // Duplicate the n'th element from the top of the frame.
+  // Dup(1) is equivalent to Dup().
+  void Dup(int n) {
+    ASSERT(n > 0);
+    PushFrameSlotAt(element_count() - n);
+  }
 
   // Pop an element from the top of the expression stack.  Returns a
   // Result, which may be a constant or a register.

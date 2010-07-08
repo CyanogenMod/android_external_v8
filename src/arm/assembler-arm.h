@@ -930,6 +930,10 @@ class Assembler : public Malloced {
             const Register base,
             int offset,  // Offset must be a multiple of 4.
             const Condition cond = al);
+
+  void vmov(const DwVfpRegister dst,
+            const DwVfpRegister src,
+            const Condition cond = al);
   void vmov(const DwVfpRegister dst,
             const Register src1,
             const Register src2,
@@ -988,6 +992,9 @@ class Assembler : public Malloced {
             const Condition cond = al);
   void vmrs(const Register dst,
             const Condition cond = al);
+  void vsqrt(const DwVfpRegister dst,
+             const DwVfpRegister src,
+             const Condition cond = al);
 
   // Pseudo instructions
   void nop(int type = 0);
@@ -1110,6 +1117,7 @@ class Assembler : public Malloced {
   void EndBlockConstPool() {
     const_pool_blocked_nesting_--;
   }
+  bool is_const_pool_blocked() const { return const_pool_blocked_nesting_ > 0; }
 
  private:
   // Code buffer:

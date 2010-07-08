@@ -592,7 +592,6 @@ bool CodeGenerator::HasValidEntryRegisters() {
       && (allocator()->count(r9) == (frame()->is_used(r9) ? 1 : 0))
       && (allocator()->count(r11) == (frame()->is_used(r11) ? 1 : 0))
       && (allocator()->count(r14) == (frame()->is_used(r14) ? 1 : 0))
-      && (allocator()->count(r15) == (frame()->is_used(r15) ? 1 : 0))
       && (allocator()->count(r12) == (frame()->is_used(r12) ? 1 : 0));
 }
 #endif
@@ -856,7 +855,7 @@ void CodeGenerator::CallApplyLazy(Expression* applicand,
       __ j(equal, &adapted);
 
       // No arguments adaptor frame. Copy fixed number of arguments.
-      __ movq(rax, Immediate(scope()->num_parameters()));
+      __ Set(rax, scope()->num_parameters());
       for (int i = 0; i < scope()->num_parameters(); i++) {
         __ push(frame_->ParameterAt(i));
       }
@@ -1600,10 +1599,132 @@ void CodeGenerator::SetTypeForStackSlot(Slot* slot, TypeInfo info) {
 }
 
 
+void CodeGenerator::GenerateFastSmiLoop(ForStatement* node) {
+  // A fast smi loop is a for loop with an initializer
+  // that is a simple assignment of a smi to a stack variable,
+  // a test that is a simple test of that variable against a smi constant,
+  // and a step that is a increment/decrement of the variable, and
+  // where the variable isn't modified in the loop body.
+  // This guarantees that the variable is always a smi.
+
+  Variable* loop_var = node->loop_variable();
+  Smi* initial_value = *Handle<Smi>::cast(node->init()
+      ->StatementAsSimpleAssignment()->value()->AsLiteral()->handle());
+  Smi* limit_value = *Handle<Smi>::cast(
+      node->cond()->AsCompareOperation()->right()->AsLiteral()->handle());
+  Token::Value compare_op =
+      node->cond()->AsCompareOperation()->op();
+  bool increments =
+      node->next()->StatementAsCountOperation()->op() == Token::INC;
+
+  // Check that the condition isn't initially false.
+  bool initially_false = false;
+  int initial_int_value = initial_value->value();
+  int limit_int_value = limit_value->value();
+  switch (compare_op) {
+    case Token::LT:
+      initially_false = initial_int_value >= limit_int_value;
+      break;
+    case Token::LTE:
+      initially_false = initial_int_value > limit_int_value;
+      break;
+    case Token::GT:
+      initially_false = initial_int_value <= limit_int_value;
+      break;
+    case Token::GTE:
+      initially_false = initial_int_value < limit_int_value;
+      break;
+    default:
+      UNREACHABLE();
+  }
+  if (initially_false) return;
+
+  // Only check loop condition at the end.
+
+  Visit(node->init());
+
+  JumpTarget loop(JumpTarget::BIDIRECTIONAL);
+  // Set type and stack height of BreakTargets.
+  node->continue_target()->set_direction(JumpTarget::FORWARD_ONLY);
+  node->break_target()->set_direction(JumpTarget::FORWARD_ONLY);
+
+  IncrementLoopNesting();
+  loop.Bind();
+
+  // Set number type of the loop variable to smi.
+  CheckStack();  // TODO(1222600): ignore if body contains calls.
+
+  SetTypeForStackSlot(loop_var->slot(), TypeInfo::Smi());
+  Visit(node->body());
+
+  if (node->continue_target()->is_linked()) {
+    node->continue_target()->Bind();
+  }
+
+  if (has_valid_frame()) {
+    CodeForStatementPosition(node);
+    Slot* loop_var_slot = loop_var->slot();
+    if (loop_var_slot->type() == Slot::LOCAL) {
+      frame_->PushLocalAt(loop_var_slot->index());
+    } else {
+      ASSERT(loop_var_slot->type() == Slot::PARAMETER);
+      frame_->PushParameterAt(loop_var_slot->index());
+    }
+    Result loop_var_result = frame_->Pop();
+    if (!loop_var_result.is_register()) {
+      loop_var_result.ToRegister();
+    }
+
+    if (increments) {
+      __ SmiAddConstant(loop_var_result.reg(),
+                        loop_var_result.reg(),
+                        Smi::FromInt(1));
+    } else {
+      __ SmiSubConstant(loop_var_result.reg(),
+                        loop_var_result.reg(),
+                        Smi::FromInt(1));
+    }
+
+    {
+      __ SmiCompare(loop_var_result.reg(), limit_value);
+      Condition condition;
+      switch (compare_op) {
+        case Token::LT:
+          condition = less;
+          break;
+        case Token::LTE:
+          condition = less_equal;
+          break;
+        case Token::GT:
+          condition = greater;
+          break;
+        case Token::GTE:
+          condition = greater_equal;
+          break;
+        default:
+          condition = never;
+          UNREACHABLE();
+      }
+      loop.Branch(condition);
+    }
+    loop_var_result.Unuse();
+  }
+  if (node->break_target()->is_linked()) {
+    node->break_target()->Bind();
+  }
+  DecrementLoopNesting();
+}
+
+
 void CodeGenerator::VisitForStatement(ForStatement* node) {
   ASSERT(!in_spilled_code());
   Comment cmnt(masm_, "[ ForStatement");
   CodeForStatementPosition(node);
+
+  if (node->is_fast_smi_loop()) {
+    GenerateFastSmiLoop(node);
+    return;
+  }
 
   // Compile the init expression if present.
   if (node->init() != NULL) {
@@ -1694,16 +1815,6 @@ void CodeGenerator::VisitForStatement(ForStatement* node) {
 
   CheckStack();  // TODO(1222600): ignore if body contains calls.
 
-  // We know that the loop index is a smi if it is not modified in the
-  // loop body and it is checked against a constant limit in the loop
-  // condition.  In this case, we reset the static type information of the
-  // loop index to smi before compiling the body, the update expression, and
-  // the bottom check of the loop condition.
-  if (node->is_fast_smi_loop()) {
-    // Set number type of the loop variable to smi.
-    SetTypeForStackSlot(node->loop_variable()->slot(), TypeInfo::Smi());
-  }
-
   Visit(node->body());
 
   // If there is an update expression, compile it if necessary.
@@ -1721,13 +1832,6 @@ void CodeGenerator::VisitForStatement(ForStatement* node) {
       CodeForStatementPosition(node);
       Visit(node->next());
     }
-  }
-
-  // Set the type of the loop variable to smi before compiling the test
-  // expression if we are in a fast smi loop condition.
-  if (node->is_fast_smi_loop() && has_valid_frame()) {
-    // Set number type of the loop variable to smi.
-    SetTypeForStackSlot(node->loop_variable()->slot(), TypeInfo::Smi());
   }
 
   // Based on the condition analysis, compile the backward jump as
@@ -2641,7 +2745,7 @@ void CodeGenerator::VisitArrayLiteral(ArrayLiteral* node) {
 
   // Generate code to set the elements in the array that are not
   // literals.
-  for (int i = 0; i < node->values()->length(); i++) {
+  for (int i = 0; i < length; i++) {
     Expression* value = node->values()->at(i);
 
     // If value is a literal the property value is already set in the
@@ -3501,17 +3605,16 @@ void CodeGenerator::VisitCountOperation(CountOperation* node) {
       __ JumpIfNotSmi(new_value.reg(), deferred->entry_label());
     }
     if (is_increment) {
-      __ SmiAddConstant(kScratchRegister,
+      __ SmiAddConstant(new_value.reg(),
                         new_value.reg(),
                         Smi::FromInt(1),
                         deferred->entry_label());
     } else {
-      __ SmiSubConstant(kScratchRegister,
+      __ SmiSubConstant(new_value.reg(),
                         new_value.reg(),
                         Smi::FromInt(1),
                         deferred->entry_label());
     }
-    __ movq(new_value.reg(), kScratchRegister);
     deferred->BindExit();
 
     // Postfix count operations return their input converted to
@@ -3855,8 +3958,17 @@ void CodeGenerator::VisitCompareOperation(CompareOperation* node) {
     default:
       UNREACHABLE();
   }
-  Load(left);
-  Load(right);
+
+  if (left->IsTrivial()) {
+    Load(right);
+    Result right_result = frame_->Pop();
+    frame_->Push(left);
+    frame_->Push(&right_result);
+  } else {
+    Load(left);
+    Load(right);
+  }
+
   Comparison(node, cc, strict, destination());
 }
 
@@ -5333,14 +5445,18 @@ void CodeGenerator::ToBoolean(ControlDestination* dest) {
     }
     // Smi => false iff zero.
     __ SmiCompare(value.reg(), Smi::FromInt(0));
-    dest->false_target()->Branch(equal);
-    Condition is_smi = masm_->CheckSmi(value.reg());
-    dest->true_target()->Branch(is_smi);
-    __ fldz();
-    __ fld_d(FieldOperand(value.reg(), HeapNumber::kValueOffset));
-    __ FCmp();
-    value.Unuse();
-    dest->Split(not_zero);
+    if (value.is_smi()) {
+      value.Unuse();
+      dest->Split(not_zero);
+    } else {
+      dest->false_target()->Branch(equal);
+      Condition is_smi = masm_->CheckSmi(value.reg());
+      dest->true_target()->Branch(is_smi);
+      __ xorpd(xmm0, xmm0);
+      __ ucomisd(xmm0, FieldOperand(value.reg(), HeapNumber::kValueOffset));
+      value.Unuse();
+      dest->Split(not_zero);
+    }
   } else {
     // Fast case checks.
     // 'false' => false.
@@ -6511,7 +6627,7 @@ class DeferredInlineBinaryOperation: public DeferredCode {
 void DeferredInlineBinaryOperation::Generate() {
   Label done;
   if ((op_ == Token::ADD)
-      || (op_ ==Token::SUB)
+      || (op_ == Token::SUB)
       || (op_ == Token::MUL)
       || (op_ == Token::DIV)) {
     Label call_runtime;
@@ -7530,9 +7646,11 @@ Result CodeGenerator::EmitKeyedLoad() {
     // is not a dictionary.
     __ movq(elements.reg(),
             FieldOperand(receiver.reg(), JSObject::kElementsOffset));
-    __ Cmp(FieldOperand(elements.reg(), HeapObject::kMapOffset),
-           Factory::fixed_array_map());
-    deferred->Branch(not_equal);
+    if (FLAG_debug_code) {
+      __ Cmp(FieldOperand(elements.reg(), HeapObject::kMapOffset),
+             Factory::fixed_array_map());
+      __ Assert(equal, "JSObject with fast elements map has slow elements");
+    }
 
     // Check that key is within bounds.
     __ SmiCompare(key.reg(),
@@ -8000,14 +8118,12 @@ void ToBooleanStub::Generate(MacroAssembler* masm) {
   __ jmp(&true_result);
 
   __ bind(&not_string);
-  // HeapNumber => false iff +0, -0, or NaN.
-  // These three cases set C3 when compared to zero in the FPU.
   __ CompareRoot(rdx, Heap::kHeapNumberMapRootIndex);
   __ j(not_equal, &true_result);
-  __ fldz();  // Load zero onto fp stack
-  // Load heap-number double value onto fp stack
-  __ fld_d(FieldOperand(rax, HeapNumber::kValueOffset));
-  __ FCmp();
+  // HeapNumber => false iff +0, -0, or NaN.
+  // These three cases set the zero flag when compared to zero using ucomisd.
+  __ xorpd(xmm0, xmm0);
+  __ ucomisd(xmm0, FieldOperand(rax, HeapNumber::kValueOffset));
   __ j(zero, &false_result);
   // Fall through to |true_result|.
 
@@ -8609,26 +8725,26 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   __ bind(&seq_ascii_string);
   // rax: subject string (sequential ascii)
   // rcx: RegExp data (FixedArray)
-  __ movq(r12, FieldOperand(rcx, JSRegExp::kDataAsciiCodeOffset));
+  __ movq(r11, FieldOperand(rcx, JSRegExp::kDataAsciiCodeOffset));
   __ Set(rdi, 1);  // Type is ascii.
   __ jmp(&check_code);
 
   __ bind(&seq_two_byte_string);
   // rax: subject string (flat two-byte)
   // rcx: RegExp data (FixedArray)
-  __ movq(r12, FieldOperand(rcx, JSRegExp::kDataUC16CodeOffset));
+  __ movq(r11, FieldOperand(rcx, JSRegExp::kDataUC16CodeOffset));
   __ Set(rdi, 0);  // Type is two byte.
 
   __ bind(&check_code);
   // Check that the irregexp code has been generated for the actual string
   // encoding. If it has, the field contains a code object otherwise it contains
   // the hole.
-  __ CmpObjectType(r12, CODE_TYPE, kScratchRegister);
+  __ CmpObjectType(r11, CODE_TYPE, kScratchRegister);
   __ j(not_equal, &runtime);
 
   // rax: subject string
   // rdi: encoding of subject string (1 if ascii, 0 if two_byte);
-  // r12: code
+  // r11: code
   // Load used arguments before starting to push arguments for call to native
   // RegExp code to avoid handling changing stack height.
   __ SmiToInteger64(rbx, Operand(rsp, kPreviousIndexOffset));
@@ -8636,7 +8752,7 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   // rax: subject string
   // rbx: previous index
   // rdi: encoding of subject string (1 if ascii 0 if two_byte);
-  // r12: code
+  // r11: code
   // All checks done. Now push arguments for native regexp code.
   __ IncrementCounter(&Counters::regexp_entry_native, 1);
 
@@ -8686,7 +8802,7 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   // rax: subject string
   // rbx: previous index
   // rdi: encoding of subject string (1 if ascii 0 if two_byte);
-  // r12: code
+  // r11: code
 
   // Argument 4: End of string data
   // Argument 3: Start of string data
@@ -8710,8 +8826,8 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   __ movq(arg1, rax);
 
   // Locate the code entry and call it.
-  __ addq(r12, Immediate(Code::kHeaderSize - kHeapObjectTag));
-  __ CallCFunction(r12, kRegExpExecuteArguments);
+  __ addq(r11, Immediate(Code::kHeaderSize - kHeapObjectTag));
+  __ CallCFunction(r11, kRegExpExecuteArguments);
 
   // rsi is caller save, as it is used to pass parameter.
   __ pop(rsi);
@@ -8925,7 +9041,7 @@ static int NegativeComparisonResult(Condition cc) {
 
 
 void CompareStub::Generate(MacroAssembler* masm) {
-  Label call_builtin, done;
+  Label check_unequal_objects, done;
   // The compare stub returns a positive, negative, or zero 64-bit integer
   // value in rax, corresponding to result of comparing the two inputs.
   // NOTICE! This code is only reached after a smi-fast-case check, so
@@ -8951,48 +9067,40 @@ void CompareStub::Generate(MacroAssembler* masm) {
     // Test for NaN. Sadly, we can't just compare to Factory::nan_value(),
     // so we do the second best thing - test it ourselves.
     // Note: if cc_ != equal, never_nan_nan_ is not used.
+    // We cannot set rax to EQUAL until just before return because
+    // rax must be unchanged on jump to not_identical.
+
     if (never_nan_nan_ && (cc_ == equal)) {
       __ Set(rax, EQUAL);
       __ ret(0);
     } else {
-      Label return_equal;
       Label heap_number;
-      // If it's not a heap number, then return equal.
+      // If it's not a heap number, then return equal for (in)equality operator.
       __ Cmp(FieldOperand(rdx, HeapObject::kMapOffset),
              Factory::heap_number_map());
       __ j(equal, &heap_number);
-      __ bind(&return_equal);
+      if (cc_ != equal) {
+        // Call runtime on identical JSObjects.  Otherwise return equal.
+        __ CmpObjectType(rax, FIRST_JS_OBJECT_TYPE, rcx);
+        __ j(above_equal, &not_identical);
+      }
       __ Set(rax, EQUAL);
       __ ret(0);
 
       __ bind(&heap_number);
-      // It is a heap number, so return non-equal if it's NaN and equal if
-      // it's not NaN.
-      // The representation of NaN values has all exponent bits (52..62) set,
-      // and not all mantissa bits (0..51) clear.
-      // We only allow QNaNs, which have bit 51 set (which also rules out
-      // the value being Infinity).
-
-      // Value is a QNaN if value & kQuietNaNMask == kQuietNaNMask, i.e.,
-      // all bits in the mask are set. We only need to check the word
-      // that contains the exponent and high bit of the mantissa.
-      ASSERT_NE(0, (kQuietNaNHighBitsMask << 1) & 0x80000000u);
-      __ movl(rdx, FieldOperand(rdx, HeapNumber::kExponentOffset));
-      __ xorl(rax, rax);
-      __ addl(rdx, rdx);  // Shift value and mask so mask applies to top bits.
-      __ cmpl(rdx, Immediate(kQuietNaNHighBitsMask << 1));
-      if (cc_ == equal) {
-        __ setcc(above_equal, rax);
-        __ ret(0);
-      } else {
-        Label nan;
-        __ j(above_equal, &nan);
-        __ Set(rax, EQUAL);
-        __ ret(0);
-        __ bind(&nan);
-        __ Set(rax, NegativeComparisonResult(cc_));
-        __ ret(0);
+      // It is a heap number, so return  equal if it's not NaN.
+      // For NaN, return 1 for every condition except greater and
+      // greater-equal.  Return -1 for them, so the comparison yields
+      // false for all conditions except not-equal.
+      __ Set(rax, EQUAL);
+      __ movsd(xmm0, FieldOperand(rdx, HeapNumber::kValueOffset));
+      __ ucomisd(xmm0, xmm0);
+      __ setcc(parity_even, rax);
+      // rax is 0 for equal non-NaN heapnumbers, 1 for NaNs.
+      if (cc_ == greater_equal || cc_ == greater) {
+        __ neg(rax);
       }
+      __ ret(0);
     }
 
     __ bind(&not_identical);
@@ -9067,16 +9175,16 @@ void CompareStub::Generate(MacroAssembler* masm) {
     Label non_number_comparison;
     Label unordered;
     FloatingPointHelper::LoadSSE2UnknownOperands(masm, &non_number_comparison);
+    __ xorl(rax, rax);
+    __ xorl(rcx, rcx);
     __ ucomisd(xmm0, xmm1);
 
     // Don't base result on EFLAGS when a NaN is involved.
     __ j(parity_even, &unordered);
     // Return a result of -1, 0, or 1, based on EFLAGS.
-    __ movq(rax, Immediate(0));  // equal
-    __ movq(rcx, Immediate(1));
-    __ cmovq(above, rax, rcx);
-    __ movq(rcx, Immediate(-1));
-    __ cmovq(below, rax, rcx);
+    __ setcc(above, rax);
+    __ setcc(below, rcx);
+    __ subq(rax, rcx);
     __ ret(2 * kPointerSize);  // rax, rdx were pushed
 
     // If one of the numbers was NaN, then the result is always false.
@@ -9108,7 +9216,8 @@ void CompareStub::Generate(MacroAssembler* masm) {
 
   __ bind(&check_for_strings);
 
-  __ JumpIfNotBothSequentialAsciiStrings(rdx, rax, rcx, rbx, &call_builtin);
+  __ JumpIfNotBothSequentialAsciiStrings(
+      rdx, rax, rcx, rbx, &check_unequal_objects);
 
   // Inline comparison of ascii strings.
   StringCompareStub::GenerateCompareFlatAsciiStrings(masm,
@@ -9123,7 +9232,40 @@ void CompareStub::Generate(MacroAssembler* masm) {
   __ Abort("Unexpected fall-through from string comparison");
 #endif
 
-  __ bind(&call_builtin);
+  __ bind(&check_unequal_objects);
+  if (cc_ == equal && !strict_) {
+    // Not strict equality.  Objects are unequal if
+    // they are both JSObjects and not undetectable,
+    // and their pointers are different.
+    Label not_both_objects, return_unequal;
+    // At most one is a smi, so we can test for smi by adding the two.
+    // A smi plus a heap object has the low bit set, a heap object plus
+    // a heap object has the low bit clear.
+    ASSERT_EQ(0, kSmiTag);
+    ASSERT_EQ(V8_UINT64_C(1), kSmiTagMask);
+    __ lea(rcx, Operand(rax, rdx, times_1, 0));
+    __ testb(rcx, Immediate(kSmiTagMask));
+    __ j(not_zero, &not_both_objects);
+    __ CmpObjectType(rax, FIRST_JS_OBJECT_TYPE, rbx);
+    __ j(below, &not_both_objects);
+    __ CmpObjectType(rdx, FIRST_JS_OBJECT_TYPE, rcx);
+    __ j(below, &not_both_objects);
+    __ testb(FieldOperand(rbx, Map::kBitFieldOffset),
+             Immediate(1 << Map::kIsUndetectable));
+    __ j(zero, &return_unequal);
+    __ testb(FieldOperand(rcx, Map::kBitFieldOffset),
+             Immediate(1 << Map::kIsUndetectable));
+    __ j(zero, &return_unequal);
+    // The objects are both undetectable, so they both compare as the value
+    // undefined, and are equal.
+    __ Set(rax, EQUAL);
+    __ bind(&return_unequal);
+    // Return non-equal by returning the non-zero object pointer in eax,
+    // or return equal if we fell through to here.
+    __ ret(2 * kPointerSize);  // rax, rdx were pushed
+    __ bind(&not_both_objects);
+  }
+
   // must swap argument order
   __ pop(rcx);
   __ pop(rdx);
@@ -9483,7 +9625,7 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
   // rbp: frame pointer  (restored after C call).
   // rsp: stack pointer  (restored after C call).
   // r14: number of arguments including receiver (C callee-saved).
-  // r15: pointer to the first argument (C callee-saved).
+  // r12: pointer to the first argument (C callee-saved).
   //      This pointer is reused in LeaveExitFrame(), so it is stored in a
   //      callee-saved register.
 
@@ -9524,7 +9666,7 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
   // Windows 64-bit ABI passes arguments in rcx, rdx, r8, r9
   // Store Arguments object on stack, below the 4 WIN64 ABI parameter slots.
   __ movq(Operand(rsp, 4 * kPointerSize), r14);  // argc.
-  __ movq(Operand(rsp, 5 * kPointerSize), r15);  // argv.
+  __ movq(Operand(rsp, 5 * kPointerSize), r12);  // argv.
   if (result_size_ < 2) {
     // Pass a pointer to the Arguments object as the first argument.
     // Return result in single register (rax).
@@ -9540,7 +9682,7 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
 #else  // _WIN64
   // GCC passes arguments in rdi, rsi, rdx, rcx, r8, r9.
   __ movq(rdi, r14);  // argc.
-  __ movq(rsi, r15);  // argv.
+  __ movq(rsi, r12);  // argv.
 #endif
   __ call(rbx);
   // Result is in rax - do not destroy this register!
@@ -9742,7 +9884,7 @@ void CEntryStub::Generate(MacroAssembler* masm) {
   // rbp: frame pointer of exit frame  (restored after C call).
   // rsp: stack pointer (restored after C call).
   // r14: number of arguments including receiver (C callee-saved).
-  // r15: argv pointer (C callee-saved).
+  // r12: argv pointer (C callee-saved).
 
   Label throw_normal_exception;
   Label throw_termination_exception;
@@ -9802,23 +9944,37 @@ void JSEntryStub::GenerateBody(MacroAssembler* masm, bool is_construct) {
 
   // Push the stack frame type marker twice.
   int marker = is_construct ? StackFrame::ENTRY_CONSTRUCT : StackFrame::ENTRY;
-  __ Push(Smi::FromInt(marker));  // context slot
-  __ Push(Smi::FromInt(marker));  // function slot
-  // Save callee-saved registers (X64 calling conventions).
+  // Scratch register is neither callee-save, nor an argument register on any
+  // platform. It's free to use at this point.
+  // Cannot use smi-register for loading yet.
+  __ movq(kScratchRegister,
+          reinterpret_cast<uint64_t>(Smi::FromInt(marker)),
+          RelocInfo::NONE);
+  __ push(kScratchRegister);  // context slot
+  __ push(kScratchRegister);  // function slot
+  // Save callee-saved registers (X64/Win64 calling conventions).
   __ push(r12);
   __ push(r13);
   __ push(r14);
   __ push(r15);
-  __ push(rdi);
-  __ push(rsi);
+#ifdef _WIN64
+  __ push(rdi);  // Only callee save in Win64 ABI, argument in AMD64 ABI.
+  __ push(rsi);  // Only callee save in Win64 ABI, argument in AMD64 ABI.
+#endif
   __ push(rbx);
-  // TODO(X64): Push XMM6-XMM15 (low 64 bits) as well, or make them
-  // callee-save in JS code as well.
+  // TODO(X64): On Win64, if we ever use XMM6-XMM15, the low low 64 bits are
+  // callee save as well.
 
   // Save copies of the top frame descriptor on the stack.
   ExternalReference c_entry_fp(Top::k_c_entry_fp_address);
   __ load_rax(c_entry_fp);
   __ push(rax);
+
+  // Set up the roots and smi constant registers.
+  // Needs to be done before any further smi loads.
+  ExternalReference roots_address = ExternalReference::roots_address();
+  __ movq(kRootRegister, roots_address);
+  __ InitializeSmiConstantRegister();
 
 #ifdef ENABLE_LOGGING_AND_PROFILING
   // If this is the outermost JS call, set js_entry_sp value.
@@ -9890,8 +10046,11 @@ void JSEntryStub::GenerateBody(MacroAssembler* masm, bool is_construct) {
 
   // Restore callee-saved registers (X64 conventions).
   __ pop(rbx);
+#ifdef _WIN64
+  // Callee save on in Win64 ABI, arguments/volatile in AMD64 ABI.
   __ pop(rsi);
   __ pop(rdi);
+#endif
   __ pop(r15);
   __ pop(r14);
   __ pop(r13);
@@ -10040,20 +10199,15 @@ void FloatingPointHelper::LoadAsIntegers(MacroAssembler* masm,
 // Input: rdx, rax are the left and right objects of a bit op.
 // Output: rax, rcx are left and right integers for a bit op.
 void FloatingPointHelper::LoadNumbersAsIntegers(MacroAssembler* masm) {
-  if (FLAG_debug_code) {
-    // Both arguments can not be smis. That case is handled by smi-only code.
-    Label ok;
-    __ JumpIfNotBothSmi(rax, rdx, &ok);
-    __ Abort("Both arguments smi but not handled by smi-code.");
-    __ bind(&ok);
-  }
   // Check float operands.
   Label done;
+  Label rax_is_smi;
   Label rax_is_object;
   Label rdx_is_object;
 
   __ JumpIfNotSmi(rdx, &rdx_is_object);
   __ SmiToInteger32(rdx, rdx);
+  __ JumpIfSmi(rax, &rax_is_smi);
 
   __ bind(&rax_is_object);
   IntegerConvert(masm, rcx, rax);  // Uses rdi, rcx and rbx.
@@ -10062,6 +10216,7 @@ void FloatingPointHelper::LoadNumbersAsIntegers(MacroAssembler* masm) {
   __ bind(&rdx_is_object);
   IntegerConvert(masm, rdx, rdx);  // Uses rdi, rcx and rbx.
   __ JumpIfNotSmi(rax, &rax_is_object);
+  __ bind(&rax_is_smi);
   __ SmiToInteger32(rcx, rax);
 
   __ bind(&done);
@@ -10446,7 +10601,6 @@ void GenericBinaryOpStub::Generate(MacroAssembler* masm) {
         Label not_floats;
         // rax: y
         // rdx: x
-        ASSERT(!static_operands_type_.IsSmi());
         if (static_operands_type_.IsNumber()) {
           if (FLAG_debug_code) {
             // Assert at runtime that inputs are only numbers.
@@ -11130,7 +11284,7 @@ void StringAddStub::Generate(MacroAssembler* masm) {
 
   // Check that both strings are non-external ascii strings.
   __ JumpIfBothInstanceTypesAreNotSequentialAscii(r8, r9, rbx, rcx,
-                                                 &string_add_runtime);
+                                                  &string_add_runtime);
 
   // Get the two characters forming the sub string.
   __ movzxbq(rbx, FieldOperand(rax, SeqAsciiString::kHeaderSize));
@@ -11140,7 +11294,7 @@ void StringAddStub::Generate(MacroAssembler* masm) {
   // just allocate a new one.
   Label make_two_character_string, make_flat_ascii_string;
   StringHelper::GenerateTwoCharacterSymbolTableProbe(
-      masm, rbx, rcx, r14, r12, rdi, r15, &make_two_character_string);
+      masm, rbx, rcx, r14, r11, rdi, r12, &make_two_character_string);
   __ IncrementCounter(&Counters::string_add_native, 1);
   __ ret(2 * kPointerSize);
 
@@ -11232,7 +11386,7 @@ void StringAddStub::Generate(MacroAssembler* masm) {
 
   __ bind(&make_flat_ascii_string);
   // Both strings are ascii strings. As they are short they are both flat.
-  __ AllocateAsciiString(rcx, rbx, rdi, r14, r15, &string_add_runtime);
+  __ AllocateAsciiString(rcx, rbx, rdi, r14, r11, &string_add_runtime);
   // rcx: result string
   __ movq(rbx, rcx);
   // Locate first character of result.
@@ -11269,7 +11423,7 @@ void StringAddStub::Generate(MacroAssembler* masm) {
   __ j(not_zero, &string_add_runtime);
   // Both strings are two byte strings. As they are short they are both
   // flat.
-  __ AllocateTwoByteString(rcx, rbx, rdi, r14, r15, &string_add_runtime);
+  __ AllocateTwoByteString(rcx, rbx, rdi, r14, r11, &string_add_runtime);
   // rcx: result string
   __ movq(rbx, rcx);
   // Locate first character of result.
@@ -11583,7 +11737,9 @@ void SubStringStub::Generate(MacroAssembler* masm) {
   __ JumpIfNotBothPositiveSmi(rcx, rdx, &runtime);
 
   __ SmiSub(rcx, rcx, rdx, NULL);  // Overflow doesn't happen.
-  __ j(negative, &runtime);
+  __ cmpq(FieldOperand(rax, String::kLengthOffset), rcx);
+  Label return_rax;
+  __ j(equal, &return_rax);
   // Special handling of sub-strings of length 1 and 2. One character strings
   // are handled in the runtime system (looked up in the single character
   // cache). Two character strings are looked for in the symbol cache.
@@ -11686,6 +11842,8 @@ void SubStringStub::Generate(MacroAssembler* masm) {
   // rsi: character of sub string start
   StringHelper::GenerateCopyCharactersREP(masm, rdi, rsi, rcx, false);
   __ movq(rsi, rdx);  // Restore esi.
+
+  __ bind(&return_rax);
   __ IncrementCounter(&Counters::sub_string_native, 1);
   __ ret(kArgumentsSize);
 
