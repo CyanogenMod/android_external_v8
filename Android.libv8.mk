@@ -85,11 +85,6 @@ ifeq ($(DEBUG_V8),true)
 	LOCAL_CFLAGS += -DDEBUG -UNDEBUG
 endif
 
-# Work around a problem in v8 triggered by -fdata-sections.
-ifeq ($(TARGET_ARCH),arm)
-LOCAL_CFLAGS += -fno-data-sections
-endif
-
 LOCAL_C_INCLUDES += bionic/libc/include $(LOCAL_PATH)/src
 
 include $(BUILD_STATIC_LIBRARY)
