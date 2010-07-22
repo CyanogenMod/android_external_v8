@@ -2190,6 +2190,8 @@ Object* JSObject::NormalizeProperties(PropertyNormalizationMode mode,
     int new_instance_size = map()->instance_size() - instance_size_delta;
     new_map->set_inobject_properties(0);
     new_map->set_instance_size(new_instance_size);
+    new_map->set_scavenger(Heap::GetScavenger(new_map->instance_type(),
+                                              new_map->instance_size()));
     Heap::CreateFillerObjectAt(this->address() + new_instance_size,
                                instance_size_delta);
   }
@@ -5033,7 +5035,7 @@ void Map::ClearNonLiveTransitions(Object* real_prototype) {
 
 void Map::MapIterateBody(ObjectVisitor* v) {
   // Assumes all Object* members are contiguously allocated!
-  IteratePointers(v, kPrototypeOffset, kCodeCacheOffset + kPointerSize);
+  IteratePointers(v, kPointerFieldsBeginOffset, kPointerFieldsEndOffset);
 }
 
 
@@ -5325,8 +5327,6 @@ void Code::CodeIterateBody(ObjectVisitor* v) {
   for (; !it.done(); it.next()) {
     it.rinfo()->Visit(v);
   }
-
-  ScopeInfo<>::IterateScopeInfo(this, v);
 }
 
 
@@ -7332,6 +7332,46 @@ int HashTable<Shape, Key>::FindEntry(Key key) {
     Object* element = KeyAt(entry);
     if (element->IsUndefined()) break;  // Empty entry.
     if (!element->IsNull() && Shape::IsMatch(key, element)) return entry;
+    entry = NextProbe(entry, count++, capacity);
+  }
+  return kNotFound;
+}
+
+
+// Find entry for key otherwise return kNotFound.
+int StringDictionary::FindEntry(String* key) {
+  if (!key->IsSymbol()) {
+    return HashTable<StringDictionaryShape, String*>::FindEntry(key);
+  }
+
+  // Optimized for symbol key. Knowledge of the key type allows:
+  // 1. Move the check if the key is a symbol out of the loop.
+  // 2. Avoid comparing hash codes in symbol to symbol comparision.
+  // 3. Detect a case when a dictionary key is not a symbol but the key is.
+  //    In case of positive result the dictionary key may be replaced by
+  //    the symbol with minimal performance penalty. It gives a chance to
+  //    perform further lookups in code stubs (and significant performance boost
+  //    a certain style of code).
+
+  // EnsureCapacity will guarantee the hash table is never full.
+  uint32_t capacity = Capacity();
+  uint32_t entry = FirstProbe(key->Hash(), capacity);
+  uint32_t count = 1;
+
+  while (true) {
+    int index = EntryToIndex(entry);
+    Object* element = get(index);
+    if (element->IsUndefined()) break;  // Empty entry.
+    if (key == element) return entry;
+    if (!element->IsSymbol() &&
+        !element->IsNull() &&
+        String::cast(element)->Equals(key)) {
+      // Replace a non-symbol key by the equivalent symbol for faster further
+      // lookups.
+      set(index, key);
+      return entry;
+    }
+    ASSERT(element->IsNull() || !String::cast(element)->Equals(key));
     entry = NextProbe(entry, count++, capacity);
   }
   return kNotFound;

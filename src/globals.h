@@ -326,6 +326,7 @@ class RegExpCompiler;
 class RegExpVisitor;
 class Scope;
 template<class Allocator = FreeStoreAllocationPolicy> class ScopeInfo;
+class SerializedScopeInfo;
 class Script;
 class Slot;
 class Smi;
@@ -345,7 +346,6 @@ class ObjectGroup;
 class TickSample;
 class VirtualMemory;
 class Mutex;
-class ZoneScopeInfo;
 
 typedef bool (*WeakSlotCallback)(Object** pointer);
 

@@ -1985,6 +1985,26 @@ void FullCodeGenerator::EmitIsObject(ZoneList<Expression*>* args) {
 }
 
 
+void FullCodeGenerator::EmitIsSpecObject(ZoneList<Expression*>* args) {
+  ASSERT(args->length() == 1);
+
+  VisitForValue(args->at(0), kAccumulator);
+
+  Label materialize_true, materialize_false;
+  Label* if_true = NULL;
+  Label* if_false = NULL;
+  PrepareTest(&materialize_true, &materialize_false, &if_true, &if_false);
+
+  __ test(eax, Immediate(kSmiTagMask));
+  __ j(equal, if_false);
+  __ CmpObjectType(eax, FIRST_JS_OBJECT_TYPE, ebx);
+  __ j(above_equal, if_true);
+  __ jmp(if_false);
+
+  Apply(context_, if_true, if_false);
+}
+
+
 void FullCodeGenerator::EmitIsUndetectableObject(ZoneList<Expression*>* args) {
   ASSERT(args->length() == 1);
 
@@ -2242,11 +2262,8 @@ void FullCodeGenerator::EmitRandomHeapNumber(ZoneList<Expression*>* args) {
   __ jmp(&heapnumber_allocated);
 
   __ bind(&slow_allocate_heapnumber);
-  // To allocate a heap number, and ensure that it is not a smi, we
-  // call the runtime function FUnaryMinus on 0, returning the double
-  // -0.0.  A new, distinct heap number is returned each time.
-  __ push(Immediate(Smi::FromInt(0)));
-  __ CallRuntime(Runtime::kNumberUnaryMinus, 1);
+  // Allocate a heap number.
+  __ CallRuntime(Runtime::kNumberAlloc, 0);
   __ mov(edi, eax);
 
   __ bind(&heapnumber_allocated);

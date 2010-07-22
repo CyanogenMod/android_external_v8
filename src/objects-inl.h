@@ -2060,6 +2060,21 @@ void ExternalFloatArray::set(int index, float value) {
   ptr[index] = value;
 }
 
+inline Scavenger Map::scavenger() {
+  Scavenger callback = reinterpret_cast<Scavenger>(
+      READ_INTPTR_FIELD(this, kScavengerCallbackOffset));
+
+  ASSERT(callback == Heap::GetScavenger(instance_type(),
+                                        instance_size()));
+
+  return callback;
+}
+
+inline void Map::set_scavenger(Scavenger callback) {
+  WRITE_INTPTR_FIELD(this,
+                     kScavengerCallbackOffset,
+                     reinterpret_cast<intptr_t>(callback));
+}
 
 int Map::instance_size() {
   return READ_BYTE_FIELD(this, kInstanceSizeOffset) << kPointerSizeLog2;
@@ -2632,6 +2647,19 @@ void SharedFunctionInfo::set_code(Code* value, WriteBarrierMode mode) {
 }
 
 
+SerializedScopeInfo* SharedFunctionInfo::scope_info() {
+  return reinterpret_cast<SerializedScopeInfo*>(
+      READ_FIELD(this, kScopeInfoOffset));
+}
+
+
+void SharedFunctionInfo::set_scope_info(SerializedScopeInfo* value,
+                                        WriteBarrierMode mode) {
+  WRITE_FIELD(this, kScopeInfoOffset, reinterpret_cast<Object*>(value));
+  CONDITIONAL_WRITE_BARRIER(this, kScopeInfoOffset, mode);
+}
+
+
 bool SharedFunctionInfo::is_compiled() {
   // TODO(1242782): Create a code kind for uncompiled code.
   return code()->kind() != Code::STUB;
@@ -2808,7 +2836,6 @@ JSValue* JSValue::cast(Object* obj) {
 
 INT_ACCESSORS(Code, instruction_size, kInstructionSizeOffset)
 ACCESSORS(Code, relocation_info, ByteArray, kRelocationInfoOffset)
-INT_ACCESSORS(Code, sinfo_size, kSInfoSizeOffset)
 
 
 byte* Code::instruction_start()  {
@@ -2849,11 +2876,6 @@ byte* Code::entry() {
 bool Code::contains(byte* pc) {
   return (instruction_start() <= pc) &&
       (pc < instruction_start() + instruction_size());
-}
-
-
-byte* Code::sinfo_start() {
-  return FIELD_ADDR(this, kHeaderSize + body_size());
 }
 
 

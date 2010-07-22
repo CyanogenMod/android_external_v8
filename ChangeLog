@@ -1,3 +1,36 @@
+2010-07-19: Version 2.3.1
+
+        Fixed compilation and linking with V8_INTERPRETED_REGEXP flag.
+
+        Fixed bug related to code flushing while compiling a lazy
+        compilable function (issue http://crbug.com/49099).
+
+        Performance improvements on all platforms.
+
+
+2010-07-15: Version 2.3.0
+
+        Added ES5 Object.seal and Object.isSealed.
+
+        Added debugger API for scheduling debugger commands from a
+        separate thread.
+
+
+2010-07-14: Version 2.2.24
+
+        Added API for capturing stack traces for uncaught exceptions.
+
+        Fixed crash bug when preparsing from a non-external V8 string
+        (issue 775).
+
+        Fixed JSON.parse bug causing input not to be converted to string
+        (issue 764).
+
+        Added ES5 Object.freeze and Object.isFrozen.
+
+        Performance improvements on all platforms.
+
+
 2010-07-07: Version 2.2.23
 
         API change: Convert Unicode code points outside the basic multilingual
@@ -10,6 +43,7 @@
         crashing V8.
 
         Performance improvements on all platforms.
+
 
 2010-07-05: Version 2.2.22
 

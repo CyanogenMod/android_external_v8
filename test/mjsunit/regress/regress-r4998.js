@@ -25,53 +25,70 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef V8_VM_STATE_H_
-#define V8_VM_STATE_H_
+// Test for a broken fast-smi-loop that does not save the incremented value
+// of the loop index.  If this test fails, it loops forever, and times out.
 
-namespace v8 {
-namespace internal {
+// Flags: --nofull-compiler
 
-class VMState BASE_EMBEDDED {
-#ifdef ENABLE_VMSTATE_TRACKING
- public:
-  inline VMState(StateTag state);
-  inline ~VMState();
+// Calling foo() spills the virtual frame.
+function foo() {
+  return;
+}
 
-  StateTag state() { return state_; }
-  void set_external_callback(Address external_callback) {
-    external_callback_ = external_callback;
+function bar() {
+  var x1 = 3;
+  var x2 = 3;
+  var x3 = 3;
+  var x4 = 3;
+  var x5 = 3;
+  var x6 = 3;
+  var x7 = 3;
+  var x8 = 3;
+  var x9 = 3;
+  var x10 = 3;
+  var x11 = 3;
+  var x12 = 3;
+  var x13 = 3;
+
+  foo();
+
+  x1 = 257;
+  x2 = 258;
+  x3 = 259;
+  x4 = 260;
+  x5 = 261;
+  x6 = 262;
+  x7 = 263;
+  x8 = 264;
+  x9 = 265;
+  x10 = 266;
+  x11 = 267;
+  x12 = 268;
+  x13 = 269;
+
+  // The loop variable x7 is initialized to 3,
+  // and then MakeMergeable is called on the virtual frame.
+  // MakeMergeable has forced the loop variable x7 to be spilled,
+  // so it is marked as synced
+  // The back edge then merges its virtual frame, which incorrectly
+  // claims that x7 is synced, and does not save the modified
+  // value.
+  for (x7 = 3; x7 < 10; ++x7) {
+    foo();
+  }
+}
+
+bar();
+
+function aliasing() {
+  var x = 3;
+  var j;
+  for (j = 7; j < 11; ++j) {
+    x = j;
   }
 
-  // Used for debug asserts.
-  static bool is_outermost_external() {
-    return current_state_ == 0;
-  }
+  assertEquals(10, x);
+  assertEquals(11, j);
+}
 
-  static StateTag current_state() {
-    VMState* state = reinterpret_cast<VMState*>(current_state_);
-    return state ? state->state() : EXTERNAL;
-  }
-
-  static Address external_callback() {
-    VMState* state = reinterpret_cast<VMState*>(current_state_);
-    return state ? state->external_callback_ : NULL;
-  }
-
- private:
-  bool disabled_;
-  StateTag state_;
-  VMState* previous_;
-  Address external_callback_;
-
-  // A stack of VM states.
-  static AtomicWord current_state_;
-#else
- public:
-  explicit VMState(StateTag state) {}
-#endif
-};
-
-} }  // namespace v8::internal
-
-
-#endif  // V8_VM_STATE_H_
+aliasing();
