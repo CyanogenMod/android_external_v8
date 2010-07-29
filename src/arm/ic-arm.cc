@@ -958,14 +958,6 @@ static inline bool IsInlinedICSite(Address address,
 }
 
 
-void LoadIC::ClearInlinedVersion(Address address) {
-  // Reset the map check of the inlined in-object property load (if present) to
-  // guarantee failure by holding an invalid map (the null value). The offset
-  // can be patched to anything.
-  PatchInlinedLoad(address, Heap::null_value(), 0);
-}
-
-
 bool LoadIC::PatchInlinedLoad(Address address, Object* map, int offset) {
   // Find the end of the inlined code for handling the load if this is an
   // inlined IC call site.
@@ -996,10 +988,50 @@ bool LoadIC::PatchInlinedLoad(Address address, Object* map, int offset) {
 }
 
 
-void KeyedLoadIC::ClearInlinedVersion(Address address) {
-  // Reset the map check of the inlined keyed load (if present) to
-  // guarantee failure by holding an invalid map (the null value).
-  PatchInlinedLoad(address, Heap::null_value());
+bool StoreIC::PatchInlinedStore(Address address, Object* map, int offset) {
+  // Find the end of the inlined code for the store if there is an
+  // inlined version of the store.
+  Address inline_end_address;
+  if (!IsInlinedICSite(address, &inline_end_address)) return false;
+
+  // Compute the address of the map load instruction.
+  Address ldr_map_instr_address =
+      inline_end_address -
+      (CodeGenerator::GetInlinedNamedStoreInstructionsAfterPatch() *
+       Assembler::kInstrSize);
+
+  // Update the offsets if initializing the inlined store. No reason
+  // to update the offsets when clearing the inlined version because
+  // it will bail out in the map check.
+  if (map != Heap::null_value()) {
+    // Patch the offset in the actual store instruction.
+    Address str_property_instr_address =
+        ldr_map_instr_address + 3 * Assembler::kInstrSize;
+    Instr str_property_instr = Assembler::instr_at(str_property_instr_address);
+    ASSERT(Assembler::IsStrRegisterImmediate(str_property_instr));
+    str_property_instr = Assembler::SetStrRegisterImmediateOffset(
+        str_property_instr, offset - kHeapObjectTag);
+    Assembler::instr_at_put(str_property_instr_address, str_property_instr);
+
+    // Patch the offset in the add instruction that is part of the
+    // write barrier.
+    Address add_offset_instr_address =
+        str_property_instr_address + Assembler::kInstrSize;
+    Instr add_offset_instr = Assembler::instr_at(add_offset_instr_address);
+    ASSERT(Assembler::IsAddRegisterImmediate(add_offset_instr));
+    add_offset_instr = Assembler::SetAddRegisterImmediateOffset(
+        add_offset_instr, offset - kHeapObjectTag);
+    Assembler::instr_at_put(add_offset_instr_address, add_offset_instr);
+
+    // Indicate that code has changed.
+    CPU::FlushICache(str_property_instr_address, 2 * Assembler::kInstrSize);
+  }
+
+  // Patch the map check.
+  Assembler::set_target_address_at(ldr_map_instr_address,
+                                   reinterpret_cast<Address>(map));
+
+  return true;
 }
 
 
@@ -1015,21 +1047,6 @@ bool KeyedLoadIC::PatchInlinedLoad(Address address, Object* map) {
   Assembler::set_target_address_at(ldr_map_instr_address,
                                    reinterpret_cast<Address>(map));
   return true;
-}
-
-
-void KeyedStoreIC::ClearInlinedVersion(Address address) {
-  // Insert null as the elements map to check for.  This will make
-  // sure that the elements fast-case map check fails so that control
-  // flows to the IC instead of the inlined version.
-  PatchInlinedStore(address, Heap::null_value());
-}
-
-
-void KeyedStoreIC::RestoreInlinedVersion(Address address) {
-  // Restore the fast-case elements map check so that the inlined
-  // version can be used again.
-  PatchInlinedStore(address, Heap::fixed_array_map());
 }
 
 
@@ -1698,14 +1715,8 @@ void KeyedStoreIC::GenerateGeneric(MacroAssembler* masm) {
   __ cmp(r4, Operand(ip));
   __ b(hs, &slow);
   __ mov(r5, Operand(value, ASR, kSmiTagSize));  // Untag the value.
-  {  // Clamp the value to [0..255].
-    Label done;
-    __ tst(r5, Operand(0xFFFFFF00));
-    __ b(eq, &done);
-    __ mov(r5, Operand(0), LeaveCC, mi);  // 0 if negative.
-    __ mov(r5, Operand(255), LeaveCC, pl);  // 255 if positive.
-    __ bind(&done);
-  }
+  __ Usat(r5, 8, Operand(r5));  // Clamp the value to [0..255].
+
   // Get the pointer to the external array. This clobbers elements.
   __ ldr(elements,
          FieldMemOperand(elements, PixelArray::kExternalPointerOffset));

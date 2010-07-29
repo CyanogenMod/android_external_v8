@@ -1,4 +1,4 @@
 We use a V8 revision that has been used for a Chromium release.
 
-http://src.chromium.org/svn/releases/6.0.474.0/DEPS
-http://v8.googlecode.com/svn/trunk@5091
+http://src.chromium.org/svn/releases/6.0.479.0/DEPS
+http://v8.googlecode.com/svn/trunk@5136
