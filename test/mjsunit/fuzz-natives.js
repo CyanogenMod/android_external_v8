@@ -57,9 +57,17 @@ function makeFunction(name, argc) {
   return new Function(args.join(", "), "return %" + name + "(" + argsStr + ");");
 }
 
-function testArgumentCount(name) {
+function testArgumentCount(name, argc) {
   for (var i = 0; i < 10; i++) {
-    var func = makeFunction(name, i);
+    var func = null;
+    try {
+      func = makeFunction(name, i);
+    } catch (e) {
+      if (e != "SyntaxError: illegal access") throw e;
+    }
+    if (func === null && i == argc) {
+      throw "unexpected exception";
+    }
     var args = [ ];
     for (var j = 0; j < i; j++)
       args.push(0);
@@ -147,7 +155,25 @@ var knownProblems = {
   "DeclareGlobals": true,
 
   "PromoteScheduledException": true,
-  "DeleteHandleScopeExtensions": true
+  "DeleteHandleScopeExtensions": true,
+
+  // That can only be invoked on Array.prototype.
+  "FinishArrayPrototypeSetup": true,
+
+  "_SwapElements": true,
+
+  // Performance critical function which cannot afford type checks.
+  "_CallFunction": true,
+
+  // Tries to allocate based on argument, and (correctly) throws
+  // out-of-memory if the request is too large. In practice, the
+  // size will be the number of captures of a RegExp.
+  "RegExpConstructResult": true,
+  "_RegExpConstructResult": true,
+
+  // This function performs some checks compile time (it requires its first
+  // argument to be a compile time smi).
+  "_GetFromCache": true,
 };
 
 var currentlyUncallable = {
@@ -164,7 +190,7 @@ function testNatives() {
       continue;
     print(name);
     var argc = nativeInfo[1];
-    testArgumentCount(name);
+    testArgumentCount(name, argc);
     testArgumentTypes(name, argc);
   }
 }

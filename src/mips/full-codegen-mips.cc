@@ -27,6 +27,8 @@
 
 #include "v8.h"
 
+#if defined(V8_TARGET_ARCH_MIPS)
+
 #include "codegen-inl.h"
 #include "compiler.h"
 #include "debug.h"
@@ -142,6 +144,11 @@ void FullCodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
 
 
 void FullCodeGenerator::VisitArrayLiteral(ArrayLiteral* expr) {
+  UNIMPLEMENTED_MIPS();
+}
+
+
+void FullCodeGenerator::VisitAssignment(Assignment* expr) {
   UNIMPLEMENTED_MIPS();
 }
 
@@ -266,3 +273,5 @@ void FullCodeGenerator::ExitFinallyBlock() {
 #undef __
 
 } }  // namespace v8::internal
+
+#endif  // V8_TARGET_ARCH_MIPS

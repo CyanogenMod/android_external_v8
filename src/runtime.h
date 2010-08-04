@@ -60,6 +60,9 @@ namespace internal {
   F(GetArgumentsProperty, 1, 1) \
   F(ToFastProperties, 1, 1) \
   F(ToSlowProperties, 1, 1) \
+  F(FinishArrayPrototypeSetup, 1, 1) \
+  F(SpecialArrayFunctions, 1, 1) \
+  F(GetGlobalReceiver, 0, 1) \
   \
   F(IsInPrototypeChain, 2, 1) \
   F(SetHiddenPrototype, 2, 1) \
@@ -91,11 +94,13 @@ namespace internal {
   F(StringParseFloat, 1, 1) \
   F(StringToLowerCase, 1, 1) \
   F(StringToUpperCase, 1, 1) \
+  F(StringSplit, 3, 1) \
   F(CharFromCode, 1, 1) \
   F(URIEscape, 1, 1) \
   F(URIUnescape, 1, 1) \
   \
   F(NumberToString, 1, 1) \
+  F(NumberToStringSkipCache, 1, 1) \
   F(NumberToInteger, 1, 1) \
   F(NumberToJSUint32, 1, 1) \
   F(NumberToJSInt32, 1, 1) \
@@ -131,7 +136,6 @@ namespace internal {
   F(StringCompare, 2, 1) \
   \
   /* Math */ \
-  F(Math_abs, 1, 1) \
   F(Math_acos, 1, 1) \
   F(Math_asin, 1, 1) \
   F(Math_atan, 1, 1) \
@@ -142,7 +146,8 @@ namespace internal {
   F(Math_floor, 1, 1) \
   F(Math_log, 1, 1) \
   F(Math_pow, 2, 1) \
-  F(Math_round, 1, 1) \
+  F(Math_pow_cfunction, 2, 1) \
+  F(RoundNumber, 1, 1) \
   F(Math_sin, 1, 1) \
   F(Math_sqrt, 1, 1) \
   F(Math_tan, 1, 1) \
@@ -150,6 +155,9 @@ namespace internal {
   /* Regular expressions */ \
   F(RegExpCompile, 3, 1) \
   F(RegExpExec, 4, 1) \
+  F(RegExpExecMultiple, 4, 1) \
+  F(RegExpInitializeObject, 5, 1) \
+  F(RegExpConstructResult, 3, 1) \
   \
   /* Strings */ \
   F(StringCharCodeAt, 2, 1) \
@@ -161,6 +169,7 @@ namespace internal {
   F(StringReplaceRegExpWithString, 4, 1) \
   F(StringMatch, 3, 1) \
   F(StringTrim, 3, 1) \
+  F(StringToArray, 1, 1) \
   \
   /* Numbers */ \
   F(NumberToRadixString, 2, 1) \
@@ -175,6 +184,7 @@ namespace internal {
   F(FunctionSetPrototype, 2, 1) \
   F(FunctionGetName, 1, 1) \
   F(FunctionSetName, 2, 1) \
+  F(FunctionRemovePrototype, 1, 1) \
   F(FunctionGetSourceCode, 1, 1) \
   F(FunctionGetScript, 1, 1) \
   F(FunctionGetScriptSourcePosition, 1, 1) \
@@ -200,9 +210,10 @@ namespace internal {
   F(DateLocalTimezone, 1, 1) \
   F(DateLocalTimeOffset, 0, 1) \
   F(DateDaylightSavingsOffset, 1, 1) \
+  F(DateMakeDay, 3, 1) \
+  F(DateYMDFromTime, 2, 1) \
   \
   /* Numbers */ \
-  F(NumberIsFinite, 1, 1) \
   \
   /* Globals */ \
   F(CompileString, 2, 1) \
@@ -222,6 +233,7 @@ namespace internal {
   F(GetArrayKeys, 2, 1) \
   F(MoveArrayContents, 2, 1) \
   F(EstimateNumberOfElements, 1, 1) \
+  F(SwapElements, 3, 1) \
   \
   /* Getters and Setters */ \
   F(DefineAccessor, -1 /* 4 or 5 */, 1) \
@@ -230,11 +242,10 @@ namespace internal {
   /* Literals */ \
   F(MaterializeRegExpLiteral, 4, 1)\
   F(CreateArrayLiteralBoilerplate, 3, 1) \
-  F(CreateObjectLiteralBoilerplate, 3, 1) \
   F(CloneLiteralBoilerplate, 1, 1) \
   F(CloneShallowLiteralBoilerplate, 1, 1) \
-  F(CreateObjectLiteral, 3, 1) \
-  F(CreateObjectLiteralShallow, 3, 1) \
+  F(CreateObjectLiteral, 4, 1) \
+  F(CreateObjectLiteralShallow, 4, 1) \
   F(CreateArrayLiteral, 3, 1) \
   F(CreateArrayLiteralShallow, 3, 1) \
   \
@@ -279,6 +290,8 @@ namespace internal {
   F(LocalKeys, 1, 1) \
   /* Handle scopes */ \
   F(DeleteHandleScopeExtensions, 0, 1) \
+  /* Cache suport */ \
+  F(GetFromCache, 2, 1) \
   \
   /* Pseudo functions - handled as macros by parser */ \
   F(IS_VAR, 1, 1)
@@ -321,7 +334,18 @@ namespace internal {
   F(SystemBreak, 0, 1) \
   F(DebugDisassembleFunction, 1, 1) \
   F(DebugDisassembleConstructor, 1, 1) \
-  F(FunctionGetInferredName, 1, 1)
+  F(FunctionGetInferredName, 1, 1) \
+  F(LiveEditFindSharedFunctionInfosForScript, 1, 1) \
+  F(LiveEditGatherCompileInfo, 2, 1) \
+  F(LiveEditReplaceScript, 3, 1) \
+  F(LiveEditReplaceFunctionCode, 2, 1) \
+  F(LiveEditFunctionSetScript, 2, 1) \
+  F(LiveEditReplaceRefToNestedFunction, 3, 1) \
+  F(LiveEditPatchFunctionPositions, 2, 1) \
+  F(LiveEditCheckAndDropActivations, 2, 1) \
+  F(LiveEditCompareStringsLinewise, 2, 1) \
+  F(GetFunctionCodePositionFromSource, 2, 1) \
+  F(ExecuteInDebugContext, 2, 1)
 #else
 #define RUNTIME_FUNCTION_LIST_DEBUGGER_SUPPORT(F)
 #endif
@@ -400,6 +424,7 @@ class Runtime : public AllStatic {
   // Support getting the characters in a string using [] notation as
   // in Firefox/SpiderMonkey, Safari and Opera.
   static Object* GetElementOrCharAt(Handle<Object> object, uint32_t index);
+  static Object* GetElement(Handle<Object> object, uint32_t index);
 
   static Object* SetObjectProperty(Handle<Object> object,
                                    Handle<Object> key,

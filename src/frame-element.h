@@ -28,8 +28,9 @@
 #ifndef V8_FRAME_ELEMENT_H_
 #define V8_FRAME_ELEMENT_H_
 
-#include "number-info.h"
+#include "type-info.h"
 #include "macro-assembler.h"
+#include "zone.h"
 
 namespace v8 {
 namespace internal {
@@ -53,23 +54,19 @@ class FrameElement BASE_EMBEDDED {
     SYNCED
   };
 
-  inline NumberInfo::Type number_info() {
-    // Copied elements do not have number info. Instead
+  inline TypeInfo type_info() {
+    // Copied elements do not have type info. Instead
     // we have to inspect their backing element in the frame.
     ASSERT(!is_copy());
-    if (!is_constant()) return NumberInfoField::decode(value_);
-    Handle<Object> value = handle();
-    if (value->IsSmi()) return NumberInfo::kSmi;
-    if (value->IsHeapNumber()) return NumberInfo::kHeapNumber;
-    return NumberInfo::kUnknown;
+    return TypeInfo::FromInt(TypeInfoField::decode(value_));
   }
 
-  inline void set_number_info(NumberInfo::Type info) {
-    // Copied elements do not have number info. Instead
+  inline void set_type_info(TypeInfo info) {
+    // Copied elements do not have type info. Instead
     // we have to inspect their backing element in the frame.
     ASSERT(!is_copy());
-    value_ = value_ & ~NumberInfoField::mask();
-    value_ = value_ | NumberInfoField::encode(info);
+    value_ = value_ & ~TypeInfoField::mask();
+    value_ = value_ | TypeInfoField::encode(info.ToInt());
   }
 
   // The default constructor creates an invalid frame element.
@@ -77,7 +74,7 @@ class FrameElement BASE_EMBEDDED {
     value_ = TypeField::encode(INVALID)
         | CopiedField::encode(false)
         | SyncedField::encode(false)
-        | NumberInfoField::encode(NumberInfo::kUninitialized)
+        | TypeInfoField::encode(TypeInfo::Uninitialized().ToInt())
         | DataField::encode(0);
   }
 
@@ -88,7 +85,7 @@ class FrameElement BASE_EMBEDDED {
   }
 
   // Factory function to construct an in-memory frame element.
-  static FrameElement MemoryElement(NumberInfo::Type info) {
+  static FrameElement MemoryElement(TypeInfo info) {
     FrameElement result(MEMORY, no_reg, SYNCED, info);
     return result;
   }
@@ -96,7 +93,7 @@ class FrameElement BASE_EMBEDDED {
   // Factory function to construct an in-register frame element.
   static FrameElement RegisterElement(Register reg,
                                       SyncFlag is_synced,
-                                      NumberInfo::Type info) {
+                                      TypeInfo info) {
     return FrameElement(REGISTER, reg, is_synced, info);
   }
 
@@ -104,7 +101,8 @@ class FrameElement BASE_EMBEDDED {
   // compile time.
   static FrameElement ConstantElement(Handle<Object> value,
                                       SyncFlag is_synced) {
-    FrameElement result(value, is_synced);
+    TypeInfo info = TypeInfo::TypeFromValue(value);
+    FrameElement result(value, is_synced, info);
     return result;
   }
 
@@ -141,6 +139,16 @@ class FrameElement BASE_EMBEDDED {
   bool is_copied() const { return CopiedField::decode(value_); }
   void set_copied() { value_ = value_ | CopiedField::encode(true); }
   void clear_copied() { value_ = value_ & ~CopiedField::mask(); }
+
+  // An untagged int32 FrameElement represents a signed int32
+  // on the stack.  These are only allowed in a side-effect-free
+  // int32 calculation, and if a non-int32 input shows up or an overflow
+  // occurs, we bail out and drop all the int32 values.
+  void set_untagged_int32(bool value) {
+    value_ &= ~UntaggedInt32Field::mask();
+    value_ |= UntaggedInt32Field::encode(value);
+  }
+  bool is_untagged_int32() const { return UntaggedInt32Field::decode(value_); }
 
   Register reg() const {
     ASSERT(is_register());
@@ -210,20 +218,20 @@ class FrameElement BASE_EMBEDDED {
   FrameElement(Type type,
                Register reg,
                SyncFlag is_synced,
-               NumberInfo::Type info) {
+               TypeInfo info) {
     value_ = TypeField::encode(type)
         | CopiedField::encode(false)
         | SyncedField::encode(is_synced != NOT_SYNCED)
-        | NumberInfoField::encode(info)
+        | TypeInfoField::encode(info.ToInt())
         | DataField::encode(reg.code_ > 0 ? reg.code_ : 0);
   }
 
   // Used to construct constant elements.
-  FrameElement(Handle<Object> value, SyncFlag is_synced) {
+  FrameElement(Handle<Object> value, SyncFlag is_synced, TypeInfo info) {
     value_ = TypeField::encode(CONSTANT)
         | CopiedField::encode(false)
         | SyncedField::encode(is_synced != NOT_SYNCED)
-        | NumberInfoField::encode(NumberInfo::kUninitialized)
+        | TypeInfoField::encode(info.ToInt())
         | DataField::encode(ConstantList()->length());
     ConstantList()->Add(value);
   }
@@ -249,11 +257,13 @@ class FrameElement BASE_EMBEDDED {
   // Encode type, copied, synced and data in one 32 bit integer.
   uint32_t value_;
 
+  // Declare BitFields with template parameters <type, start, size>.
   class TypeField: public BitField<Type, 0, 3> {};
   class CopiedField: public BitField<bool, 3, 1> {};
   class SyncedField: public BitField<bool, 4, 1> {};
-  class NumberInfoField: public BitField<NumberInfo::Type, 5, 3> {};
-  class DataField: public BitField<uint32_t, 8, 32 - 8> {};
+  class UntaggedInt32Field: public BitField<bool, 5, 1> {};
+  class TypeInfoField: public BitField<int, 6, 6> {};
+  class DataField: public BitField<uint32_t, 12, 32 - 12> {};
 
   friend class VirtualFrame;
 };

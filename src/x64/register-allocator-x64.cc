@@ -27,8 +27,11 @@
 
 #include "v8.h"
 
+#if defined(V8_TARGET_ARCH_X64)
+
 #include "codegen-inl.h"
 #include "register-allocator-inl.h"
+#include "virtual-frame-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -43,6 +46,7 @@ void Result::ToRegister() {
     ASSERT(fresh.is_valid());
     CodeGeneratorScope::Current()->masm()->Move(fresh.reg(), handle());
     // This result becomes a copy of the fresh one.
+    fresh.set_type_info(type_info());
     *this = fresh;
   }
   ASSERT(is_register());
@@ -60,6 +64,7 @@ void Result::ToRegister(Register target) {
       ASSERT(is_constant());
       CodeGeneratorScope::Current()->masm()->Move(fresh.reg(), handle());
     }
+    fresh.set_type_info(type_info());
     *this = fresh;
   } else if (is_register() && reg().is(target)) {
     ASSERT(CodeGeneratorScope::Current()->has_valid_frame());
@@ -82,3 +87,5 @@ Result RegisterAllocator::AllocateByteRegisterWithoutSpilling() {
 
 
 } }  // namespace v8::internal
+
+#endif  // V8_TARGET_ARCH_X64

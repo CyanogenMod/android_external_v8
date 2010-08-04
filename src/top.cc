@@ -31,6 +31,7 @@
 #include "bootstrapper.h"
 #include "debug.h"
 #include "execution.h"
+#include "messages.h"
 #include "platform.h"
 #include "simulator.h"
 #include "string-stream.h"
@@ -87,19 +88,30 @@ char* Top::Iterate(ObjectVisitor* v, char* thread_storage) {
 }
 
 
+void Top::IterateThread(ThreadVisitor* v) {
+  v->VisitThread(&thread_local_);
+}
+
+
+void Top::IterateThread(ThreadVisitor* v, char* t) {
+  ThreadLocalTop* thread = reinterpret_cast<ThreadLocalTop*>(t);
+  v->VisitThread(thread);
+}
+
+
 void Top::Iterate(ObjectVisitor* v, ThreadLocalTop* thread) {
   v->VisitPointer(&(thread->pending_exception_));
   v->VisitPointer(&(thread->pending_message_obj_));
   v->VisitPointer(
-      bit_cast<Object**, Script**>(&(thread->pending_message_script_)));
-  v->VisitPointer(bit_cast<Object**, Context**>(&(thread->context_)));
+      BitCast<Object**, Script**>(&(thread->pending_message_script_)));
+  v->VisitPointer(BitCast<Object**, Context**>(&(thread->context_)));
   v->VisitPointer(&(thread->scheduled_exception_));
 
   for (v8::TryCatch* block = thread->TryCatchHandler();
        block != NULL;
        block = TRY_CATCH_FROM_ADDRESS(block->next_)) {
-    v->VisitPointer(bit_cast<Object**, void**>(&(block->exception_)));
-    v->VisitPointer(bit_cast<Object**, void**>(&(block->message_)));
+    v->VisitPointer(BitCast<Object**, void**>(&(block->exception_)));
+    v->VisitPointer(BitCast<Object**, void**>(&(block->message_)));
   }
 
   // Iterate over pointers on native execution stack.
@@ -325,7 +337,7 @@ static int stack_trace_nesting_level = 0;
 static StringStream* incomplete_message = NULL;
 
 
-Handle<String> Top::StackTrace() {
+Handle<String> Top::StackTraceString() {
   if (stack_trace_nesting_level == 0) {
     stack_trace_nesting_level++;
     HeapStringAllocator allocator;
@@ -350,6 +362,89 @@ Handle<String> Top::StackTrace() {
     // Unreachable
     return Factory::empty_symbol();
   }
+}
+
+
+Local<StackTrace> Top::CaptureCurrentStackTrace(
+    int frame_limit, StackTrace::StackTraceOptions options) {
+  v8::HandleScope scope;
+  // Ensure no negative values.
+  int limit = Max(frame_limit, 0);
+  Handle<JSArray> stackTrace = Factory::NewJSArray(frame_limit);
+  FixedArray* frames = FixedArray::cast(stackTrace->elements());
+
+  Handle<String> column_key =  Factory::LookupAsciiSymbol("column");
+  Handle<String> line_key =  Factory::LookupAsciiSymbol("lineNumber");
+  Handle<String> script_key =  Factory::LookupAsciiSymbol("scriptName");
+  Handle<String> function_key =  Factory::LookupAsciiSymbol("functionName");
+  Handle<String> eval_key =  Factory::LookupAsciiSymbol("isEval");
+  Handle<String> constructor_key =  Factory::LookupAsciiSymbol("isConstructor");
+
+  StackTraceFrameIterator it;
+  int frames_seen = 0;
+  while (!it.done() && (frames_seen < limit)) {
+    // Create a JSObject to hold the information for the StackFrame.
+    Handle<JSObject> stackFrame = Factory::NewJSObject(object_function());
+
+    JavaScriptFrame* frame = it.frame();
+    JSFunction* fun(JSFunction::cast(frame->function()));
+    Script* script = Script::cast(fun->shared()->script());
+
+    if (options & StackTrace::kLineNumber) {
+      int script_line_offset = script->line_offset()->value();
+      int position = frame->code()->SourcePosition(frame->pc());
+      int line_number = GetScriptLineNumber(Handle<Script>(script), position);
+      // line_number is already shifted by the script_line_offset.
+      int relative_line_number = line_number - script_line_offset;
+      if (options & StackTrace::kColumnOffset && relative_line_number >= 0) {
+        Handle<FixedArray> line_ends(FixedArray::cast(script->line_ends()));
+        int start = (relative_line_number == 0) ? 0 :
+            Smi::cast(line_ends->get(relative_line_number - 1))->value() + 1;
+        int column_offset = position - start;
+        if (relative_line_number == 0) {
+          // For the case where the code is on the same line as the script tag.
+          column_offset += script->column_offset()->value();
+        }
+        SetProperty(stackFrame, column_key,
+                    Handle<Smi>(Smi::FromInt(column_offset + 1)), NONE);
+      }
+      SetProperty(stackFrame, line_key,
+                  Handle<Smi>(Smi::FromInt(line_number + 1)), NONE);
+    }
+
+    if (options & StackTrace::kScriptName) {
+      Handle<Object> script_name(script->name());
+      SetProperty(stackFrame, script_key, script_name, NONE);
+    }
+
+    if (options & StackTrace::kFunctionName) {
+      Handle<Object> fun_name(fun->shared()->name());
+      if (fun_name->ToBoolean()->IsFalse()) {
+        fun_name = Handle<Object>(fun->shared()->inferred_name());
+      }
+      SetProperty(stackFrame, function_key, fun_name, NONE);
+    }
+
+    if (options & StackTrace::kIsEval) {
+      int type = Smi::cast(script->compilation_type())->value();
+      Handle<Object> is_eval = (type == Script::COMPILATION_TYPE_EVAL) ?
+          Factory::true_value() : Factory::false_value();
+      SetProperty(stackFrame, eval_key, is_eval, NONE);
+    }
+
+    if (options & StackTrace::kIsConstructor) {
+      Handle<Object> is_constructor = (frame->IsConstructor()) ?
+          Factory::true_value() : Factory::false_value();
+      SetProperty(stackFrame, constructor_key, is_constructor, NONE);
+    }
+
+    frames->set(frames_seen, *stackFrame);
+    frames_seen++;
+    it.Advance();
+  }
+
+  stackTrace->set_length(Smi::FromInt(frames_seen));
+  return scope.Close(Utils::StackTraceToLocal(stackTrace));
 }
 
 
@@ -438,10 +533,9 @@ void Top::ReportFailedAccessCheck(JSObject* receiver, v8::AccessType type) {
 
   // Get the data object from access check info.
   JSFunction* constructor = JSFunction::cast(receiver->map()->constructor());
-  Object* info = constructor->shared()->function_data();
-  if (info == Heap::undefined_value()) return;
-
-  Object* data_obj = FunctionTemplateInfo::cast(info)->access_check_info();
+  if (!constructor->shared()->IsApiFunction()) return;
+  Object* data_obj =
+      constructor->shared()->get_api_func_data()->access_check_info();
   if (data_obj == Heap::undefined_value()) return;
 
   HandleScope scope;
@@ -501,10 +595,10 @@ bool Top::MayNamedAccess(JSObject* receiver, Object* key, v8::AccessType type) {
 
   // Get named access check callback
   JSFunction* constructor = JSFunction::cast(receiver->map()->constructor());
-  Object* info = constructor->shared()->function_data();
-  if (info == Heap::undefined_value()) return false;
+  if (!constructor->shared()->IsApiFunction()) return false;
 
-  Object* data_obj = FunctionTemplateInfo::cast(info)->access_check_info();
+  Object* data_obj =
+     constructor->shared()->get_api_func_data()->access_check_info();
   if (data_obj == Heap::undefined_value()) return false;
 
   Object* fun_obj = AccessCheckInfo::cast(data_obj)->named_callback();
@@ -546,10 +640,10 @@ bool Top::MayIndexedAccess(JSObject* receiver,
 
   // Get indexed access check callback
   JSFunction* constructor = JSFunction::cast(receiver->map()->constructor());
-  Object* info = constructor->shared()->function_data();
-  if (info == Heap::undefined_value()) return false;
+  if (!constructor->shared()->IsApiFunction()) return false;
 
-  Object* data_obj = FunctionTemplateInfo::cast(info)->access_check_info();
+  Object* data_obj =
+      constructor->shared()->get_api_func_data()->access_check_info();
   if (data_obj == Heap::undefined_value()) return false;
 
   Object* fun_obj = AccessCheckInfo::cast(data_obj)->indexed_callback();
@@ -775,7 +869,7 @@ void Top::DoThrow(Object* exception,
       // traces while the bootstrapper is active since the infrastructure
       // may not have been properly initialized.
       Handle<String> stack_trace;
-      if (FLAG_trace_exception) stack_trace = StackTrace();
+      if (FLAG_trace_exception) stack_trace = StackTraceString();
       message_obj = MessageHandler::MakeMessageObject("uncaught_exception",
           location, HandleVector<Object>(&exception_handle, 1), stack_trace);
     }
@@ -946,27 +1040,6 @@ Handle<Context> Top::GetCallingGlobalContext() {
   JavaScriptFrame* frame = it.frame();
   Context* context = Context::cast(frame->context());
   return Handle<Context>(context->global_context());
-}
-
-
-bool Top::CanHaveSpecialFunctions(JSObject* object) {
-  return object->IsJSArray();
-}
-
-
-Object* Top::LookupSpecialFunction(JSObject* receiver,
-                                   JSObject* prototype,
-                                   JSFunction* function) {
-  if (CanHaveSpecialFunctions(receiver)) {
-    FixedArray* table = context()->global_context()->special_function_table();
-    for (int index = 0; index < table->length(); index +=3) {
-      if ((prototype == table->get(index)) &&
-          (function == table->get(index+1))) {
-        return table->get(index+2);
-      }
-    }
-  }
-  return Heap::undefined_value();
 }
 
 

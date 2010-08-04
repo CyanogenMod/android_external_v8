@@ -1249,16 +1249,16 @@ int OS::StackWalk(Vector<OS::StackFrame> frames) {
 
     // Try to locate a symbol for this frame.
     DWORD64 symbol_displacement;
-    IMAGEHLP_SYMBOL64* symbol = NULL;
-    symbol = NewArray<IMAGEHLP_SYMBOL64>(kStackWalkMaxNameLen);
-    if (!symbol) return kStackWalkError;  // Out of memory.
-    memset(symbol, 0, sizeof(IMAGEHLP_SYMBOL64) + kStackWalkMaxNameLen);
-    symbol->SizeOfStruct = sizeof(IMAGEHLP_SYMBOL64);
-    symbol->MaxNameLength = kStackWalkMaxNameLen;
+    SmartPointer<IMAGEHLP_SYMBOL64> symbol(
+        NewArray<IMAGEHLP_SYMBOL64>(kStackWalkMaxNameLen));
+    if (symbol.is_empty()) return kStackWalkError;  // Out of memory.
+    memset(*symbol, 0, sizeof(IMAGEHLP_SYMBOL64) + kStackWalkMaxNameLen);
+    (*symbol)->SizeOfStruct = sizeof(IMAGEHLP_SYMBOL64);
+    (*symbol)->MaxNameLength = kStackWalkMaxNameLen;
     ok = _SymGetSymFromAddr64(process_handle,             // hProcess
                               stack_frame.AddrPC.Offset,  // Address
                               &symbol_displacement,       // Displacement
-                              symbol);                    // Symbol
+                              *symbol);                   // Symbol
     if (ok) {
       // Try to locate more source information for the symbol.
       IMAGEHLP_LINE64 Line;
@@ -1276,13 +1276,13 @@ int OS::StackWalk(Vector<OS::StackFrame> frames) {
         SNPrintF(MutableCStrVector(frames[frames_count].text,
                                    kStackWalkMaxTextLen),
                  "%s %s:%d:%d",
-                 symbol->Name, Line.FileName, Line.LineNumber,
+                 (*symbol)->Name, Line.FileName, Line.LineNumber,
                  line_displacement);
       } else {
         SNPrintF(MutableCStrVector(frames[frames_count].text,
                                    kStackWalkMaxTextLen),
                  "%s",
-                 symbol->Name);
+                 (*symbol)->Name);
       }
       // Make sure line termination is in place.
       frames[frames_count].text[kStackWalkMaxTextLen - 1] = '\0';
@@ -1294,11 +1294,9 @@ int OS::StackWalk(Vector<OS::StackFrame> frames) {
       // module will never be found).
       int err = GetLastError();
       if (err != ERROR_MOD_NOT_FOUND) {
-        DeleteArray(symbol);
         break;
       }
     }
-    DeleteArray(symbol);
 
     frames_count++;
   }
@@ -1803,36 +1801,35 @@ class Sampler::PlatformData : public Malloced {
     // Context used for sampling the register state of the profiled thread.
     CONTEXT context;
     memset(&context, 0, sizeof(context));
-    // Loop until the sampler is disengaged.
-    while (sampler_->IsActive()) {
-      TickSample sample;
+    // Loop until the sampler is disengaged, keeping the specified samling freq.
+    for ( ; sampler_->IsActive(); Sleep(sampler_->interval_)) {
+      TickSample sample_obj;
+      TickSample* sample = CpuProfiler::TickSampleEvent();
+      if (sample == NULL) sample = &sample_obj;
 
+      // We always sample the VM state.
+      sample->state = VMState::current_state();
       // If profiling, we record the pc and sp of the profiled thread.
       if (sampler_->IsProfiling()
           && SuspendThread(profiled_thread_) != (DWORD)-1) {
         context.ContextFlags = CONTEXT_FULL;
         if (GetThreadContext(profiled_thread_, &context) != 0) {
 #if V8_HOST_ARCH_X64
-          sample.pc = reinterpret_cast<Address>(context.Rip);
-          sample.sp = reinterpret_cast<Address>(context.Rsp);
-          sample.fp = reinterpret_cast<Address>(context.Rbp);
+          sample->pc = reinterpret_cast<Address>(context.Rip);
+          sample->sp = reinterpret_cast<Address>(context.Rsp);
+          sample->fp = reinterpret_cast<Address>(context.Rbp);
 #else
-          sample.pc = reinterpret_cast<Address>(context.Eip);
-          sample.sp = reinterpret_cast<Address>(context.Esp);
-          sample.fp = reinterpret_cast<Address>(context.Ebp);
+          sample->pc = reinterpret_cast<Address>(context.Eip);
+          sample->sp = reinterpret_cast<Address>(context.Esp);
+          sample->fp = reinterpret_cast<Address>(context.Ebp);
 #endif
-          sampler_->SampleStack(&sample);
+          sampler_->SampleStack(sample);
         }
         ResumeThread(profiled_thread_);
       }
 
-      // We always sample the VM state.
-      sample.state = Logger::state();
       // Invoke tick handler with program counter and stack pointer.
-      sampler_->Tick(&sample);
-
-      // Wait until next sampling.
-      Sleep(sampler_->interval_);
+      sampler_->Tick(sample);
     }
   }
 };

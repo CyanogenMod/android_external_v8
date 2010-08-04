@@ -46,7 +46,7 @@
 #include "regexp-macro-assembler.h"
 #include "platform.h"
 // Include native regexp-macro-assembler.
-#ifdef V8_NATIVE_REGEXP
+#ifndef V8_INTERPRETED_REGEXP
 #if V8_TARGET_ARCH_IA32
 #include "ia32/regexp-macro-assembler-ia32.h"
 #elif V8_TARGET_ARCH_X64
@@ -56,7 +56,7 @@
 #else  // Unknown architecture.
 #error "Unknown architecture."
 #endif  // Target architecture.
-#endif  // V8_NATIVE_REGEXP
+#endif  // V8_INTERPRETED_REGEXP
 
 namespace v8 {
 namespace internal {
@@ -424,8 +424,6 @@ const char* RelocInfo::RelocModeName(RelocInfo::Mode rmode) {
       return "no reloc";
     case RelocInfo::EMBEDDED_OBJECT:
       return "embedded object";
-    case RelocInfo::EMBEDDED_STRING:
-      return "embedded string";
     case RelocInfo::CONSTRUCT_CALL:
       return "code target (js construct call)";
     case RelocInfo::CODE_TARGET_CONTEXT:
@@ -508,7 +506,6 @@ void RelocInfo::Verify() {
       ASSERT(code->address() == HeapObject::cast(found)->address());
       break;
     }
-    case RelocInfo::EMBEDDED_STRING:
     case RUNTIME_ENTRY:
     case JS_RETURN:
     case COMMENT:
@@ -574,8 +571,14 @@ ExternalReference ExternalReference::perform_gc_function() {
 }
 
 
-ExternalReference ExternalReference::random_positive_smi_function() {
-  return ExternalReference(Redirect(FUNCTION_ADDR(V8::RandomPositiveSmi)));
+ExternalReference ExternalReference::fill_heap_number_with_random_function() {
+  return
+      ExternalReference(Redirect(FUNCTION_ADDR(V8::FillHeapNumberWithRandom)));
+}
+
+
+ExternalReference ExternalReference::random_uint32_function() {
+  return ExternalReference(Redirect(FUNCTION_ADDR(V8::Random)));
 }
 
 
@@ -664,7 +667,7 @@ ExternalReference ExternalReference::scheduled_exception_address() {
 }
 
 
-#ifdef V8_NATIVE_REGEXP
+#ifndef V8_INTERPRETED_REGEXP
 
 ExternalReference ExternalReference::re_check_stack_guard_state() {
   Address function;
@@ -707,7 +710,7 @@ ExternalReference ExternalReference::address_of_regexp_stack_memory_size() {
   return ExternalReference(RegExpStack::memory_size_address());
 }
 
-#endif
+#endif  // V8_INTERPRETED_REGEXP
 
 
 static double add_two_doubles(double x, double y) {

@@ -1,3 +1,188 @@
+2010-05-21: Version 2.2.11
+
+        Fix crash bug in liveedit on 64 bit.
+
+        Use 'full compiler' when debugging is active.  This should increase
+        the density of possible break points, making single step more fine
+        grained.  This will only take effect for functions compiled after
+        debugging has been started, so recompilation of all functions is
+        required to get the full effect.  IA32 and x64 only for now.
+
+        Misc. fixes to the Solaris build.
+
+        Add new flags --print-cumulative-gc-stat and --trace-gc-nvp.
+
+        Add filtering of CPU profiles by security context.
+
+        Fix crash bug on ARM when running without VFP2 or VFP3.
+
+        Incremental performance improvements in all backends.
+
+
+2010-05-17: Version 2.2.10
+
+        Performance improvements in the x64 and ARM backends.
+
+
+2010-05-10: Version 2.2.9
+
+        Allow Object.create to be called with a function (issue 697).
+
+        Fixed bug with Date.parse returning a non-NaN value when called on a
+        non date string (issue 696).
+
+        Allow unaligned memory accesses on ARM targets that support it (by
+        Subrato K De of CodeAurora <subratokde@codeaurora.org>).
+
+        C++ API for retrieving JavaScript stack trace information.
+
+
+2010-05-05: Version 2.2.8
+
+        Performance improvements in the x64 and ARM backends.
+
+
+2010-05-03: Version 2.2.7
+
+        Added support for ES5 date time string format to Date.parse.
+
+        Performance improvements in the x64 backend.
+
+
+2010-04-28: Version 2.2.6
+
+        Added "amd64" as recognized architecture in scons build script
+        (by Ryan Dahl <coldredlemur@gmail.com>).
+
+        Fixed bug in String search and replace with very simple RegExps.
+
+        Fixed bug in RegExp containing "\b^".
+
+        Performance improvements on all platforms.
+
+
+2010-04-26: Version 2.2.5
+
+        Various performance improvements (especially for ARM and x64)
+
+        Fixed bug in CPU profiling (http://crbug.com/42137)
+
+        Fixed a bug with the natives cache.
+
+        Fixed two bugs in the ARM code generator that can cause
+        wrong calculations.
+
+        Fixed a bug that may cause a wrong result for shift operations.
+
+
+2010-04-21: Version 2.2.4
+
+        Fixed warnings on arm on newer GCC versions.
+
+        Fixed a number of minor bugs.
+
+        Performance improvements on all platforms.
+
+
+2010-04-14: Version 2.2.3
+
+        Added stack command and mem command to ARM simulator debugger.
+
+        Fixed scons snapshot and ARM build, and Windows X64 build issues.
+
+        Performance improvements on all platforms.
+
+
+2010-04-12: Version 2.2.2
+
+        Introduced new profiler API.
+
+        Fixed random number generator to produce full 32 random bits.
+
+
+2010-04-06: Version 2.2.1
+
+        Debugger improvements.
+
+        Fixed minor bugs.
+
+
+2010-03-29: Version 2.2.0
+
+        Fixed a few minor bugs.
+
+        Performance improvements for string operations.
+
+
+2010-03-26: Version 2.1.10
+
+        Fixed scons build issues.
+
+        Fixed a couple of minor bugs.
+
+
+2010-03-25: Version 2.1.9
+
+        Added API support for reattaching a global object to a context.
+
+        Extended debugger API with access to the internal debugger context.
+
+        Fixed Chromium crashes (issues http://crbug.com/39128 and
+        http://crbug.com/39160)
+
+
+2010-03-24: Version 2.1.8
+
+        Added fine-grained garbage collection callbacks to the API.
+
+        Performance improvements on all platforms.
+
+
+2010-03-22: Version 2.1.7
+
+        Fixed issue 650.
+
+        Fixed a bug where __proto__ was sometimes enumerated (issue 646).
+
+        Performance improvements for arithmetic operations.
+
+        Performance improvements for string operations.
+
+        Print script name and line number information in stack trace.
+
+
+2010-03-17: Version 2.1.6
+
+        Performance improvements for arithmetic operations.
+
+        Performance improvements for string operations.
+
+
+2010-03-10: Version 2.1.4
+
+        Fixed code cache lookup for keyed IC's (issue http://crbug.com/37853).
+
+        Performance improvements on all platforms.
+
+
+2010-03-10: Version 2.1.3
+
+        Added API method for context-disposal notifications.
+
+        Added API method for accessing elements by integer index.
+
+        Added missing implementation of Uint32::Value and Value::IsUint32
+        API methods.
+
+        Added IsExecutionTerminating API method.
+
+        Disabled strict aliasing for GCC 4.4.
+
+        Fixed string-concatenation bug (issue 636).
+
+        Performance improvements on all platforms.
+
+
 2010-02-23: Version 2.1.2
 
         Fix a crash bug caused by wrong assert.
@@ -5,6 +190,7 @@
         Fix a bug with register names on 64-bit V8 (issue 615).
 
         Performance improvements on all platforms.
+
 
 2010-02-19: Version 2.1.1
 

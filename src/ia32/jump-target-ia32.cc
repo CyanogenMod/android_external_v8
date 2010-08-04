@@ -27,9 +27,12 @@
 
 #include "v8.h"
 
+#if defined(V8_TARGET_ARCH_IA32)
+
 #include "codegen-inl.h"
 #include "jump-target-inl.h"
 #include "register-allocator-inl.h"
+#include "virtual-frame-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -430,3 +433,5 @@ void BreakTarget::Bind(Result* arg) {
 
 
 } }  // namespace v8::internal
+
+#endif  // V8_TARGET_ARCH_IA32

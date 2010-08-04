@@ -27,6 +27,8 @@
 
 #include "v8.h"
 
+#if defined(V8_TARGET_ARCH_ARM)
+
 #include "codegen-inl.h"
 #include "debug.h"
 #include "runtime.h"
@@ -61,10 +63,10 @@ void Builtins::Generate_Adaptor(MacroAssembler* masm,
     ASSERT(extra_args == NO_EXTRA_ARGUMENTS);
   }
 
-  // JumpToRuntime expects r0 to contain the number of arguments
+  // JumpToExternalReference expects r0 to contain the number of arguments
   // including the receiver and the extra arguments.
   __ add(r0, r0, Operand(num_extra_args + 1));
-  __ JumpToRuntime(ExternalReference(id));
+  __ JumpToExternalReference(ExternalReference(id));
 }
 
 
@@ -107,7 +109,7 @@ static void AllocateEmptyJSArray(MacroAssembler* masm,
   // Allocate the JSArray object together with space for a fixed array with the
   // requested elements.
   int size = JSArray::kSize + FixedArray::SizeFor(initial_capacity);
-  __ AllocateInNewSpace(size / kPointerSize,
+  __ AllocateInNewSpace(size,
                         result,
                         scratch2,
                         scratch3,
@@ -130,7 +132,7 @@ static void AllocateEmptyJSArray(MacroAssembler* masm,
   // of the JSArray.
   // result: JSObject
   // scratch2: start of next object
-  __ lea(scratch1, MemOperand(result, JSArray::kSize));
+  __ add(scratch1, result, Operand(JSArray::kSize));
   __ str(scratch1, FieldMemOperand(result, JSArray::kElementsOffset));
 
   // Clear the heap tag on the elements array.
@@ -191,7 +193,7 @@ static void AllocateJSArray(MacroAssembler* masm,
   // keeps the code below free of special casing for the empty array.
   int size = JSArray::kSize +
              FixedArray::SizeFor(JSArray::kPreallocatedArrayElements);
-  __ AllocateInNewSpace(size / kPointerSize,
+  __ AllocateInNewSpace(size,
                         result,
                         elements_array_end,
                         scratch1,
@@ -208,12 +210,13 @@ static void AllocateJSArray(MacroAssembler* masm,
   __ add(elements_array_end,
          elements_array_end,
          Operand(array_size, ASR, kSmiTagSize));
-  __ AllocateInNewSpace(elements_array_end,
-                        result,
-                        scratch1,
-                        scratch2,
-                        gc_required,
-                        TAG_OBJECT);
+  __ AllocateInNewSpace(
+      elements_array_end,
+      result,
+      scratch1,
+      scratch2,
+      gc_required,
+      static_cast<AllocationFlags>(TAG_OBJECT | SIZE_IN_WORDS));
 
   // Allocated the JSArray. Now initialize the fields except for the elements
   // array.
@@ -561,7 +564,7 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
     // r2: initial map
     // r7: undefined
     __ ldrb(r3, FieldMemOperand(r2, Map::kInstanceSizeOffset));
-    __ AllocateInNewSpace(r3, r4, r5, r6, &rt_call, NO_ALLOCATION_FLAGS);
+    __ AllocateInNewSpace(r3, r4, r5, r6, &rt_call, SIZE_IN_WORDS);
 
     // Allocated the JSObject, now initialize the fields. Map is set to initial
     // map and properties and elements are set to empty fixed array.
@@ -593,7 +596,7 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
       __ bind(&loop);
       __ str(r7, MemOperand(r5, kPointerSize, PostIndex));
       __ bind(&entry);
-      __ cmp(r5, Operand(r6));
+      __ cmp(r5, r6);
       __ b(lt, &loop);
     }
 
@@ -632,12 +635,13 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
     // r5: start of next object
     // r7: undefined
     __ add(r0, r3, Operand(FixedArray::kHeaderSize / kPointerSize));
-    __ AllocateInNewSpace(r0,
-                          r5,
-                          r6,
-                          r2,
-                          &undo_allocation,
-                          RESULT_CONTAINS_TOP);
+    __ AllocateInNewSpace(
+        r0,
+        r5,
+        r6,
+        r2,
+        &undo_allocation,
+        static_cast<AllocationFlags>(RESULT_CONTAINS_TOP | SIZE_IN_WORDS));
 
     // Initialize the FixedArray.
     // r1: constructor
@@ -666,7 +670,7 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
       __ bind(&loop);
       __ str(r7, MemOperand(r2, kPointerSize, PostIndex));
       __ bind(&entry);
-      __ cmp(r2, Operand(r6));
+      __ cmp(r2, r6);
       __ b(lt, &loop);
     }
 
@@ -863,7 +867,7 @@ static void Generate_JSEntryTrampolineHelper(MacroAssembler* masm,
   __ ldr(r0, MemOperand(r0));  // dereference handle
   __ push(r0);  // push parameter
   __ bind(&entry);
-  __ cmp(r4, Operand(r2));
+  __ cmp(r4, r2);
   __ b(ne, &loop);
 
   // Initialize all JavaScript callee-saved registers, since they will be seen
@@ -1213,7 +1217,7 @@ void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {
   Label invoke, dont_adapt_arguments;
 
   Label enough, too_few;
-  __ cmp(r0, Operand(r2));
+  __ cmp(r0, r2);
   __ b(lt, &too_few);
   __ cmp(r2, Operand(SharedFunctionInfo::kDontAdaptArgumentsSentinel));
   __ b(eq, &dont_adapt_arguments);
@@ -1309,3 +1313,5 @@ void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {
 #undef __
 
 } }  // namespace v8::internal
+
+#endif  // V8_TARGET_ARCH_ARM

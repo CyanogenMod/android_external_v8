@@ -32,14 +32,14 @@ namespace v8 {
 namespace internal {
 
 
-#ifndef V8_NATIVE_REGEXP
+#ifdef V8_INTERPRETED_REGEXP
 class RegExpMacroAssemblerARM: public RegExpMacroAssembler {
  public:
   RegExpMacroAssemblerARM();
   virtual ~RegExpMacroAssemblerARM();
 };
 
-#else
+#else  // V8_INTERPRETED_REGEXP
 class RegExpMacroAssemblerARM: public NativeRegExpMacroAssembler {
  public:
   RegExpMacroAssemblerARM(Mode mode, int registers_to_save);
@@ -206,22 +206,6 @@ class RegExpMacroAssemblerARM: public NativeRegExpMacroAssembler {
   // and increments it by a word size.
   inline void Pop(Register target);
 
-  // Before calling a C-function from generated code, align arguments on stack.
-  // After aligning the frame, non-register arguments must be stored in
-  // sp[0], sp[4], etc., not pushed. The argument count assumes all arguments
-  // are word sized.
-  // Some compilers/platforms require the stack to be aligned when calling
-  // C++ code.
-  // Needs a scratch register to do some arithmetic. This register will be
-  // trashed.
-  inline void FrameAlign(int num_arguments, Register scratch);
-
-  // Calls a C function and cleans up the space for arguments allocated
-  // by FrameAlign. The called function is not allowed to trigger a garbage
-  // collection.
-  inline void CallCFunction(ExternalReference function,
-                            int num_arguments);
-
   // Calls a C function and cleans up the frame alignment done by
   // by FrameAlign. The called function *is* allowed to trigger a garbage
   // collection, but may not take more than four arguments (no arguments
@@ -274,7 +258,7 @@ class RegExpCEntryStub: public CodeStub {
   const char* GetName() { return "RegExpCEntryStub"; }
 };
 
-#endif  // V8_NATIVE_REGEXP
+#endif  // V8_INTERPRETED_REGEXP
 
 
 }}  // namespace v8::internal

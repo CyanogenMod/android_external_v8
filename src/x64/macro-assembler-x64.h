@@ -33,10 +33,22 @@
 namespace v8 {
 namespace internal {
 
+// Flags used for the AllocateInNewSpace functions.
+enum AllocationFlags {
+  // No special flags.
+  NO_ALLOCATION_FLAGS = 0,
+  // Return the pointer to the allocated already tagged as a heap object.
+  TAG_OBJECT = 1 << 0,
+  // The content of the result register already contains the allocation top in
+  // new space.
+  RESULT_CONTAINS_TOP = 1 << 1
+};
+
 // Default scratch register used by MacroAssembler (and other code that needs
 // a spare register). The register isn't callee save, and not used by the
 // function calling convention.
 static const Register kScratchRegister = { 10 };  // r10.
+static const Register kRootRegister = { 13 };     // r13
 
 // Convenience for platform-independent signatures.
 typedef Operand MemOperand;
@@ -61,9 +73,25 @@ class MacroAssembler: public Assembler {
   void CompareRoot(Register with, Heap::RootListIndex index);
   void CompareRoot(Operand with, Heap::RootListIndex index);
   void PushRoot(Heap::RootListIndex index);
+  void StoreRoot(Register source, Heap::RootListIndex index);
 
   // ---------------------------------------------------------------------------
   // GC Support
+
+  // Set the remebered set bit for an address which points into an
+  // object. RecordWriteHelper only works if the object is not in new
+  // space.
+  void RecordWriteHelper(Register object,
+                         Register addr,
+                         Register scratch);
+
+  // Check if object is in new space. The condition cc can be equal or
+  // not_equal. If it is equal a jump will be done if the object is on new
+  // space. The register scratch can be object itself, but it will be clobbered.
+  void InNewSpace(Register object,
+                  Register scratch,
+                  Condition cc,
+                  Label* branch);
 
   // Set the remembered set bit for [object+offset].
   // object is the object being stored into, value is the object being stored.
@@ -85,7 +113,6 @@ class MacroAssembler: public Assembler {
                          int offset,
                          Register value,
                          Register scratch);
-
 
 #ifdef ENABLE_DEBUGGER_SUPPORT
   // ---------------------------------------------------------------------------
@@ -196,6 +223,7 @@ class MacroAssembler: public Assembler {
   // Simple comparison of smis.
   void SmiCompare(Register dst, Register src);
   void SmiCompare(Register dst, Smi* src);
+  void SmiCompare(Register dst, const Operand& src);
   void SmiCompare(const Operand& dst, Register src);
   void SmiCompare(const Operand& dst, Smi* src);
   // Sets sign and zero flags depending on value of smi in register.
@@ -278,6 +306,10 @@ class MacroAssembler: public Assembler {
   // No overflow testing on the result is done.
   void SmiAddConstant(Register dst, Register src, Smi* constant);
 
+  // Add an integer constant to a tagged smi, giving a tagged smi as result.
+  // No overflow testing on the result is done.
+  void SmiAddConstant(const Operand& dst, Smi* constant);
+
   // Add an integer constant to a tagged smi, giving a tagged smi as result,
   // or jumping to a label if the result cannot be represented by a smi.
   void SmiAddConstant(Register dst,
@@ -286,7 +318,8 @@ class MacroAssembler: public Assembler {
                       Label* on_not_smi_result);
 
   // Subtract an integer constant from a tagged smi, giving a tagged smi as
-  // result. No testing on the result is done.
+  // result. No testing on the result is done. Sets the N and Z flags
+  // based on the value of the resulting integer.
   void SmiSubConstant(Register dst, Register src, Smi* constant);
 
   // Subtract an integer constant from a tagged smi, giving a tagged smi as
@@ -316,6 +349,11 @@ class MacroAssembler: public Assembler {
   void SmiSub(Register dst,
               Register src1,
               Register src2,
+              Label* on_not_smi_result);
+
+  void SmiSub(Register dst,
+              Register src1,
+              const Operand& src2,
               Label* on_not_smi_result);
 
   // Multiplies smi values and return the result as a smi,
@@ -352,8 +390,7 @@ class MacroAssembler: public Assembler {
 
   void SmiShiftLeftConstant(Register dst,
                             Register src,
-                            int shift_value,
-                            Label* on_not_smi_result);
+                            int shift_value);
   void SmiShiftLogicalRightConstant(Register dst,
                                   Register src,
                                   int shift_value,
@@ -366,8 +403,7 @@ class MacroAssembler: public Assembler {
   // Uses and clobbers rcx, so dst may not be rcx.
   void SmiShiftLeft(Register dst,
                     Register src1,
-                    Register src2,
-                    Label* on_not_smi_result);
+                    Register src2);
   // Shifts a smi value to the right, shifting in zero bits at the top, and
   // returns the unsigned intepretation of the result if that is a smi.
   // Uses and clobbers rcx, so dst may not be rcx.
@@ -425,6 +461,20 @@ class MacroAssembler: public Assembler {
                                            Register scratch1,
                                            Register scratch2,
                                            Label* on_not_both_flat_ascii);
+
+  // Check whether the instance type represents a flat ascii string. Jump to the
+  // label if not. If the instance type can be scratched specify same register
+  // for both instance type and scratch.
+  void JumpIfInstanceTypeIsNotSequentialAscii(Register instance_type,
+                                              Register scratch,
+                                              Label *on_not_flat_ascii_string);
+
+  void JumpIfBothInstanceTypesAreNotSequentialAscii(
+      Register first_object_instance_type,
+      Register second_object_instance_type,
+      Register scratch1,
+      Register scratch2,
+      Label* on_fail);
 
   // ---------------------------------------------------------------------------
   // Macro instructions.
@@ -487,7 +537,10 @@ class MacroAssembler: public Assembler {
   void FCmp();
 
   // Abort execution if argument is not a number. Used in debug code.
-  void AbortIfNotNumber(Register object, const char* msg);
+  void AbortIfNotNumber(Register object);
+
+  // Abort execution if argument is not a smi. Used in debug code.
+  void AbortIfNotSmi(Register object);
 
   // ---------------------------------------------------------------------------
   // Exception handling
@@ -511,9 +564,14 @@ class MacroAssembler: public Assembler {
   // clobbered if it the same as the holder register. The function
   // returns a register containing the holder - either object_reg or
   // holder_reg.
+  // The function can optionally (when save_at_depth !=
+  // kInvalidProtoDepth) save the object at the given depth by moving
+  // it to [rsp + kPointerSize].
   Register CheckMaps(JSObject* object, Register object_reg,
                      JSObject* holder, Register holder_reg,
-                     Register scratch, Label* miss);
+                     Register scratch,
+                     int save_at_depth,
+                     Label* miss);
 
   // Generate code for checking access rights - used for security checks
   // on access to global objects across environments. The holder register
@@ -645,7 +703,6 @@ class MacroAssembler: public Assembler {
   void StubReturn(int argc);
 
   // Call a runtime routine.
-  // Eventually this should be used for all C calls.
   void CallRuntime(Runtime::Function* f, int num_arguments);
 
   // Convenience function: Same as above, but takes the fid instead.
@@ -656,14 +713,19 @@ class MacroAssembler: public Assembler {
                              int num_arguments);
 
   // Tail call of a runtime routine (jump).
-  // Like JumpToRuntime, but also takes care of passing the number
-  // of arguments.
-  void TailCallRuntime(const ExternalReference& ext,
+  // Like JumpToExternalReference, but also takes care of passing the number
+  // of parameters.
+  void TailCallExternalReference(const ExternalReference& ext,
+                                 int num_arguments,
+                                 int result_size);
+
+  // Convenience function: tail call a runtime routine (jump).
+  void TailCallRuntime(Runtime::FunctionId fid,
                        int num_arguments,
                        int result_size);
 
   // Jump to a runtime routine.
-  void JumpToRuntime(const ExternalReference& ext, int result_size);
+  void JumpToExternalReference(const ExternalReference& ext, int result_size);
 
   // Before calling a C-function from generated code, align arguments on stack.
   // After aligning the frame, arguments must be stored in esp[0], esp[4],
@@ -715,6 +777,9 @@ class MacroAssembler: public Assembler {
   // Print a message to stdout and abort execution.
   void Abort(const char* msg);
 
+  // Check that the stack is aligned.
+  void CheckStackAlignment();
+
   // Verify restrictions about code generated in stubs.
   void set_generating_stub(bool value) { generating_stub_ = value; }
   bool generating_stub() { return generating_stub_; }
@@ -740,10 +805,17 @@ class MacroAssembler: public Assembler {
   void LeaveFrame(StackFrame::Type type);
 
   // Allocation support helpers.
+  // Loads the top of new-space into the result register.
+  // If flags contains RESULT_CONTAINS_TOP then result_end is valid and
+  // already contains the top of new-space, and scratch is invalid.
+  // Otherwise the address of the new-space top is loaded into scratch (if
+  // scratch is valid), and the new-space top is loaded into result.
   void LoadAllocationTopHelper(Register result,
                                Register result_end,
                                Register scratch,
                                AllocationFlags flags);
+  // Update allocation top with value in result_end register.
+  // If scratch is valid, it contains the address of the allocation top.
   void UpdateAllocationTopHelper(Register result_end, Register scratch);
 };
 

@@ -30,6 +30,7 @@
 #include "codegen-inl.h"
 #include "compiler.h"
 #include "full-codegen.h"
+#include "scopes.h"
 #include "stub-cache.h"
 #include "debug.h"
 #include "liveedit.h"
@@ -211,9 +212,9 @@ void FullCodeGenSyntaxChecker::VisitFunctionLiteral(FunctionLiteral* expr) {
 }
 
 
-void FullCodeGenSyntaxChecker::VisitFunctionBoilerplateLiteral(
-    FunctionBoilerplateLiteral* expr) {
-  BAILOUT("FunctionBoilerplateLiteral");
+void FullCodeGenSyntaxChecker::VisitSharedFunctionInfoLiteral(
+    SharedFunctionInfoLiteral* expr) {
+  BAILOUT("SharedFunctionInfoLiteral");
 }
 
 
@@ -449,7 +450,6 @@ Handle<Code> FullCodeGenerator::MakeCode(CompilationInfo* info) {
   CodeGenerator::MakeCodePrologue(info);
   const int kInitialBufferSize = 4 * KB;
   MacroAssembler masm(NULL, kInitialBufferSize);
-  LiveEditFunctionTracker live_edit_tracker(info->function());
 
   FullCodeGenerator cgen(&masm);
   cgen.Generate(info, PRIMARY);
@@ -458,9 +458,7 @@ Handle<Code> FullCodeGenerator::MakeCode(CompilationInfo* info) {
     return Handle<Code>::null();
   }
   Code::Flags flags = Code::ComputeFlags(Code::FUNCTION, NOT_IN_LOOP);
-  Handle<Code> result = CodeGenerator::MakeCodeEpilogue(&masm, flags, info);
-  live_edit_tracker.RecordFunctionCode(result);
-  return result;
+  return CodeGenerator::MakeCodeEpilogue(&masm, flags, info);
 }
 
 
@@ -523,8 +521,8 @@ void FullCodeGenerator::VisitDeclarations(
             array->set_undefined(j++);
           }
         } else {
-          Handle<JSFunction> function =
-              Compiler::BuildBoilerplate(decl->fun(), script(), this);
+          Handle<SharedFunctionInfo> function =
+              Compiler::BuildFunctionInfo(decl->fun(), script(), this);
           // Check for stack-overflow exception.
           if (HasStackOverflow()) return;
           array->set(j++, *function);
@@ -762,11 +760,6 @@ void FullCodeGenerator::VisitWithExitStatement(WithExitStatement* stmt) {
 }
 
 
-void FullCodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
-  UNREACHABLE();
-}
-
-
 void FullCodeGenerator::VisitDoWhileStatement(DoWhileStatement* stmt) {
   Comment cmnt(masm_, "[ DoWhileStatement");
   SetStatementPosition(stmt);
@@ -812,6 +805,7 @@ void FullCodeGenerator::VisitWhileStatement(WhileStatement* stmt) {
   Visit(stmt->body());
 
   __ bind(loop_statement.continue_target());
+
   // Check stack before looping.
   __ StackLimitCheck(&stack_limit_hit);
   __ bind(&stack_check_success);
@@ -871,11 +865,6 @@ void FullCodeGenerator::VisitForStatement(ForStatement* stmt) {
 
   __ bind(loop_statement.break_target());
   decrement_loop_depth();
-}
-
-
-void FullCodeGenerator::VisitForInStatement(ForInStatement* stmt) {
-  UNREACHABLE();
 }
 
 
@@ -997,12 +986,6 @@ void FullCodeGenerator::VisitDebuggerStatement(DebuggerStatement* stmt) {
 }
 
 
-void FullCodeGenerator::VisitFunctionBoilerplateLiteral(
-    FunctionBoilerplateLiteral* expr) {
-  UNREACHABLE();
-}
-
-
 void FullCodeGenerator::VisitConditional(Conditional* expr) {
   Comment cmnt(masm_, "[ Conditional");
   Label true_case, false_case, done;
@@ -1033,6 +1016,24 @@ void FullCodeGenerator::VisitSlot(Slot* expr) {
 void FullCodeGenerator::VisitLiteral(Literal* expr) {
   Comment cmnt(masm_, "[ Literal");
   Apply(context_, expr);
+}
+
+
+void FullCodeGenerator::VisitFunctionLiteral(FunctionLiteral* expr) {
+  Comment cmnt(masm_, "[ FunctionLiteral");
+
+  // Build the function boilerplate and instantiate it.
+  Handle<SharedFunctionInfo> function_info =
+      Compiler::BuildFunctionInfo(expr, script(), this);
+  if (HasStackOverflow()) return;
+  EmitNewClosure(function_info);
+}
+
+
+void FullCodeGenerator::VisitSharedFunctionInfoLiteral(
+    SharedFunctionInfoLiteral* expr) {
+  Comment cmnt(masm_, "[ SharedFunctionInfoLiteral");
+  EmitNewClosure(expr->shared_function_info());
 }
 
 

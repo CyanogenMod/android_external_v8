@@ -66,28 +66,6 @@ static void DoTraceHideCEntryFPAddress(Address fp) {
 }
 
 
-static void CheckRetAddrIsInFunction(const char* func_name,
-                                     Address ret_addr,
-                                     Address func_start_addr,
-                                     unsigned int func_len) {
-  printf("CheckRetAddrIsInFunction \"%s\": %p %p %p\n",
-         func_name, func_start_addr, ret_addr, func_start_addr + func_len);
-  CHECK_GE(ret_addr, func_start_addr);
-  CHECK_GE(func_start_addr + func_len, ret_addr);
-}
-
-
-static void CheckRetAddrIsInJSFunction(const char* func_name,
-                                       Address ret_addr,
-                                       Handle<JSFunction> func) {
-  v8::internal::Code* func_code = func->code();
-  CheckRetAddrIsInFunction(
-      func_name, ret_addr,
-      func_code->instruction_start(),
-      func_code->ExecutableSize());
-}
-
-
 // --- T r a c e   E x t e n s i o n ---
 
 class TraceExtension : public v8::Extension {
@@ -191,7 +169,9 @@ static void InitializeVM() {
 
 
 static Handle<JSFunction> CompileFunction(const char* source) {
-  return v8::Utils::OpenHandle(*Script::Compile(String::New(source)));
+  Handle<JSFunction> result(JSFunction::cast(
+      *v8::Utils::OpenHandle(*Script::Compile(String::New(source)))));
+  return result;
 }
 
 
@@ -201,17 +181,22 @@ static Local<Value> GetGlobalProperty(const char* name) {
 
 
 static Handle<JSFunction> GetGlobalJSFunction(const char* name) {
-  Handle<JSFunction> js_func(JSFunction::cast(
-                                 *(v8::Utils::OpenHandle(
-                                       *GetGlobalProperty(name)))));
-  return js_func;
+  Handle<JSFunction> result(JSFunction::cast(
+      *v8::Utils::OpenHandle(*GetGlobalProperty(name))));
+  return result;
 }
 
 
-static void CheckRetAddrIsInJSFunction(const char* func_name,
-                                       Address ret_addr) {
-  CheckRetAddrIsInJSFunction(func_name, ret_addr,
-                             GetGlobalJSFunction(func_name));
+static void CheckObjectIsJSFunction(const char* func_name,
+                                    Address addr) {
+  i::Object* obj = reinterpret_cast<i::Object*>(addr);
+  CHECK(obj->IsJSFunction());
+  CHECK(JSFunction::cast(obj)->shared()->name()->IsString());
+  i::SmartPointer<char> found_name =
+      i::String::cast(
+          JSFunction::cast(
+              obj)->shared()->name())->ToCString();
+  CHECK_EQ(func_name, *found_name);
 }
 
 
@@ -232,10 +217,12 @@ class CodeGeneratorPatcher {
  public:
   CodeGeneratorPatcher() {
     CodeGenerator::InlineRuntimeLUT genGetFramePointer =
-        {&CodeGenerator::GenerateGetFramePointer, "_GetFramePointer"};
-    // _FastCharCodeAt is not used in our tests.
+        {&CodeGenerator::GenerateGetFramePointer, "_GetFramePointer", 0};
+    // _RandomHeapNumber is just used as a dummy function that has zero
+    // arguments, the same as the _GetFramePointer function we actually patch
+    // in.
     bool result = CodeGenerator::PatchInlineRuntimeEntry(
-        NewString("_FastCharCodeAt"),
+        NewString("_RandomHeapNumber"),
         genGetFramePointer, &oldInlineEntry);
     CHECK(result);
   }
@@ -268,6 +255,7 @@ static void CreateTraceCallerFunction(const char* func_name,
   Handle<JSFunction> func = CompileFunction(trace_call_buf.start());
   CHECK(!func.is_null());
   i::FLAG_allow_natives_syntax = allow_natives_syntax;
+  func->shared()->set_name(*NewString(func_name));
 
 #ifdef DEBUG
   v8::internal::Code* func_code = func->code();
@@ -276,54 +264,99 @@ static void CreateTraceCallerFunction(const char* func_name,
 #endif
 
   SetGlobalProperty(func_name, v8::ToApi<Value>(func));
+  CHECK_EQ(*func, *GetGlobalJSFunction(func_name));
 }
 
 
+// This test verifies that stack tracing works when called during
+// execution of a native function called from JS code. In this case,
+// StackTracer uses Top::c_entry_fp as a starting point for stack
+// walking.
 TEST(CFromJSStackTrace) {
+#if defined(V8_HOST_ARCH_IA32) || defined(V8_HOST_ARCH_X64)
+  // TODO(711) The hack of replacing the inline runtime function
+  // RandomHeapNumber with GetFrameNumber does not work with the way the full
+  // compiler generates inline runtime calls.
+  i::FLAG_force_full_compiler = false;
+#endif
+
   TickSample sample;
   InitTraceEnv(&sample);
 
   InitializeVM();
   v8::HandleScope scope;
+  // Create global function JSFuncDoTrace which calls
+  // extension function trace() with the current frame pointer value.
   CreateTraceCallerFunction("JSFuncDoTrace", "trace");
-  CompileRun(
+  Local<Value> result = CompileRun(
       "function JSTrace() {"
       "         JSFuncDoTrace();"
       "};\n"
-      "JSTrace();");
+      "JSTrace();\n"
+      "true;");
+  CHECK(!result.IsEmpty());
+  // When stack tracer is invoked, the stack should look as follows:
+  // script [JS]
+  //   JSTrace() [JS]
+  //     JSFuncDoTrace() [JS] [captures EBP value and encodes it as Smi]
+  //       trace(EBP encoded as Smi) [native (extension)]
+  //         DoTrace(EBP) [native]
+  //           StackTracer::Trace
   CHECK_GT(sample.frames_count, 1);
-  // Stack sampling will start from the first JS function, i.e. "JSFuncDoTrace"
-  CheckRetAddrIsInJSFunction("JSFuncDoTrace",
-                             sample.stack[0]);
-  CheckRetAddrIsInJSFunction("JSTrace",
-                             sample.stack[1]);
+  // Stack tracing will start from the first JS function, i.e. "JSFuncDoTrace"
+  CheckObjectIsJSFunction("JSFuncDoTrace", sample.stack[0]);
+  CheckObjectIsJSFunction("JSTrace", sample.stack[1]);
 }
 
 
+// This test verifies that stack tracing works when called during
+// execution of JS code. However, as calling StackTracer requires
+// entering native code, we can only emulate pure JS by erasing
+// Top::c_entry_fp value. In this case, StackTracer uses passed frame
+// pointer value as a starting point for stack walking.
 TEST(PureJSStackTrace) {
+#if defined(V8_HOST_ARCH_IA32) || defined(V8_HOST_ARCH_X64)
+  // TODO(711) The hack of replacing the inline runtime function
+  // RandomHeapNumber with GetFrameNumber does not work with the way the full
+  // compiler generates inline runtime calls.
+  i::FLAG_force_full_compiler = false;
+#endif
+
   TickSample sample;
   InitTraceEnv(&sample);
 
   InitializeVM();
   v8::HandleScope scope;
+  // Create global function JSFuncDoTrace which calls
+  // extension function js_trace() with the current frame pointer value.
   CreateTraceCallerFunction("JSFuncDoTrace", "js_trace");
-  CompileRun(
+  Local<Value> result = CompileRun(
       "function JSTrace() {"
       "         JSFuncDoTrace();"
       "};\n"
       "function OuterJSTrace() {"
       "         JSTrace();"
       "};\n"
-      "OuterJSTrace();");
-  // The last JS function called.
+      "OuterJSTrace();\n"
+      "true;");
+  CHECK(!result.IsEmpty());
+  // When stack tracer is invoked, the stack should look as follows:
+  // script [JS]
+  //   OuterJSTrace() [JS]
+  //     JSTrace() [JS]
+  //       JSFuncDoTrace() [JS] [captures EBP value and encodes it as Smi]
+  //         js_trace(EBP encoded as Smi) [native (extension)]
+  //           DoTraceHideCEntryFPAddress(EBP) [native]
+  //             StackTracer::Trace
+  //
+  // The last JS function called. It is only visible through
+  // sample.function, as its return address is above captured EBP value.
   CHECK_EQ(GetGlobalJSFunction("JSFuncDoTrace")->address(),
            sample.function);
   CHECK_GT(sample.frames_count, 1);
   // Stack sampling will start from the caller of JSFuncDoTrace, i.e. "JSTrace"
-  CheckRetAddrIsInJSFunction("JSTrace",
-                             sample.stack[0]);
-  CheckRetAddrIsInJSFunction("OuterJSTrace",
-                             sample.stack[1]);
+  CheckObjectIsJSFunction("JSTrace", sample.stack[0]);
+  CheckObjectIsJSFunction("OuterJSTrace", sample.stack[1]);
 }
 
 
@@ -352,6 +385,9 @@ static int CFunc(int depth) {
 }
 
 
+// This test verifies that stack tracing doesn't crash when called on
+// pure native code. StackTracer only unrolls JS code, so we can't
+// get any meaningful info here.
 TEST(PureCStackTrace) {
   TickSample sample;
   InitTraceEnv(&sample);

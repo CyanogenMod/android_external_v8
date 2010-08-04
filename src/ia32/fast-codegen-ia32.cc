@@ -27,6 +27,8 @@
 
 #include "v8.h"
 
+#if defined(V8_TARGET_ARCH_IA32)
+
 #include "codegen-inl.h"
 #include "fast-codegen.h"
 #include "data-flow.h"
@@ -195,9 +197,9 @@ void FastCodeGenSyntaxChecker::VisitFunctionLiteral(FunctionLiteral* expr) {
 }
 
 
-void FastCodeGenSyntaxChecker::VisitFunctionBoilerplateLiteral(
-    FunctionBoilerplateLiteral* expr) {
-  BAILOUT("FunctionBoilerplateLiteral");
+void FastCodeGenSyntaxChecker::VisitSharedFunctionInfoLiteral(
+    SharedFunctionInfoLiteral* expr) {
+  BAILOUT("SharedFunctionInfoLiteral");
 }
 
 
@@ -436,9 +438,6 @@ Handle<Code> FastCodeGenerator::MakeCode(CompilationInfo* info) {
   AstLabeler labeler;
   labeler.Label(info);
 
-  LivenessAnalyzer analyzer;
-  analyzer.Analyze(info->function());
-
   CodeGenerator::MakeCodePrologue(info);
 
   const int kInitialBufferSize = 4 * KB;
@@ -621,6 +620,7 @@ void FastCodeGenerator::EmitBitOr() {
 void FastCodeGenerator::Generate(CompilationInfo* compilation_info) {
   ASSERT(info_ == NULL);
   info_ = compilation_info;
+  Comment cmnt(masm_, "[ function compiled by fast code generator");
 
   // Save the caller's frame pointer and set up our own.
   Comment prologue_cmnt(masm(), ";; Prologue");
@@ -766,8 +766,8 @@ void FastCodeGenerator::VisitFunctionLiteral(FunctionLiteral* expr) {
 }
 
 
-void FastCodeGenerator::VisitFunctionBoilerplateLiteral(
-    FunctionBoilerplateLiteral* expr) {
+void FastCodeGenerator::VisitSharedFunctionInfoLiteral(
+    SharedFunctionInfoLiteral* expr) {
   UNREACHABLE();
 }
 
@@ -801,8 +801,8 @@ void FastCodeGenerator::VisitVariableProxy(VariableProxy* expr) {
     Comment cmnt(masm(), ";; Global");
     if (FLAG_print_ir) {
       SmartPointer<char> name = expr->name()->ToCString();
-      PrintF("%d: t%d = Global(%s)  // last_use = %d\n", expr->num(),
-             expr->num(), *name, expr->var_def()->last_use()->num());
+      PrintF("%d: t%d = Global(%s)\n", expr->num(),
+             expr->num(), *name);
     }
     EmitGlobalVariableLoad(cell);
   }
@@ -856,9 +856,8 @@ void FastCodeGenerator::VisitAssignment(Assignment* expr) {
     SmartPointer<char> name_string = name->ToCString();
     PrintF("%d: ", expr->num());
     if (!destination().is(no_reg)) PrintF("t%d = ", expr->num());
-    PrintF("Store(this, \"%s\", t%d)  // last_use(this) = %d\n", *name_string,
-           expr->value()->num(),
-           expr->var_def()->last_use()->num());
+    PrintF("Store(this, \"%s\", t%d)\n", *name_string,
+           expr->value()->num());
   }
 
   EmitThisPropertyStore(name);
@@ -881,9 +880,8 @@ void FastCodeGenerator::VisitProperty(Property* expr) {
     Comment cmnt(masm(), ";; Load from this");
     if (FLAG_print_ir) {
       SmartPointer<char> name_string = name->ToCString();
-      PrintF("%d: t%d = Load(this, \"%s\")  // last_use(this) = %d\n",
-             expr->num(), expr->num(), *name_string,
-             expr->var_def()->last_use()->num());
+      PrintF("%d: t%d = Load(this, \"%s\")\n",
+             expr->num(), expr->num(), *name_string);
     }
     EmitThisPropertyLoad(name);
   }
@@ -952,3 +950,5 @@ void FastCodeGenerator::VisitThisFunction(ThisFunction* expr) {
 
 
 } }  // namespace v8::internal
+
+#endif  // V8_TARGET_ARCH_IA32

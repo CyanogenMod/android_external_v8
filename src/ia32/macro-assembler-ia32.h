@@ -33,6 +33,17 @@
 namespace v8 {
 namespace internal {
 
+// Flags used for the AllocateInNewSpace functions.
+enum AllocationFlags {
+  // No special flags.
+  NO_ALLOCATION_FLAGS = 0,
+  // Return the pointer to the allocated already tagged as a heap object.
+  TAG_OBJECT = 1 << 0,
+  // The content of the result register already contains the allocation top in
+  // new space.
+  RESULT_CONTAINS_TOP = 1 << 1
+};
+
 // Convenience for platform-independent signatures.  We do not normally
 // distinguish memory operands from other operands on ia32.
 typedef Operand MemOperand;
@@ -47,6 +58,20 @@ class MacroAssembler: public Assembler {
 
   // ---------------------------------------------------------------------------
   // GC Support
+
+  // Set the remebered set bit for an address which points into an
+  // object. RecordWriteHelper only works if the object is not in new
+  // space.
+  void RecordWriteHelper(Register object,
+                         Register addr,
+                         Register scratch);
+
+  // Check if object is in new space.
+  // scratch can be object itself, but it will be clobbered.
+  void InNewSpace(Register object,
+                  Register scratch,
+                  Condition cc,  // equal for new space, not_equal otherwise.
+                  Label* branch);
 
   // Set the remembered set bit for [object+offset].
   // object is the object being stored into, value is the object being stored.
@@ -170,14 +195,18 @@ class MacroAssembler: public Assembler {
   // Smi tagging support.
   void SmiTag(Register reg) {
     ASSERT(kSmiTag == 0);
-    shl(reg, kSmiTagSize);
+    ASSERT(kSmiTagSize == 1);
+    add(reg, Operand(reg));
   }
   void SmiUntag(Register reg) {
     sar(reg, kSmiTagSize);
   }
 
   // Abort execution if argument is not a number. Used in debug code.
-  void AbortIfNotNumber(Register object, const char* msg);
+  void AbortIfNotNumber(Register object);
+
+  // Abort execution if argument is not a smi. Used in debug code.
+  void AbortIfNotSmi(Register object);
 
   // ---------------------------------------------------------------------------
   // Exception handling
@@ -349,7 +378,6 @@ class MacroAssembler: public Assembler {
   void StubReturn(int argc);
 
   // Call a runtime routine.
-  // Eventually this should be used for all C calls.
   void CallRuntime(Runtime::Function* f, int num_arguments);
 
   // Call a runtime function, returning the CodeStub object called.
@@ -367,11 +395,33 @@ class MacroAssembler: public Assembler {
   Object* TryCallRuntime(Runtime::FunctionId id, int num_arguments);
 
   // Tail call of a runtime routine (jump).
-  // Like JumpToRuntime, but also takes care of passing the number
-  // of arguments.
-  void TailCallRuntime(const ExternalReference& ext,
+  // Like JumpToExternalReference, but also takes care of passing the number
+  // of parameters.
+  void TailCallExternalReference(const ExternalReference& ext,
+                                 int num_arguments,
+                                 int result_size);
+
+  // Convenience function: tail call a runtime routine (jump).
+  void TailCallRuntime(Runtime::FunctionId fid,
                        int num_arguments,
                        int result_size);
+
+  // Before calling a C-function from generated code, align arguments on stack.
+  // After aligning the frame, arguments must be stored in esp[0], esp[4],
+  // etc., not pushed. The argument count assumes all arguments are word sized.
+  // Some compilers/platforms require the stack to be aligned when calling
+  // C++ code.
+  // Needs a scratch register to do some arithmetic. This register will be
+  // trashed.
+  void PrepareCallCFunction(int num_arguments, Register scratch);
+
+  // Calls a C function and cleans up the space for arguments allocated
+  // by PrepareCallCFunction. The called function is not allowed to trigger a
+  // garbage collection, since that might move the code and invalidate the
+  // return address (unless this is somehow accounted for by the called
+  // function).
+  void CallCFunction(ExternalReference function, int num_arguments);
+  void CallCFunction(Register function, int num_arguments);
 
   void PushHandleScope(Register scratch);
 
@@ -384,7 +434,7 @@ class MacroAssembler: public Assembler {
   Object* TryPopHandleScope(Register saved, Register scratch);
 
   // Jump to a runtime routine.
-  void JumpToRuntime(const ExternalReference& ext);
+  void JumpToExternalReference(const ExternalReference& ext);
 
 
   // ---------------------------------------------------------------------------
@@ -426,6 +476,9 @@ class MacroAssembler: public Assembler {
   // Print a message to stdout and abort execution.
   void Abort(const char* msg);
 
+  // Check that the stack is aligned.
+  void CheckStackAlignment();
+
   // Verify restrictions about code generated in stubs.
   void set_generating_stub(bool value) { generating_stub_ = value; }
   bool generating_stub() { return generating_stub_; }
@@ -440,7 +493,7 @@ class MacroAssembler: public Assembler {
   // for both instance type and scratch.
   void JumpIfInstanceTypeIsNotSequentialAscii(Register instance_type,
                                               Register scratch,
-                                              Label *on_not_flat_ascii_string);
+                                              Label* on_not_flat_ascii_string);
 
   // Checks if both objects are sequential ASCII strings, and jumps to label
   // if either is not.
@@ -448,7 +501,7 @@ class MacroAssembler: public Assembler {
                                            Register object2,
                                            Register scratch1,
                                            Register scratch2,
-                                           Label *on_not_flat_ascii_strings);
+                                           Label* on_not_flat_ascii_strings);
 
  private:
   bool generating_stub_;

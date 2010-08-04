@@ -29,6 +29,8 @@
 
 #include "v8.h"
 
+#if defined(V8_TARGET_ARCH_MIPS)
+
 #include "codegen-inl.h"
 #include "debug.h"
 
@@ -104,9 +106,26 @@ void Debug::GenerateStubNoRegistersDebugBreak(MacroAssembler* masm) {
 }
 
 
+void Debug::GeneratePlainReturnLiveEdit(MacroAssembler* masm) {
+  masm->Abort("LiveEdit frame dropping is not supported on mips");
+}
+
+void Debug::GenerateFrameDropperLiveEdit(MacroAssembler* masm) {
+  masm->Abort("LiveEdit frame dropping is not supported on mips");
+}
+
 #undef __
+
+
+void Debug::SetUpFrameDropperFrame(StackFrame* bottom_js_frame,
+                                   Handle<Code> code) {
+  UNREACHABLE();
+}
+const int Debug::kFrameDropperFrameSize = -1;
+
 
 #endif  // ENABLE_DEBUGGER_SUPPORT
 
 } }  // namespace v8::internal
 
+#endif  // V8_TARGET_ARCH_MIPS

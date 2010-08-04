@@ -67,11 +67,103 @@ class LiveEditFunctionTracker {
  public:
   explicit LiveEditFunctionTracker(FunctionLiteral* fun);
   ~LiveEditFunctionTracker();
-  void RecordFunctionCode(Handle<Code> code);
-  void RecordFunctionScope(Scope* scope);
+  void RecordFunctionInfo(Handle<SharedFunctionInfo> info,
+                          FunctionLiteral* lit);
+  void RecordRootFunctionInfo(Handle<Code> code);
 
   static bool IsActive();
 };
+
+#ifdef ENABLE_DEBUGGER_SUPPORT
+
+class LiveEdit : AllStatic {
+ public:
+  static JSArray* GatherCompileInfo(Handle<Script> script,
+                                    Handle<String> source);
+
+  static void WrapSharedFunctionInfos(Handle<JSArray> array);
+
+  static Object* ReplaceFunctionCode(Handle<JSArray> new_compile_info_array,
+                                     Handle<JSArray> shared_info_array);
+
+  // Updates script field in FunctionSharedInfo.
+  static void SetFunctionScript(Handle<JSValue> function_wrapper,
+                                Handle<Object> script_handle);
+
+  static Object* PatchFunctionPositions(
+      Handle<JSArray> shared_info_array, Handle<JSArray> position_change_array);
+
+  // For a script updates its source field. If old_script_name is provided
+  // (i.e. is a String), also creates a copy of the script with its original
+  // source and sends notification to debugger.
+  static Object* ChangeScriptSource(Handle<Script> original_script,
+                                    Handle<String> new_source,
+                                    Handle<Object> old_script_name);
+
+  // In a code of a parent function replaces original function as embedded
+  // object with a substitution one.
+  static void ReplaceRefToNestedFunction(Handle<JSValue> parent_function_shared,
+                                         Handle<JSValue> orig_function_shared,
+                                         Handle<JSValue> subst_function_shared);
+
+  // Checks listed functions on stack and return array with corresponding
+  // FunctionPatchabilityStatus statuses; extra array element may
+  // contain general error message. Modifies the current stack and
+  // has restart the lowest found frames and drops all other frames above
+  // if possible and if do_drop is true.
+  static Handle<JSArray> CheckAndDropActivations(
+      Handle<JSArray> shared_info_array, bool do_drop);
+
+  // A copy of this is in liveedit-debugger.js.
+  enum FunctionPatchabilityStatus {
+    FUNCTION_AVAILABLE_FOR_PATCH = 1,
+    FUNCTION_BLOCKED_ON_ACTIVE_STACK = 2,
+    FUNCTION_BLOCKED_ON_OTHER_STACK = 3,
+    FUNCTION_BLOCKED_UNDER_NATIVE_CODE = 4,
+    FUNCTION_REPLACED_ON_ACTIVE_STACK = 5
+  };
+
+  // Compares 2 strings line-by-line and returns diff in form of array of
+  // triplets (pos1, pos1_end, pos2_end) describing list of diff chunks.
+  static Handle<JSArray> CompareStringsLinewise(Handle<String> s1,
+                                                Handle<String> s2);
+};
+
+
+// A general-purpose comparator between 2 arrays.
+class Comparator {
+ public:
+
+  // Holds 2 arrays of some elements allowing to compare any pair of
+  // element from the first array and element from the second array.
+  class Input {
+   public:
+    virtual int getLength1() = 0;
+    virtual int getLength2() = 0;
+    virtual bool equals(int index1, int index2) = 0;
+
+   protected:
+    virtual ~Input() {}
+  };
+
+  // Receives compare result as a series of chunks.
+  class Output {
+   public:
+    // Puts another chunk in result list. Note that technically speaking
+    // only 3 arguments actually needed with 4th being derivable.
+    virtual void AddChunk(int pos1, int pos2, int len1, int len2) = 0;
+
+   protected:
+    virtual ~Output() {}
+  };
+
+  // Finds the difference between 2 arrays of elements.
+  static void CalculateDifference(Input* input,
+                                  Output* result_writer);
+};
+
+#endif  // ENABLE_DEBUGGER_SUPPORT
+
 
 } }  // namespace v8::internal
 

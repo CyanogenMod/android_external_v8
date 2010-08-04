@@ -44,12 +44,6 @@
 #ifndef V8_PLATFORM_H_
 #define V8_PLATFORM_H_
 
-#ifdef __sun
-// On Solaris, to get isinf, INFINITY, fpclassify and other macros one needs
-// to define this symbol
-#define __C99FEATURES__ 1
-#endif
-
 #define V8_INFINITY INFINITY
 
 // Windows specific stuff.
@@ -89,6 +83,14 @@ int random();
 
 #endif  // WIN32
 
+
+#ifdef __sun
+# ifndef signbit
+int signbit(double x);
+# endif
+#endif
+
+
 // GCC specific stuff
 #ifdef __GNUC__
 
@@ -113,6 +115,10 @@ int random();
 
 namespace v8 {
 namespace internal {
+
+// Use AtomicWord for a machine-sized pointer. It is assumed that
+// reads and writes of naturally aligned values of this type are atomic.
+typedef intptr_t AtomicWord;
 
 class Semaphore;
 
@@ -501,7 +507,6 @@ class Socket {
 };
 
 
-#ifdef ENABLE_LOGGING_AND_PROFILING
 // ----------------------------------------------------------------------------
 // Sampler
 //
@@ -513,22 +518,23 @@ class Socket {
 class TickSample {
  public:
   TickSample()
-      : pc(NULL),
+      : state(OTHER),
+        pc(NULL),
         sp(NULL),
         fp(NULL),
         function(NULL),
-        state(OTHER),
         frames_count(0) {}
+  StateTag state;  // The state of the VM.
   Address pc;  // Instruction pointer.
   Address sp;  // Stack pointer.
   Address fp;  // Frame pointer.
   Address function;  // The last called JS function.
-  StateTag state;  // The state of the VM.
-  static const int kMaxFramesCount = 100;
-  EmbeddedVector<Address, kMaxFramesCount> stack;  // Call stack.
+  static const int kMaxFramesCount = 64;
+  Address stack[kMaxFramesCount];  // Call stack.
   int frames_count;  // Number of captured frames.
 };
 
+#ifdef ENABLE_LOGGING_AND_PROFILING
 class Sampler {
  public:
   // Initialize sampler.

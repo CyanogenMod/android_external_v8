@@ -89,10 +89,42 @@ class SimulatorStack : public v8::internal::AllStatic {
 
 
 #include "constants-arm.h"
+#include "hashmap.h"
 
 
 namespace assembler {
 namespace arm {
+
+class CachePage {
+ public:
+  static const int LINE_VALID = 0;
+  static const int LINE_INVALID = 1;
+
+  static const int kPageShift = 12;
+  static const int kPageSize = 1 << kPageShift;
+  static const int kPageMask = kPageSize - 1;
+  static const int kLineShift = 2;  // The cache line is only 4 bytes right now.
+  static const int kLineLength = 1 << kLineShift;
+  static const int kLineMask = kLineLength - 1;
+
+  CachePage() {
+    memset(&validity_map_, LINE_INVALID, sizeof(validity_map_));
+  }
+
+  char* ValidityByte(int offset) {
+    return &validity_map_[offset >> kLineShift];
+  }
+
+  char* CachedData(int offset) {
+    return &data_[offset];
+  }
+
+ private:
+  char data_[kPageSize];   // The cached data.
+  static const int kValidityMapSize = kPageSize >> kLineShift;
+  char validity_map_[kValidityMapSize];  // One byte per line.
+};
+
 
 class Simulator {
  public:
@@ -127,6 +159,7 @@ class Simulator {
   // instruction.
   void set_register(int reg, int32_t value);
   int32_t get_register(int reg) const;
+  void set_dw_register(int dreg, const int* dbl);
 
   // Support for VFP.
   void set_s_register(int reg, unsigned int value);
@@ -161,6 +194,9 @@ class Simulator {
 
   // Pop an address from the JS stack.
   uintptr_t PopAddress();
+
+  // ICache checking.
+  static void FlushICache(void* start, size_t size);
 
  private:
   enum special_values {
@@ -217,6 +253,9 @@ class Simulator {
   inline int ReadW(int32_t addr, Instr* instr);
   inline void WriteW(int32_t addr, int value, Instr* instr);
 
+  int32_t* ReadDW(int32_t addr);
+  void WriteDW(int32_t addr, int32_t value1, int32_t value2);
+
   // Executing is handled based on the instruction type.
   void DecodeType01(Instr* instr);  // both type 0 and type 1 rolled into one
   void DecodeType2(Instr* instr);
@@ -231,8 +270,18 @@ class Simulator {
   void DecodeTypeVFP(Instr* instr);
   void DecodeType6CoprocessorIns(Instr* instr);
 
+  void DecodeVMOVBetweenCoreAndSinglePrecisionRegisters(Instr* instr);
+  void DecodeVCMP(Instr* instr);
+  void DecodeVCVTBetweenDoubleAndSingle(Instr* instr);
+  void DecodeVCVTBetweenFloatingPointAndInteger(Instr* instr);
+
   // Executes one instruction.
   void InstructionDecode(Instr* instr);
+
+  // ICache.
+  static void CheckICache(Instr* instr);
+  static void FlushOnePage(intptr_t start, int size);
+  static CachePage* GetCachePage(void* page);
 
   // Runtime call support.
   static void* RedirectExternalReference(void* external_function,
@@ -270,6 +319,9 @@ class Simulator {
   bool pc_modified_;
   int icount_;
   static bool initialized_;
+
+  // Icache simulation
+  static v8::internal::HashMap* i_cache_;
 
   // Registered breakpoints.
   Instr* break_pc_;

@@ -80,10 +80,7 @@ function EQUALS(y) {
     } else {
       // x is not a number, boolean, null or undefined.
       if (y == null) return 1;  // not equal
-      if (IS_OBJECT(y)) {
-        return %_ObjectEquals(x, y) ? 0 : 1;
-      }
-      if (IS_FUNCTION(y)) {
+      if (IS_SPEC_OBJECT_OR_NULL(y)) {
         return %_ObjectEquals(x, y) ? 0 : 1;
       }
 
@@ -344,7 +341,7 @@ function DELETE(key) {
 
 // ECMA-262, section 11.8.7, page 54.
 function IN(x) {
-  if (x == null || (!IS_OBJECT(x) && !IS_FUNCTION(x))) {
+  if (x == null || !IS_SPEC_OBJECT_OR_NULL(x)) {
     throw %MakeTypeError('invalid_in_operator_use', [this, x]);
   }
   return %_IsNonNegativeSmi(this) ? %HasElement(x, this) : %HasProperty(x, %ToString(this));
@@ -362,13 +359,13 @@ function INSTANCE_OF(F) {
   }
 
   // If V is not an object, return false.
-  if (IS_NULL(V) || (!IS_OBJECT(V) && !IS_FUNCTION(V))) {
+  if (IS_NULL(V) || !IS_SPEC_OBJECT_OR_NULL(V)) {
     return 1;
   }
 
   // Get the prototype of F; if it is not an object, throw an error.
   var O = F.prototype;
-  if (IS_NULL(O) || (!IS_OBJECT(O) && !IS_FUNCTION(O))) {
+  if (IS_NULL(O) || !IS_SPEC_OBJECT_OR_NULL(O)) {
     throw %MakeTypeError('instanceof_nonobject_proto', [O]);
   }
 
@@ -471,17 +468,6 @@ function TO_STRING() {
 }
 
 
-// Specialized version of String.charAt. It assumes string as
-// the receiver type and that the index is a number.
-function STRING_CHAR_AT(pos) {
-  var char_code = %_FastCharCodeAt(this, pos);
-  if (!%_IsSmi(char_code)) {
-    return %StringCharAt(this, pos);
-  }
-  return %CharFromCode(char_code);
-}
-
-
 /* -------------------------------------
    - - -   C o n v e r s i o n s   - - -
    -------------------------------------
@@ -493,7 +479,7 @@ function ToPrimitive(x, hint) {
   // Fast case check.
   if (IS_STRING(x)) return x;
   // Normal behavior.
-  if (!IS_OBJECT(x) && !IS_FUNCTION(x)) return x;
+  if (!IS_SPEC_OBJECT_OR_NULL(x)) return x;
   if (x == null) return x;  // check for null, undefined
   if (hint == NO_HINT) hint = (IS_DATE(x)) ? STRING_HINT : NUMBER_HINT;
   return (hint == NUMBER_HINT) ? %DefaultNumber(x) : %DefaultString(x);
@@ -530,7 +516,7 @@ function ToString(x) {
 }
 
 function NonStringToString(x) {
-  if (IS_NUMBER(x)) return %NumberToString(x);
+  if (IS_NUMBER(x)) return %_NumberToString(x);
   if (IS_BOOLEAN(x)) return x ? 'true' : 'false';
   if (IS_UNDEFINED(x)) return 'undefined';
   return (IS_NULL(x)) ? 'null' : %ToString(%DefaultString(x));
@@ -577,11 +563,11 @@ function SameValue(x, y) {
   if (IS_NUMBER(x)) {
     if (NUMBER_IS_NAN(x) && NUMBER_IS_NAN(y)) return true;
     // x is +0 and y is -0 or vice versa
-    if (x === 0 && y === 0 && !%_IsSmi(x) && !%_IsSmi(y) && 
+    if (x === 0 && y === 0 && !%_IsSmi(x) && !%_IsSmi(y) &&
         ((1 / x < 0 && 1 / y > 0) || (1 / x > 0 && 1 / y < 0))) {
       return false;
     }
-    return x == y;    
+    return x == y;
   }
   if (IS_STRING(x)) return %StringEquals(x, y);
   if (IS_BOOLEAN(x))return %NumberEquals(%ToNumber(x),%ToNumber(y));
@@ -598,7 +584,7 @@ function SameValue(x, y) {
 // Returns if the given x is a primitive value - not an object or a
 // function.
 function IsPrimitive(x) {
-  if (!IS_OBJECT(x) && !IS_FUNCTION(x)) {
+  if (!IS_SPEC_OBJECT_OR_NULL(x)) {
     return true;
   } else {
     // Even though the type of null is "object", null is still

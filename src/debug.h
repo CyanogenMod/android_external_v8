@@ -377,9 +377,17 @@ class Debug {
   static void GenerateConstructCallDebugBreak(MacroAssembler* masm);
   static void GenerateReturnDebugBreak(MacroAssembler* masm);
   static void GenerateStubNoRegistersDebugBreak(MacroAssembler* masm);
+  static void GeneratePlainReturnLiveEdit(MacroAssembler* masm);
+  static void GenerateFrameDropperLiveEdit(MacroAssembler* masm);
 
   // Called from stub-cache.cc.
   static void GenerateCallICDebugBreak(MacroAssembler* masm);
+
+  static void FramesHaveBeenDropped(StackFrame::Id new_break_frame_id);
+
+  static void SetUpFrameDropperFrame(StackFrame* bottom_js_frame,
+                                     Handle<Code> code);
+  static const int kFrameDropperFrameSize;
 
  private:
   static bool CompileDebuggerScript(int index);
@@ -446,6 +454,9 @@ class Debug {
     // Storage location for jump when exiting debug break calls.
     Address after_break_target_;
 
+    // Indicates that LiveEdit has patched the stack.
+    bool frames_are_dropped_;
+
     // Top debugger entry.
     EnterDebugger* debugger_entry_;
 
@@ -510,6 +521,27 @@ class MessageImpl: public v8::Debug::Message {
   Handle<JSObject> event_data_;  // Data associated with the event.
   Handle<String> response_json_;  // Response JSON if message holds a response.
   v8::Debug::ClientData* client_data_;  // Client data passed with the request.
+};
+
+
+// Details of the debug event delivered to the debug event listener.
+class EventDetailsImpl : public v8::Debug::EventDetails {
+ public:
+  EventDetailsImpl(DebugEvent event,
+                   Handle<JSObject> exec_state,
+                   Handle<JSObject> event_data,
+                   Handle<Object> callback_data);
+  virtual DebugEvent GetEvent() const;
+  virtual v8::Handle<v8::Object> GetExecutionState() const;
+  virtual v8::Handle<v8::Object> GetEventData() const;
+  virtual v8::Handle<v8::Context> GetEventContext() const;
+  virtual v8::Handle<v8::Value> GetCallbackData() const;
+ private:
+  DebugEvent event_;  // Debug event causing the break.
+  Handle<JSObject> exec_state_;  // Current execution state.
+  Handle<JSObject> event_data_;  // Data associated with the event.
+  Handle<Object> callback_data_;  // User data passed with the callback when
+                                  // it was registered.
 };
 
 
@@ -604,8 +636,13 @@ class Debugger {
   static void OnDebugBreak(Handle<Object> break_points_hit, bool auto_continue);
   static void OnException(Handle<Object> exception, bool uncaught);
   static void OnBeforeCompile(Handle<Script> script);
+
+  enum AfterCompileFlags {
+    NO_AFTER_COMPILE_FLAGS,
+    SEND_WHEN_DEBUGGING
+  };
   static void OnAfterCompile(Handle<Script> script,
-                           Handle<JSFunction> fun);
+                             AfterCompileFlags after_compile_flags);
   static void OnNewFunction(Handle<JSFunction> fun);
   static void OnScriptCollected(int id);
   static void ProcessDebugEvent(v8::DebugEvent event,
@@ -649,9 +686,12 @@ class Debugger {
 
   static void CallMessageDispatchHandler();
 
+  static Handle<Context> GetDebugContext();
+
   // Unload the debugger if possible. Only called when no debugger is currently
   // active.
   static void UnloadDebugger();
+  friend void ForceUnloadDebugger();  // In test-debug.cc
 
   inline static bool EventActive(v8::DebugEvent event) {
     ScopedLock with(debugger_access_);
@@ -674,8 +714,9 @@ class Debugger {
   static void set_loading_debugger(bool v) { is_loading_debugger_ = v; }
   static bool is_loading_debugger() { return Debugger::is_loading_debugger_; }
 
- private:
   static bool IsDebuggerActive();
+
+ private:
   static void ListenersChanged();
 
   static Mutex* debugger_access_;  // Mutex guarding debugger variables.

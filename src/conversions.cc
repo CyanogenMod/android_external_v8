@@ -26,10 +26,12 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <stdarg.h>
+#include <limits.h>
 
 #include "v8.h"
 
 #include "conversions-inl.h"
+#include "dtoa.h"
 #include "factory.h"
 #include "scanner.h"
 
@@ -46,134 +48,320 @@ int HexValue(uc32 c) {
   return -1;
 }
 
+namespace {
 
-// Provide a common interface to getting a character at a certain
-// index from a char* or a String object.
-static inline int GetChar(const char* str, int index) {
-  ASSERT(index >= 0 && index < StrLength(str));
-  return str[index];
+// C++-style iterator adaptor for StringInputBuffer
+// (unlike C++ iterators the end-marker has different type).
+class StringInputBufferIterator {
+ public:
+  class EndMarker {};
+
+  explicit StringInputBufferIterator(StringInputBuffer* buffer);
+
+  int operator*() const;
+  void operator++();
+  bool operator==(EndMarker const&) const { return end_; }
+  bool operator!=(EndMarker const& m) const { return !end_; }
+
+ private:
+  StringInputBuffer* const buffer_;
+  int current_;
+  bool end_;
+};
+
+
+StringInputBufferIterator::StringInputBufferIterator(
+    StringInputBuffer* buffer) : buffer_(buffer) {
+  ++(*this);
+}
+
+int StringInputBufferIterator::operator*() const {
+  return current_;
 }
 
 
-static inline int GetChar(String* str, int index) {
-  return str->Get(index);
-}
-
-
-static inline int GetLength(const char* str) {
-  return StrLength(str);
-}
-
-
-static inline int GetLength(String* str) {
-  return str->length();
-}
-
-
-static inline const char* GetCString(const char* str, int index) {
-  return str + index;
-}
-
-
-static inline const char* GetCString(String* str, int index) {
-  int length = str->length();
-  char* result = NewArray<char>(length + 1);
-  for (int i = index; i < length; i++) {
-    uc16 c = str->Get(i);
-    if (c <= 127) {
-      result[i - index] = static_cast<char>(c);
-    } else {
-      result[i - index] = 127;  // Force number parsing to fail.
-    }
+void StringInputBufferIterator::operator++() {
+  end_ = !buffer_->has_more();
+  if (!end_) {
+    current_ = buffer_->GetNext();
   }
-  result[length - index] = '\0';
-  return result;
+}
 }
 
 
-static inline void ReleaseCString(const char* original, const char* str) {
-}
-
-
-static inline void ReleaseCString(String* original, const char* str) {
-  DeleteArray(const_cast<char *>(str));
-}
-
-
-static inline bool IsSpace(const char* str, int index) {
-  ASSERT(index >= 0 && index < StrLength(str));
-  return Scanner::kIsWhiteSpace.get(str[index]);
-}
-
-
-static inline bool IsSpace(String* str, int index) {
-  return Scanner::kIsWhiteSpace.get(str->Get(index));
-}
-
-
-static inline bool SubStringEquals(const char* str,
-                                   int index,
-                                   const char* other) {
-  return strncmp(str + index, other, strlen(other)) != 0;
-}
-
-
-static inline bool SubStringEquals(String* str, int index, const char* other) {
-  HandleScope scope;
-  int str_length = str->length();
-  int other_length = StrLength(other);
-  int end = index + other_length < str_length ?
-            index + other_length :
-            str_length;
-  Handle<String> substring =
-      Factory::NewSubString(Handle<String>(str), index, end);
-  return substring->IsEqualTo(Vector<const char>(other, other_length));
-}
-
-
-// Check if a string should be parsed as an octal number.  The string
-// can be either a char* or a String*.
-template<class S>
-static bool ShouldParseOctal(S* s, int i) {
-  int index = i;
-  int len = GetLength(s);
-  if (index < len && GetChar(s, index) != '0') return false;
-
-  // If the first real character (following '0') is not an octal
-  // digit, bail out early. This also takes care of numbers of the
-  // forms 0.xxx and 0exxx by not allowing the first 0 to be
-  // interpreted as an octal.
-  index++;
-  if (index < len) {
-    int d = GetChar(s, index) - '0';
-    if (d < 0 || d > 7) return false;
-  } else {
-    return false;
+template <class Iterator, class EndMark>
+static bool SubStringEquals(Iterator* current,
+                            EndMark end,
+                            const char* substring) {
+  ASSERT(**current == *substring);
+  for (substring++; *substring != '\0'; substring++) {
+    ++*current;
+    if (*current == end || **current != *substring) return false;
   }
-
-  // Traverse all digits (including the first). If there is an octal
-  // prefix which is not a part of a longer decimal prefix, we return
-  // true. Otherwise, false is returned.
-  while (index < len) {
-    int d = GetChar(s, index++) - '0';
-    if (d == 8 || d == 9) return false;
-    if (d <  0 || d >  7) return true;
-  }
+  ++*current;
   return true;
 }
 
 
 extern "C" double gay_strtod(const char* s00, const char** se);
 
+// Maximum number of significant digits in decimal representation.
+// The longest possible double in decimal representation is
+// (2^53 - 1) * 2 ^ -1074 that is (2 ^ 53 - 1) * 5 ^ 1074 / 10 ^ 1074
+// (768 digits). If we parse a number whose first digits are equal to a
+// mean of 2 adjacent doubles (that could have up to 769 digits) the result
+// must be rounded to the bigger one unless the tail consists of zeros, so
+// we don't need to preserve all the digits.
+const int kMaxSignificantDigits = 772;
 
-// Parse an int from a string starting a given index and in a given
-// radix.  The string can be either a char* or a String*.
-template <class S>
-static int InternalStringToInt(S* s, int i, int radix, double* value) {
-  int len = GetLength(s);
 
-  // Setup limits for computing the value.
-  ASSERT(2 <= radix && radix <= 36);
+static const double JUNK_STRING_VALUE = OS::nan_value();
+
+
+// Returns true if a nonspace found and false if the end has reached.
+template <class Iterator, class EndMark>
+static inline bool AdvanceToNonspace(Iterator* current, EndMark end) {
+  while (*current != end) {
+    if (!Scanner::kIsWhiteSpace.get(**current)) return true;
+    ++*current;
+  }
+  return false;
+}
+
+
+static bool isDigit(int x, int radix) {
+  return (x >= '0' && x <= '9' && x < '0' + radix)
+      || (radix > 10 && x >= 'a' && x < 'a' + radix - 10)
+      || (radix > 10 && x >= 'A' && x < 'A' + radix - 10);
+}
+
+
+static double SignedZero(bool sign) {
+  return sign ? -0.0 : 0.0;
+}
+
+
+// Parsing integers with radix 2, 4, 8, 16, 32. Assumes current != end.
+template <int radix_log_2, class Iterator, class EndMark>
+static double InternalStringToIntDouble(Iterator current,
+                                        EndMark end,
+                                        bool sign,
+                                        bool allow_trailing_junk) {
+  ASSERT(current != end);
+
+  // Skip leading 0s.
+  while (*current == '0') {
+    ++current;
+    if (current == end) return SignedZero(sign);
+  }
+
+  int64_t number = 0;
+  int exponent = 0;
+  const int radix = (1 << radix_log_2);
+
+  do {
+    int digit;
+    if (*current >= '0' && *current <= '9' && *current < '0' + radix) {
+      digit = static_cast<char>(*current) - '0';
+    } else if (radix > 10 && *current >= 'a' && *current < 'a' + radix - 10) {
+      digit = static_cast<char>(*current) - 'a' + 10;
+    } else if (radix > 10 && *current >= 'A' && *current < 'A' + radix - 10) {
+      digit = static_cast<char>(*current) - 'A' + 10;
+    } else {
+      if (allow_trailing_junk || !AdvanceToNonspace(&current, end)) {
+        break;
+      } else {
+        return JUNK_STRING_VALUE;
+      }
+    }
+
+    number = number * radix + digit;
+    int overflow = static_cast<int>(number >> 53);
+    if (overflow != 0) {
+      // Overflow occurred. Need to determine which direction to round the
+      // result.
+      int overflow_bits_count = 1;
+      while (overflow > 1) {
+        overflow_bits_count++;
+        overflow >>= 1;
+      }
+
+      int dropped_bits_mask = ((1 << overflow_bits_count) - 1);
+      int dropped_bits = static_cast<int>(number) & dropped_bits_mask;
+      number >>= overflow_bits_count;
+      exponent = overflow_bits_count;
+
+      bool zero_tail = true;
+      while (true) {
+        ++current;
+        if (current == end || !isDigit(*current, radix)) break;
+        zero_tail = zero_tail && *current == '0';
+        exponent += radix_log_2;
+      }
+
+      if (!allow_trailing_junk && AdvanceToNonspace(&current, end)) {
+        return JUNK_STRING_VALUE;
+      }
+
+      int middle_value = (1 << (overflow_bits_count - 1));
+      if (dropped_bits > middle_value) {
+        number++;  // Rounding up.
+      } else if (dropped_bits == middle_value) {
+        // Rounding to even to consistency with decimals: half-way case rounds
+        // up if significant part is odd and down otherwise.
+        if ((number & 1) != 0 || !zero_tail) {
+          number++;  // Rounding up.
+        }
+      }
+
+      // Rounding up may cause overflow.
+      if ((number & ((int64_t)1 << 53)) != 0) {
+        exponent++;
+        number >>= 1;
+      }
+      break;
+    }
+    ++current;
+  } while (current != end);
+
+  ASSERT(number < ((int64_t)1 << 53));
+  ASSERT(static_cast<int64_t>(static_cast<double>(number)) == number);
+
+  if (exponent == 0) {
+    if (sign) {
+      if (number == 0) return -0.0;
+      number = -number;
+    }
+    return static_cast<double>(number);
+  }
+
+  ASSERT(number != 0);
+  // The double could be constructed faster from number (mantissa), exponent
+  // and sign. Assuming it's a rare case more simple code is used.
+  return static_cast<double>(sign ? -number : number) * pow(2.0, exponent);
+}
+
+
+template <class Iterator, class EndMark>
+static double InternalStringToInt(Iterator current, EndMark end, int radix) {
+  const bool allow_trailing_junk = true;
+  const double empty_string_val = JUNK_STRING_VALUE;
+
+  if (!AdvanceToNonspace(&current, end)) return empty_string_val;
+
+  bool sign = false;
+  bool leading_zero = false;
+
+  if (*current == '+') {
+    // Ignore leading sign; skip following spaces.
+    ++current;
+    if (!AdvanceToNonspace(&current, end)) return JUNK_STRING_VALUE;
+  } else if (*current == '-') {
+    ++current;
+    if (!AdvanceToNonspace(&current, end)) return JUNK_STRING_VALUE;
+    sign = true;
+  }
+
+  if (radix == 0) {
+    // Radix detection.
+    if (*current == '0') {
+      ++current;
+      if (current == end) return SignedZero(sign);
+      if (*current == 'x' || *current == 'X') {
+        radix = 16;
+        ++current;
+        if (current == end) return JUNK_STRING_VALUE;
+      } else {
+        radix = 8;
+        leading_zero = true;
+      }
+    } else {
+      radix = 10;
+    }
+  } else if (radix == 16) {
+    if (*current == '0') {
+      // Allow "0x" prefix.
+      ++current;
+      if (current == end) return SignedZero(sign);
+      if (*current == 'x' || *current == 'X') {
+        ++current;
+        if (current == end) return JUNK_STRING_VALUE;
+      } else {
+        leading_zero = true;
+      }
+    }
+  }
+
+  if (radix < 2 || radix > 36) return JUNK_STRING_VALUE;
+
+  // Skip leading zeros.
+  while (*current == '0') {
+    leading_zero = true;
+    ++current;
+    if (current == end) return SignedZero(sign);
+  }
+
+  if (!leading_zero && !isDigit(*current, radix)) {
+    return JUNK_STRING_VALUE;
+  }
+
+  if (IsPowerOf2(radix)) {
+    switch (radix) {
+      case 2:
+        return InternalStringToIntDouble<1>(
+                   current, end, sign, allow_trailing_junk);
+      case 4:
+        return InternalStringToIntDouble<2>(
+                   current, end, sign, allow_trailing_junk);
+      case 8:
+        return InternalStringToIntDouble<3>(
+                   current, end, sign, allow_trailing_junk);
+
+      case 16:
+        return InternalStringToIntDouble<4>(
+                   current, end, sign, allow_trailing_junk);
+
+      case 32:
+        return InternalStringToIntDouble<5>(
+                   current, end, sign, allow_trailing_junk);
+      default:
+        UNREACHABLE();
+    }
+  }
+
+  if (radix == 10) {
+    // Parsing with strtod.
+    const int kMaxSignificantDigits = 309;  // Doubles are less than 1.8e308.
+    // The buffer may contain up to kMaxSignificantDigits + 1 digits and a zero
+    // end.
+    const int kBufferSize = kMaxSignificantDigits + 2;
+    char buffer[kBufferSize];
+    int buffer_pos = 0;
+    while (*current >= '0' && *current <= '9') {
+      if (buffer_pos <= kMaxSignificantDigits) {
+        // If the number has more than kMaxSignificantDigits it will be parsed
+        // as infinity.
+        ASSERT(buffer_pos < kBufferSize);
+        buffer[buffer_pos++] = static_cast<char>(*current);
+      }
+      ++current;
+      if (current == end) break;
+    }
+
+    if (!allow_trailing_junk && AdvanceToNonspace(&current, end)) {
+      return JUNK_STRING_VALUE;
+    }
+
+    ASSERT(buffer_pos < kBufferSize);
+    buffer[buffer_pos++] = '\0';
+    return sign ? -gay_strtod(buffer, NULL) : gay_strtod(buffer, NULL);
+  }
+
+  // The following code causes accumulating rounding error for numbers greater
+  // than ~2^56. It's explicitly allowed in the spec: "if R is not 2, 4, 8, 10,
+  // 16, or 32, then mathInt may be an implementation-dependent approximation to
+  // the mathematical integer value" (15.1.2.2).
+
   int lim_0 = '0' + (radix < 10 ? radix : 10);
   int lim_a = 'a' + (radix - 10);
   int lim_A = 'A' + (radix - 10);
@@ -183,22 +371,22 @@ static int InternalStringToInt(S* s, int i, int radix, double* value) {
   // loops as long as possible to avoid loosing precision.
 
   double v = 0.0;
-  int j;
-  for (j = i; j < len;) {
+  bool done = false;
+  do {
     // Parse the longest part of the string starting at index j
     // possible while keeping the multiplier, and thus the part
     // itself, within 32 bits.
-    uint32_t part = 0, multiplier = 1;
-    int k;
-    for (k = j; k < len; k++) {
-      int c = GetChar(s, k);
-      if (c >= '0' && c < lim_0) {
-        c = c - '0';
-      } else if (c >= 'a' && c < lim_a) {
-        c = c - 'a' + 10;
-      } else if (c >= 'A' && c < lim_A) {
-        c = c - 'A' + 10;
+    unsigned int part = 0, multiplier = 1;
+    while (true) {
+      int d;
+      if (*current >= '0' && *current < lim_0) {
+        d = *current - '0';
+      } else if (*current >= 'a' && *current < lim_a) {
+        d = *current - 'a' + 10;
+      } else if (*current >= 'A' && *current < lim_A) {
+        d = *current - 'A' + 10;
       } else {
+        done = true;
         break;
       }
 
@@ -206,150 +394,347 @@ static int InternalStringToInt(S* s, int i, int radix, double* value) {
       // in 32 bits. When we can't guarantee that the next iteration
       // will not overflow the multiplier, we stop parsing the part
       // by leaving the loop.
-      static const uint32_t kMaximumMultiplier = 0xffffffffU / 36;
+      const unsigned int kMaximumMultiplier = 0xffffffffU / 36;
       uint32_t m = multiplier * radix;
       if (m > kMaximumMultiplier) break;
-      part = part * radix + c;
+      part = part * radix + d;
       multiplier = m;
       ASSERT(multiplier > part);
+
+      ++current;
+      if (current == end) {
+        done = true;
+        break;
+      }
     }
 
-    // Compute the number of part digits. If no digits were parsed;
-    // we're done parsing the entire string.
-    int digits = k - j;
-    if (digits == 0) break;
-
     // Update the value and skip the part in the string.
-    ASSERT(multiplier ==
-           pow(static_cast<double>(radix), static_cast<double>(digits)));
     v = v * multiplier + part;
-    j = k;
-  }
+  } while (!done);
 
-  // If the resulting value is larger than 2^53 the value does not fit
-  // in the mantissa of the double and there is a loss of precision.
-  // When the value is larger than 2^53 the rounding depends on the
-  // code generation.  If the code generator spills the double value
-  // it uses 64 bits and if it does not it uses 80 bits.
-  //
-  // If there is a potential for overflow we resort to strtod for
-  // radix 10 numbers to get higher precision.  For numbers in another
-  // radix we live with the loss of precision.
-  static const double kPreciseConversionLimit = 9007199254740992.0;
-  if (radix == 10 && v > kPreciseConversionLimit) {
-    const char* cstr = GetCString(s, i);
-    const char* end;
-    v = gay_strtod(cstr, &end);
-    ReleaseCString(s, cstr);
-  }
-
-  *value = v;
-  return j;
-}
-
-
-int StringToInt(String* str, int index, int radix, double* value) {
-  return InternalStringToInt(str, index, radix, value);
-}
-
-
-int StringToInt(const char* str, int index, int radix, double* value) {
-  return InternalStringToInt(const_cast<char*>(str), index, radix, value);
-}
-
-
-static const double JUNK_STRING_VALUE = OS::nan_value();
-
-
-// Convert a string to a double value.  The string can be either a
-// char* or a String*.
-template<class S>
-static double InternalStringToDouble(S* str,
-                                     int flags,
-                                     double empty_string_val) {
-  double result = 0.0;
-  int index = 0;
-
-  int len = GetLength(str);
-
-  // Skip leading spaces.
-  while ((index < len) && IsSpace(str, index)) index++;
-
-  // Is the string empty?
-  if (index >= len) return empty_string_val;
-
-  // Get the first character.
-  uint16_t first = GetChar(str, index);
-
-  // Numbers can only start with '-', '+', '.', 'I' (Infinity), or a digit.
-  if (first != '-' && first != '+' && first != '.' && first != 'I' &&
-      (first > '9' || first < '0')) {
+  if (!allow_trailing_junk && AdvanceToNonspace(&current, end)) {
     return JUNK_STRING_VALUE;
   }
 
-  // Compute sign of result based on first character.
-  int sign = 1;
-  if (first == '-') {
-    sign = -1;
-    index++;
-    // String only containing a '-' are junk chars.
-    if (index == len) return JUNK_STRING_VALUE;
-  }
-
-  // do we have a hex number?
-  // (since the string is 0-terminated, it's ok to look one char beyond the end)
-  if ((flags & ALLOW_HEX) != 0 &&
-      (index + 1) < len &&
-      GetChar(str, index) == '0' &&
-      (GetChar(str, index + 1) == 'x' || GetChar(str, index + 1) == 'X')) {
-    index += 2;
-    index = StringToInt(str, index, 16, &result);
-  } else if ((flags & ALLOW_OCTALS) != 0 && ShouldParseOctal(str, index)) {
-    // NOTE: We optimistically try to parse the number as an octal (if
-    // we're allowed to), even though this is not as dictated by
-    // ECMA-262. The reason for doing this is compatibility with IE and
-    // Firefox.
-    index = StringToInt(str, index, 8, &result);
-  } else {
-    const char* cstr = GetCString(str, index);
-    const char* end;
-    // Optimistically parse the number and then, if that fails,
-    // check if it might have been {+,-,}Infinity.
-    result = gay_strtod(cstr, &end);
-    ReleaseCString(str, cstr);
-    if (result != 0.0 || end != cstr) {
-      // It appears that strtod worked
-      index += static_cast<int>(end - cstr);
-    } else {
-      // Check for {+,-,}Infinity
-      bool is_negative = (GetChar(str, index) == '-');
-      if (GetChar(str, index) == '+' || GetChar(str, index) == '-')
-        index++;
-      if (!SubStringEquals(str, index, "Infinity"))
-        return JUNK_STRING_VALUE;
-      result = is_negative ? -V8_INFINITY : V8_INFINITY;
-      index += 8;
-    }
-  }
-
-  if ((flags & ALLOW_TRAILING_JUNK) == 0) {
-    // skip trailing spaces
-    while ((index < len) && IsSpace(str, index)) index++;
-    // string ending with junk?
-    if (index < len) return JUNK_STRING_VALUE;
-  }
-
-  return sign * result;
+  return sign ? -v : v;
 }
 
 
+// Converts a string to a double value. Assumes the Iterator supports
+// the following operations:
+// 1. current == end (other ops are not allowed), current != end.
+// 2. *current - gets the current character in the sequence.
+// 3. ++current (advances the position).
+template <class Iterator, class EndMark>
+static double InternalStringToDouble(Iterator current,
+                                     EndMark end,
+                                     int flags,
+                                     double empty_string_val) {
+  // To make sure that iterator dereferencing is valid the following
+  // convention is used:
+  // 1. Each '++current' statement is followed by check for equality to 'end'.
+  // 2. If AdvanceToNonspace returned false then current == end.
+  // 3. If 'current' becomes be equal to 'end' the function returns or goes to
+  // 'parsing_done'.
+  // 4. 'current' is not dereferenced after the 'parsing_done' label.
+  // 5. Code before 'parsing_done' may rely on 'current != end'.
+  if (!AdvanceToNonspace(&current, end)) return empty_string_val;
+
+  const bool allow_trailing_junk = (flags & ALLOW_TRAILING_JUNK) != 0;
+
+  // The longest form of simplified number is: "-<significant digits>'.1eXXX\0".
+  const int kBufferSize = kMaxSignificantDigits + 10;
+  char buffer[kBufferSize];  // NOLINT: size is known at compile time.
+  int buffer_pos = 0;
+
+  // Exponent will be adjusted if insignificant digits of the integer part
+  // or insignificant leading zeros of the fractional part are dropped.
+  int exponent = 0;
+  int significant_digits = 0;
+  int insignificant_digits = 0;
+  bool nonzero_digit_dropped = false;
+  bool fractional_part = false;
+
+  bool sign = false;
+
+  if (*current == '+') {
+    // Ignore leading sign; skip following spaces.
+    ++current;
+    if (!AdvanceToNonspace(&current, end)) return JUNK_STRING_VALUE;
+  } else if (*current == '-') {
+    buffer[buffer_pos++] = '-';
+    ++current;
+    if (!AdvanceToNonspace(&current, end)) return JUNK_STRING_VALUE;
+    sign = true;
+  }
+
+  static const char kInfinitySymbol[] = "Infinity";
+  if (*current == kInfinitySymbol[0]) {
+    if (!SubStringEquals(&current, end, kInfinitySymbol)) {
+      return JUNK_STRING_VALUE;
+    }
+
+    if (!allow_trailing_junk && AdvanceToNonspace(&current, end)) {
+      return JUNK_STRING_VALUE;
+    }
+
+    ASSERT(buffer_pos == 0 || buffer[0] == '-');
+    return buffer_pos > 0 ? -V8_INFINITY : V8_INFINITY;
+  }
+
+  bool leading_zero = false;
+  if (*current == '0') {
+    ++current;
+    if (current == end) return SignedZero(sign);
+
+    leading_zero = true;
+
+    // It could be hexadecimal value.
+    if ((flags & ALLOW_HEX) && (*current == 'x' || *current == 'X')) {
+      ++current;
+      if (current == end || !isDigit(*current, 16)) {
+        return JUNK_STRING_VALUE;  // "0x".
+      }
+
+      bool sign = (buffer_pos > 0 && buffer[0] == '-');
+      return InternalStringToIntDouble<4>(current,
+                                          end,
+                                          sign,
+                                          allow_trailing_junk);
+    }
+
+    // Ignore leading zeros in the integer part.
+    while (*current == '0') {
+      ++current;
+      if (current == end) return SignedZero(sign);
+    }
+  }
+
+  bool octal = leading_zero && (flags & ALLOW_OCTALS) != 0;
+
+  // Copy significant digits of the integer part (if any) to the buffer.
+  while (*current >= '0' && *current <= '9') {
+    if (significant_digits < kMaxSignificantDigits) {
+      ASSERT(buffer_pos < kBufferSize);
+      buffer[buffer_pos++] = static_cast<char>(*current);
+      significant_digits++;
+      // Will later check if it's an octal in the buffer.
+    } else {
+      insignificant_digits++;  // Move the digit into the exponential part.
+      nonzero_digit_dropped = nonzero_digit_dropped || *current != '0';
+    }
+    octal = octal && *current < '8';
+    ++current;
+    if (current == end) goto parsing_done;
+  }
+
+  if (significant_digits == 0) {
+    octal = false;
+  }
+
+  if (*current == '.') {
+    ++current;
+    if (current == end) {
+      if (significant_digits == 0 && !leading_zero) {
+        return JUNK_STRING_VALUE;
+      } else {
+        goto parsing_done;
+      }
+    }
+
+    if (significant_digits == 0) {
+      // octal = false;
+      // Integer part consists of 0 or is absent. Significant digits start after
+      // leading zeros (if any).
+      while (*current == '0') {
+        ++current;
+        if (current == end) return SignedZero(sign);
+        exponent--;  // Move this 0 into the exponent.
+      }
+    }
+
+    ASSERT(buffer_pos < kBufferSize);
+    buffer[buffer_pos++] = '.';
+    fractional_part = true;
+
+    // There is the fractional part.
+    while (*current >= '0' && *current <= '9') {
+      if (significant_digits < kMaxSignificantDigits) {
+        ASSERT(buffer_pos < kBufferSize);
+        buffer[buffer_pos++] = static_cast<char>(*current);
+        significant_digits++;
+      } else {
+        // Ignore insignificant digits in the fractional part.
+        nonzero_digit_dropped = nonzero_digit_dropped || *current != '0';
+      }
+      ++current;
+      if (current == end) goto parsing_done;
+    }
+  }
+
+  if (!leading_zero && exponent == 0 && significant_digits == 0) {
+    // If leading_zeros is true then the string contains zeros.
+    // If exponent < 0 then string was [+-]\.0*...
+    // If significant_digits != 0 the string is not equal to 0.
+    // Otherwise there are no digits in the string.
+    return JUNK_STRING_VALUE;
+  }
+
+  // Parse exponential part.
+  if (*current == 'e' || *current == 'E') {
+    if (octal) return JUNK_STRING_VALUE;
+    ++current;
+    if (current == end) {
+      if (allow_trailing_junk) {
+        goto parsing_done;
+      } else {
+        return JUNK_STRING_VALUE;
+      }
+    }
+    char sign = '+';
+    if (*current == '+' || *current == '-') {
+      sign = static_cast<char>(*current);
+      ++current;
+      if (current == end) {
+        if (allow_trailing_junk) {
+          goto parsing_done;
+        } else {
+          return JUNK_STRING_VALUE;
+        }
+      }
+    }
+
+    if (current == end || *current < '0' || *current > '9') {
+      if (allow_trailing_junk) {
+        goto parsing_done;
+      } else {
+        return JUNK_STRING_VALUE;
+      }
+    }
+
+    const int max_exponent = INT_MAX / 2;
+    ASSERT(-max_exponent / 2 <= exponent && exponent <= max_exponent / 2);
+    int num = 0;
+    do {
+      // Check overflow.
+      int digit = *current - '0';
+      if (num >= max_exponent / 10
+          && !(num == max_exponent / 10 && digit <= max_exponent % 10)) {
+        num = max_exponent;
+      } else {
+        num = num * 10 + digit;
+      }
+      ++current;
+    } while (current != end && *current >= '0' && *current <= '9');
+
+    exponent += (sign == '-' ? -num : num);
+  }
+
+  if (!allow_trailing_junk && AdvanceToNonspace(&current, end)) {
+    return JUNK_STRING_VALUE;
+  }
+
+  parsing_done:
+  exponent += insignificant_digits;
+
+  if (octal) {
+    bool sign = buffer[0] == '-';
+    int start_pos = (sign ? 1 : 0);
+
+    return InternalStringToIntDouble<3>(buffer + start_pos,
+                                        buffer + buffer_pos,
+                                        sign,
+                                        allow_trailing_junk);
+  }
+
+  if (nonzero_digit_dropped) {
+    if (insignificant_digits) buffer[buffer_pos++] = '.';
+    buffer[buffer_pos++] = '1';
+  }
+
+  // If the number has no more than kMaxDigitsInInt digits and doesn't have
+  // fractional part it could be parsed faster (without checks for
+  // spaces, overflow, etc.).
+  const int kMaxDigitsInInt = 9 * sizeof(int) / 4;  // NOLINT
+
+  if (exponent != 0) {
+    ASSERT(buffer_pos < kBufferSize);
+    buffer[buffer_pos++] = 'e';
+    if (exponent < 0) {
+      ASSERT(buffer_pos < kBufferSize);
+      buffer[buffer_pos++] = '-';
+      exponent = -exponent;
+    }
+    if (exponent > 999) exponent = 999;  // Result will be Infinity or 0 or -0.
+
+    const int exp_digits = 3;
+    for (int i = 0; i < exp_digits; i++) {
+      buffer[buffer_pos + exp_digits - 1 - i] = '0' + exponent % 10;
+      exponent /= 10;
+    }
+    ASSERT(exponent == 0);
+    buffer_pos += exp_digits;
+  } else if (!fractional_part && significant_digits <= kMaxDigitsInInt) {
+    if (significant_digits == 0) return SignedZero(sign);
+    ASSERT(buffer_pos > 0);
+    int num = 0;
+    int start_pos = (buffer[0] == '-' ? 1 : 0);
+    for (int i = start_pos; i < buffer_pos; i++) {
+      ASSERT(buffer[i] >= '0' && buffer[i] <= '9');
+      num = 10 * num + (buffer[i] - '0');
+    }
+    return static_cast<double>(start_pos == 0 ? num : -num);
+  }
+
+  ASSERT(buffer_pos < kBufferSize);
+  buffer[buffer_pos] = '\0';
+
+  return gay_strtod(buffer, NULL);
+}
+
 double StringToDouble(String* str, int flags, double empty_string_val) {
-  return InternalStringToDouble(str, flags, empty_string_val);
+  StringShape shape(str);
+  if (shape.IsSequentialAscii()) {
+    const char* begin = SeqAsciiString::cast(str)->GetChars();
+    const char* end = begin + str->length();
+    return InternalStringToDouble(begin, end, flags, empty_string_val);
+  } else if (shape.IsSequentialTwoByte()) {
+    const uc16* begin = SeqTwoByteString::cast(str)->GetChars();
+    const uc16* end = begin + str->length();
+    return InternalStringToDouble(begin, end, flags, empty_string_val);
+  } else {
+    StringInputBuffer buffer(str);
+    return InternalStringToDouble(StringInputBufferIterator(&buffer),
+                                  StringInputBufferIterator::EndMarker(),
+                                  flags,
+                                  empty_string_val);
+  }
+}
+
+
+double StringToInt(String* str, int radix) {
+  StringShape shape(str);
+  if (shape.IsSequentialAscii()) {
+    const char* begin = SeqAsciiString::cast(str)->GetChars();
+    const char* end = begin + str->length();
+    return InternalStringToInt(begin, end, radix);
+  } else if (shape.IsSequentialTwoByte()) {
+    const uc16* begin = SeqTwoByteString::cast(str)->GetChars();
+    const uc16* end = begin + str->length();
+    return InternalStringToInt(begin, end, radix);
+  } else {
+    StringInputBuffer buffer(str);
+    return InternalStringToInt(StringInputBufferIterator(&buffer),
+                               StringInputBufferIterator::EndMarker(),
+                               radix);
+  }
 }
 
 
 double StringToDouble(const char* str, int flags, double empty_string_val) {
-  return InternalStringToDouble(str, flags, empty_string_val);
+  const char* end = str + StrLength(str);
+
+  return InternalStringToDouble(str, end, flags, empty_string_val);
 }
 
 
@@ -381,9 +766,21 @@ const char* DoubleToCString(double v, Vector<char> buffer) {
     default: {
       int decimal_point;
       int sign;
+      char* decimal_rep;
+      bool used_gay_dtoa = false;
+      const int kV8DtoaBufferCapacity = kBase10MaximalLength + 1;
+      char v8_dtoa_buffer[kV8DtoaBufferCapacity];
+      int length;
 
-      char* decimal_rep = dtoa(v, 0, 0, &decimal_point, &sign, NULL);
-      int length = StrLength(decimal_rep);
+      if (DoubleToAscii(v, DTOA_SHORTEST, 0,
+                        Vector<char>(v8_dtoa_buffer, kV8DtoaBufferCapacity),
+                        &sign, &length, &decimal_point)) {
+        decimal_rep = v8_dtoa_buffer;
+      } else {
+        decimal_rep = dtoa(v, 0, 0, &decimal_point, &sign, NULL);
+        used_gay_dtoa = true;
+        length = StrLength(decimal_rep);
+      }
 
       if (sign) builder.AddCharacter('-');
 
@@ -418,7 +815,7 @@ const char* DoubleToCString(double v, Vector<char> buffer) {
         builder.AddFormatted("%d", exponent);
       }
 
-      freedtoa(decimal_rep);
+      if (used_gay_dtoa) freedtoa(decimal_rep);
     }
   }
   return builder.Finalize();
@@ -446,7 +843,11 @@ const char* IntToCString(int n, Vector<char> buffer) {
 
 
 char* DoubleToFixedCString(double value, int f) {
+  const int kMaxDigitsBeforePoint = 20;
+  const double kFirstNonFixed = 1e21;
+  const int kMaxDigitsAfterPoint = 20;
   ASSERT(f >= 0);
+  ASSERT(f <= kMaxDigitsAfterPoint);
 
   bool negative = false;
   double abs_value = value;
@@ -455,7 +856,9 @@ char* DoubleToFixedCString(double value, int f) {
     negative = true;
   }
 
-  if (abs_value >= 1e21) {
+  // If abs_value has more than kMaxDigitsBeforePoint digits before the point
+  // use the non-fixed conversion routine.
+  if (abs_value >= kFirstNonFixed) {
     char arr[100];
     Vector<char> buffer(arr, ARRAY_SIZE(arr));
     return StrDup(DoubleToCString(value, buffer));
@@ -464,8 +867,16 @@ char* DoubleToFixedCString(double value, int f) {
   // Find a sufficiently precise decimal representation of n.
   int decimal_point;
   int sign;
-  char* decimal_rep = dtoa(abs_value, 3, f, &decimal_point, &sign, NULL);
-  int decimal_rep_length = StrLength(decimal_rep);
+  // Add space for the '.' and the '\0' byte.
+  const int kDecimalRepCapacity =
+      kMaxDigitsBeforePoint + kMaxDigitsAfterPoint + 2;
+  char decimal_rep[kDecimalRepCapacity];
+  int decimal_rep_length;
+  bool status = DoubleToAscii(value, DTOA_FIXED, f,
+                              Vector<char>(decimal_rep, kDecimalRepCapacity),
+                              &sign, &decimal_rep_length, &decimal_point);
+  USE(status);
+  ASSERT(status);
 
   // Create a representation that is padded with zeros if needed.
   int zero_prefix_length = 0;
@@ -488,7 +899,6 @@ char* DoubleToFixedCString(double value, int f) {
   rep_builder.AddString(decimal_rep);
   rep_builder.AddPadding('0', zero_postfix_length);
   char* rep = rep_builder.Finalize();
-  freedtoa(decimal_rep);
 
   // Create the result string by appending a minus and putting in a
   // decimal point if needed.

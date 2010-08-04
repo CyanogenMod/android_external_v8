@@ -36,15 +36,29 @@ namespace internal {
 
 // Platform-specific inline functions.
 
-void DeferredCode::Jump() { __ b(&entry_label_); }
-
-void CodeGenerator::GenerateMathSin(ZoneList<Expression*>* args) {
-  UNIMPLEMENTED_MIPS();
+void DeferredCode::Jump() {
+  __ b(&entry_label_);
+  __ nop();
 }
 
 
-void CodeGenerator::GenerateMathCos(ZoneList<Expression*>* args) {
-  UNIMPLEMENTED_MIPS();
+void Reference::GetValueAndSpill() {
+  GetValue();
+}
+
+
+void CodeGenerator::VisitAndSpill(Statement* statement) {
+  Visit(statement);
+}
+
+
+void CodeGenerator::VisitStatementsAndSpill(ZoneList<Statement*>* statements) {
+  VisitStatements(statements);
+}
+
+
+void CodeGenerator::LoadAndSpill(Expression* expression) {
+  Load(expression);
 }
 
 

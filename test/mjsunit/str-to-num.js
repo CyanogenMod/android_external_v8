@@ -29,8 +29,20 @@ function toNumber(val) {
   return Number(val);
 }
 
-// assertEquals(, toNumber());
+function repeat(s, num) {
+  var result = '';
+  while (num > 0) {
+    if ((num & 1) != 0) result += s;
+    s += s;
+    num >>= 1;
+  }
 
+  return result;
+}
+
+assertEquals('0000000000', repeat('0', 10));
+
+// assertEquals(, toNumber());
 
 assertEquals(123, toNumber(" 123"));
 assertEquals(123, toNumber("\n123"));
@@ -50,6 +62,10 @@ assertEquals(123, toNumber("\r123\r"));
 assertEquals(123, toNumber("\t123\t"));
 assertEquals(123, toNumber("\f123\f"));
 
+assertEquals(16, toNumber(" 0x10 "));
+assertEquals(NaN, toNumber("0x"));
+assertEquals(NaN, toNumber("0x "));
+
 assertTrue(isNaN(toNumber(" NaN ")));
 assertEquals(Infinity,  toNumber(" Infinity ") ," Infinity");
 assertEquals(-Infinity, toNumber(" -Infinity "));
@@ -61,6 +77,7 @@ assertEquals(Infinity,  toNumber("+Infinity "), "+Infinity");
 assertEquals(0,  toNumber("0"));
 assertEquals(0,  toNumber("+0"));
 assertEquals(-0, toNumber("-0"));
+assertEquals(-Infinity, 1 / toNumber("-0"));
 
 assertEquals(1,  toNumber("1"));
 assertEquals(1,  toNumber("+1"));
@@ -130,11 +147,38 @@ assertEquals(15, toNumber("0Xf"));
 assertEquals(15, toNumber("0XF"));
 
 assertEquals(0,  toNumber("0x000"));
+assertEquals(-Infinity,  1 / toNumber("-0x000"));
+assertEquals(0,  toNumber("0x000" + repeat('0', 1000)));
 assertEquals(9,  toNumber("0x009"));
 assertEquals(10, toNumber("0x00a"));
 assertEquals(10, toNumber("0x00A"));
 assertEquals(15, toNumber("0x00f"));
 assertEquals(15, toNumber("0x00F"));
+assertEquals(15, toNumber("0x00F "));
+assertEquals(Infinity,  toNumber("0x" + repeat('0', 1000) + '1'
+                        + repeat('0', 1000)));
+assertEquals(-Infinity,  toNumber("-0x1" + repeat('0', 1000)));
+
+assertEquals(0x1000000 * 0x10000000, toNumber("0x10000000000000"));
+assertEquals(0x1000000 * 0x10000000 + 1, toNumber("0x10000000000001"));
+assertEquals(0x10 * 0x1000000 * 0x10000000, toNumber("0x100000000000000"));
+assertEquals(0x10 * 0x1000000 * 0x10000000, toNumber("0x100000000000001"));
+assertEquals(0x10 * 0x1000000 * 0x10000000, toNumber("0x100000000000007"));
+assertEquals(0x10 * 0x1000000 * 0x10000000, toNumber("0x100000000000008"));
+assertEquals(0x10 * (0x1000000 * 0x10000000 + 1),
+             toNumber("0x100000000000009"));
+assertEquals(0x10 * (0x1000000 * 0x10000000 + 1),
+             toNumber("0x10000000000000F"));
+assertEquals(0x10 * (0x1000000 * 0x10000000 + 1),
+             toNumber("0x100000000000010"));
+assertEquals(0x100000000000 * 0x1000000 * 0x10000000,
+             toNumber("0x1000000000000000000000000"));
+assertEquals(0x100000000000 * 0x1000000 * 0x10000000,
+             toNumber("0x1000000000000080000000000"));
+assertEquals(0x100000000000 * (0x1000000 * 0x10000000 + 1),
+             toNumber("0x1000000000000080000000001"));
+assertEquals(0x100000000000 * 0x1000000 * 0x10000000,
+             toNumber("  0x1000000000000000000000000  "));
 
 assertEquals(0, toNumber("00"));
 assertEquals(1, toNumber("01"));
@@ -156,3 +200,6 @@ assertTrue(isNaN(toNumber("0x100 junk")), "0x100 junk");
 assertTrue(isNaN(toNumber("100.0 junk")), "100.0 junk");
 assertTrue(isNaN(toNumber(".1e4 junk")), ".1e4 junk");
 assertTrue(isNaN(toNumber("Infinity junk")), "Infinity junk");
+assertTrue(isNaN(toNumber("1e")), "1e");
+assertTrue(isNaN(toNumber("1e ")), "1e_");
+assertTrue(isNaN(toNumber("1" + repeat('0', 1000) + 'junk')), "1e1000 junk");

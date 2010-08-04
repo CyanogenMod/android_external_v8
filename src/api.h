@@ -192,6 +192,10 @@ class Utils {
       v8::internal::Handle<v8::internal::Proxy> obj);
   static inline Local<Message> MessageToLocal(
       v8::internal::Handle<v8::internal::Object> obj);
+  static inline Local<StackTrace> StackTraceToLocal(
+      v8::internal::Handle<v8::internal::JSArray> obj);
+  static inline Local<StackFrame> StackFrameToLocal(
+      v8::internal::Handle<v8::internal::JSObject> obj);
   static inline Local<Number> NumberToLocal(
       v8::internal::Handle<v8::internal::Object> obj);
   static inline Local<Integer> IntegerToLocal(
@@ -221,12 +225,16 @@ class Utils {
       OpenHandle(const v8::Array* data);
   static inline v8::internal::Handle<v8::internal::String>
       OpenHandle(const String* data);
-  static inline v8::internal::Handle<v8::internal::JSFunction>
+  static inline v8::internal::Handle<v8::internal::Object>
       OpenHandle(const Script* data);
   static inline v8::internal::Handle<v8::internal::JSFunction>
       OpenHandle(const Function* data);
   static inline v8::internal::Handle<v8::internal::JSObject>
       OpenHandle(const Message* message);
+  static inline v8::internal::Handle<v8::internal::JSArray>
+      OpenHandle(const StackTrace* stack_trace);
+  static inline v8::internal::Handle<v8::internal::JSObject>
+      OpenHandle(const StackFrame* stack_frame);
   static inline v8::internal::Handle<v8::internal::Context>
       OpenHandle(const v8::Context* context);
   static inline v8::internal::Handle<v8::internal::SignatureInfo>
@@ -247,7 +255,11 @@ static inline T* ToApi(v8::internal::Handle<v8::internal::Object> obj) {
 template <class T>
 v8::internal::Handle<T> v8::internal::Handle<T>::EscapeFrom(
     v8::HandleScope* scope) {
-  return Utils::OpenHandle(*scope->Close(Utils::ToLocal(*this)));
+  v8::internal::Handle<T> handle;
+  if (!is_null()) {
+    handle = *this;
+  }
+  return Utils::OpenHandle(*scope->Close(Utils::ToLocal(handle)));
 }
 
 
@@ -255,7 +267,7 @@ v8::internal::Handle<T> v8::internal::Handle<T>::EscapeFrom(
 
 #define MAKE_TO_LOCAL(Name, From, To)                                       \
   Local<v8::To> Utils::Name(v8::internal::Handle<v8::internal::From> obj) { \
-    ASSERT(!obj->IsTheHole());                                              \
+    ASSERT(obj.is_null() || !obj->IsTheHole());                             \
     return Local<To>(reinterpret_cast<To*>(obj.location()));                \
   }
 
@@ -271,6 +283,8 @@ MAKE_TO_LOCAL(ToLocal, ObjectTemplateInfo, ObjectTemplate)
 MAKE_TO_LOCAL(ToLocal, SignatureInfo, Signature)
 MAKE_TO_LOCAL(ToLocal, TypeSwitchInfo, TypeSwitch)
 MAKE_TO_LOCAL(MessageToLocal, Object, Message)
+MAKE_TO_LOCAL(StackTraceToLocal, JSArray, StackTrace)
+MAKE_TO_LOCAL(StackFrameToLocal, JSObject, StackFrame)
 MAKE_TO_LOCAL(NumberToLocal, Object, Number)
 MAKE_TO_LOCAL(IntegerToLocal, Object, Integer)
 MAKE_TO_LOCAL(Uint32ToLocal, Object, Uint32)
@@ -296,11 +310,13 @@ MAKE_OPEN_HANDLE(Data, Object)
 MAKE_OPEN_HANDLE(Object, JSObject)
 MAKE_OPEN_HANDLE(Array, JSArray)
 MAKE_OPEN_HANDLE(String, String)
-MAKE_OPEN_HANDLE(Script, JSFunction)
+MAKE_OPEN_HANDLE(Script, Object)
 MAKE_OPEN_HANDLE(Function, JSFunction)
 MAKE_OPEN_HANDLE(Message, JSObject)
 MAKE_OPEN_HANDLE(Context, Context)
 MAKE_OPEN_HANDLE(External, Proxy)
+MAKE_OPEN_HANDLE(StackTrace, JSArray)
+MAKE_OPEN_HANDLE(StackFrame, JSObject)
 
 #undef MAKE_OPEN_HANDLE
 

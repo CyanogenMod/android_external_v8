@@ -159,7 +159,7 @@ int OS::ActivationFrameAlignment() {
 #elif V8_TARGET_ARCH_MIPS
   return 8;
 #endif
-  // With gcc 4.4 the tree vectorization optimiser can generate code
+  // With gcc 4.4 the tree vectorization optimizer can generate code
   // that requires 16 byte alignment such as movdqa on x86.
   return 16;
 }
@@ -332,8 +332,8 @@ void OS::LogSharedLibraryAddresses() {
     if (fscanf(fp, " %c%c%c%c", &attr_r, &attr_w, &attr_x, &attr_p) != 4) break;
 
     int c;
-    if (attr_r == 'r' && attr_x == 'x') {
-      // Found a readable and executable entry. Skip characters until we reach
+    if (attr_r == 'r' && attr_w != 'w' && attr_x == 'x') {
+      // Found a read-only executable entry. Skip characters until we reach
       // the beginning of the filename or the end of the line.
       do {
         c = getc(fp);
@@ -376,14 +376,12 @@ int OS::StackWalk(Vector<OS::StackFrame> frames) {
   // backtrace is a glibc extension.
 #ifdef __GLIBC__
   int frames_size = frames.length();
-  void** addresses = NewArray<void*>(frames_size);
+  ScopedVector<void*> addresses(frames_size);
 
-  int frames_count = backtrace(addresses, frames_size);
+  int frames_count = backtrace(addresses.start(), frames_size);
 
-  char** symbols;
-  symbols = backtrace_symbols(addresses, frames_count);
+  char** symbols = backtrace_symbols(addresses.start(), frames_count);
   if (symbols == NULL) {
-    DeleteArray(addresses);
     return kStackWalkError;
   }
 
@@ -398,7 +396,6 @@ int OS::StackWalk(Vector<OS::StackFrame> frames) {
     frames[i].text[kStackWalkMaxTextLen - 1] = '\0';
   }
 
-  DeleteArray(addresses);
   free(symbols);
 
   return frames_count;
@@ -727,44 +724,46 @@ static void ProfilerSignalHandler(int signal, siginfo_t* info, void* context) {
   if (signal != SIGPROF) return;
   if (active_sampler_ == NULL) return;
 
-  TickSample sample;
+  TickSample sample_obj;
+  TickSample* sample = CpuProfiler::TickSampleEvent();
+  if (sample == NULL) sample = &sample_obj;
 
+  // We always sample the VM state.
+  sample->state = VMState::current_state();
   // If profiling, we extract the current pc and sp.
   if (active_sampler_->IsProfiling()) {
     // Extracting the sample from the context is extremely machine dependent.
     ucontext_t* ucontext = reinterpret_cast<ucontext_t*>(context);
     mcontext_t& mcontext = ucontext->uc_mcontext;
 #if V8_HOST_ARCH_IA32
-    sample.pc = reinterpret_cast<Address>(mcontext.gregs[REG_EIP]);
-    sample.sp = reinterpret_cast<Address>(mcontext.gregs[REG_ESP]);
-    sample.fp = reinterpret_cast<Address>(mcontext.gregs[REG_EBP]);
+    sample->pc = reinterpret_cast<Address>(mcontext.gregs[REG_EIP]);
+    sample->sp = reinterpret_cast<Address>(mcontext.gregs[REG_ESP]);
+    sample->fp = reinterpret_cast<Address>(mcontext.gregs[REG_EBP]);
 #elif V8_HOST_ARCH_X64
-    sample.pc = reinterpret_cast<Address>(mcontext.gregs[REG_RIP]);
-    sample.sp = reinterpret_cast<Address>(mcontext.gregs[REG_RSP]);
-    sample.fp = reinterpret_cast<Address>(mcontext.gregs[REG_RBP]);
+    sample->pc = reinterpret_cast<Address>(mcontext.gregs[REG_RIP]);
+    sample->sp = reinterpret_cast<Address>(mcontext.gregs[REG_RSP]);
+    sample->fp = reinterpret_cast<Address>(mcontext.gregs[REG_RBP]);
 #elif V8_HOST_ARCH_ARM
 // An undefined macro evaluates to 0, so this applies to Android's Bionic also.
 #if (__GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ <= 3))
-    sample.pc = reinterpret_cast<Address>(mcontext.gregs[R15]);
-    sample.sp = reinterpret_cast<Address>(mcontext.gregs[R13]);
-    sample.fp = reinterpret_cast<Address>(mcontext.gregs[R11]);
+    sample->pc = reinterpret_cast<Address>(mcontext.gregs[R15]);
+    sample->sp = reinterpret_cast<Address>(mcontext.gregs[R13]);
+    sample->fp = reinterpret_cast<Address>(mcontext.gregs[R11]);
 #else
-    sample.pc = reinterpret_cast<Address>(mcontext.arm_pc);
-    sample.sp = reinterpret_cast<Address>(mcontext.arm_sp);
-    sample.fp = reinterpret_cast<Address>(mcontext.arm_fp);
+    sample->pc = reinterpret_cast<Address>(mcontext.arm_pc);
+    sample->sp = reinterpret_cast<Address>(mcontext.arm_sp);
+    sample->fp = reinterpret_cast<Address>(mcontext.arm_fp);
 #endif
 #elif V8_HOST_ARCH_MIPS
     // Implement this on MIPS.
     UNIMPLEMENTED();
 #endif
-    if (IsVmThread())
-      active_sampler_->SampleStack(&sample);
+    if (IsVmThread()) {
+      active_sampler_->SampleStack(sample);
+    }
   }
 
-  // We always sample the VM state.
-  sample.state = Logger::state();
-
-  active_sampler_->Tick(&sample);
+  active_sampler_->Tick(sample);
 #endif
 }
 

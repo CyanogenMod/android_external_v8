@@ -644,55 +644,33 @@ function ArraySort(comparefn) {
   // In-place QuickSort algorithm.
   // For short (length <= 22) arrays, insertion sort is used for efficiency.
 
-  var custom_compare = IS_FUNCTION(comparefn);
-
-  function Compare(x,y) {
-    // Assume the comparefn, if any, is a consistent comparison function.
-    // If it isn't, we are allowed arbitrary behavior by ECMA 15.4.4.11.
-    if (x === y) return 0;
-    if (custom_compare) {
-      // Don't call directly to avoid exposing the builtin's global object.
-      return comparefn.call(null, x, y);
-    }
-    if (%_IsSmi(x) && %_IsSmi(y)) {
-      return %SmiLexicographicCompare(x, y);
-    }
-    x = ToString(x);
-    y = ToString(y);
-    if (x == y) return 0;
-    else return x < y ? -1 : 1;
-  };
+  if (!IS_FUNCTION(comparefn)) {
+    comparefn = function (x, y) {
+      if (x === y) return 0;
+      if (%_IsSmi(x) && %_IsSmi(y)) {
+        return %SmiLexicographicCompare(x, y);
+      }
+      x = ToString(x);
+      y = ToString(y);
+      if (x == y) return 0;
+      else return x < y ? -1 : 1;
+    };
+  }
+  var global_receiver = %GetGlobalReceiver();
 
   function InsertionSort(a, from, to) {
     for (var i = from + 1; i < to; i++) {
       var element = a[i];
-      // Pre-convert the element to a string for comparison if we know
-      // it will happen on each compare anyway.
-      var key =
-          (custom_compare || %_IsSmi(element)) ? element : ToString(element);
-      // place element in a[from..i[
-      // binary search
-      var min = from;
-      var max = i;
-      // The search interval is a[min..max[
-      while (min < max) {
-        var mid = min + ((max - min) >> 1);
-        var order = Compare(a[mid], key);
-        if (order == 0) {
-          min = max = mid;
+      for (var j = i - 1; j >= from; j--) {
+        var tmp = a[j];
+        var order = %_CallFunction(global_receiver, tmp, element, comparefn);
+        if (order > 0) {
+          a[j + 1] = tmp;
+        } else {
           break;
         }
-        if (order < 0) {
-          min = mid + 1;
-        } else {
-          max = mid;
-        }
       }
-      // place element at position min==max.
-      for (var j = i; j > min; j--) {
-        a[j] = a[j - 1];
-      }
-      a[min] = element;
+      a[j + 1] = element;
     }
   }
 
@@ -704,30 +682,23 @@ function ArraySort(comparefn) {
     }
     var pivot_index = $floor($random() * (to - from)) + from;
     var pivot = a[pivot_index];
-    // Pre-convert the element to a string for comparison if we know
-    // it will happen on each compare anyway.
-    var pivot_key =
-      (custom_compare || %_IsSmi(pivot)) ? pivot : ToString(pivot);
     // Issue 95: Keep the pivot element out of the comparisons to avoid
     // infinite recursion if comparefn(pivot, pivot) != 0.
-    a[pivot_index] = a[from];
-    a[from] = pivot;
+    %_SwapElements(a, from, pivot_index);
     var low_end = from;   // Upper bound of the elements lower than pivot.
     var high_start = to;  // Lower bound of the elements greater than pivot.
     // From low_end to i are elements equal to pivot.
     // From i to high_start are elements that haven't been compared yet.
     for (var i = from + 1; i < high_start; ) {
       var element = a[i];
-      var order = Compare(element, pivot_key);
+      var order = %_CallFunction(global_receiver, element, pivot, comparefn);
       if (order < 0) {
-        a[i] = a[low_end];
-        a[low_end] = element;
+        %_SwapElements(a, i, low_end);
         i++;
         low_end++;
       } else if (order > 0) {
         high_start--;
-        a[i] = a[high_start];
-        a[high_start] = element;
+        %_SwapElements(a, i, high_start);
       } else {  // order == 0
         i++;
       }
@@ -735,8 +706,6 @@ function ArraySort(comparefn) {
     QuickSort(a, from, low_end);
     QuickSort(a, high_start, to);
   }
-
-  var length;
 
   // Copies elements in the range 0..length from obj's prototype chain
   // to obj itself, if obj has holes. Returns one more than the maximal index
@@ -855,7 +824,7 @@ function ArraySort(comparefn) {
     return first_undefined;
   }
 
-  length = TO_UINT32(this.length);
+  var length = TO_UINT32(this.length);
   if (length < 2) return this;
 
   var is_array = IS_ARRAY(this);
@@ -994,11 +963,16 @@ function ArrayIndexOf(element, index) {
     // If index is still negative, search the entire array.
     if (index < 0) index = 0;
   }
+  if (!IS_UNDEFINED(element)) {
+    for (var i = index; i < length; i++) {
+      if (this[i] === element) return i;
+    }
+    return -1;
+  }
   // Lookup through the array.
   for (var i = index; i < length; i++) {
-    var current = this[i];
-    if (!IS_UNDEFINED(current) || i in this) {
-      if (current === element) return i;
+    if (IS_UNDEFINED(this[i]) && i in this) {
+      return i;
     }
   }
   return -1;
@@ -1018,10 +992,15 @@ function ArrayLastIndexOf(element, index) {
     else if (index >= length) index = length - 1;
   }
   // Lookup through the array.
+  if (!IS_UNDEFINED(element)) {
+    for (var i = index; i >= 0; i--) {
+      if (this[i] === element) return i;
+    }
+    return -1;
+  }
   for (var i = index; i >= 0; i--) {
-    var current = this[i];
-    if (!IS_UNDEFINED(current) || i in this) {
-      if (current === element) return i;
+    if (IS_UNDEFINED(this[i]) && i in this) {
+      return i;
     }
   }
   return -1;
@@ -1088,15 +1067,6 @@ function ArrayIsArray(obj) {
   return IS_ARRAY(obj);
 }
 
-// -------------------------------------------------------------------
-
-
-function UpdateFunctionLengths(lengths) {
-  for (var key in lengths) {
-    %FunctionSetLength(this[key], lengths[key]);
-  }
-}
-
 
 // -------------------------------------------------------------------
 function SetupArray() {
@@ -1109,46 +1079,48 @@ function SetupArray() {
     "isArray", ArrayIsArray
   ));
 
+  var specialFunctions = %SpecialArrayFunctions({});
+
+  function getFunction(name, jsBuiltin, len) {
+    var f = jsBuiltin;
+    if (specialFunctions.hasOwnProperty(name)) {
+      f = specialFunctions[name];
+    }
+    if (!IS_UNDEFINED(len)) {
+      %FunctionSetLength(f, len);
+    }
+    return f;
+  }
+
   // Setup non-enumerable functions of the Array.prototype object and
   // set their names.
-  InstallFunctionsOnHiddenPrototype($Array.prototype, DONT_ENUM, $Array(
-    "toString", ArrayToString,
-    "toLocaleString", ArrayToLocaleString,
-    "join", ArrayJoin,
-    "pop", ArrayPop,
-    "push", ArrayPush,
-    "concat", ArrayConcat,
-    "reverse", ArrayReverse,
-    "shift", ArrayShift,
-    "unshift", ArrayUnshift,
-    "slice", ArraySlice,
-    "splice", ArraySplice,
-    "sort", ArraySort,
-    "filter", ArrayFilter,
-    "forEach", ArrayForEach,
-    "some", ArraySome,
-    "every", ArrayEvery,
-    "map", ArrayMap,
-    "indexOf", ArrayIndexOf,
-    "lastIndexOf", ArrayLastIndexOf,
-    "reduce", ArrayReduce,
-    "reduceRight", ArrayReduceRight
-  ));
-    
   // Manipulate the length of some of the functions to meet
   // expectations set by ECMA-262 or Mozilla.
-  UpdateFunctionLengths({
-    ArrayFilter: 1,
-    ArrayForEach: 1,
-    ArraySome: 1,
-    ArrayEvery: 1,
-    ArrayMap: 1,
-    ArrayIndexOf: 1,
-    ArrayLastIndexOf: 1,
-    ArrayPush: 1,
-    ArrayReduce: 1,
-    ArrayReduceRight: 1
-  });
+  InstallFunctionsOnHiddenPrototype($Array.prototype, DONT_ENUM, $Array(
+    "toString", getFunction("toString", ArrayToString),
+    "toLocaleString", getFunction("toLocaleString", ArrayToLocaleString),
+    "join", getFunction("join", ArrayJoin),
+    "pop", getFunction("pop", ArrayPop),
+    "push", getFunction("push", ArrayPush, 1),
+    "concat", getFunction("concat", ArrayConcat, 1),
+    "reverse", getFunction("reverse", ArrayReverse),
+    "shift", getFunction("shift", ArrayShift),
+    "unshift", getFunction("unshift", ArrayUnshift, 1),
+    "slice", getFunction("slice", ArraySlice, 2),
+    "splice", getFunction("splice", ArraySplice, 2),
+    "sort", getFunction("sort", ArraySort),
+    "filter", getFunction("filter", ArrayFilter, 1),
+    "forEach", getFunction("forEach", ArrayForEach, 1),
+    "some", getFunction("some", ArraySome, 1),
+    "every", getFunction("every", ArrayEvery, 1),
+    "map", getFunction("map", ArrayMap, 1),
+    "indexOf", getFunction("indexOf", ArrayIndexOf, 1),
+    "lastIndexOf", getFunction("lastIndexOf", ArrayLastIndexOf, 1),
+    "reduce", getFunction("reduce", ArrayReduce, 1),
+    "reduceRight", getFunction("reduceRight", ArrayReduceRight, 1)
+  ));
+
+  %FinishArrayPrototypeSetup($Array.prototype);
 }
 
 

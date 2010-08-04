@@ -29,6 +29,7 @@
 #define V8_UTILS_H_
 
 #include <stdlib.h>
+#include <string.h>
 
 namespace v8 {
 namespace internal {
@@ -340,7 +341,6 @@ class Vector {
   // Releases the array underlying this vector. Once disposed the
   // vector is empty.
   void Dispose() {
-    if (is_empty()) return;
     DeleteArray(start_);
     start_ = NULL;
     length_ = 0;
@@ -396,7 +396,7 @@ class EmbeddedVector : public Vector<T> {
     if (this == &rhs) return *this;
     Vector<T>::operator=(rhs);
     memcpy(buffer_, rhs.buffer_, sizeof(T) * kSize);
-    set_start(buffer_);
+    this->set_start(buffer_);
     return *this;
   }
 
@@ -412,6 +412,9 @@ class ScopedVector : public Vector<T> {
   ~ScopedVector() {
     DeleteArray(this->start());
   }
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ScopedVector);
 };
 
 
@@ -528,11 +531,11 @@ static inline void CopyChars(sinkchar* dest, const sourcechar* src, int chars) {
   sinkchar* limit = dest + chars;
 #ifdef V8_HOST_CAN_READ_UNALIGNED
   if (sizeof(*dest) == sizeof(*src)) {
-    // Number of characters in a uint32_t.
-    static const int kStepSize = sizeof(uint32_t) / sizeof(*dest);  // NOLINT
+    // Number of characters in a uintptr_t.
+    static const int kStepSize = sizeof(uintptr_t) / sizeof(*dest);  // NOLINT
     while (dest <= limit - kStepSize) {
-      *reinterpret_cast<uint32_t*>(dest) =
-          *reinterpret_cast<const uint32_t*>(src);
+      *reinterpret_cast<uintptr_t*>(dest) =
+          *reinterpret_cast<const uintptr_t*>(src);
       dest += kStepSize;
       src += kStepSize;
     }
@@ -544,9 +547,120 @@ static inline void CopyChars(sinkchar* dest, const sourcechar* src, int chars) {
 }
 
 
+// Compare ASCII/16bit chars to ASCII/16bit chars.
+template <typename lchar, typename rchar>
+static inline int CompareChars(const lchar* lhs, const rchar* rhs, int chars) {
+  const lchar* limit = lhs + chars;
+#ifdef V8_HOST_CAN_READ_UNALIGNED
+  if (sizeof(*lhs) == sizeof(*rhs)) {
+    // Number of characters in a uintptr_t.
+    static const int kStepSize = sizeof(uintptr_t) / sizeof(*lhs);  // NOLINT
+    while (lhs <= limit - kStepSize) {
+      if (*reinterpret_cast<const uintptr_t*>(lhs) !=
+          *reinterpret_cast<const uintptr_t*>(rhs)) {
+        break;
+      }
+      lhs += kStepSize;
+      rhs += kStepSize;
+    }
+  }
+#endif
+  while (lhs < limit) {
+    int r = static_cast<int>(*lhs) - static_cast<int>(*rhs);
+    if (r != 0) return r;
+    ++lhs;
+    ++rhs;
+  }
+  return 0;
+}
+
+
+template <typename T>
+static inline void MemsetPointer(T** dest, T* value, int counter) {
+#if defined(V8_HOST_ARCH_IA32)
+#define STOS "stosl"
+#elif defined(V8_HOST_ARCH_X64)
+#define STOS "stosq"
+#endif
+
+#if defined(__GNUC__) && defined(STOS)
+  asm volatile(
+      "cld;"
+      "rep ; " STOS
+      : "+&c" (counter), "+&D" (dest)
+      : "a" (value)
+      : "memory", "cc");
+#else
+  for (int i = 0; i < counter; i++) {
+    dest[i] = value;
+  }
+#endif
+
+#undef STOS
+}
+
+
+// Copies data from |src| to |dst|.  The data spans MUST not overlap.
+inline void CopyWords(Object** dst, Object** src, int num_words) {
+  ASSERT(Min(dst, src) + num_words <= Max(dst, src));
+  ASSERT(num_words > 0);
+
+  // Use block copying memcpy if the segment we're copying is
+  // enough to justify the extra call/setup overhead.
+  static const int kBlockCopyLimit = 16;
+
+  if (num_words >= kBlockCopyLimit) {
+    memcpy(dst, src, num_words * kPointerSize);
+  } else {
+    int remaining = num_words;
+    do {
+      remaining--;
+      *dst++ = *src++;
+    } while (remaining > 0);
+  }
+}
+
+
 // Calculate 10^exponent.
 int TenToThe(int exponent);
 
+
+// The type-based aliasing rule allows the compiler to assume that pointers of
+// different types (for some definition of different) never alias each other.
+// Thus the following code does not work:
+//
+// float f = foo();
+// int fbits = *(int*)(&f);
+//
+// The compiler 'knows' that the int pointer can't refer to f since the types
+// don't match, so the compiler may cache f in a register, leaving random data
+// in fbits.  Using C++ style casts makes no difference, however a pointer to
+// char data is assumed to alias any other pointer.  This is the 'memcpy
+// exception'.
+//
+// Bit_cast uses the memcpy exception to move the bits from a variable of one
+// type of a variable of another type.  Of course the end result is likely to
+// be implementation dependent.  Most compilers (gcc-4.2 and MSVC 2005)
+// will completely optimize BitCast away.
+//
+// There is an additional use for BitCast.
+// Recent gccs will warn when they see casts that may result in breakage due to
+// the type-based aliasing rule.  If you have checked that there is no breakage
+// you can use BitCast to cast one pointer type to another.  This confuses gcc
+// enough that it can no longer see that you have cast one pointer type to
+// another thus avoiding the warning.
+template <class Dest, class Source>
+inline Dest BitCast(const Source& source) {
+  // Compile time assertion: sizeof(Dest) == sizeof(Source)
+  // A compile error here means your Dest and Source have different sizes.
+  typedef char VerifySizesAreEqual[sizeof(Dest) == sizeof(Source) ? 1 : -1];
+
+  Dest dest;
+  memcpy(&dest, &source, sizeof(dest));
+  return dest;
+}
+
 } }  // namespace v8::internal
+
 
 #endif  // V8_UTILS_H_

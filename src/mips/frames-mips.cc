@@ -28,6 +28,8 @@
 
 #include "v8.h"
 
+#if defined(V8_TARGET_ARCH_MIPS)
+
 #include "frames-inl.h"
 #include "mips/assembler-mips-inl.h"
 
@@ -91,10 +93,10 @@ Address ArgumentsAdaptorFrame::GetCallerStackPointer() const {
 
 
 Address InternalFrame::GetCallerStackPointer() const {
-  UNIMPLEMENTED_MIPS();
-  return static_cast<Address>(NULL);  // UNIMPLEMENTED RETURN
+  return fp() + StandardFrameConstants::kCallerSPOffset;
 }
 
 
 } }  // namespace v8::internal
 
+#endif  // V8_TARGET_ARCH_MIPS

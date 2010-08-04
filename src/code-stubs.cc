@@ -61,14 +61,10 @@ void CodeStub::GenerateCode(MacroAssembler* masm) {
 void CodeStub::RecordCodeGeneration(Code* code, MacroAssembler* masm) {
   code->set_major_key(MajorKey());
 
-#ifdef ENABLE_OPROFILE_AGENT
-  // Register the generated stub with the OPROFILE agent.
-  OProfileAgent::CreateNativeCodeRegion(GetName(),
-                                        code->instruction_start(),
-                                        code->instruction_size());
-#endif
-
-  LOG(CodeCreateEvent(Logger::STUB_TAG, code, GetName()));
+  OPROFILE(CreateNativeCodeRegion(GetName(),
+                                  code->instruction_start(),
+                                  code->instruction_size()));
+  PROFILE(CodeCreateEvent(Logger::STUB_TAG, code, GetName()));
   Counters::total_stubs_code_size.Increment(code->instruction_size());
 
 #ifdef ENABLE_DISASSEMBLER
@@ -80,6 +76,11 @@ void CodeStub::RecordCodeGeneration(Code* code, MacroAssembler* masm) {
     PrintF("\n");
   }
 #endif
+}
+
+
+int CodeStub::GetCodeKind() {
+  return Code::STUB;
 }
 
 
@@ -97,7 +98,10 @@ Handle<Code> CodeStub::GetCode() {
     masm.GetCode(&desc);
 
     // Copy the generated code into a heap object.
-    Code::Flags flags = Code::ComputeFlags(Code::STUB, InLoop());
+    Code::Flags flags = Code::ComputeFlags(
+        static_cast<Code::Kind>(GetCodeKind()),
+        InLoop(),
+        GetICState());
     Handle<Code> new_object =
         Factory::NewCode(desc, NULL, flags, masm.CodeObject());
     RecordCodeGeneration(*new_object, &masm);
@@ -132,7 +136,10 @@ Object* CodeStub::TryGetCode() {
     masm.GetCode(&desc);
 
     // Try to copy the generated code into a heap object.
-    Code::Flags flags = Code::ComputeFlags(Code::STUB, InLoop());
+    Code::Flags flags = Code::ComputeFlags(
+        static_cast<Code::Kind>(GetCodeKind()),
+        InLoop(),
+        GetICState());
     Object* new_object =
         Heap::CreateCode(desc, NULL, flags, masm.CodeObject());
     if (new_object->IsFailure()) return new_object;

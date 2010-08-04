@@ -26,6 +26,9 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "v8.h"
+
+#if defined(V8_TARGET_ARCH_X64)
+
 #include "codegen-inl.h"
 #include "macro-assembler.h"
 
@@ -61,10 +64,10 @@ void Builtins::Generate_Adaptor(MacroAssembler* masm,
     ASSERT(extra_args == NO_EXTRA_ARGUMENTS);
   }
 
-  // JumpToRuntime expects rax to contain the number of arguments
+  // JumpToExternalReference expects rax to contain the number of arguments
   // including the receiver and the extra arguments.
   __ addq(rax, Immediate(num_extra_args + 1));
-  __ JumpToRuntime(ExternalReference(id), 1);
+  __ JumpToExternalReference(ExternalReference(id), 1);
 }
 
 
@@ -1212,7 +1215,7 @@ static void Generate_JSEntryTrampolineHelper(MacroAssembler* masm,
   __ movq(rbx, Operand(kScratchRegister, EntryFrameConstants::kArgvOffset));
   // Load the function pointer into rdi.
   __ movq(rdi, rdx);
-#else  // !defined(_WIN64)
+#else  // _WIN64
   // GCC parameters in:
   // rdi : entry (ignored)
   // rsi : function
@@ -1240,7 +1243,7 @@ static void Generate_JSEntryTrampolineHelper(MacroAssembler* masm,
 
   // Set up the roots register.
   ExternalReference roots_address = ExternalReference::roots_address();
-  __ movq(r13, roots_address);
+  __ movq(kRootRegister, roots_address);
 
   // Current stack contents:
   // [rsp + 2 * kPointerSize ... ]: Internal frame
@@ -1296,3 +1299,5 @@ void Builtins::Generate_JSConstructEntryTrampoline(MacroAssembler* masm) {
 }
 
 } }  // namespace v8::internal
+
+#endif  // V8_TARGET_ARCH_X64
