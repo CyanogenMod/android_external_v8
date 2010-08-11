@@ -210,6 +210,7 @@ class Parser {
   Expression* ParsePrimaryExpression(bool* ok);
   Expression* ParseArrayLiteral(bool* ok);
   Expression* ParseObjectLiteral(bool* ok);
+  ObjectLiteral::Property* ParseObjectLiteralGetSet(bool is_getter, bool* ok);
   Expression* ParseRegExpLiteral(bool seen_equal, bool* ok);
 
   // Populate the constant properties fixed array for a materialized object
@@ -265,6 +266,7 @@ class Parser {
   Literal* GetLiteralNumber(double value);
 
   Handle<String> ParseIdentifier(bool* ok);
+  Handle<String> ParseIdentifierName(bool* ok);
   Handle<String> ParseIdentifierOrGetOrSet(bool* is_get,
                                            bool* is_set,
                                            bool* ok);
@@ -3121,7 +3123,7 @@ Expression* Parser::ParseLeftHandSideExpression(bool* ok) {
       case Token::PERIOD: {
         Consume(Token::PERIOD);
         int pos = scanner().location().beg_pos;
-        Handle<String> name = ParseIdentifier(CHECK_OK);
+        Handle<String> name = ParseIdentifierName(CHECK_OK);
         result = factory()->NewProperty(result, NEW(Literal(name)), pos);
         break;
       }
@@ -3207,7 +3209,7 @@ Expression* Parser::ParseMemberWithNewPrefixesExpression(PositionStack* stack,
       case Token::PERIOD: {
         Consume(Token::PERIOD);
         int pos = scanner().location().beg_pos;
-        Handle<String> name = ParseIdentifier(CHECK_OK);
+        Handle<String> name = ParseIdentifierName(CHECK_OK);
         result = factory()->NewProperty(result, NEW(Literal(name)), pos);
         break;
       }
@@ -3375,11 +3377,7 @@ Expression* Parser::ParsePrimaryExpression(bool* ok) {
       // default case.
 
     default: {
-      Token::Value tok = peek();
-      // Token::Peek returns the value of the next token but
-      // location() gives info about the current token.
-      // Therefore, we need to read ahead to the next token
-      Next();
+      Token::Value tok = Next();
       ReportUnexpectedToken(tok);
       *ok = false;
       return NULL;
@@ -3583,11 +3581,40 @@ void Parser::BuildObjectLiteralConstantProperties(
 }
 
 
+ObjectLiteral::Property* Parser::ParseObjectLiteralGetSet(bool is_getter,
+                                                          bool* ok) {
+  // Special handling of getter and setter syntax:
+  // { ... , get foo() { ... }, ... , set foo(v) { ... v ... } , ... }
+  // We have already read the "get" or "set" keyword.
+  Token::Value next = Next();
+  if (next == Token::IDENTIFIER ||
+      next == Token::STRING ||
+      next == Token::NUMBER ||
+      Token::IsKeyword(next)) {
+    Handle<String> name =
+        factory()->LookupSymbol(scanner_.literal_string(),
+                                scanner_.literal_length());
+    FunctionLiteral* value =
+        ParseFunctionLiteral(name,
+                             RelocInfo::kNoPosition,
+                             DECLARATION,
+                             CHECK_OK);
+    ObjectLiteral::Property* property =
+        NEW(ObjectLiteral::Property(is_getter, value));
+    return property;
+  } else {
+    ReportUnexpectedToken(next);
+    *ok = false;
+    return NULL;
+  }
+}
+
+
 Expression* Parser::ParseObjectLiteral(bool* ok) {
   // ObjectLiteral ::
   //   '{' (
-  //       ((Identifier | String | Number) ':' AssignmentExpression)
-  //     | (('get' | 'set') FunctionLiteral)
+  //       ((IdentifierName | String | Number) ':' AssignmentExpression)
+  //     | (('get' | 'set') (IdentifierName | String | Number) FunctionLiteral)
   //    )*[','] '}'
 
   ZoneListWrapper<ObjectLiteral::Property> properties =
@@ -3597,49 +3624,42 @@ Expression* Parser::ParseObjectLiteral(bool* ok) {
   Expect(Token::LBRACE, CHECK_OK);
   while (peek() != Token::RBRACE) {
     Literal* key = NULL;
-    switch (peek()) {
+    Token::Value next = peek();
+    switch (next) {
       case Token::IDENTIFIER: {
-        // Store identifier keys as literal symbols to avoid
-        // resolving them when compiling code for the object
-        // literal.
         bool is_getter = false;
         bool is_setter = false;
         Handle<String> id =
             ParseIdentifierOrGetOrSet(&is_getter, &is_setter, CHECK_OK);
-        if (is_getter || is_setter) {
-          // Special handling of getter and setter syntax.
-          if (peek() == Token::IDENTIFIER) {
-            Handle<String> name = ParseIdentifier(CHECK_OK);
-            FunctionLiteral* value =
-                ParseFunctionLiteral(name, RelocInfo::kNoPosition,
-                                     DECLARATION, CHECK_OK);
+        if ((is_getter || is_setter) && peek() != Token::COLON) {
             ObjectLiteral::Property* property =
-                NEW(ObjectLiteral::Property(is_getter, value));
-            if (IsBoilerplateProperty(property))
+                ParseObjectLiteralGetSet(is_getter, CHECK_OK);
+            if (IsBoilerplateProperty(property)) {
               number_of_boilerplate_properties++;
+            }
             properties.Add(property);
             if (peek() != Token::RBRACE) Expect(Token::COMMA, CHECK_OK);
             continue;  // restart the while
-          }
         }
+        // Failed to parse as get/set property, so it's just a property
+        // called "get" or "set".
         key = NEW(Literal(id));
         break;
       }
-
       case Token::STRING: {
         Consume(Token::STRING);
         Handle<String> string =
             factory()->LookupSymbol(scanner_.literal_string(),
                                     scanner_.literal_length());
         uint32_t index;
-        if (!string.is_null() && string->AsArrayIndex(&index)) {
+        if (!string.is_null() &&
+            string->AsArrayIndex(&index)) {
           key = NewNumberLiteral(index);
-        } else {
-          key = NEW(Literal(string));
+          break;
         }
+        key = NEW(Literal(string));
         break;
       }
-
       case Token::NUMBER: {
         Consume(Token::NUMBER);
         double value =
@@ -3647,10 +3667,20 @@ Expression* Parser::ParseObjectLiteral(bool* ok) {
         key = NewNumberLiteral(value);
         break;
       }
-
       default:
-        Expect(Token::RBRACE, CHECK_OK);
-        break;
+        if (Token::IsKeyword(next)) {
+          Consume(next);
+          Handle<String> string =
+              factory()->LookupSymbol(scanner_.literal_string(),
+                                      scanner_.literal_length());
+          key = NEW(Literal(string));
+        } else {
+          // Unexpected token.
+          Token::Value next = Next();
+          ReportUnexpectedToken(next);
+          *ok = false;
+          return NULL;
+        }
     }
 
     Expect(Token::COLON, CHECK_OK);
@@ -4007,6 +4037,19 @@ Handle<String> Parser::ParseIdentifier(bool* ok) {
   return factory()->LookupSymbol(scanner_.literal_string(),
                                  scanner_.literal_length());
 }
+
+
+Handle<String> Parser::ParseIdentifierName(bool* ok) {
+  Token::Value next = Next();
+  if (next != Token::IDENTIFIER && !Token::IsKeyword(next)) {
+    ReportUnexpectedToken(next);
+    *ok = false;
+    return Handle<String>();
+  }
+  return factory()->LookupSymbol(scanner_.literal_string(),
+                                 scanner_.literal_length());
+}
+
 
 // This function reads an identifier and determines whether or not it
 // is 'get' or 'set'.  The reason for not using ParseIdentifier and

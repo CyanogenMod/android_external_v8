@@ -770,7 +770,7 @@ void FullCodeGenerator::SetFunctionPosition(FunctionLiteral* fun) {
 
 void FullCodeGenerator::SetReturnPosition(FunctionLiteral* fun) {
   if (FLAG_debug_info) {
-    CodeGenerator::RecordPositions(masm_, fun->end_position());
+    CodeGenerator::RecordPositions(masm_, fun->end_position() - 1);
   }
 }
 
@@ -917,6 +917,8 @@ void FullCodeGenerator::EmitInlineRuntimeCall(CallRuntime* expr) {
     EmitSwapElements(expr->arguments());
   } else if (strcmp("_GetFromCache", *name->ToCString()) == 0) {
     EmitGetFromCache(expr->arguments());
+  } else if (strcmp("_IsRegExpEquivalent", *name->ToCString()) == 0) {
+    EmitIsRegExpEquivalent(expr->arguments());
   } else {
     UNREACHABLE();
   }

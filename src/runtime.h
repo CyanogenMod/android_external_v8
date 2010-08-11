@@ -80,6 +80,7 @@ namespace internal {
   F(NewArgumentsFast, 3, 1) \
   F(LazyCompile, 1, 1) \
   F(SetNewFunctionAttributes, 1, 1) \
+  F(AllocateInNewSpace, 1, 1) \
   \
   /* Array join support */ \
   F(PushIfAbsent, 2, 1) \
@@ -322,6 +323,7 @@ namespace internal {
   F(GetCFrames, 1, 1) \
   F(GetThreadCount, 1, 1) \
   F(GetThreadDetails, 2, 1) \
+  F(SetDisableBreak, 1, 1) \
   F(GetBreakLocations, 1, 1) \
   F(SetFunctionBreakPoint, 3, 1) \
   F(SetScriptBreakPoint, 3, 1) \

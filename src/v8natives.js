@@ -749,7 +749,7 @@ function ObjectSeal(obj) {
     if (desc.isConfigurable()) desc.setConfigurable(false);
     DefineOwnProperty(obj, name, desc, true);
   }  
-  ObjectPreventExtension(obj);
+  return ObjectPreventExtension(obj);
 }
 
 
@@ -766,7 +766,7 @@ function ObjectFreeze(obj) {
     if (desc.isConfigurable()) desc.setConfigurable(false);
     DefineOwnProperty(obj, name, desc, true);
   }  
-  ObjectPreventExtension(obj);
+  return ObjectPreventExtension(obj);
 }
 
 
@@ -1105,7 +1105,7 @@ function FunctionBind(this_arg) { // Length is 1.
       throw new $TypeError('Bind must be called on a function');
   }
   // this_arg is not an argument that should be bound.
-  var argc_bound = %_ArgumentsLength() - 1;
+  var argc_bound = (%_ArgumentsLength() || 1) - 1;
   if (argc_bound > 0) {
     var bound_args = new $Array(argc_bound);
     for(var i = 0; i < argc_bound; i++) {

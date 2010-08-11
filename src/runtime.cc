@@ -305,14 +305,13 @@ static Handle<Object> CreateObjectLiteralBoilerplate(
       }
       Handle<Object> result;
       uint32_t element_index = 0;
-      if (key->IsSymbol()) {
-        // If key is a symbol it is not an array element.
-        Handle<String> name(String::cast(*key));
-        ASSERT(!name->AsArrayIndex(&element_index));
-        result = SetProperty(boilerplate, name, value, NONE);
-      } else if (key->ToArrayIndex(&element_index)) {
+      if (key->ToArrayIndex(&element_index)) {
         // Array index (uint32).
         result = SetElement(boilerplate, element_index, value);
+      } else if (key->IsSymbol()) {
+        // The key is not an array index.
+        Handle<String> name(String::cast(*key));
+        result = SetProperty(boilerplate, name, value, NONE);
       } else {
         // Non-uint32 number.
         ASSERT(key->IsNumber());
@@ -6757,17 +6756,23 @@ static Object* Runtime_NewObjectFromBound(Arguments args) {
   CONVERT_ARG_CHECKED(JSFunction, function, 0);
   CONVERT_ARG_CHECKED(JSArray, params, 1);
 
+  RUNTIME_ASSERT(params->HasFastElements());
   FixedArray* fixed = FixedArray::cast(params->elements());
 
-  bool exception = false;
-  Object*** param_data = NewArray<Object**>(fixed->length());
-  for (int i = 0; i < fixed->length();  i++) {
+  int fixed_length = Smi::cast(params->length())->value();
+  SmartPointer<Object**> param_data(NewArray<Object**>(fixed_length));
+  for (int i = 0; i < fixed_length; i++) {
     Handle<Object> val = Handle<Object>(fixed->get(i));
     param_data[i] = val.location();
   }
 
+  bool exception = false;
   Handle<Object> result = Execution::New(
-      function, fixed->length(), param_data, &exception);
+      function, fixed_length, *param_data, &exception);
+  if (exception) {
+      return Failure::Exception();
+  }
+  ASSERT(!result.is_null());
   return *result;
 }
 
@@ -7579,6 +7584,26 @@ static Object* Runtime_SetNewFunctionAttributes(Arguments args) {
          Top::function_instance_map()->instance_size());
   func->set_map(*Top::function_instance_map());
   return *func;
+}
+
+
+static Object* Runtime_AllocateInNewSpace(Arguments args) {
+  // Allocate a block of memory in NewSpace (filled with a filler).
+  // Use as fallback for allocation in generated code when NewSpace
+  // is full.
+  ASSERT(args.length() == 1);
+  CONVERT_ARG_CHECKED(Smi, size_smi, 0);
+  int size = size_smi->value();
+  RUNTIME_ASSERT(IsAligned(size, kPointerSize));
+  RUNTIME_ASSERT(size > 0);
+  static const int kMinFreeNewSpaceAfterGC =
+      Heap::InitialSemiSpaceSize() * 3/4;
+  RUNTIME_ASSERT(size <= kMinFreeNewSpaceAfterGC);
+  Object* allocation = Heap::new_space()->AllocateRaw(size);
+  if (!allocation->IsFailure()) {
+    Heap::CreateFillerObjectAt(HeapObject::cast(allocation)->address(), size);
+  }
+  return allocation;
 }
 
 
@@ -9237,6 +9262,17 @@ static Object* Runtime_GetThreadDetails(Arguments args) {
 }
 
 
+// Sets the disable break state
+// args[0]: disable break state
+static Object* Runtime_SetDisableBreak(Arguments args) {
+  HandleScope scope;
+  ASSERT(args.length() == 1);
+  CONVERT_BOOLEAN_CHECKED(disable_break, args[0]);
+  Debug::set_disable_break(disable_break);
+  return  Heap::undefined_value();
+}
+
+
 static Object* Runtime_GetBreakLocations(Arguments args) {
   HandleScope scope;
   ASSERT(args.length() == 1);
@@ -9381,13 +9417,6 @@ static Object* Runtime_SetScriptBreakPoint(Arguments args) {
     }
     Debug::SetBreakPoint(shared, break_point_object_arg, &position);
     position += shared->start_position();
-
-    // The result position may become beyond script source end.
-    // This is expected when the function is toplevel. This may become
-    // a problem later when actual position gets converted into line/column.
-    if (shared->is_toplevel() && position == shared->end_position()) {
-      position = shared->end_position() - 1;
-    }
     return Smi::FromInt(position);
   }
   return  Heap::undefined_value();
