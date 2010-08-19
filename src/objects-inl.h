@@ -1167,7 +1167,8 @@ HeapObject* JSObject::elements() {
 
 void JSObject::set_elements(HeapObject* value, WriteBarrierMode mode) {
   ASSERT(map()->has_fast_elements() ==
-         (value->map() == Heap::fixed_array_map()));
+         (value->map() == Heap::fixed_array_map() ||
+          value->map() == Heap::fixed_cow_array_map()));
   // In the assert below Dictionary is covered under FixedArray.
   ASSERT(value->IsFixedArray() || value->IsPixelArray() ||
          value->IsExternalArray());
@@ -1397,6 +1398,7 @@ Object* FixedArray::get(int index) {
 
 
 void FixedArray::set(int index, Smi* value) {
+  ASSERT(map() != Heap::fixed_cow_array_map());
   ASSERT(reinterpret_cast<Object*>(value)->IsSmi());
   int offset = kHeaderSize + index * kPointerSize;
   WRITE_FIELD(this, offset, value);
@@ -1404,6 +1406,7 @@ void FixedArray::set(int index, Smi* value) {
 
 
 void FixedArray::set(int index, Object* value) {
+  ASSERT(map() != Heap::fixed_cow_array_map());
   ASSERT(index >= 0 && index < this->length());
   int offset = kHeaderSize + index * kPointerSize;
   WRITE_FIELD(this, offset, value);
@@ -1420,6 +1423,7 @@ WriteBarrierMode HeapObject::GetWriteBarrierMode(const AssertNoAllocation&) {
 void FixedArray::set(int index,
                      Object* value,
                      WriteBarrierMode mode) {
+  ASSERT(map() != Heap::fixed_cow_array_map());
   ASSERT(index >= 0 && index < this->length());
   int offset = kHeaderSize + index * kPointerSize;
   WRITE_FIELD(this, offset, value);
@@ -1428,6 +1432,7 @@ void FixedArray::set(int index,
 
 
 void FixedArray::fast_set(FixedArray* array, int index, Object* value) {
+  ASSERT(array->map() != Heap::raw_unchecked_fixed_cow_array_map());
   ASSERT(index >= 0 && index < array->length());
   ASSERT(!Heap::InNewSpace(value));
   WRITE_FIELD(array, kHeaderSize + index * kPointerSize, value);
@@ -1435,6 +1440,7 @@ void FixedArray::fast_set(FixedArray* array, int index, Object* value) {
 
 
 void FixedArray::set_undefined(int index) {
+  ASSERT(map() != Heap::fixed_cow_array_map());
   ASSERT(index >= 0 && index < this->length());
   ASSERT(!Heap::InNewSpace(Heap::undefined_value()));
   WRITE_FIELD(this, kHeaderSize + index * kPointerSize,
@@ -1443,6 +1449,7 @@ void FixedArray::set_undefined(int index) {
 
 
 void FixedArray::set_null(int index) {
+  ASSERT(map() != Heap::fixed_cow_array_map());
   ASSERT(index >= 0 && index < this->length());
   ASSERT(!Heap::InNewSpace(Heap::null_value()));
   WRITE_FIELD(this, kHeaderSize + index * kPointerSize, Heap::null_value());
@@ -1450,9 +1457,24 @@ void FixedArray::set_null(int index) {
 
 
 void FixedArray::set_the_hole(int index) {
+  ASSERT(map() != Heap::fixed_cow_array_map());
   ASSERT(index >= 0 && index < this->length());
   ASSERT(!Heap::InNewSpace(Heap::the_hole_value()));
   WRITE_FIELD(this, kHeaderSize + index * kPointerSize, Heap::the_hole_value());
+}
+
+
+void FixedArray::set_unchecked(int index, Smi* value) {
+  ASSERT(reinterpret_cast<Object*>(value)->IsSmi());
+  int offset = kHeaderSize + index * kPointerSize;
+  WRITE_FIELD(this, offset, value);
+}
+
+
+void FixedArray::set_null_unchecked(int index) {
+  ASSERT(index >= 0 && index < this->length());
+  ASSERT(!Heap::InNewSpace(Heap::null_value()));
+  WRITE_FIELD(this, kHeaderSize + index * kPointerSize, Heap::null_value());
 }
 
 
@@ -1490,6 +1512,16 @@ int DescriptorArray::Search(String* name) {
 
   // Slow case: perform binary search.
   return BinarySearch(name, 0, nof - 1);
+}
+
+
+int DescriptorArray::SearchWithCache(String* name) {
+  int number = DescriptorLookupCache::Lookup(this, name);
+  if (number == DescriptorLookupCache::kAbsent) {
+    number = Search(name);
+    DescriptorLookupCache::Update(this, name, number);
+  }
+  return number;
 }
 
 
@@ -2060,21 +2092,8 @@ void ExternalFloatArray::set(int index, float value) {
   ptr[index] = value;
 }
 
-inline Scavenger Map::scavenger() {
-  Scavenger callback = reinterpret_cast<Scavenger>(
-      READ_INTPTR_FIELD(this, kScavengerCallbackOffset));
 
-  ASSERT(callback == Heap::GetScavenger(instance_type(),
-                                        instance_size()));
-
-  return callback;
-}
-
-inline void Map::set_scavenger(Scavenger callback) {
-  WRITE_INTPTR_FIELD(this,
-                     kScavengerCallbackOffset,
-                     reinterpret_cast<intptr_t>(callback));
-}
+INT_ACCESSORS(Map, visitor_id, kScavengerCallbackOffset)
 
 int Map::instance_size() {
   return READ_BYTE_FIELD(this, kInstanceSizeOffset) << kPointerSizeLog2;
@@ -2099,7 +2118,7 @@ int HeapObject::SizeFromMap(Map* map) {
       (kStringTag | kConsStringTag) ||
       instance_type == JS_ARRAY_TYPE) return map->instance_size();
   if (instance_type == FIXED_ARRAY_TYPE) {
-    return reinterpret_cast<FixedArray*>(this)->FixedArraySize();
+    return FixedArray::BodyDescriptor::SizeOf(map, this);
   }
   if (instance_type == BYTE_ARRAY_TYPE) {
     return reinterpret_cast<ByteArray*>(this)->ByteArraySize();
@@ -2401,6 +2420,7 @@ Object* Map::GetFastElementsMap() {
   if (obj->IsFailure()) return obj;
   Map* new_map = Map::cast(obj);
   new_map->set_has_fast_elements(true);
+  Counters::map_slow_to_fast_elements.Increment();
   return new_map;
 }
 
@@ -2411,6 +2431,7 @@ Object* Map::GetSlowElementsMap() {
   if (obj->IsFailure()) return obj;
   Map* new_map = Map::cast(obj);
   new_map->set_has_fast_elements(false);
+  Counters::map_fast_to_slow_elements.Increment();
   return new_map;
 }
 
@@ -2542,6 +2563,7 @@ BOOL_ACCESSORS(SharedFunctionInfo,
                allows_lazy_compilation,
                kAllowLazyCompilation)
 
+
 #if V8_HOST_ARCH_32_BIT
 SMI_ACCESSORS(SharedFunctionInfo, length, kLengthOffset)
 SMI_ACCESSORS(SharedFunctionInfo, formal_parameter_count,
@@ -2641,6 +2663,11 @@ Code* SharedFunctionInfo::code() {
 }
 
 
+Code* SharedFunctionInfo::unchecked_code() {
+  return reinterpret_cast<Code*>(READ_FIELD(this, kCodeOffset));
+}
+
+
 void SharedFunctionInfo::set_code(Code* value, WriteBarrierMode mode) {
   WRITE_FIELD(this, kCodeOffset, value);
   CONDITIONAL_WRITE_BARRIER(this, kCodeOffset, mode);
@@ -2661,8 +2688,7 @@ void SharedFunctionInfo::set_scope_info(SerializedScopeInfo* value,
 
 
 bool SharedFunctionInfo::is_compiled() {
-  // TODO(1242782): Create a code kind for uncompiled code.
-  return code()->kind() != Code::STUB;
+  return code() != Builtins::builtin(Builtins::LazyCompile);
 }
 
 
@@ -2688,18 +2714,36 @@ int SharedFunctionInfo::custom_call_generator_id() {
 }
 
 
+int SharedFunctionInfo::code_age() {
+  return (compiler_hints() >> kCodeAgeShift) & kCodeAgeMask;
+}
+
+
+void SharedFunctionInfo::set_code_age(int code_age) {
+  set_compiler_hints(compiler_hints() |
+                     ((code_age & kCodeAgeMask) << kCodeAgeShift));
+}
+
+
 bool JSFunction::IsBuiltin() {
   return context()->global()->IsJSBuiltinsObject();
 }
 
 
 Code* JSFunction::code() {
-  return shared()->code();
+  return Code::cast(READ_FIELD(this, kCodeOffset));
+}
+
+
+Code* JSFunction::unchecked_code() {
+  return reinterpret_cast<Code*>(READ_FIELD(this, kCodeOffset));
 }
 
 
 void JSFunction::set_code(Code* value) {
-  shared()->set_code(value);
+  // Skip the write barrier because code is never in new space.
+  ASSERT(!Heap::InNewSpace(value));
+  WRITE_FIELD(this, kCodeOffset, value);
 }
 
 
@@ -2710,6 +2754,12 @@ Context* JSFunction::context() {
 
 Object* JSFunction::unchecked_context() {
   return READ_FIELD(this, kContextOffset);
+}
+
+
+SharedFunctionInfo* JSFunction::unchecked_shared() {
+  return reinterpret_cast<SharedFunctionInfo*>(
+      READ_FIELD(this, kSharedFunctionInfoOffset));
 }
 
 
@@ -2771,7 +2821,7 @@ bool JSFunction::should_have_prototype() {
 
 
 bool JSFunction::is_compiled() {
-  return shared()->is_compiled();
+  return code() != Builtins::builtin(Builtins::LazyCompile);
 }
 
 
@@ -2815,12 +2865,6 @@ Address Proxy::proxy() {
 
 void Proxy::set_proxy(Address value) {
   WRITE_INTPTR_FIELD(this, kProxyOffset, OffsetFrom(value));
-}
-
-
-void Proxy::ProxyIterateBody(ObjectVisitor* visitor) {
-  visitor->VisitExternalReference(
-      reinterpret_cast<Address *>(FIELD_ADDR(this, kProxyOffset)));
 }
 
 
@@ -2936,18 +2980,18 @@ void JSRegExp::SetDataAt(int index, Object* value) {
 
 
 JSObject::ElementsKind JSObject::GetElementsKind() {
+  if (map()->has_fast_elements()) {
+    ASSERT(elements()->map() == Heap::fixed_array_map() ||
+           elements()->map() == Heap::fixed_cow_array_map());
+    return FAST_ELEMENTS;
+  }
   HeapObject* array = elements();
   if (array->IsFixedArray()) {
-    // FAST_ELEMENTS or DICTIONARY_ELEMENTS are both stored in a FixedArray.
-    if (array->map() == Heap::fixed_array_map()) {
-      ASSERT(map()->has_fast_elements());
-      return FAST_ELEMENTS;
-    }
+    // FAST_ELEMENTS or DICTIONARY_ELEMENTS are both stored in a
+    // FixedArray, but FAST_ELEMENTS is already handled above.
     ASSERT(array->IsDictionary());
-    ASSERT(!map()->has_fast_elements());
     return DICTIONARY_ELEMENTS;
   }
-  ASSERT(!map()->has_fast_elements());
   if (array->IsExternalArray()) {
     switch (array->map()->instance_type()) {
       case EXTERNAL_BYTE_ARRAY_TYPE:
@@ -3047,6 +3091,19 @@ bool JSObject::AllowsSetElementsLength() {
   bool result = elements()->IsFixedArray();
   ASSERT(result == (!HasPixelElements() && !HasExternalArrayElements()));
   return result;
+}
+
+
+Object* JSObject::EnsureWritableFastElements() {
+  ASSERT(HasFastElements());
+  FixedArray* elems = FixedArray::cast(elements());
+  if (elems->map() != Heap::fixed_cow_array_map()) return elems;
+  Object* writable_elems = Heap::CopyFixedArray(elems);
+  if (writable_elems->IsFailure()) return writable_elems;
+  FixedArray::cast(writable_elems)->set_map(Heap::fixed_array_map());
+  set_elements(FixedArray::cast(writable_elems));
+  Counters::cow_arrays_converted.Increment();
+  return writable_elems;
 }
 
 
@@ -3305,6 +3362,74 @@ Object* FixedArray::Copy() {
   if (length() == 0) return this;
   return Heap::CopyFixedArray(this);
 }
+
+
+int JSObject::BodyDescriptor::SizeOf(Map* map, HeapObject* object) {
+  return map->instance_size();
+}
+
+
+void Proxy::ProxyIterateBody(ObjectVisitor* v) {
+  v->VisitExternalReference(
+      reinterpret_cast<Address *>(FIELD_ADDR(this, kProxyOffset)));
+}
+
+
+template<typename StaticVisitor>
+void Proxy::ProxyIterateBody() {
+  StaticVisitor::VisitExternalReference(
+      reinterpret_cast<Address *>(FIELD_ADDR(this, kProxyOffset)));
+}
+
+
+void ExternalAsciiString::ExternalAsciiStringIterateBody(ObjectVisitor* v) {
+  typedef v8::String::ExternalAsciiStringResource Resource;
+  v->VisitExternalAsciiString(
+      reinterpret_cast<Resource**>(FIELD_ADDR(this, kResourceOffset)));
+}
+
+
+template<typename StaticVisitor>
+void ExternalAsciiString::ExternalAsciiStringIterateBody() {
+  typedef v8::String::ExternalAsciiStringResource Resource;
+  StaticVisitor::VisitExternalAsciiString(
+      reinterpret_cast<Resource**>(FIELD_ADDR(this, kResourceOffset)));
+}
+
+
+void ExternalTwoByteString::ExternalTwoByteStringIterateBody(ObjectVisitor* v) {
+  typedef v8::String::ExternalStringResource Resource;
+  v->VisitExternalTwoByteString(
+      reinterpret_cast<Resource**>(FIELD_ADDR(this, kResourceOffset)));
+}
+
+
+template<typename StaticVisitor>
+void ExternalTwoByteString::ExternalTwoByteStringIterateBody() {
+  typedef v8::String::ExternalStringResource Resource;
+  StaticVisitor::VisitExternalTwoByteString(
+      reinterpret_cast<Resource**>(FIELD_ADDR(this, kResourceOffset)));
+}
+
+#define SLOT_ADDR(obj, offset) \
+  reinterpret_cast<Object**>((obj)->address() + offset)
+
+template<int start_offset, int end_offset, int size>
+void FixedBodyDescriptor<start_offset, end_offset, size>::IterateBody(
+    HeapObject* obj,
+    ObjectVisitor* v) {
+    v->VisitPointers(SLOT_ADDR(obj, start_offset), SLOT_ADDR(obj, end_offset));
+}
+
+
+template<int start_offset>
+void FlexibleBodyDescriptor<start_offset>::IterateBody(HeapObject* obj,
+                                                       int object_size,
+                                                       ObjectVisitor* v) {
+  v->VisitPointers(SLOT_ADDR(obj, start_offset), SLOT_ADDR(obj, object_size));
+}
+
+#undef SLOT_ADDR
 
 
 #undef CAST_ACCESSOR

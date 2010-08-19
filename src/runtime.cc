@@ -160,13 +160,22 @@ static Object* DeepCopyBoilerplate(JSObject* boilerplate) {
   switch (copy->GetElementsKind()) {
     case JSObject::FAST_ELEMENTS: {
       FixedArray* elements = FixedArray::cast(copy->elements());
-      for (int i = 0; i < elements->length(); i++) {
-        Object* value = elements->get(i);
-        if (value->IsJSObject()) {
-          JSObject* js_object = JSObject::cast(value);
-          result = DeepCopyBoilerplate(js_object);
-          if (result->IsFailure()) return result;
-          elements->set(i, result);
+      if (elements->map() == Heap::fixed_cow_array_map()) {
+        Counters::cow_arrays_created_runtime.Increment();
+#ifdef DEBUG
+        for (int i = 0; i < elements->length(); i++) {
+          ASSERT(!elements->get(i)->IsJSObject());
+        }
+#endif
+      } else {
+        for (int i = 0; i < elements->length(); i++) {
+          Object* value = elements->get(i);
+          if (value->IsJSObject()) {
+            JSObject* js_object = JSObject::cast(value);
+            result = DeepCopyBoilerplate(js_object);
+            if (result->IsFailure()) return result;
+            elements->set(i, result);
+          }
         }
       }
       break;
@@ -305,13 +314,14 @@ static Handle<Object> CreateObjectLiteralBoilerplate(
       }
       Handle<Object> result;
       uint32_t element_index = 0;
-      if (key->ToArrayIndex(&element_index)) {
+      if (key->IsSymbol()) {
+        // If key is a symbol it is not an array element.
+        Handle<String> name(String::cast(*key));
+        ASSERT(!name->AsArrayIndex(&element_index));
+        result = SetProperty(boilerplate, name, value, NONE);
+      } else if (key->ToArrayIndex(&element_index)) {
         // Array index (uint32).
         result = SetElement(boilerplate, element_index, value);
-      } else if (key->IsSymbol()) {
-        // The key is not an array index.
-        Handle<String> name(String::cast(*key));
-        result = SetProperty(boilerplate, name, value, NONE);
       } else {
         // Non-uint32 number.
         ASSERT(key->IsNumber());
@@ -342,18 +352,29 @@ static Handle<Object> CreateArrayLiteralBoilerplate(
       JSFunction::GlobalContextFromLiterals(*literals)->array_function());
   Handle<Object> object = Factory::NewJSObject(constructor);
 
-  Handle<Object> copied_elements = Factory::CopyFixedArray(elements);
+  const bool is_cow = (elements->map() == Heap::fixed_cow_array_map());
+  Handle<FixedArray> copied_elements =
+      is_cow ? elements : Factory::CopyFixedArray(elements);
 
   Handle<FixedArray> content = Handle<FixedArray>::cast(copied_elements);
-  for (int i = 0; i < content->length(); i++) {
-    if (content->get(i)->IsFixedArray()) {
-      // The value contains the constant_properties of a
-      // simple object literal.
-      Handle<FixedArray> fa(FixedArray::cast(content->get(i)));
-      Handle<Object> result =
-        CreateLiteralBoilerplate(literals, fa);
-      if (result.is_null()) return result;
-      content->set(i, *result);
+  if (is_cow) {
+#ifdef DEBUG
+    // Copy-on-write arrays must be shallow (and simple).
+    for (int i = 0; i < content->length(); i++) {
+      ASSERT(!content->get(i)->IsFixedArray());
+    }
+#endif
+  } else {
+    for (int i = 0; i < content->length(); i++) {
+      if (content->get(i)->IsFixedArray()) {
+        // The value contains the constant_properties of a
+        // simple object literal.
+        Handle<FixedArray> fa(FixedArray::cast(content->get(i)));
+        Handle<Object> result =
+            CreateLiteralBoilerplate(literals, fa);
+        if (result.is_null()) return result;
+        content->set(i, *result);
+      }
     }
   }
 
@@ -481,6 +502,10 @@ static Object* Runtime_CreateArrayLiteralShallow(Arguments args) {
     if (boilerplate.is_null()) return Failure::Exception();
     // Update the functions literal and return the boilerplate.
     literals->set(literals_index, *boilerplate);
+  }
+  if (JSObject::cast(*boilerplate)->elements()->map() ==
+      Heap::fixed_cow_array_map()) {
+    Counters::cow_arrays_created_runtime.Increment();
   }
   return Heap::CopyJSObject(JSObject::cast(*boilerplate));
 }
@@ -1626,7 +1651,8 @@ static Object* Runtime_SetCode(Arguments args) {
     }
     // Set the code, scope info, formal parameter count,
     // and the length of the target function.
-    target->set_code(fun->code());
+    target->shared()->set_code(shared->code());
+    target->set_code(shared->code());
     target->shared()->set_scope_info(shared->scope_info());
     target->shared()->set_length(shared->length());
     target->shared()->set_formal_parameter_count(
@@ -6697,9 +6723,13 @@ static Object* Runtime_DateYMDFromTime(Arguments args) {
   int year, month, day;
   DateYMDFromTime(static_cast<int>(floor(t / 86400000)), year, month, day);
 
-  res_array->SetElement(0, Smi::FromInt(year));
-  res_array->SetElement(1, Smi::FromInt(month));
-  res_array->SetElement(2, Smi::FromInt(day));
+  RUNTIME_ASSERT(res_array->elements()->map() == Heap::fixed_array_map());
+  FixedArray* elms = FixedArray::cast(res_array->elements());
+  RUNTIME_ASSERT(elms->length() == 3);
+
+  elms->set(0, Smi::FromInt(year));
+  elms->set(1, Smi::FromInt(month));
+  elms->set(2, Smi::FromInt(day));
 
   return Heap::undefined_value();
 }
@@ -6869,7 +6899,7 @@ static Object* Runtime_LazyCompile(Arguments args) {
 
   Handle<JSFunction> function = args.at<JSFunction>(0);
 #ifdef DEBUG
-  if (FLAG_trace_lazy) {
+  if (FLAG_trace_lazy && !function->shared()->is_compiled()) {
     PrintF("[lazy: ");
     function->shared()->name()->Print();
     PrintF("]\n");
@@ -8055,7 +8085,8 @@ static Object* Runtime_MoveArrayContents(Arguments args) {
   CONVERT_CHECKED(JSArray, to, args[1]);
   HeapObject* new_elements = from->elements();
   Object* new_map;
-  if (new_elements->map() == Heap::fixed_array_map()) {
+  if (new_elements->map() == Heap::fixed_array_map() ||
+      new_elements->map() == Heap::fixed_cow_array_map()) {
     new_map = to->map()->GetFastElementsMap();
   } else {
     new_map = to->map()->GetSlowElementsMap();

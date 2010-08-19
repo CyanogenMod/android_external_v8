@@ -55,6 +55,7 @@ namespace internal {
   V(Map, heap_number_map, HeapNumberMap)                                       \
   V(Map, global_context_map, GlobalContextMap)                                 \
   V(Map, fixed_array_map, FixedArrayMap)                                       \
+  V(Map, fixed_cow_array_map, FixedCOWArrayMap)                                \
   V(Object, no_interceptor_result_sentinel, NoInterceptorResultSentinel)       \
   V(Map, meta_map, MetaMap)                                                    \
   V(Object, termination_exception, TerminationException)                       \
@@ -983,8 +984,6 @@ class Heap : public AllStatic {
 
   static void RecordStats(HeapStats* stats, bool take_snapshot = false);
 
-  static Scavenger GetScavenger(int instance_type, int instance_size);
-
   // Copy block of memory from src to dst. Size of block should be aligned
   // by pointer size.
   static inline void CopyBlock(Address dst, Address src, int byte_size);
@@ -1259,10 +1258,6 @@ class Heap : public AllStatic {
   // Flush the number to string cache.
   static void FlushNumberStringCache();
 
-  // Flush code from functions we do not expect to use again. The code will
-  // be replaced with a lazy compilable version.
-  static void FlushCode();
-
   static void UpdateSurvivalRateTrend(int start_new_space_size);
 
   enum SurvivalRateTrend { INCREASING, STABLE, DECREASING, FLUCTUATING };
@@ -1324,6 +1319,9 @@ class Heap : public AllStatic {
 
 class HeapStats {
  public:
+  static const int kStartMarker = 0xDECADE00;
+  static const int kEndMarker = 0xDECADE01;
+
   int* start_marker;                    //  0
   int* new_space_size;                  //  1
   int* new_space_capacity;              //  2
@@ -1347,7 +1345,8 @@ class HeapStats {
   int* memory_allocator_capacity;       // 20
   int* objects_per_type;                // 21
   int* size_per_type;                   // 22
-  int* end_marker;                      // 23
+  int* os_error;                        // 23
+  int* end_marker;                      // 24
 };
 
 
@@ -1725,6 +1724,7 @@ class GCTracer BASE_EMBEDDED {
       EXTERNAL,
       MC_MARK,
       MC_SWEEP,
+      MC_SWEEP_NEWSPACE,
       MC_COMPACT,
       MC_FLUSH_CODE,
       kNumberOfScopes

@@ -3461,6 +3461,12 @@ Expression* Parser::ParseArrayLiteral(bool* ok) {
     }
   }
 
+  // Simple and shallow arrays can be lazily copied, we transform the
+  // elements array to a copy-on-write array.
+  if (is_simple && depth == 1 && values.length() > 0) {
+    literals->set_map(Heap::fixed_cow_array_map());
+  }
+
   return NEW(ArrayLiteral(literals, values.elements(),
                           literal_index, is_simple, depth));
 }
@@ -3476,6 +3482,19 @@ bool CompileTimeValue::IsCompileTimeValue(Expression* expression) {
   MaterializedLiteral* lit = expression->AsMaterializedLiteral();
   return lit != NULL && lit->is_simple();
 }
+
+
+bool CompileTimeValue::ArrayLiteralElementNeedsInitialization(
+    Expression* value) {
+  // If value is a literal the property value is already set in the
+  // boilerplate object.
+  if (value->AsLiteral() != NULL) return false;
+  // If value is a materialized literal the property value is already set
+  // in the boilerplate object if it is simple.
+  if (CompileTimeValue::IsCompileTimeValue(value)) return false;
+  return true;
+}
+
 
 Handle<FixedArray> CompileTimeValue::GetValue(Expression* expression) {
   ASSERT(IsCompileTimeValue(expression));
@@ -3587,10 +3606,8 @@ ObjectLiteral::Property* Parser::ParseObjectLiteralGetSet(bool is_getter,
   // { ... , get foo() { ... }, ... , set foo(v) { ... v ... } , ... }
   // We have already read the "get" or "set" keyword.
   Token::Value next = Next();
-  if (next == Token::IDENTIFIER ||
-      next == Token::STRING ||
-      next == Token::NUMBER ||
-      Token::IsKeyword(next)) {
+  // TODO(820): Allow NUMBER and STRING as well (and handle array indices).
+  if (next == Token::IDENTIFIER || Token::IsKeyword(next)) {
     Handle<String> name =
         factory()->LookupSymbol(scanner_.literal_string(),
                                 scanner_.literal_length());
@@ -3652,8 +3669,7 @@ Expression* Parser::ParseObjectLiteral(bool* ok) {
             factory()->LookupSymbol(scanner_.literal_string(),
                                     scanner_.literal_length());
         uint32_t index;
-        if (!string.is_null() &&
-            string->AsArrayIndex(&index)) {
+        if (!string.is_null() && string->AsArrayIndex(&index)) {
           key = NewNumberLiteral(index);
           break;
         }

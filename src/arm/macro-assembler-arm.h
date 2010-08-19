@@ -597,6 +597,7 @@ class MacroAssembler: public Assembler {
   // Use --debug_code to enable.
   void Assert(Condition cc, const char* msg);
   void AssertRegisterIsRoot(Register reg, Heap::RootListIndex index);
+  void AssertFastElements(Register elements);
 
   // Like Assert(), but always enabled.
   void Check(Condition cc, const char* msg);
@@ -617,6 +618,9 @@ class MacroAssembler: public Assembler {
   void JumpIfNotBothSmi(Register reg1, Register reg2, Label* on_not_both_smi);
   // Jump if either of the registers contain a smi.
   void JumpIfEitherSmi(Register reg1, Register reg2, Label* on_either_smi);
+
+  // Abort execution if argument is a smi. Used in debug code.
+  void AbortIfSmi(Register object);
 
   // ---------------------------------------------------------------------------
   // String utilities

@@ -26,7 +26,6 @@ V8_LOCAL_SRC_FILES := \
 	src/dtoa.cc \
 	src/execution.cc \
 	src/factory.cc \
-	src/fast-codegen.cc \
 	src/fast-dtoa.cc \
 	src/fixed-dtoa.cc \
 	src/flags.cc \
@@ -51,6 +50,7 @@ V8_LOCAL_SRC_FILES := \
 	src/mark-compact.cc \
 	src/messages.cc \
 	src/objects.cc \
+	src/objects-visiting.cc \
 	src/oprofile-agent.cc \
 	src/parser.cc \
 	src/property.cc \
@@ -91,7 +91,6 @@ ifeq ($(TARGET_ARCH),arm)
 		src/arm/debug-arm.cc \
 		src/arm/disasm-arm.cc \
 		src/arm/frames-arm.cc \
-		src/arm/fast-codegen-arm.cc \
 		src/arm/full-codegen-arm.cc \
 		src/arm/ic-arm.cc \
 		src/arm/jump-target-arm.cc \

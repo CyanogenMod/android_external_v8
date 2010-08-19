@@ -248,7 +248,7 @@ class SerializerDeserializer: public ObjectVisitor {
   }
 
   static int partial_snapshot_cache_length_;
-  static const int kPartialSnapshotCacheCapacity = 1300;
+  static const int kPartialSnapshotCacheCapacity = 1400;
   static Object* partial_snapshot_cache_[];
 };
 
@@ -536,7 +536,8 @@ class PartialSerializer : public Serializer {
     // would cause dupes.
     ASSERT(!o->IsScript());
     return o->IsString() || o->IsSharedFunctionInfo() ||
-           o->IsHeapNumber() || o->IsCode();
+           o->IsHeapNumber() || o->IsCode() ||
+           o->map() == Heap::fixed_cow_array_map();
   }
 
  private:

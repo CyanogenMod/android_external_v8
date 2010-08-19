@@ -1212,38 +1212,6 @@ void StubCompiler::GenerateLoadInterceptor(JSObject* object,
 }
 
 
-Object* StubCompiler::CompileLazyCompile(Code::Flags flags) {
-  // ----------- S t a t e -------------
-  //  -- r1: function
-  //  -- lr: return address
-  // -----------------------------------
-
-  // Enter an internal frame.
-  __ EnterInternalFrame();
-
-  // Preserve the function.
-  __ push(r1);
-
-  // Push the function on the stack as the argument to the runtime function.
-  __ push(r1);
-  __ CallRuntime(Runtime::kLazyCompile, 1);
-
-  // Calculate the entry point.
-  __ add(r2, r0, Operand(Code::kHeaderSize - kHeapObjectTag));
-
-  // Restore saved function.
-  __ pop(r1);
-
-  // Tear down temporary frame.
-  __ LeaveInternalFrame();
-
-  // Do a tail-call of the compiled function.
-  __ Jump(r2);
-
-  return GetCodeWithFlags(flags, "LazyCompileStub");
-}
-
-
 void CallStubCompiler::GenerateNameCheck(String* name, Label* miss) {
   if (kind_ == Code::KEYED_CALL_IC) {
     __ cmp(r2, Operand(Handle<String>(name)));
@@ -1329,11 +1297,6 @@ Object* CallStubCompiler::CompileArrayPushCall(Object* object,
   // Check that the maps haven't changed.
   CheckPrototypes(JSObject::cast(object), r1, holder, r3, r0, r4, name, &miss);
 
-  if (object->IsGlobalObject()) {
-    __ ldr(r3, FieldMemOperand(r1, GlobalObject::kGlobalReceiverOffset));
-    __ str(r3, MemOperand(sp, argc * kPointerSize));
-  }
-
   __ TailCallExternalReference(ExternalReference(Builtins::c_ArrayPush),
                                argc + 1,
                                1);
@@ -1380,11 +1343,6 @@ Object* CallStubCompiler::CompileArrayPopCall(Object* object,
 
   // Check that the maps haven't changed.
   CheckPrototypes(JSObject::cast(object), r1, holder, r3, r0, r4, name, &miss);
-
-  if (object->IsGlobalObject()) {
-    __ ldr(r3, FieldMemOperand(r1, GlobalObject::kGlobalReceiverOffset));
-    __ str(r3, MemOperand(sp, argc * kPointerSize));
-  }
 
   __ TailCallExternalReference(ExternalReference(Builtins::c_ArrayPop),
                                argc + 1,

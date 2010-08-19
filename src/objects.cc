@@ -33,6 +33,7 @@
 #include "debug.h"
 #include "execution.h"
 #include "objects-inl.h"
+#include "objects-visiting.h"
 #include "macro-assembler.h"
 #include "scanner.h"
 #include "scopeinfo.h"
@@ -1042,7 +1043,7 @@ int HeapObject::SlowSizeFromMap(Map* map) {
 
   switch (instance_type) {
     case FIXED_ARRAY_TYPE:
-      return reinterpret_cast<FixedArray*>(this)->FixedArraySize();
+      return FixedArray::BodyDescriptor::SizeOf(map, this);
     case BYTE_ARRAY_TYPE:
       return reinterpret_cast<ByteArray*>(this)->ByteArraySize();
     case CODE_TYPE:
@@ -1073,7 +1074,7 @@ void HeapObject::IterateBody(InstanceType type, int object_size,
       case kSeqStringTag:
         break;
       case kConsStringTag:
-        reinterpret_cast<ConsString*>(this)->ConsStringIterateBody(v);
+        ConsString::BodyDescriptor::IterateBody(this, v);
         break;
       case kExternalStringTag:
         if ((type & kStringEncodingMask) == kAsciiStringTag) {
@@ -1090,7 +1091,7 @@ void HeapObject::IterateBody(InstanceType type, int object_size,
 
   switch (type) {
     case FIXED_ARRAY_TYPE:
-      reinterpret_cast<FixedArray*>(this)->FixedArrayIterateBody(v);
+      FixedArray::BodyDescriptor::IterateBody(this, object_size, v);
       break;
     case JS_OBJECT_TYPE:
     case JS_CONTEXT_EXTENSION_OBJECT_TYPE:
@@ -1101,23 +1102,22 @@ void HeapObject::IterateBody(InstanceType type, int object_size,
     case JS_GLOBAL_PROXY_TYPE:
     case JS_GLOBAL_OBJECT_TYPE:
     case JS_BUILTINS_OBJECT_TYPE:
-      reinterpret_cast<JSObject*>(this)->JSObjectIterateBody(object_size, v);
+      JSObject::BodyDescriptor::IterateBody(this, object_size, v);
       break;
     case ODDBALL_TYPE:
-      reinterpret_cast<Oddball*>(this)->OddballIterateBody(v);
+      Oddball::BodyDescriptor::IterateBody(this, v);
       break;
     case PROXY_TYPE:
       reinterpret_cast<Proxy*>(this)->ProxyIterateBody(v);
       break;
     case MAP_TYPE:
-      reinterpret_cast<Map*>(this)->MapIterateBody(v);
+      Map::BodyDescriptor::IterateBody(this, v);
       break;
     case CODE_TYPE:
       reinterpret_cast<Code*>(this)->CodeIterateBody(v);
       break;
     case JS_GLOBAL_PROPERTY_CELL_TYPE:
-      reinterpret_cast<JSGlobalPropertyCell*>(this)
-          ->JSGlobalPropertyCellIterateBody(v);
+      JSGlobalPropertyCell::BodyDescriptor::IterateBody(this, v);
       break;
     case HEAP_NUMBER_TYPE:
     case FILLER_TYPE:
@@ -1131,16 +1131,15 @@ void HeapObject::IterateBody(InstanceType type, int object_size,
     case EXTERNAL_UNSIGNED_INT_ARRAY_TYPE:
     case EXTERNAL_FLOAT_ARRAY_TYPE:
       break;
-    case SHARED_FUNCTION_INFO_TYPE: {
-      SharedFunctionInfo* shared = reinterpret_cast<SharedFunctionInfo*>(this);
-      shared->SharedFunctionInfoIterateBody(v);
+    case SHARED_FUNCTION_INFO_TYPE:
+      SharedFunctionInfo::BodyDescriptor::IterateBody(this, v);
       break;
-    }
+
 #define MAKE_STRUCT_CASE(NAME, Name, name) \
         case NAME##_TYPE:
       STRUCT_LIST(MAKE_STRUCT_CASE)
 #undef MAKE_STRUCT_CASE
-      IterateStructBody(object_size, v);
+      StructBodyDescriptor::IterateBody(this, object_size, v);
       break;
     default:
       PrintF("Unknown type: %d\n", type);
@@ -1156,11 +1155,23 @@ void HeapObject::IterateStructBody(int object_size, ObjectVisitor* v) {
 
 Object* HeapNumber::HeapNumberToBoolean() {
   // NaN, +0, and -0 should return the false object
-  switch (fpclassify(value())) {
-    case FP_NAN:  // fall through
-    case FP_ZERO: return Heap::false_value();
-    default: return Heap::true_value();
+#if __BYTE_ORDER == __LITTLE_ENDIAN
+  union IeeeDoubleLittleEndianArchType u;
+#elif __BYTE_ORDER == __BIG_ENDIAN
+  union IeeeDoubleBigEndianArchType u;
+#endif
+  u.d = value();
+  if (u.bits.exp == 2047) {
+    // Detect NaN for IEEE double precision floating point.
+    if ((u.bits.man_low | u.bits.man_high) != 0)
+      return Heap::false_value();
   }
+  if (u.bits.exp == 0) {
+    // Detect +0, and -0 for IEEE double precision floating point.
+    if ((u.bits.man_low | u.bits.man_high) == 0)
+      return Heap::false_value();
+  }
+  return Heap::true_value();
 }
 
 
@@ -1206,12 +1217,6 @@ String* JSObject::constructor_name() {
   }
   // If the constructor is not present, return "Object".
   return Heap::Object_symbol();
-}
-
-
-void JSObject::JSObjectIterateBody(int object_size, ObjectVisitor* v) {
-  // Iterate over all fields in the body. Assumes all are Object*.
-  IteratePointers(v, kPropertiesOffset, object_size);
 }
 
 
@@ -1337,7 +1342,7 @@ Object* JSObject::AddConstantFunctionProperty(String* name,
   if (attributes != NONE) {
     return function;
   }
-  ConstTransitionDescriptor mark(name);
+  ConstTransitionDescriptor mark(name, Map::cast(new_map));
   new_descriptors =
       old_map->instance_descriptors()->CopyInsert(&mark, KEEP_TRANSITIONS);
   if (new_descriptors->IsFailure()) {
@@ -1695,11 +1700,7 @@ bool JSObject::SetElementWithCallbackSetterInPrototypes(uint32_t index,
 
 void JSObject::LookupInDescriptor(String* name, LookupResult* result) {
   DescriptorArray* descriptors = map()->instance_descriptors();
-  int number = DescriptorLookupCache::Lookup(descriptors, name);
-  if (number == DescriptorLookupCache::kAbsent) {
-    number = descriptors->Search(name);
-    DescriptorLookupCache::Update(descriptors, name, number);
-  }
+  int number = descriptors->SearchWithCache(name);
   if (number != DescriptorArray::kNotFound) {
     result->DescriptorResult(this, descriptors->GetDetails(number), number);
   } else {
@@ -1817,8 +1818,10 @@ Object* JSObject::SetPropertyWithFailedAccessCheck(LookupResult* result,
     }
   }
 
+  HandleScope scope;
+  Handle<Object> value_handle(value);
   Top::ReportFailedAccessCheck(this, v8::ACCESS_SET);
-  return value;
+  return *value_handle;
 }
 
 
@@ -1896,10 +1899,25 @@ Object* JSObject::SetProperty(LookupResult* result,
                                      result->holder());
     case INTERCEPTOR:
       return SetPropertyWithInterceptor(name, value, attributes);
-    case CONSTANT_TRANSITION:
-      // Replace with a MAP_TRANSITION to a new map with a FIELD, even
-      // if the value is a function.
+    case CONSTANT_TRANSITION: {
+      // If the same constant function is being added we can simply
+      // transition to the target map.
+      Map* target_map = result->GetTransitionMap();
+      DescriptorArray* target_descriptors = target_map->instance_descriptors();
+      int number = target_descriptors->SearchWithCache(name);
+      ASSERT(number != DescriptorArray::kNotFound);
+      ASSERT(target_descriptors->GetType(number) == CONSTANT_FUNCTION);
+      JSFunction* function =
+          JSFunction::cast(target_descriptors->GetValue(number));
+      ASSERT(!Heap::InNewSpace(function));
+      if (value == function) {
+        set_map(target_map);
+        return value;
+      }
+      // Otherwise, replace with a MAP_TRANSITION to a new map with a
+      // FIELD, even if the value is a constant function.
       return ConvertDescriptorToFieldAndMapTransition(name, value, attributes);
+    }
     case NULL_DESCRIPTOR:
       return ConvertDescriptorToFieldAndMapTransition(name, value, attributes);
     default:
@@ -2190,8 +2208,7 @@ Object* JSObject::NormalizeProperties(PropertyNormalizationMode mode,
     int new_instance_size = map()->instance_size() - instance_size_delta;
     new_map->set_inobject_properties(0);
     new_map->set_instance_size(new_instance_size);
-    new_map->set_scavenger(Heap::GetScavenger(new_map->instance_type(),
-                                              new_map->instance_size()));
+    new_map->set_visitor_id(StaticVisitorBase::GetVisitorId(new_map));
     Heap::CreateFillerObjectAt(this->address() + new_instance_size,
                                instance_size_delta);
   }
@@ -2321,6 +2338,8 @@ Object* JSObject::DeleteElementPostInterceptor(uint32_t index,
   ASSERT(!HasPixelElements() && !HasExternalArrayElements());
   switch (GetElementsKind()) {
     case FAST_ELEMENTS: {
+      Object* obj = EnsureWritableFastElements();
+      if (obj->IsFailure()) return obj;
       uint32_t length = IsJSArray() ?
       static_cast<uint32_t>(Smi::cast(JSArray::cast(this)->length())->value()) :
       static_cast<uint32_t>(FixedArray::cast(elements())->length());
@@ -2401,6 +2420,8 @@ Object* JSObject::DeleteElement(uint32_t index, DeleteMode mode) {
 
   switch (GetElementsKind()) {
     case FAST_ELEMENTS: {
+      Object* obj = EnsureWritableFastElements();
+      if (obj->IsFailure()) return obj;
       uint32_t length = IsJSArray() ?
       static_cast<uint32_t>(Smi::cast(JSArray::cast(this)->length())->value()) :
       static_cast<uint32_t>(FixedArray::cast(elements())->length());
@@ -3404,11 +3425,6 @@ void CodeCacheHashTable::RemoveByIndex(int index) {
   set(EntryToIndex(index), Heap::null_value());
   set(EntryToIndex(index) + 1, Heap::null_value());
   ElementRemoved();
-}
-
-
-void FixedArray::FixedArrayIterateBody(ObjectVisitor* v) {
-  IteratePointers(v, kHeaderSize, kHeaderSize + length() * kPointerSize);
 }
 
 
@@ -4501,16 +4517,6 @@ void ConsString::ConsStringReadBlockIntoBuffer(ReadBlockBuffer* rbb,
 }
 
 
-void ConsString::ConsStringIterateBody(ObjectVisitor* v) {
-  IteratePointers(v, kFirstOffset, kSecondOffset + kPointerSize);
-}
-
-
-void JSGlobalPropertyCell::JSGlobalPropertyCellIterateBody(ObjectVisitor* v) {
-  IteratePointers(v, kValueOffset, kValueOffset + kPointerSize);
-}
-
-
 uint16_t ConsString::ConsStringGet(int index) {
   ASSERT(index >= 0 && index < this->length());
 
@@ -4613,24 +4619,6 @@ void String::WriteToFlat(String* src,
   }
 }
 
-
-#define FIELD_ADDR(p, offset) \
-  (reinterpret_cast<byte*>(p) + offset - kHeapObjectTag)
-
-void ExternalAsciiString::ExternalAsciiStringIterateBody(ObjectVisitor* v) {
-  typedef v8::String::ExternalAsciiStringResource Resource;
-  v->VisitExternalAsciiString(
-      reinterpret_cast<Resource**>(FIELD_ADDR(this, kResourceOffset)));
-}
-
-
-void ExternalTwoByteString::ExternalTwoByteStringIterateBody(ObjectVisitor* v) {
-  typedef v8::String::ExternalStringResource Resource;
-  v->VisitExternalTwoByteString(
-      reinterpret_cast<Resource**>(FIELD_ADDR(this, kResourceOffset)));
-}
-
-#undef FIELD_ADDR
 
 template <typename IteratorA, typename IteratorB>
 static inline bool CompareStringContents(IteratorA* ia, IteratorB* ib) {
@@ -4977,7 +4965,8 @@ void String::PrintOn(FILE* file) {
 void Map::CreateBackPointers() {
   DescriptorArray* descriptors = instance_descriptors();
   for (int i = 0; i < descriptors->number_of_descriptors(); i++) {
-    if (descriptors->GetType(i) == MAP_TRANSITION) {
+    if (descriptors->GetType(i) == MAP_TRANSITION ||
+        descriptors->GetType(i) == CONSTANT_TRANSITION) {
       // Get target.
       Map* target = Map::cast(descriptors->GetValue(i));
 #ifdef DEBUG
@@ -5018,13 +5007,14 @@ void Map::ClearNonLiveTransitions(Object* real_prototype) {
     // map is not reached again by following a back pointer from a
     // non-live object.
     PropertyDetails details(Smi::cast(contents->get(i + 1)));
-    if (details.type() == MAP_TRANSITION) {
+    if (details.type() == MAP_TRANSITION ||
+        details.type() == CONSTANT_TRANSITION) {
       Map* target = reinterpret_cast<Map*>(contents->get(i));
       ASSERT(target->IsHeapObject());
       if (!target->IsMarked()) {
         ASSERT(target->IsMap());
-        contents->set(i + 1, NullDescriptorDetails);
-        contents->set_null(i);
+        contents->set_unchecked(i + 1, NullDescriptorDetails);
+        contents->set_null_unchecked(i);
         ASSERT(target->prototype() == this ||
                target->prototype() == real_prototype);
         // Getter prototype() is read-only, set_prototype() has side effects.
@@ -5032,12 +5022,6 @@ void Map::ClearNonLiveTransitions(Object* real_prototype) {
       }
     }
   }
-}
-
-
-void Map::MapIterateBody(ObjectVisitor* v) {
-  // Assumes all Object* members are contiguously allocated!
-  IteratePointers(v, kPointerFieldsBeginOffset, kPointerFieldsEndOffset);
 }
 
 
@@ -5104,12 +5088,6 @@ Context* JSFunction::GlobalContextFromLiterals(FixedArray* literals) {
 }
 
 
-void Oddball::OddballIterateBody(ObjectVisitor* v) {
-  // Assumes all Object* members are contiguously allocated!
-  IteratePointers(v, kToStringOffset, kToNumberOffset + kPointerSize);
-}
-
-
 Object* Oddball::Initialize(const char* to_string, Object* to_number) {
   Object* symbol = Heap::LookupAsciiSymbol(to_string);
   if (symbol->IsFailure()) return symbol;
@@ -5121,7 +5099,7 @@ Object* Oddball::Initialize(const char* to_string, Object* to_number) {
 
 bool SharedFunctionInfo::HasSourceCode() {
   return !script()->IsUndefined() &&
-         !Script::cast(script())->source()->IsUndefined();
+         !reinterpret_cast<Script*>(script())->source()->IsUndefined();
 }
 
 
@@ -5282,13 +5260,6 @@ void SharedFunctionInfo::SourceCodePrint(StringStream* accumulator,
 }
 
 
-void SharedFunctionInfo::SharedFunctionInfoIterateBody(ObjectVisitor* v) {
-  IteratePointers(v,
-                  kNameOffset,
-                  kThisPropertyAssignmentsOffset + kPointerSize);
-}
-
-
 void ObjectVisitor::VisitCodeTarget(RelocInfo* rinfo) {
   ASSERT(RelocInfo::IsCodeTarget(rinfo->rmode()));
   Object* target = Code::GetCodeFromTargetAddress(rinfo->target_address());
@@ -5307,28 +5278,6 @@ void ObjectVisitor::VisitDebugTarget(RelocInfo* rinfo) {
   Object* old_target = target;
   VisitPointer(&target);
   CHECK_EQ(target, old_target);  // VisitPointer doesn't change Code* *target.
-}
-
-
-void Code::CodeIterateBody(ObjectVisitor* v) {
-  int mode_mask = RelocInfo::kCodeTargetMask |
-                  RelocInfo::ModeMask(RelocInfo::EMBEDDED_OBJECT) |
-                  RelocInfo::ModeMask(RelocInfo::EXTERNAL_REFERENCE) |
-                  RelocInfo::ModeMask(RelocInfo::JS_RETURN) |
-                  RelocInfo::ModeMask(RelocInfo::DEBUG_BREAK_SLOT) |
-                  RelocInfo::ModeMask(RelocInfo::RUNTIME_ENTRY);
-
-  // Use the relocation info pointer before it is visited by
-  // the heap compaction in the next statement.
-  RelocIterator it(this, mode_mask);
-
-  IteratePointers(v,
-                  kRelocationInfoOffset,
-                  kRelocationInfoOffset + kPointerSize);
-
-  for (; !it.done(); it.next()) {
-    it.rinfo()->Visit(v);
-  }
 }
 
 
@@ -5646,6 +5595,8 @@ Object* JSObject::SetElementsLength(Object* len) {
         int old_capacity = FixedArray::cast(elements())->length();
         if (value <= old_capacity) {
           if (IsJSArray()) {
+            Object* obj = EnsureWritableFastElements();
+            if (obj->IsFailure()) return obj;
             int old_length = FastD2I(JSArray::cast(this)->length()->Number());
             // NOTE: We may be able to optimize this by removing the
             // last part of the elements backing storage array and
@@ -5826,13 +5777,16 @@ bool JSObject::HasElementWithInterceptor(JSObject* receiver, uint32_t index) {
     v8::IndexedPropertyQuery query =
         v8::ToCData<v8::IndexedPropertyQuery>(interceptor->query());
     LOG(ApiIndexedPropertyAccess("interceptor-indexed-has", this, index));
-    v8::Handle<v8::Boolean> result;
+    v8::Handle<v8::Integer> result;
     {
       // Leaving JavaScript.
       VMState state(EXTERNAL);
       result = query(index, info);
     }
-    if (!result.IsEmpty()) return result->IsTrue();
+    if (!result.IsEmpty()) {
+      ASSERT(result->IsInt32());
+      return true;  // absence of property is signaled by empty handle.
+    }
   } else if (!interceptor->getter()->IsUndefined()) {
     v8::IndexedPropertyGetter getter =
         v8::ToCData<v8::IndexedPropertyGetter>(interceptor->getter());
@@ -6103,7 +6057,9 @@ Object* JSObject::SetElementWithCallback(Object* structure,
 Object* JSObject::SetFastElement(uint32_t index, Object* value) {
   ASSERT(HasFastElements());
 
-  FixedArray* elms = FixedArray::cast(elements());
+  Object* elms_obj = EnsureWritableFastElements();
+  if (elms_obj->IsFailure()) return elms_obj;
+  FixedArray* elms = FixedArray::cast(elms_obj);
   uint32_t elms_length = static_cast<uint32_t>(elms->length());
 
   if (!IsJSArray() && (index >= elms_length || elms->get(index)->IsTheHole())) {
@@ -6147,12 +6103,15 @@ Object* JSObject::SetFastElement(uint32_t index, Object* value) {
   return SetElement(index, value);
 }
 
+
 Object* JSObject::SetElement(uint32_t index, Object* value) {
   // Check access rights if needed.
   if (IsAccessCheckNeeded() &&
       !Top::MayIndexedAccess(this, index, v8::ACCESS_SET)) {
+    HandleScope scope;
+    Handle<Object> value_handle(value);
     Top::ReportFailedAccessCheck(this, v8::ACCESS_SET);
-    return value;
+    return *value_handle;
   }
 
   if (IsJSGlobalProxy()) {
@@ -7623,6 +7582,9 @@ Object* JSObject::PrepareElementsForSort(uint32_t limit) {
 
     set_map(new_map);
     set_elements(fast_elements);
+  } else {
+    Object* obj = EnsureWritableFastElements();
+    if (obj->IsFailure()) return obj;
   }
   ASSERT(HasFastElements());
 

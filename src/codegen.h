@@ -101,7 +101,8 @@ enum UncatchableExceptionType { OUT_OF_MEMORY, TERMINATION };
   F(IsObject, 1, 1)                                                          \
   F(IsFunction, 1, 1)                                                        \
   F(IsUndetectableObject, 1, 1)                                              \
-  F(IsSpecObject, 1, 1)                                            \
+  F(IsSpecObject, 1, 1)                                                      \
+  F(IsStringWrapperSafeForDefaultValueOf, 1, 1)                              \
   F(StringAdd, 2, 1)                                                         \
   F(SubString, 3, 1)                                                         \
   F(StringCompare, 2, 1)                                                     \
@@ -179,6 +180,7 @@ class CodeGeneratorScope BASE_EMBEDDED {
   static CodeGenerator* top_;
   CodeGenerator* previous_;
 };
+
 
 #if V8_TARGET_ARCH_IA32 || V8_TARGET_ARCH_X64
 
@@ -319,6 +321,15 @@ class DeferredCode: public ZoneObject {
 
   void SaveRegisters();
   void RestoreRegisters();
+  void Exit();
+
+  // If this returns true then all registers will be saved for the duration
+  // of the Generate() call.  Otherwise the registers are not saved and the
+  // Generate() call must bracket runtime any runtime calls with calls to
+  // SaveRegisters() and RestoreRegisters().  In this case the Generate
+  // method must also call Exit() in order to return to the non-deferred
+  // code.
+  virtual bool AutoSaveAndRestore() { return true; }
 
  protected:
   MacroAssembler* masm_;
@@ -385,20 +396,33 @@ class FastNewContextStub : public CodeStub {
 
 class FastCloneShallowArrayStub : public CodeStub {
  public:
-  static const int kMaximumLength = 8;
+  // Maximum length of copied elements array.
+  static const int kMaximumClonedLength = 8;
 
-  explicit FastCloneShallowArrayStub(int length) : length_(length) {
-    ASSERT(length >= 0 && length <= kMaximumLength);
+  enum Mode {
+    CLONE_ELEMENTS,
+    COPY_ON_WRITE_ELEMENTS
+  };
+
+  FastCloneShallowArrayStub(Mode mode, int length)
+      : mode_(mode),
+        length_((mode == COPY_ON_WRITE_ELEMENTS) ? 0 : length) {
+    ASSERT(length_ >= 0);
+    ASSERT(length_ <= kMaximumClonedLength);
   }
 
   void Generate(MacroAssembler* masm);
 
  private:
+  Mode mode_;
   int length_;
 
   const char* GetName() { return "FastCloneShallowArrayStub"; }
   Major MajorKey() { return FastCloneShallowArray; }
-  int MinorKey() { return length_; }
+  int MinorKey() {
+    ASSERT(mode_ == 0 || mode_ == 1);
+    return (length_ << 1) | mode_;
+  }
 };
 
 
@@ -718,18 +742,6 @@ class CallFunctionStub: public CodeStub {
   static int ExtractArgcFromMinorKey(int minor_key) {
     return ArgcBits::decode(minor_key);
   }
-};
-
-
-class ToBooleanStub: public CodeStub {
- public:
-  ToBooleanStub() { }
-
-  void Generate(MacroAssembler* masm);
-
- private:
-  Major MajorKey() { return ToBoolean; }
-  int MinorKey() { return 0; }
 };
 
 

@@ -201,103 +201,89 @@ void CodeGenerator::Generate(CompilationInfo* info) {
     // rsi: callee's context
     allocator_->Initialize();
 
-    if (info->mode() == CompilationInfo::PRIMARY) {
-      frame_->Enter();
+    frame_->Enter();
 
-      // Allocate space for locals and initialize them.
-      frame_->AllocateStackSlots();
+    // Allocate space for locals and initialize them.
+    frame_->AllocateStackSlots();
 
-      // Allocate the local context if needed.
-      int heap_slots = scope()->num_heap_slots() - Context::MIN_CONTEXT_SLOTS;
-      if (heap_slots > 0) {
-        Comment cmnt(masm_, "[ allocate local context");
-        // Allocate local context.
-        // Get outer context and create a new context based on it.
-        frame_->PushFunction();
-        Result context;
-        if (heap_slots <= FastNewContextStub::kMaximumSlots) {
-          FastNewContextStub stub(heap_slots);
-          context = frame_->CallStub(&stub, 1);
-        } else {
-          context = frame_->CallRuntime(Runtime::kNewContext, 1);
-        }
-
-        // Update context local.
-        frame_->SaveContextRegister();
-
-        // Verify that the runtime call result and rsi agree.
-        if (FLAG_debug_code) {
-          __ cmpq(context.reg(), rsi);
-          __ Assert(equal, "Runtime::NewContext should end up in rsi");
-        }
+    // Allocate the local context if needed.
+    int heap_slots = scope()->num_heap_slots() - Context::MIN_CONTEXT_SLOTS;
+    if (heap_slots > 0) {
+      Comment cmnt(masm_, "[ allocate local context");
+      // Allocate local context.
+      // Get outer context and create a new context based on it.
+      frame_->PushFunction();
+      Result context;
+      if (heap_slots <= FastNewContextStub::kMaximumSlots) {
+        FastNewContextStub stub(heap_slots);
+        context = frame_->CallStub(&stub, 1);
+      } else {
+        context = frame_->CallRuntime(Runtime::kNewContext, 1);
       }
 
-      // TODO(1241774): Improve this code:
-      // 1) only needed if we have a context
-      // 2) no need to recompute context ptr every single time
-      // 3) don't copy parameter operand code from SlotOperand!
-      {
-        Comment cmnt2(masm_, "[ copy context parameters into .context");
-        // Note that iteration order is relevant here! If we have the same
-        // parameter twice (e.g., function (x, y, x)), and that parameter
-        // needs to be copied into the context, it must be the last argument
-        // passed to the parameter that needs to be copied. This is a rare
-        // case so we don't check for it, instead we rely on the copying
-        // order: such a parameter is copied repeatedly into the same
-        // context location and thus the last value is what is seen inside
-        // the function.
-        for (int i = 0; i < scope()->num_parameters(); i++) {
-          Variable* par = scope()->parameter(i);
-          Slot* slot = par->slot();
-          if (slot != NULL && slot->type() == Slot::CONTEXT) {
-            // The use of SlotOperand below is safe in unspilled code
-            // because the slot is guaranteed to be a context slot.
-            //
-            // There are no parameters in the global scope.
-            ASSERT(!scope()->is_global_scope());
-            frame_->PushParameterAt(i);
-            Result value = frame_->Pop();
-            value.ToRegister();
+      // Update context local.
+      frame_->SaveContextRegister();
 
-            // SlotOperand loads context.reg() with the context object
-            // stored to, used below in RecordWrite.
-            Result context = allocator_->Allocate();
-            ASSERT(context.is_valid());
-            __ movq(SlotOperand(slot, context.reg()), value.reg());
-            int offset = FixedArray::kHeaderSize + slot->index() * kPointerSize;
-            Result scratch = allocator_->Allocate();
-            ASSERT(scratch.is_valid());
-            frame_->Spill(context.reg());
-            frame_->Spill(value.reg());
-            __ RecordWrite(context.reg(), offset, value.reg(), scratch.reg());
-          }
+      // Verify that the runtime call result and rsi agree.
+      if (FLAG_debug_code) {
+        __ cmpq(context.reg(), rsi);
+        __ Assert(equal, "Runtime::NewContext should end up in rsi");
+      }
+    }
+
+    // TODO(1241774): Improve this code:
+    // 1) only needed if we have a context
+    // 2) no need to recompute context ptr every single time
+    // 3) don't copy parameter operand code from SlotOperand!
+    {
+      Comment cmnt2(masm_, "[ copy context parameters into .context");
+      // Note that iteration order is relevant here! If we have the same
+      // parameter twice (e.g., function (x, y, x)), and that parameter
+      // needs to be copied into the context, it must be the last argument
+      // passed to the parameter that needs to be copied. This is a rare
+      // case so we don't check for it, instead we rely on the copying
+      // order: such a parameter is copied repeatedly into the same
+      // context location and thus the last value is what is seen inside
+      // the function.
+      for (int i = 0; i < scope()->num_parameters(); i++) {
+        Variable* par = scope()->parameter(i);
+        Slot* slot = par->slot();
+        if (slot != NULL && slot->type() == Slot::CONTEXT) {
+          // The use of SlotOperand below is safe in unspilled code
+          // because the slot is guaranteed to be a context slot.
+          //
+          // There are no parameters in the global scope.
+          ASSERT(!scope()->is_global_scope());
+          frame_->PushParameterAt(i);
+          Result value = frame_->Pop();
+          value.ToRegister();
+
+          // SlotOperand loads context.reg() with the context object
+          // stored to, used below in RecordWrite.
+          Result context = allocator_->Allocate();
+          ASSERT(context.is_valid());
+          __ movq(SlotOperand(slot, context.reg()), value.reg());
+          int offset = FixedArray::kHeaderSize + slot->index() * kPointerSize;
+          Result scratch = allocator_->Allocate();
+          ASSERT(scratch.is_valid());
+          frame_->Spill(context.reg());
+          frame_->Spill(value.reg());
+          __ RecordWrite(context.reg(), offset, value.reg(), scratch.reg());
         }
       }
+    }
 
-      // Store the arguments object.  This must happen after context
-      // initialization because the arguments object may be stored in
-      // the context.
-      if (ArgumentsMode() != NO_ARGUMENTS_ALLOCATION) {
-        StoreArgumentsObject(true);
-      }
+    // Store the arguments object.  This must happen after context
+    // initialization because the arguments object may be stored in
+    // the context.
+    if (ArgumentsMode() != NO_ARGUMENTS_ALLOCATION) {
+      StoreArgumentsObject(true);
+    }
 
-      // Initialize ThisFunction reference if present.
-      if (scope()->is_function_scope() && scope()->function() != NULL) {
-        frame_->Push(Factory::the_hole_value());
-        StoreToSlot(scope()->function()->slot(), NOT_CONST_INIT);
-      }
-    } else {
-      // When used as the secondary compiler for splitting, rbp, rsi,
-      // and rdi have been pushed on the stack.  Adjust the virtual
-      // frame to match this state.
-      frame_->Adjust(3);
-      allocator_->Unuse(rdi);
-
-      // Bind all the bailout labels to the beginning of the function.
-      List<CompilationInfo::Bailout*>* bailouts = info->bailouts();
-      for (int i = 0; i < bailouts->length(); i++) {
-        __ bind(bailouts->at(i)->label());
-      }
+    // Initialize ThisFunction reference if present.
+    if (scope()->is_function_scope() && scope()->function() != NULL) {
+      frame_->Push(Factory::the_hole_value());
+      StoreToSlot(scope()->function()->slot(), NOT_CONST_INIT);
     }
 
     // Initialize the function return target after the locals are set
@@ -2630,9 +2616,8 @@ void CodeGenerator::CallApplyLazy(Expression* applicand,
       __ j(is_smi, &build_args);
       __ CmpObjectType(rax, JS_FUNCTION_TYPE, rcx);
       __ j(not_equal, &build_args);
-      __ movq(rax, FieldOperand(rax, JSFunction::kSharedFunctionInfoOffset));
       Handle<Code> apply_code(Builtins::builtin(Builtins::FunctionApply));
-      __ Cmp(FieldOperand(rax, SharedFunctionInfo::kCodeOffset), apply_code);
+      __ Cmp(FieldOperand(rax, JSFunction::kCodeOffset), apply_code);
       __ j(not_equal, &build_args);
 
       // Check that applicand is a function.
@@ -3926,7 +3911,7 @@ void CodeGenerator::VisitForInStatement(ForInStatement* node) {
   __ movq(rbx, rax);
 
   // If the property has been removed while iterating, we just skip it.
-  __ CompareRoot(rbx, Heap::kNullValueRootIndex);
+  __ SmiCompare(rbx, Smi::FromInt(0));
   node->continue_target()->Branch(equal);
 
   end_del_check.Bind();
@@ -5004,12 +4989,18 @@ void CodeGenerator::VisitArrayLiteral(ArrayLiteral* node) {
   frame_->Push(node->constant_elements());
   int length = node->values()->length();
   Result clone;
-  if (node->depth() > 1) {
+  if (node->constant_elements()->map() == Heap::fixed_cow_array_map()) {
+    FastCloneShallowArrayStub stub(
+        FastCloneShallowArrayStub::COPY_ON_WRITE_ELEMENTS, length);
+    clone = frame_->CallStub(&stub, 3);
+    __ IncrementCounter(&Counters::cow_arrays_created_stub, 1);
+  } else if (node->depth() > 1) {
     clone = frame_->CallRuntime(Runtime::kCreateArrayLiteral, 3);
-  } else if (length > FastCloneShallowArrayStub::kMaximumLength) {
+  } else if (length > FastCloneShallowArrayStub::kMaximumClonedLength) {
     clone = frame_->CallRuntime(Runtime::kCreateArrayLiteralShallow, 3);
   } else {
-    FastCloneShallowArrayStub stub(length);
+    FastCloneShallowArrayStub stub(
+        FastCloneShallowArrayStub::CLONE_ELEMENTS, length);
     clone = frame_->CallStub(&stub, 3);
   }
   frame_->Push(&clone);
@@ -5019,12 +5010,9 @@ void CodeGenerator::VisitArrayLiteral(ArrayLiteral* node) {
   for (int i = 0; i < length; i++) {
     Expression* value = node->values()->at(i);
 
-    // If value is a literal the property value is already set in the
-    // boilerplate object.
-    if (value->AsLiteral() != NULL) continue;
-    // If value is a materialized literal the property value is already set
-    // in the boilerplate object if it is simple.
-    if (CompileTimeValue::IsCompileTimeValue(value)) continue;
+    if (!CompileTimeValue::ArrayLiteralElementNeedsInitialization(value)) {
+      continue;
+    }
 
     // The property must be set by generated code.
     Load(value);
@@ -6041,6 +6029,143 @@ void CodeGenerator::GenerateIsSpecObject(ZoneList<Expression*>* args) {
 }
 
 
+// Deferred code to check whether the String JavaScript object is safe for using
+// default value of. This code is called after the bit caching this information
+// in the map has been checked with the map for the object in the map_result_
+// register. On return the register map_result_ contains 1 for true and 0 for
+// false.
+class DeferredIsStringWrapperSafeForDefaultValueOf : public DeferredCode {
+ public:
+  DeferredIsStringWrapperSafeForDefaultValueOf(Register object,
+                                               Register map_result,
+                                               Register scratch1,
+                                               Register scratch2)
+      : object_(object),
+        map_result_(map_result),
+        scratch1_(scratch1),
+        scratch2_(scratch2) { }
+
+  virtual void Generate() {
+    Label false_result;
+
+    // Check that map is loaded as expected.
+    if (FLAG_debug_code) {
+      __ cmpq(map_result_, FieldOperand(object_, HeapObject::kMapOffset));
+      __ Assert(equal, "Map not in expected register");
+    }
+
+    // Check for fast case object. Generate false result for slow case object.
+    __ movq(scratch1_, FieldOperand(object_, JSObject::kPropertiesOffset));
+    __ movq(scratch1_, FieldOperand(scratch1_, HeapObject::kMapOffset));
+    __ CompareRoot(scratch1_, Heap::kHashTableMapRootIndex);
+    __ j(equal, &false_result);
+
+    // Look for valueOf symbol in the descriptor array, and indicate false if
+    // found. The type is not checked, so if it is a transition it is a false
+    // negative.
+    __ movq(map_result_,
+           FieldOperand(map_result_, Map::kInstanceDescriptorsOffset));
+    __ movq(scratch1_, FieldOperand(map_result_, FixedArray::kLengthOffset));
+    // map_result_: descriptor array
+    // scratch1_: length of descriptor array
+    // Calculate the end of the descriptor array.
+    SmiIndex index = masm_->SmiToIndex(scratch2_, scratch1_, kPointerSizeLog2);
+    __ lea(scratch1_,
+           Operand(
+               map_result_, index.reg, index.scale, FixedArray::kHeaderSize));
+    // Calculate location of the first key name.
+    __ addq(map_result_,
+            Immediate(FixedArray::kHeaderSize +
+                      DescriptorArray::kFirstIndex * kPointerSize));
+    // Loop through all the keys in the descriptor array. If one of these is the
+    // symbol valueOf the result is false.
+    Label entry, loop;
+    __ jmp(&entry);
+    __ bind(&loop);
+    __ movq(scratch2_, FieldOperand(map_result_, 0));
+    __ Cmp(scratch2_, Factory::value_of_symbol());
+    __ j(equal, &false_result);
+    __ addq(map_result_, Immediate(kPointerSize));
+    __ bind(&entry);
+    __ cmpq(map_result_, scratch1_);
+    __ j(not_equal, &loop);
+
+    // Reload map as register map_result_ was used as temporary above.
+    __ movq(map_result_, FieldOperand(object_, HeapObject::kMapOffset));
+
+    // If a valueOf property is not found on the object check that it's
+    // prototype is the un-modified String prototype. If not result is false.
+    __ movq(scratch1_, FieldOperand(map_result_, Map::kPrototypeOffset));
+    __ testq(scratch1_, Immediate(kSmiTagMask));
+    __ j(zero, &false_result);
+    __ movq(scratch1_, FieldOperand(scratch1_, HeapObject::kMapOffset));
+    __ movq(scratch2_,
+            Operand(rsi, Context::SlotOffset(Context::GLOBAL_INDEX)));
+    __ movq(scratch2_,
+            FieldOperand(scratch2_, GlobalObject::kGlobalContextOffset));
+    __ cmpq(scratch1_,
+            CodeGenerator::ContextOperand(
+                scratch2_, Context::STRING_FUNCTION_PROTOTYPE_MAP_INDEX));
+    __ j(not_equal, &false_result);
+    // Set the bit in the map to indicate that it has been checked safe for
+    // default valueOf and set true result.
+    __ or_(FieldOperand(map_result_, Map::kBitField2Offset),
+           Immediate(1 << Map::kStringWrapperSafeForDefaultValueOf));
+    __ Set(map_result_, 1);
+    __ jmp(exit_label());
+    __ bind(&false_result);
+    // Set false result.
+    __ Set(map_result_, 0);
+  }
+
+ private:
+  Register object_;
+  Register map_result_;
+  Register scratch1_;
+  Register scratch2_;
+};
+
+
+void CodeGenerator::GenerateIsStringWrapperSafeForDefaultValueOf(
+    ZoneList<Expression*>* args) {
+  ASSERT(args->length() == 1);
+  Load(args->at(0));
+  Result obj = frame_->Pop();  // Pop the string wrapper.
+  obj.ToRegister();
+  ASSERT(obj.is_valid());
+  if (FLAG_debug_code) {
+    __ AbortIfSmi(obj.reg());
+  }
+
+  // Check whether this map has already been checked to be safe for default
+  // valueOf.
+  Result map_result = allocator()->Allocate();
+  ASSERT(map_result.is_valid());
+  __ movq(map_result.reg(), FieldOperand(obj.reg(), HeapObject::kMapOffset));
+  __ testb(FieldOperand(map_result.reg(), Map::kBitField2Offset),
+           Immediate(1 << Map::kStringWrapperSafeForDefaultValueOf));
+  destination()->true_target()->Branch(not_zero);
+
+  // We need an additional two scratch registers for the deferred code.
+  Result temp1 = allocator()->Allocate();
+  ASSERT(temp1.is_valid());
+  Result temp2 = allocator()->Allocate();
+  ASSERT(temp2.is_valid());
+
+  DeferredIsStringWrapperSafeForDefaultValueOf* deferred =
+      new DeferredIsStringWrapperSafeForDefaultValueOf(
+          obj.reg(), map_result.reg(), temp1.reg(), temp2.reg());
+  deferred->Branch(zero);
+  deferred->BindExit();
+  __ testq(map_result.reg(), map_result.reg());
+  obj.Unuse();
+  map_result.Unuse();
+  temp1.Unuse();
+  temp2.Unuse();
+  destination()->Split(not_equal);
+}
+
+
 void CodeGenerator::GenerateIsFunction(ZoneList<Expression*>* args) {
   // This generates a fast version of:
   // (%_ClassOf(arg) === 'Function')
@@ -6753,7 +6878,7 @@ void CodeGenerator::GenerateSwapElements(ZoneList<Expression*>* args) {
            Immediate(KeyedLoadIC::kSlowCaseBitFieldMask));
   deferred->Branch(not_zero);
 
-  // Check the object's elements are in fast case.
+  // Check the object's elements are in fast case and writable.
   __ movq(tmp1.reg(), FieldOperand(object.reg(), JSObject::kElementsOffset));
   __ CompareRoot(FieldOperand(tmp1.reg(), HeapObject::kMapOffset),
                  Heap::kFixedArrayMapRootIndex);
@@ -8297,15 +8422,10 @@ Result CodeGenerator::EmitKeyedLoad() {
     // Check that the key is a non-negative smi.
     __ JumpIfNotPositiveSmi(key.reg(), deferred->entry_label());
 
-    // Get the elements array from the receiver and check that it
-    // is not a dictionary.
+    // Get the elements array from the receiver.
     __ movq(elements.reg(),
             FieldOperand(receiver.reg(), JSObject::kElementsOffset));
-    if (FLAG_debug_code) {
-      __ Cmp(FieldOperand(elements.reg(), HeapObject::kMapOffset),
-             Factory::fixed_array_map());
-      __ Assert(equal, "JSObject with fast elements map has slow elements");
-    }
+    __ AssertFastElements(elements.reg());
 
     // Check that key is within bounds.
     __ SmiCompare(key.reg(),
@@ -8635,6 +8755,12 @@ void FastNewClosureStub::Generate(MacroAssembler* masm) {
   __ movq(FieldOperand(rax, JSFunction::kContextOffset), rsi);
   __ movq(FieldOperand(rax, JSFunction::kLiteralsOffset), rbx);
 
+  // Initialize the code pointer in the function to be the one
+  // found in the shared function info object.
+  __ movq(rdx, FieldOperand(rdx, SharedFunctionInfo::kCodeOffset));
+  __ movq(FieldOperand(rax, JSFunction::kCodeOffset), rdx);
+
+
   // Return and remove the on-stack parameter.
   __ ret(1 * kPointerSize);
 
@@ -8712,6 +8838,25 @@ void FastCloneShallowArrayStub::Generate(MacroAssembler* masm) {
           FieldOperand(rcx, index.reg, index.scale, FixedArray::kHeaderSize));
   __ CompareRoot(rcx, Heap::kUndefinedValueRootIndex);
   __ j(equal, &slow_case);
+
+  if (FLAG_debug_code) {
+    const char* message;
+    Heap::RootListIndex expected_map_index;
+    if (mode_ == CLONE_ELEMENTS) {
+      message = "Expected (writable) fixed array";
+      expected_map_index = Heap::kFixedArrayMapRootIndex;
+    } else {
+      ASSERT(mode_ == COPY_ON_WRITE_ELEMENTS);
+      message = "Expected copy-on-write fixed array";
+      expected_map_index = Heap::kFixedCOWArrayMapRootIndex;
+    }
+    __ push(rcx);
+    __ movq(rcx, FieldOperand(rcx, JSArray::kElementsOffset));
+    __ CompareRoot(FieldOperand(rcx, HeapObject::kMapOffset),
+                   expected_map_index);
+    __ Assert(equal, message);
+    __ pop(rcx);
+  }
 
   // Allocate both the JS array and the elements array in one big
   // allocation. This avoids multiple limit checks.

@@ -230,19 +230,21 @@ enum PropertyNormalizationMode {
   V(CONS_SYMBOL_TYPE)                                                          \
   V(CONS_ASCII_SYMBOL_TYPE)                                                    \
   V(EXTERNAL_SYMBOL_TYPE)                                                      \
+  V(EXTERNAL_SYMBOL_WITH_ASCII_DATA_TYPE)                                      \
   V(EXTERNAL_ASCII_SYMBOL_TYPE)                                                \
   V(STRING_TYPE)                                                               \
   V(ASCII_STRING_TYPE)                                                         \
   V(CONS_STRING_TYPE)                                                          \
   V(CONS_ASCII_STRING_TYPE)                                                    \
   V(EXTERNAL_STRING_TYPE)                                                      \
+  V(EXTERNAL_STRING_WITH_ASCII_DATA_TYPE)                                      \
   V(EXTERNAL_ASCII_STRING_TYPE)                                                \
   V(PRIVATE_EXTERNAL_ASCII_STRING_TYPE)                                        \
                                                                                \
   V(MAP_TYPE)                                                                  \
   V(CODE_TYPE)                                                                 \
-  V(JS_GLOBAL_PROPERTY_CELL_TYPE)                                              \
   V(ODDBALL_TYPE)                                                              \
+  V(JS_GLOBAL_PROPERTY_CELL_TYPE)                                              \
                                                                                \
   V(HEAP_NUMBER_TYPE)                                                          \
   V(PROXY_TYPE)                                                                \
@@ -260,11 +262,9 @@ enum PropertyNormalizationMode {
   V(EXTERNAL_FLOAT_ARRAY_TYPE)                                                 \
   V(FILLER_TYPE)                                                               \
                                                                                \
-  V(FIXED_ARRAY_TYPE)                                                          \
   V(ACCESSOR_INFO_TYPE)                                                        \
   V(ACCESS_CHECK_INFO_TYPE)                                                    \
   V(INTERCEPTOR_INFO_TYPE)                                                     \
-  V(SHARED_FUNCTION_INFO_TYPE)                                                 \
   V(CALL_HANDLER_INFO_TYPE)                                                    \
   V(FUNCTION_TEMPLATE_INFO_TYPE)                                               \
   V(OBJECT_TEMPLATE_INFO_TYPE)                                                 \
@@ -272,6 +272,9 @@ enum PropertyNormalizationMode {
   V(TYPE_SWITCH_INFO_TYPE)                                                     \
   V(SCRIPT_TYPE)                                                               \
   V(CODE_CACHE_TYPE)                                                           \
+                                                                               \
+  V(FIXED_ARRAY_TYPE)                                                          \
+  V(SHARED_FUNCTION_INFO_TYPE)                                                 \
                                                                                \
   V(JS_VALUE_TYPE)                                                             \
   V(JS_OBJECT_TYPE)                                                            \
@@ -1106,6 +1109,51 @@ class HeapObject: public Object {
 };
 
 
+#define SLOT_ADDR(obj, offset) \
+  reinterpret_cast<Object**>((obj)->address() + offset)
+
+// This class describes a body of an object of a fixed size
+// in which all pointer fields are located in the [start_offset, end_offset)
+// interval.
+template<int start_offset, int end_offset, int size>
+class FixedBodyDescriptor {
+ public:
+  static const int kStartOffset = start_offset;
+  static const int kEndOffset = end_offset;
+  static const int kSize = size;
+
+  static inline void IterateBody(HeapObject* obj, ObjectVisitor* v);
+
+  template<typename StaticVisitor>
+  static inline void IterateBody(HeapObject* obj) {
+    StaticVisitor::VisitPointers(SLOT_ADDR(obj, start_offset),
+                                 SLOT_ADDR(obj, end_offset));
+  }
+};
+
+
+// This class describes a body of an object of a variable size
+// in which all pointer fields are located in the [start_offset, object_size)
+// interval.
+template<int start_offset>
+class FlexibleBodyDescriptor {
+ public:
+  static const int kStartOffset = start_offset;
+
+  static inline void IterateBody(HeapObject* obj,
+                                 int object_size,
+                                 ObjectVisitor* v);
+
+  template<typename StaticVisitor>
+  static inline void IterateBody(HeapObject* obj, int object_size) {
+    StaticVisitor::VisitPointers(SLOT_ADDR(obj, start_offset),
+                                 SLOT_ADDR(obj, object_size));
+  }
+};
+
+#undef SLOT_ADDR
+
+
 // The HeapNumber class describes heap allocated numbers that cannot be
 // represented in a Smi (small integer)
 class HeapNumber: public HeapObject {
@@ -1166,7 +1214,9 @@ class JSObject: public HeapObject {
  public:
   enum DeleteMode { NORMAL_DELETION, FORCE_DELETION };
   enum ElementsKind {
+    // The only "fast" kind.
     FAST_ELEMENTS,
+    // All the kinds below are "slow".
     DICTIONARY_ELEMENTS,
     PIXEL_ELEMENTS,
     EXTERNAL_BYTE_ELEMENTS,
@@ -1187,8 +1237,21 @@ class JSObject: public HeapObject {
   inline StringDictionary* property_dictionary();  // Gets slow properties.
 
   // [elements]: The elements (properties with names that are integers).
-  // elements is a FixedArray in the fast case, a Dictionary in the slow
-  // case, and a PixelArray or ExternalArray in special cases.
+  //
+  // Elements can be in two general modes: fast and slow. Each mode
+  // corrensponds to a set of object representations of elements that
+  // have something in common.
+  //
+  // In the fast mode elements is a FixedArray and so each element can
+  // be quickly accessed. This fact is used in the generated code. The
+  // elements array can have one of the two maps in this mode:
+  // fixed_array_map or fixed_cow_array_map (for copy-on-write
+  // arrays). In the latter case the elements array may be shared by a
+  // few objects and so before writing to any element the array must
+  // be copied. Use EnsureWritableFastElements in this case.
+  //
+  // In the slow mode elements is either a NumberDictionary or a
+  // PixelArray or an ExternalArray.
   DECL_ACCESSORS(elements, HeapObject)
   inline void initialize_elements();
   inline Object* ResetElements();
@@ -1206,6 +1269,8 @@ class JSObject: public HeapObject {
   inline bool HasExternalFloatElements();
   inline bool AllowsSetElementsLength();
   inline NumberDictionary* element_dictionary();  // Gets slow elements.
+  // Requires: this->HasFastElements().
+  inline Object* EnsureWritableFastElements();
 
   // Collects elements starting at index 0.
   // Undefined values are placed after non-undefined values.
@@ -1522,7 +1587,6 @@ class JSObject: public HeapObject {
 
 
   // Dispatched behavior.
-  void JSObjectIterateBody(int object_size, ObjectVisitor* v);
   void JSObjectShortPrint(StringStream* accumulator);
 #ifdef DEBUG
   void JSObjectPrint();
@@ -1577,6 +1641,11 @@ class JSObject: public HeapObject {
   static const int kHeaderSize = kElementsOffset + kPointerSize;
 
   STATIC_CHECK(kHeaderSize == Internals::kJSObjectHeaderSize);
+
+  class BodyDescriptor : public FlexibleBodyDescriptor<kPropertiesOffset> {
+   public:
+    static inline int SizeOf(Map* map, HeapObject* object);
+  };
 
  private:
   Object* GetElementWithCallback(Object* receiver,
@@ -1654,6 +1723,10 @@ class FixedArray: public HeapObject {
   inline void set_null(int index);
   inline void set_the_hole(int index);
 
+  // Setters with less debug checks for the GC to use.
+  inline void set_unchecked(int index, Smi* value);
+  inline void set_null_unchecked(int index);
+
   // Gives access to raw memory which stores the array's data.
   inline Object** data_start();
 
@@ -1692,8 +1765,6 @@ class FixedArray: public HeapObject {
   static const int kMaxLength = (kMaxSize - kHeaderSize) / kPointerSize;
 
   // Dispatched behavior.
-  int FixedArraySize() { return SizeFor(length()); }
-  void FixedArrayIterateBody(ObjectVisitor* v);
 #ifdef DEBUG
   void FixedArrayPrint();
   void FixedArrayVerify();
@@ -1710,6 +1781,13 @@ class FixedArray: public HeapObject {
   // numbers.  If the numbers array and the this array are the same
   // object, the prefix of this array is sorted.
   void SortPairs(FixedArray* numbers, uint32_t len);
+
+  class BodyDescriptor : public FlexibleBodyDescriptor<kHeaderSize> {
+   public:
+    static inline int SizeOf(Map* map, HeapObject* object) {
+      return SizeFor(reinterpret_cast<FixedArray*>(object)->length());
+    }
+  };
 
  protected:
   // Set operation on FixedArray without using write barriers. Can
@@ -1810,6 +1888,10 @@ class DescriptorArray: public FixedArray {
 
   // Search the instance descriptors for given name.
   inline int Search(String* name);
+
+  // As the above, but uses DescriptorLookupCache and updates it when
+  // necessary.
+  inline int SearchWithCache(String* name);
 
   // Tells whether the name is present int the array.
   bool Contains(String* name) { return kNotFound != Search(name); }
@@ -2426,7 +2508,9 @@ class ByteArray: public HeapObject {
   static inline ByteArray* cast(Object* obj);
 
   // Dispatched behavior.
-  int ByteArraySize() { return SizeFor(length()); }
+  inline int ByteArraySize() {
+    return SizeFor(this->length());
+  }
 #ifdef DEBUG
   void ByteArrayPrint();
   void ByteArrayVerify();
@@ -2702,7 +2786,12 @@ class Code: public HeapObject {
  public:
   // Opaque data type for encapsulating code flags like kind, inline
   // cache state, and arguments count.
-  enum Flags { };
+  // FLAGS_MIN_VALUE and FLAGS_MAX_VALUE are specified to ensure that
+  // enumeration type has correct value range (see Issue 830 for more details).
+  enum Flags {
+    FLAGS_MIN_VALUE = kMinInt,
+    FLAGS_MAX_VALUE = kMaxInt
+  };
 
   enum Kind {
     FUNCTION,
@@ -2847,7 +2936,10 @@ class Code: public HeapObject {
 
   // Dispatched behavior.
   int CodeSize() { return SizeFor(body_size()); }
-  void CodeIterateBody(ObjectVisitor* v);
+  inline void CodeIterateBody(ObjectVisitor* v);
+
+  template<typename StaticVisitor>
+  inline void CodeIterateBody();
 #ifdef DEBUG
   void CodePrint();
   void CodeVerify();
@@ -2893,7 +2985,6 @@ class Code: public HeapObject {
   DISALLOW_IMPLICIT_CONSTRUCTORS(Code);
 };
 
-typedef void (*Scavenger)(Map* map, HeapObject** slot, HeapObject* object);
 
 // All heap objects have a Map that describes their structure.
 //  A Map contains information about:
@@ -2999,7 +3090,8 @@ class Map: public HeapObject {
   inline bool is_extensible();
 
   // Tells whether the instance has fast elements.
-  void set_has_fast_elements(bool value) {
+  // Equivalent to instance->GetElementsKind() == FAST_ELEMENTS.
+  inline void set_has_fast_elements(bool value) {
     if (value) {
       set_bit_field2(bit_field2() | (1 << kHasFastElements));
     } else {
@@ -3007,7 +3099,7 @@ class Map: public HeapObject {
     }
   }
 
-  bool has_fast_elements() {
+  inline bool has_fast_elements() {
     return ((1 << kHasFastElements) & bit_field2()) != 0;
   }
 
@@ -3089,18 +3181,13 @@ class Map: public HeapObject {
   void ClearNonLiveTransitions(Object* real_prototype);
 
   // Dispatched behavior.
-  void MapIterateBody(ObjectVisitor* v);
 #ifdef DEBUG
   void MapPrint();
   void MapVerify();
 #endif
 
-  inline Scavenger scavenger();
-  inline void set_scavenger(Scavenger callback);
-
-  inline void Scavenge(HeapObject** slot, HeapObject* obj) {
-    scavenger()(this, slot, obj);
-  }
+  inline int visitor_id();
+  inline void set_visitor_id(int visitor_id);
 
   static const int kMaxPreAllocatedPropertyFields = 255;
 
@@ -3154,11 +3241,16 @@ class Map: public HeapObject {
   static const int kIsExtensible = 0;
   static const int kFunctionWithPrototype = 1;
   static const int kHasFastElements = 2;
+  static const int kStringWrapperSafeForDefaultValueOf = 3;
 
   // Layout of the default cache. It holds alternating name and code objects.
   static const int kCodeCacheEntrySize = 2;
   static const int kCodeCacheEntryNameOffset = 0;
   static const int kCodeCacheEntryCodeOffset = 1;
+
+  typedef FixedBodyDescriptor<kPointerFieldsBeginOffset,
+                              kPointerFieldsEndOffset,
+                              kSize> BodyDescriptor;
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(Map);
@@ -3282,6 +3374,8 @@ class SharedFunctionInfo: public HeapObject {
   // [construct stub]: Code stub for constructing instances of this function.
   DECL_ACCESSORS(construct_stub, Code)
 
+  inline Code* unchecked_code();
+
   // Returns if this function has been compiled to native code yet.
   inline bool is_compiled();
 
@@ -3389,6 +3483,15 @@ class SharedFunctionInfo: public HeapObject {
   inline bool allows_lazy_compilation();
   inline void set_allows_lazy_compilation(bool flag);
 
+  // Indicates how many full GCs this function has survived with assigned
+  // code object. Used to determine when it is relatively safe to flush
+  // this code object and replace it with lazy compilation stub.
+  // Age is reset when GC notices that the code object is referenced
+  // from the stack or compilation cache.
+  inline int code_age();
+  inline void set_code_age(int age);
+
+
   // Check whether a inlined constructor can be generated with the given
   // prototype.
   bool CanGenerateInlineConstructor(Object* prototype);
@@ -3414,7 +3517,6 @@ class SharedFunctionInfo: public HeapObject {
   int CalculateInObjectProperties();
 
   // Dispatched behavior.
-  void SharedFunctionInfoIterateBody(ObjectVisitor* v);
   // Set max_length to -1 for unlimited length.
   void SourceCodePrint(StringStream* accumulator, int max_length);
 #ifdef DEBUG
@@ -3503,6 +3605,10 @@ class SharedFunctionInfo: public HeapObject {
 #endif
   static const int kAlignedSize = POINTER_SIZE_ALIGN(kSize);
 
+  typedef FixedBodyDescriptor<kNameOffset,
+                              kThisPropertyAssignmentsOffset + kPointerSize,
+                              kSize> BodyDescriptor;
+
  private:
   // Bit positions in start_position_and_type.
   // The source code start position is in the 30 most significant bits of
@@ -3516,6 +3622,8 @@ class SharedFunctionInfo: public HeapObject {
   static const int kHasOnlySimpleThisPropertyAssignments = 0;
   static const int kTryFullCodegen = 1;
   static const int kAllowLazyCompilation = 2;
+  static const int kCodeAgeShift = 3;
+  static const int kCodeAgeMask = 7;
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(SharedFunctionInfo);
 };
@@ -3531,6 +3639,8 @@ class JSFunction: public JSObject {
   // can be shared by instances.
   DECL_ACCESSORS(shared, SharedFunctionInfo)
 
+  inline SharedFunctionInfo* unchecked_shared();
+
   // [context]: The context for this function.
   inline Context* context();
   inline Object* unchecked_context();
@@ -3542,6 +3652,8 @@ class JSFunction: public JSObject {
   // 8.6.2, page 27.
   inline Code* code();
   inline void set_code(Code* value);
+
+  inline Code* unchecked_code();
 
   // Tells whether this function is builtin.
   inline bool IsBuiltin();
@@ -3608,7 +3720,9 @@ class JSFunction: public JSObject {
   static Context* GlobalContextFromLiterals(FixedArray* literals);
 
   // Layout descriptors.
-  static const int kPrototypeOrInitialMapOffset = JSObject::kHeaderSize;
+  static const int kCodeOffset = JSObject::kHeaderSize;
+  static const int kPrototypeOrInitialMapOffset =
+      kCodeOffset + kPointerSize;
   static const int kSharedFunctionInfoOffset =
       kPrototypeOrInitialMapOffset + kPointerSize;
   static const int kContextOffset = kSharedFunctionInfoOffset + kPointerSize;
@@ -4551,11 +4665,6 @@ class ConsString: public String {
   // Casting.
   static inline ConsString* cast(Object* obj);
 
-  // Garbage collection support.  This method is called during garbage
-  // collection to iterate through the heap pointers in the body of
-  // the ConsString.
-  void ConsStringIterateBody(ObjectVisitor* v);
-
   // Layout description.
   static const int kFirstOffset = POINTER_SIZE_ALIGN(String::kSize);
   static const int kSecondOffset = kFirstOffset + kPointerSize;
@@ -4571,6 +4680,9 @@ class ConsString: public String {
 
   // Minimum length for a cons string.
   static const int kMinLength = 13;
+
+  typedef FixedBodyDescriptor<kFirstOffset, kSecondOffset + kPointerSize, kSize>
+          BodyDescriptor;
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(ConsString);
@@ -4621,7 +4733,10 @@ class ExternalAsciiString: public ExternalString {
   static inline ExternalAsciiString* cast(Object* obj);
 
   // Garbage collection support.
-  void ExternalAsciiStringIterateBody(ObjectVisitor* v);
+  inline void ExternalAsciiStringIterateBody(ObjectVisitor* v);
+
+  template<typename StaticVisitor>
+  inline void ExternalAsciiStringIterateBody();
 
   // Support for StringInputBuffer.
   const unibrow::byte* ExternalAsciiStringReadBlock(unsigned* remaining,
@@ -4658,7 +4773,11 @@ class ExternalTwoByteString: public ExternalString {
   static inline ExternalTwoByteString* cast(Object* obj);
 
   // Garbage collection support.
-  void ExternalTwoByteStringIterateBody(ObjectVisitor* v);
+  inline void ExternalTwoByteStringIterateBody(ObjectVisitor* v);
+
+  template<typename StaticVisitor>
+  inline void ExternalTwoByteStringIterateBody();
+
 
   // Support for StringInputBuffer.
   void ExternalTwoByteStringReadBlockIntoBuffer(ReadBlockBuffer* buffer,
@@ -4769,7 +4888,6 @@ class Oddball: public HeapObject {
   static inline Oddball* cast(Object* obj);
 
   // Dispatched behavior.
-  void OddballIterateBody(ObjectVisitor* v);
 #ifdef DEBUG
   void OddballVerify();
 #endif
@@ -4781,6 +4899,10 @@ class Oddball: public HeapObject {
   static const int kToStringOffset = HeapObject::kHeaderSize;
   static const int kToNumberOffset = kToStringOffset + kPointerSize;
   static const int kSize = kToNumberOffset + kPointerSize;
+
+  typedef FixedBodyDescriptor<kToStringOffset,
+                              kToNumberOffset + kPointerSize,
+                              kSize> BodyDescriptor;
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(Oddball);
@@ -4795,8 +4917,6 @@ class JSGlobalPropertyCell: public HeapObject {
   // Casting.
   static inline JSGlobalPropertyCell* cast(Object* obj);
 
-  // Dispatched behavior.
-  void JSGlobalPropertyCellIterateBody(ObjectVisitor* v);
 #ifdef DEBUG
   void JSGlobalPropertyCellVerify();
   void JSGlobalPropertyCellPrint();
@@ -4805,6 +4925,10 @@ class JSGlobalPropertyCell: public HeapObject {
   // Layout description.
   static const int kValueOffset = HeapObject::kHeaderSize;
   static const int kSize = kValueOffset + kPointerSize;
+
+  typedef FixedBodyDescriptor<kValueOffset,
+                              kValueOffset + kPointerSize,
+                              kSize> BodyDescriptor;
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(JSGlobalPropertyCell);
@@ -4826,6 +4950,10 @@ class Proxy: public HeapObject {
 
   // Dispatched behavior.
   inline void ProxyIterateBody(ObjectVisitor* v);
+
+  template<typename StaticVisitor>
+  inline void ProxyIterateBody();
+
 #ifdef DEBUG
   void ProxyPrint();
   void ProxyVerify();
@@ -5340,6 +5468,15 @@ class ObjectVisitor BASE_EMBEDDED {
 #else
   inline void Synchronize(const char* tag) {}
 #endif
+};
+
+
+class StructBodyDescriptor : public
+  FlexibleBodyDescriptor<HeapObject::kHeaderSize> {
+ public:
+  static inline int SizeOf(Map* map, HeapObject* object) {
+    return map->instance_size();
+  }
 };
 
 

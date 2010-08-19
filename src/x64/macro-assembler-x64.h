@@ -582,6 +582,9 @@ class MacroAssembler: public Assembler {
   // Abort execution if argument is not a number. Used in debug code.
   void AbortIfNotNumber(Register object);
 
+  // Abort execution if argument is a smi. Used in debug code.
+  void AbortIfSmi(Register object);
+
   // Abort execution if argument is not a smi. Used in debug code.
   void AbortIfNotSmi(Register object);
 
@@ -828,6 +831,8 @@ class MacroAssembler: public Assembler {
   // Calls Abort(msg) if the condition cc is not satisfied.
   // Use --debug_code to enable.
   void Assert(Condition cc, const char* msg);
+
+  void AssertFastElements(Register elements);
 
   // Like Assert(), but always enabled.
   void Check(Condition cc, const char* msg);
