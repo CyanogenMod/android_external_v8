@@ -1,4 +1,3 @@
-We use a V8 revision that has been used for a Chromium release.
-
-http://src.chromium.org/svn/releases/7.0.499.0/DEPS
-http://v8.googlecode.com/svn/trunk@5295
+Currently we are using V8 at http://v8.googlecode.com/svn/trunk@5318,
+which is ahead of our current WebKit revision
+See b/2947054
