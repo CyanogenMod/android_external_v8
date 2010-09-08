@@ -29,7 +29,6 @@ V8_LOCAL_SRC_FILES := \
 	src/fast-dtoa.cc \
 	src/fixed-dtoa.cc \
 	src/flags.cc \
-	src/flow-graph.cc \
 	src/frame-element.cc \
 	src/frames.cc \
 	src/full-codegen.cc \
@@ -86,6 +85,7 @@ ifeq ($(TARGET_ARCH),arm)
 		src/arm/assembler-arm.cc \
 		src/arm/builtins-arm.cc \
 		src/arm/codegen-arm.cc \
+		src/arm/code-stubs-arm.cc \
 		src/arm/constants-arm.cc \
 		src/arm/cpu-arm.cc \
 		src/arm/debug-arm.cc \
@@ -106,6 +106,7 @@ ifeq ($(TARGET_ARCH),x86)
 		src/ia32/assembler-ia32.cc \
 		src/ia32/builtins-ia32.cc \
 		src/ia32/codegen-ia32.cc \
+		src/ia32/code-stubs-arm.cc \
 		src/ia32/cpu-ia32.cc \
 		src/ia32/disasm-ia32.cc \
 		src/ia32/frames-ia32.cc \

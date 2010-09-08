@@ -35,11 +35,13 @@
 #ifndef V8_OBJECTS_INL_H_
 #define V8_OBJECTS_INL_H_
 
-#include "memory.h"
+#include "objects.h"
 #include "contexts.h"
 #include "conversions-inl.h"
-#include "objects.h"
+#include "heap.h"
+#include "memory.h"
 #include "property.h"
+#include "spaces.h"
 
 namespace v8 {
 namespace internal {
@@ -570,6 +572,18 @@ bool Object::IsJSFunctionResultCache() {
   }
 #ifdef DEBUG
   reinterpret_cast<JSFunctionResultCache*>(this)->JSFunctionResultCacheVerify();
+#endif
+  return true;
+}
+
+
+bool Object::IsNormalizedMapCache() {
+  if (!IsFixedArray()) return false;
+  if (FixedArray::cast(this)->length() != NormalizedMapCache::kEntries) {
+    return false;
+  }
+#ifdef DEBUG
+  reinterpret_cast<NormalizedMapCache*>(this)->NormalizedMapCacheVerify();
 #endif
   return true;
 }
@@ -1660,6 +1674,7 @@ CAST_ACCESSOR(FixedArray)
 CAST_ACCESSOR(DescriptorArray)
 CAST_ACCESSOR(SymbolTable)
 CAST_ACCESSOR(JSFunctionResultCache)
+CAST_ACCESSOR(NormalizedMapCache)
 CAST_ACCESSOR(CompilationCacheTable)
 CAST_ACCESSOR(CodeCacheHashTable)
 CAST_ACCESSOR(MapCache)
@@ -2306,14 +2321,13 @@ int Code::arguments_count() {
 }
 
 
-CodeStub::Major Code::major_key() {
+int Code::major_key() {
   ASSERT(kind() == STUB || kind() == BINARY_OP_IC);
-  return static_cast<CodeStub::Major>(READ_BYTE_FIELD(this,
-                                                      kStubMajorKeyOffset));
+  return READ_BYTE_FIELD(this, kStubMajorKeyOffset);
 }
 
 
-void Code::set_major_key(CodeStub::Major major) {
+void Code::set_major_key(int major) {
   ASSERT(kind() == STUB || kind() == BINARY_OP_IC);
   ASSERT(0 <= major && major < 256);
   WRITE_BYTE_FIELD(this, kStubMajorKeyOffset, major);
@@ -2936,7 +2950,7 @@ byte* Code::entry() {
 
 bool Code::contains(byte* pc) {
   return (instruction_start() <= pc) &&
-      (pc < instruction_start() + instruction_size());
+      (pc <= instruction_start() + instruction_size());
 }
 
 

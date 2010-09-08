@@ -339,6 +339,11 @@ void CodeGenerator::ProcessDeclarations(ZoneList<Declaration*>* declarations) {
 }
 
 
+void CodeGenerator::VisitIncrementOperation(IncrementOperation* expr) {
+  UNREACHABLE();
+}
+
+
 // List of special runtime calls which are generated inline. For some of these
 // functions the code will be generated inline, and for others a call to a code
 // stub will be inlined.
@@ -496,12 +501,11 @@ void ArgumentsAccessStub::Generate(MacroAssembler* masm) {
 
 
 int CEntryStub::MinorKey() {
-  ASSERT(result_size_ <= 2);
+  ASSERT(result_size_ == 1 || result_size_ == 2);
 #ifdef _WIN64
-  return ExitFrameModeBits::encode(mode_)
-         | IndirectResultBits::encode(result_size_ > 1);
+  return result_size_ == 1 ? 0 : 1;
 #else
-  return ExitFrameModeBits::encode(mode_);
+  return 0;
 #endif
 }
 

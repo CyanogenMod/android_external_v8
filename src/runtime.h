@@ -174,6 +174,7 @@ namespace internal {
   F(StringMatch, 3, 1) \
   F(StringTrim, 3, 1) \
   F(StringToArray, 1, 1) \
+  F(NewStringWrapper, 1, 1) \
   \
   /* Numbers */ \
   F(NumberToRadixString, 2, 1) \
@@ -201,6 +202,7 @@ namespace internal {
   \
   F(ClassOf, 1, 1) \
   F(SetCode, 2, 1) \
+  F(SetExpectedNumberOfProperties, 2, 1) \
   \
   F(CreateApiFunction, 1, 1) \
   F(IsTemplate, 1, 1) \
@@ -419,7 +421,7 @@ class Runtime : public AllStatic {
   static Function* FunctionForId(FunctionId fid);
 
   // Get the runtime function with the given name.
-  static Function* FunctionForName(const char* name);
+  static Function* FunctionForName(Vector<const char> name);
 
   static int StringMatch(Handle<String> sub, Handle<String> pat, int index);
 
