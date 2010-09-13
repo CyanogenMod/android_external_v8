@@ -1136,13 +1136,18 @@ ScriptData* ScriptData::PreCompile(v8::Handle<String> source) {
 ScriptData* ScriptData::New(const char* data, int length) {
   // Return an empty ScriptData if the length is obviously invalid.
   if (length % sizeof(unsigned) != 0) {
-    return new i::ScriptDataImpl(i::Vector<unsigned>());
+    return new i::ScriptDataImpl();
   }
 
   // Copy the data to ensure it is properly aligned.
   int deserialized_data_length = length / sizeof(unsigned);
+  // If aligned, don't create a copy of the data.
+  if (reinterpret_cast<intptr_t>(data) % sizeof(unsigned) == 0) {
+    return new i::ScriptDataImpl(data, length);
+  }
+  // Copy the data to align it.
   unsigned* deserialized_data = i::NewArray<unsigned>(deserialized_data_length);
-  memcpy(deserialized_data, data, length);
+  i::MemCopy(deserialized_data, data, length);
 
   return new i::ScriptDataImpl(
       i::Vector<unsigned>(deserialized_data, deserialized_data_length));
@@ -3902,6 +3907,22 @@ void V8::AddGCEpilogueCallback(GCEpilogueCallback callback, GCType gc_type) {
 void V8::RemoveGCEpilogueCallback(GCEpilogueCallback callback) {
   if (IsDeadCheck("v8::V8::RemoveGCEpilogueCallback()")) return;
   i::Heap::RemoveGCEpilogueCallback(callback);
+}
+
+
+void V8::AddMemoryAllocationCallback(MemoryAllocationCallback callback,
+                                     ObjectSpace space,
+                                     AllocationAction action) {
+  if (IsDeadCheck("v8::V8::AddMemoryAllocationCallback()")) return;
+  i::MemoryAllocator::AddMemoryAllocationCallback(callback,
+                                                  space,
+                                                  action);
+}
+
+
+void V8::RemoveMemoryAllocationCallback(MemoryAllocationCallback callback) {
+  if (IsDeadCheck("v8::V8::RemoveMemoryAllocationCallback()")) return;
+  i::MemoryAllocator::RemoveMemoryAllocationCallback(callback);
 }
 
 

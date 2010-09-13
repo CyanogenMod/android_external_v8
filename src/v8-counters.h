@@ -98,6 +98,8 @@ namespace internal {
   SC(total_parse_size, V8.TotalParseSize)                             \
   /* Amount of source code skipped over using preparsing. */          \
   SC(total_preparse_skipped, V8.TotalPreparseSkipped)                 \
+  /* Number of symbol lookups skipped using preparsing */             \
+  SC(total_preparse_symbols_skipped, V8.TotalPreparseSymbolSkipped)   \
   /* Amount of compiled source code. */                               \
   SC(total_compile_size, V8.TotalCompileSize)                         \
   /* Amount of source code compiled with the old codegen. */          \
@@ -203,6 +205,7 @@ namespace internal {
   SC(string_add_runtime_ext_to_ascii, V8.StringAddRuntimeExtToAscii)  \
   SC(sub_string_runtime, V8.SubStringRuntime)                         \
   SC(sub_string_native, V8.SubStringNative)                           \
+  SC(string_add_make_two_char, V8.StringAddMakeTwoChar)               \
   SC(string_compare_native, V8.StringCompareNative)                   \
   SC(string_compare_runtime, V8.StringCompareRuntime)                 \
   SC(regexp_entry_runtime, V8.RegExpEntryRuntime)                     \
