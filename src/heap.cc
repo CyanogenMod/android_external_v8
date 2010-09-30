@@ -1,4 +1,4 @@
-// Copyright 2009 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -55,7 +55,6 @@ namespace internal {
 String* Heap::hidden_symbol_;
 Object* Heap::roots_[Heap::kRootListLength];
 
-
 NewSpace Heap::new_space_;
 OldSpace* Heap::old_pointer_space_ = NULL;
 OldSpace* Heap::old_data_space_ = NULL;
@@ -63,9 +62,6 @@ OldSpace* Heap::code_space_ = NULL;
 MapSpace* Heap::map_space_ = NULL;
 CellSpace* Heap::cell_space_ = NULL;
 LargeObjectSpace* Heap::lo_space_ = NULL;
-
-static const int kMinimumPromotionLimit = 2*MB;
-static const int kMinimumAllocationLimit = 8*MB;
 
 int Heap::old_gen_promotion_limit_ = kMinimumPromotionLimit;
 int Heap::old_gen_allocation_limit_ = kMinimumAllocationLimit;
@@ -405,17 +401,26 @@ void Heap::GarbageCollectionEpilogue() {
 }
 
 
-void Heap::CollectAllGarbage(bool force_compaction) {
+void Heap::CollectAllGarbage(bool force_compaction,
+                             CollectionPolicy collectionPolicy) {
   // Since we are ignoring the return value, the exact choice of space does
   // not matter, so long as we do not specify NEW_SPACE, which would not
   // cause a full GC.
   MarkCompactCollector::SetForceCompaction(force_compaction);
-  CollectGarbage(0, OLD_POINTER_SPACE);
+  CollectGarbage(0, OLD_POINTER_SPACE, collectionPolicy);
   MarkCompactCollector::SetForceCompaction(false);
 }
 
 
-bool Heap::CollectGarbage(int requested_size, AllocationSpace space) {
+void Heap::CollectAllAvailableGarbage() {
+  CompilationCache::Clear();
+  CollectAllGarbage(true, AGGRESSIVE);
+}
+
+
+bool Heap::CollectGarbage(int requested_size,
+                          AllocationSpace space,
+                          CollectionPolicy collectionPolicy) {
   // The VM is in the GC state until exiting this function.
   VMState state(GC);
 
@@ -442,7 +447,7 @@ bool Heap::CollectGarbage(int requested_size, AllocationSpace space) {
         ? &Counters::gc_scavenger
         : &Counters::gc_compactor;
     rate->Start();
-    PerformGarbageCollection(space, collector, &tracer);
+    PerformGarbageCollection(collector, &tracer, collectionPolicy);
     rate->Stop();
 
     GarbageCollectionEpilogue();
@@ -475,7 +480,7 @@ bool Heap::CollectGarbage(int requested_size, AllocationSpace space) {
 
 void Heap::PerformScavenge() {
   GCTracer tracer;
-  PerformGarbageCollection(NEW_SPACE, SCAVENGER, &tracer);
+  PerformGarbageCollection(SCAVENGER, &tracer, NORMAL);
 }
 
 
@@ -664,9 +669,9 @@ void Heap::UpdateSurvivalRateTrend(int start_new_space_size) {
   survival_rate_ = survival_rate;
 }
 
-void Heap::PerformGarbageCollection(AllocationSpace space,
-                                    GarbageCollector collector,
-                                    GCTracer* tracer) {
+void Heap::PerformGarbageCollection(GarbageCollector collector,
+                                    GCTracer* tracer,
+                                    CollectionPolicy collectionPolicy) {
   VerifySymbolTable();
   if (collector == MARK_COMPACTOR && global_gc_prologue_callback_) {
     ASSERT(!allocation_allowed_);
@@ -696,25 +701,45 @@ void Heap::PerformGarbageCollection(AllocationSpace space,
 
     UpdateSurvivalRateTrend(start_new_space_size);
 
-    int old_gen_size = PromotedSpaceSize();
-    old_gen_promotion_limit_ =
-        old_gen_size + Max(kMinimumPromotionLimit, old_gen_size / 3);
-    old_gen_allocation_limit_ =
-        old_gen_size + Max(kMinimumAllocationLimit, old_gen_size / 2);
+    UpdateOldSpaceLimits();
 
-    if (high_survival_rate_during_scavenges &&
-        IsStableOrIncreasingSurvivalTrend()) {
-      // Stable high survival rates of young objects both during partial and
-      // full collection indicate that mutator is either building or modifying
-      // a structure with a long lifetime.
-      // In this case we aggressively raise old generation memory limits to
-      // postpone subsequent mark-sweep collection and thus trade memory
-      // space for the mutation speed.
-      old_gen_promotion_limit_ *= 2;
-      old_gen_allocation_limit_ *= 2;
+    // Major GC would invoke weak handle callbacks on weakly reachable
+    // handles, but won't collect weakly reachable objects until next
+    // major GC.  Therefore if we collect aggressively and weak handle callback
+    // has been invoked, we rerun major GC to release objects which become
+    // garbage.
+    if (collectionPolicy == AGGRESSIVE) {
+      // Note: as weak callbacks can execute arbitrary code, we cannot
+      // hope that eventually there will be no weak callbacks invocations.
+      // Therefore stop recollecting after several attempts.
+      const int kMaxNumberOfAttempts = 7;
+      for (int attempt = 0; attempt < kMaxNumberOfAttempts; attempt++) {
+        { DisableAssertNoAllocation allow_allocation;
+          GCTracer::Scope scope(tracer, GCTracer::Scope::EXTERNAL);
+          if (!GlobalHandles::PostGarbageCollectionProcessing()) break;
+        }
+        MarkCompact(tracer);
+        // Weak handle callbacks can allocate data, so keep limits correct.
+        UpdateOldSpaceLimits();
+      }
+    } else {
+      if (high_survival_rate_during_scavenges &&
+          IsStableOrIncreasingSurvivalTrend()) {
+        // Stable high survival rates of young objects both during partial and
+        // full collection indicate that mutator is either building or modifying
+        // a structure with a long lifetime.
+        // In this case we aggressively raise old generation memory limits to
+        // postpone subsequent mark-sweep collection and thus trade memory
+        // space for the mutation speed.
+        old_gen_promotion_limit_ *= 2;
+        old_gen_allocation_limit_ *= 2;
+      }
     }
 
-    old_gen_exhausted_ = false;
+    { DisableAssertNoAllocation allow_allocation;
+      GCTracer::Scope scope(tracer, GCTracer::Scope::EXTERNAL);
+      GlobalHandles::PostGarbageCollectionProcessing();
+    }
   } else {
     tracer_ = tracer;
     Scavenge();
@@ -724,12 +749,6 @@ void Heap::PerformGarbageCollection(AllocationSpace space,
   }
 
   Counters::objs_since_last_young.Set(0);
-
-  if (collector == MARK_COMPACTOR) {
-    DisableAssertNoAllocation allow_allocation;
-    GCTracer::Scope scope(tracer, GCTracer::Scope::EXTERNAL);
-    GlobalHandles::PostGarbageCollectionProcessing();
-  }
 
   // Update relocatables.
   Relocatable::PostGarbageCollectionProcessing();
@@ -1199,7 +1218,14 @@ class ScavengingVisitor : public StaticVisitorBase {
     RecordCopiedObject(target);
 #endif
     HEAP_PROFILE(ObjectMoveEvent(source->address(), target->address()));
-
+#if defined(ENABLE_LOGGING_AND_PROFILING)
+    if (Logger::is_logging() || CpuProfiler::is_profiling()) {
+      if (target->IsJSFunction()) {
+        PROFILE(FunctionMoveEvent(source->address(), target->address()));
+        PROFILE(FunctionCreateEventFromMove(JSFunction::cast(target), source));
+      }
+    }
+#endif
     return target;
   }
 
@@ -1834,6 +1860,13 @@ bool Heap::CreateInitialObjects() {
 
   CreateFixedStubs();
 
+  // Allocate the dictionary of intrinsic function names.
+  obj = StringDictionary::Allocate(Runtime::kNumFunctions);
+  if (obj->IsFailure()) return false;
+  obj = Runtime::InitializeIntrinsicFunctionNames(obj);
+  if (obj->IsFailure()) return false;
+  set_intrinsic_function_names(StringDictionary::cast(obj));
+
   if (InitializeNumberStringCache()->IsFailure()) return false;
 
   // Allocate cache for single character ASCII strings.
@@ -2042,6 +2075,7 @@ Object* Heap::AllocateSharedFunctionInfo(Object* name) {
   share->set_debug_info(undefined_value());
   share->set_inferred_name(empty_string());
   share->set_compiler_hints(0);
+  share->set_initial_map(undefined_value());
   share->set_this_property_assignments_count(0);
   share->set_this_property_assignments(undefined_value());
   share->set_num_literals(0);
@@ -2410,7 +2444,7 @@ Object* Heap::CreateCode(const CodeDesc& desc,
   // Compute size
   int body_size = RoundUp(desc.instr_size, kObjectAlignment);
   int obj_size = Code::SizeFor(body_size);
-  ASSERT(IsAligned(obj_size, Code::kCodeAlignment));
+  ASSERT(IsAligned(static_cast<intptr_t>(obj_size), kCodeAlignment));
   Object* result;
   if (obj_size > MaxObjectSizeInPagedSpace()) {
     result = lo_space_->AllocateRawCode(obj_size);
@@ -2624,6 +2658,20 @@ Object* Heap::AllocateArgumentsObject(Object* callee, int length) {
 }
 
 
+static bool HasDuplicates(DescriptorArray* descriptors) {
+  int count = descriptors->number_of_descriptors();
+  if (count > 1) {
+    String* prev_key = descriptors->GetKey(0);
+    for (int i = 1; i != count; i++) {
+      String* current_key = descriptors->GetKey(i);
+      if (prev_key == current_key) return true;
+      prev_key = current_key;
+    }
+  }
+  return false;
+}
+
+
 Object* Heap::AllocateInitialMap(JSFunction* fun) {
   ASSERT(!fun->has_initial_map());
 
@@ -2657,24 +2705,38 @@ Object* Heap::AllocateInitialMap(JSFunction* fun) {
   if (fun->shared()->CanGenerateInlineConstructor(prototype)) {
     int count = fun->shared()->this_property_assignments_count();
     if (count > in_object_properties) {
-      count = in_object_properties;
+      // Inline constructor can only handle inobject properties.
+      fun->shared()->ForbidInlineConstructor();
+    } else {
+      Object* descriptors_obj = DescriptorArray::Allocate(count);
+      if (descriptors_obj->IsFailure()) return descriptors_obj;
+      DescriptorArray* descriptors = DescriptorArray::cast(descriptors_obj);
+      for (int i = 0; i < count; i++) {
+        String* name = fun->shared()->GetThisPropertyAssignmentName(i);
+        ASSERT(name->IsSymbol());
+        FieldDescriptor field(name, i, NONE);
+        field.SetEnumerationIndex(i);
+        descriptors->Set(i, &field);
+      }
+      descriptors->SetNextEnumerationIndex(count);
+      descriptors->SortUnchecked();
+
+      // The descriptors may contain duplicates because the compiler does not
+      // guarantee the uniqueness of property names (it would have required
+      // quadratic time). Once the descriptors are sorted we can check for
+      // duplicates in linear time.
+      if (HasDuplicates(descriptors)) {
+        fun->shared()->ForbidInlineConstructor();
+      } else {
+        map->set_instance_descriptors(descriptors);
+        map->set_pre_allocated_property_fields(count);
+        map->set_unused_property_fields(in_object_properties - count);
+      }
     }
-    Object* descriptors_obj = DescriptorArray::Allocate(count);
-    if (descriptors_obj->IsFailure()) return descriptors_obj;
-    DescriptorArray* descriptors = DescriptorArray::cast(descriptors_obj);
-    for (int i = 0; i < count; i++) {
-      String* name = fun->shared()->GetThisPropertyAssignmentName(i);
-      ASSERT(name->IsSymbol());
-      FieldDescriptor field(name, i, NONE);
-      field.SetEnumerationIndex(i);
-      descriptors->Set(i, &field);
-    }
-    descriptors->SetNextEnumerationIndex(count);
-    descriptors->Sort();
-    map->set_instance_descriptors(descriptors);
-    map->set_pre_allocated_property_fields(count);
-    map->set_unused_property_fields(in_object_properties - count);
   }
+
+  fun->shared()->StartInobjectSlackTracking(map);
+
   return map;
 }
 
@@ -2691,7 +2753,20 @@ void Heap::InitializeJSObjectFromMap(JSObject* obj,
   // fixed array (eg, Heap::empty_fixed_array()).  Currently, the object
   // verification code has to cope with (temporarily) invalid objects.  See
   // for example, JSArray::JSArrayVerify).
-  obj->InitializeBody(map->instance_size());
+  Object* filler;
+  // We cannot always fill with one_pointer_filler_map because objects
+  // created from API functions expect their internal fields to be initialized
+  // with undefined_value.
+  if (map->constructor()->IsJSFunction() &&
+      JSFunction::cast(map->constructor())->shared()->
+          IsInobjectSlackTrackingInProgress()) {
+    // We might want to shrink the object later.
+    ASSERT(obj->GetInternalFieldCount() == 0);
+    filler = Heap::one_pointer_filler_map();
+  } else {
+    filler = Heap::undefined_value();
+  }
+  obj->InitializeBody(map->instance_size(), filler);
 }
 
 
@@ -2874,19 +2949,13 @@ Object* Heap::CopyJSObject(JSObject* source) {
 
 Object* Heap::ReinitializeJSGlobalProxy(JSFunction* constructor,
                                         JSGlobalProxy* object) {
-  // Allocate initial map if absent.
-  if (!constructor->has_initial_map()) {
-    Object* initial_map = AllocateInitialMap(constructor);
-    if (initial_map->IsFailure()) return initial_map;
-    constructor->set_initial_map(Map::cast(initial_map));
-    Map::cast(initial_map)->set_constructor(constructor);
-  }
-
+  ASSERT(constructor->has_initial_map());
   Map* map = constructor->initial_map();
 
-  // Check that the already allocated object has the same size as
+  // Check that the already allocated object has the same size and type as
   // objects allocated using the constructor.
   ASSERT(map->instance_size() == object->map()->instance_size());
+  ASSERT(map->instance_type() == object->map()->instance_type());
 
   // Allocate the backing storage for the properties.
   int prop_size = map->unused_property_fields() - map->inobject_properties();
@@ -3133,6 +3202,7 @@ Object* Heap::AllocateRawFixedArray(int length) {
   if (length < 0 || length > FixedArray::kMaxLength) {
     return Failure::OutOfMemoryException();
   }
+  ASSERT(length > 0);
   // Use the general function if we're forced to always allocate.
   if (always_allocate()) return AllocateFixedArray(length, TENURED);
   // Allocate the raw data for a fixed array.
@@ -3143,16 +3213,19 @@ Object* Heap::AllocateRawFixedArray(int length) {
 }
 
 
-Object* Heap::CopyFixedArray(FixedArray* src) {
+Object* Heap::CopyFixedArrayWithMap(FixedArray* src, Map* map) {
   int len = src->length();
   Object* obj = AllocateRawFixedArray(len);
   if (obj->IsFailure()) return obj;
   if (Heap::InNewSpace(obj)) {
     HeapObject* dst = HeapObject::cast(obj);
-    CopyBlock(dst->address(), src->address(), FixedArray::SizeFor(len));
+    dst->set_map(map);
+    CopyBlock(dst->address() + kPointerSize,
+              src->address() + kPointerSize,
+              FixedArray::SizeFor(len) - kPointerSize);
     return obj;
   }
-  HeapObject::cast(obj)->set_map(src->map());
+  HeapObject::cast(obj)->set_map(map);
   FixedArray* result = FixedArray::cast(obj);
   result->set_length(len);
 

@@ -100,25 +100,23 @@ class CodeEntry {
   INLINE(const char* name() const) { return name_; }
   INLINE(const char* resource_name() const) { return resource_name_; }
   INLINE(int line_number() const) { return line_number_; }
-  INLINE(unsigned call_uid() const) { return call_uid_; }
   INLINE(int security_token_id() const) { return security_token_id_; }
 
   INLINE(static bool is_js_function_tag(Logger::LogEventsAndTags tag));
 
   void CopyData(const CodeEntry& source);
+  uint32_t GetCallUid() const;
+  bool IsSameAs(CodeEntry* entry) const;
 
   static const char* kEmptyNamePrefix;
 
  private:
-  unsigned call_uid_;
   Logger::LogEventsAndTags tag_;
   const char* name_prefix_;
   const char* name_;
   const char* resource_name_;
   int line_number_;
   int security_token_id_;
-
-  static unsigned next_call_uid_;
 
   DISALLOW_COPY_AND_ASSIGN(CodeEntry);
 };
@@ -147,11 +145,12 @@ class ProfileNode {
 
  private:
   INLINE(static bool CodeEntriesMatch(void* entry1, void* entry2)) {
-    return entry1 == entry2;
+    return reinterpret_cast<CodeEntry*>(entry1)->IsSameAs(
+        reinterpret_cast<CodeEntry*>(entry2));
   }
 
   INLINE(static uint32_t CodeEntryHash(CodeEntry* entry)) {
-    return static_cast<int32_t>(reinterpret_cast<intptr_t>(entry));
+    return entry->GetCallUid();
   }
 
   ProfileTree* tree_;
@@ -746,7 +745,8 @@ class HeapObjectsMap {
   }
 
   static uint32_t AddressHash(Address addr) {
-    return static_cast<int32_t>(reinterpret_cast<intptr_t>(addr));
+    return ComputeIntegerHash(
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(addr)));
   }
 
   bool initial_fill_mode_;
@@ -889,7 +889,8 @@ class HeapEntriesMap {
   };
 
   uint32_t Hash(HeapObject* object) {
-    return static_cast<uint32_t>(reinterpret_cast<intptr_t>(object));
+    return ComputeIntegerHash(
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(object)));
   }
   static bool HeapObjectsMatch(void* key1, void* key2) { return key1 == key2; }
 
@@ -974,6 +975,55 @@ class HeapSnapshotGenerator {
   friend class IndexedReferencesExtractor;
 
   DISALLOW_COPY_AND_ASSIGN(HeapSnapshotGenerator);
+};
+
+class OutputStreamWriter;
+
+class HeapSnapshotJSONSerializer {
+ public:
+  explicit HeapSnapshotJSONSerializer(HeapSnapshot* snapshot)
+      : snapshot_(snapshot),
+        nodes_(ObjectsMatch),
+        strings_(ObjectsMatch),
+        next_node_id_(1),
+        next_string_id_(1),
+        writer_(NULL) {
+  }
+  void Serialize(v8::OutputStream* stream);
+
+ private:
+  INLINE(static bool ObjectsMatch(void* key1, void* key2)) {
+    return key1 == key2;
+  }
+
+  INLINE(static uint32_t ObjectHash(const void* key)) {
+    return ComputeIntegerHash(
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(key)));
+  }
+
+  void EnumerateNodes();
+  int GetNodeId(HeapEntry* entry);
+  int GetStringId(const char* s);
+  void SerializeEdge(HeapGraphEdge* edge);
+  void SerializeImpl();
+  void SerializeNode(HeapEntry* entry);
+  void SerializeNodes();
+  void SerializeSnapshot();
+  void SerializeString(const unsigned char* s);
+  void SerializeStrings();
+  void SortHashMap(HashMap* map, List<HashMap::Entry*>* sorted_entries);
+
+  HeapSnapshot* snapshot_;
+  HashMap nodes_;
+  HashMap strings_;
+  int next_node_id_;
+  int next_string_id_;
+  OutputStreamWriter* writer_;
+
+  friend class HeapSnapshotJSONSerializerEnumerator;
+  friend class HeapSnapshotJSONSerializerIterator;
+
+  DISALLOW_COPY_AND_ASSIGN(HeapSnapshotJSONSerializer);
 };
 
 } }  // namespace v8::internal
