@@ -132,6 +132,7 @@ class Log : public AllStatic {
     size_t rv = fwrite(msg, 1, length, output_handle_);
     ASSERT(static_cast<size_t>(length) == rv);
     USE(rv);
+    fflush(output_handle_);
     return length;
   }
 
@@ -150,6 +151,9 @@ class Log : public AllStatic {
   // via OpenMemoryBuffer, then output_buffer_ is used.
   // mutex_ should be acquired before using output_handle_ or output_buffer_.
   static FILE* output_handle_;
+
+  // Used when low-level profiling is active to save code object contents.
+  static FILE* output_code_handle_;
 
   static LogDynamicBuffer* output_buffer_;
 
@@ -170,6 +174,7 @@ class Log : public AllStatic {
   // mutex_ should be acquired before using it.
   static char* message_buffer_;
 
+  friend class Logger;
   friend class LogMessageBuilder;
   friend class LogRecordCompressor;
 };

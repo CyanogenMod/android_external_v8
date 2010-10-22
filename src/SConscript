@@ -42,6 +42,7 @@ SOURCES = {
     ast.cc
     bootstrapper.cc
     builtins.cc
+    cached-powers.cc
     checks.cc
     circular-queue.cc
     code-stubs.cc
@@ -100,7 +101,9 @@ SOURCES = {
     serialize.cc
     snapshot-common.cc
     spaces.cc
+    string-search.cc
     string-stream.cc
+    strtod.cc
     stub-cache.cc
     token.cc
     top.cc
@@ -113,7 +116,6 @@ SOURCES = {
     variables.cc
     version.cc
     virtual-frame.cc
-    vm-state.cc
     zone.cc
     """),
   'arch:arm': Split("""

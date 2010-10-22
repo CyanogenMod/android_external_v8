@@ -1,4 +1,4 @@
-// Copyright 2009 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -28,6 +28,7 @@
 #include "v8.h"
 
 #include "api.h"
+
 #include "arguments.h"
 #include "bootstrapper.h"
 #include "compiler.h"
@@ -36,6 +37,7 @@
 #include "global-handles.h"
 #include "heap-profiler.h"
 #include "messages.h"
+#include "parser.h"
 #include "platform.h"
 #include "profile-generator-inl.h"
 #include "serialize.h"
@@ -134,27 +136,27 @@ void i::V8::FatalProcessOutOfMemory(const char* location, bool take_snapshot) {
   heap_stats.new_space_size = &new_space_size;
   int new_space_capacity;
   heap_stats.new_space_capacity = &new_space_capacity;
-  int old_pointer_space_size;
+  intptr_t old_pointer_space_size;
   heap_stats.old_pointer_space_size = &old_pointer_space_size;
-  int old_pointer_space_capacity;
+  intptr_t old_pointer_space_capacity;
   heap_stats.old_pointer_space_capacity = &old_pointer_space_capacity;
-  int old_data_space_size;
+  intptr_t old_data_space_size;
   heap_stats.old_data_space_size = &old_data_space_size;
-  int old_data_space_capacity;
+  intptr_t old_data_space_capacity;
   heap_stats.old_data_space_capacity = &old_data_space_capacity;
-  int code_space_size;
+  intptr_t code_space_size;
   heap_stats.code_space_size = &code_space_size;
-  int code_space_capacity;
+  intptr_t code_space_capacity;
   heap_stats.code_space_capacity = &code_space_capacity;
-  int map_space_size;
+  intptr_t map_space_size;
   heap_stats.map_space_size = &map_space_size;
-  int map_space_capacity;
+  intptr_t map_space_capacity;
   heap_stats.map_space_capacity = &map_space_capacity;
-  int cell_space_size;
+  intptr_t cell_space_size;
   heap_stats.cell_space_size = &cell_space_size;
-  int cell_space_capacity;
+  intptr_t cell_space_capacity;
   heap_stats.cell_space_capacity = &cell_space_capacity;
-  int lo_space_size;
+  intptr_t lo_space_size;
   heap_stats.lo_space_size = &lo_space_size;
   int global_handle_count;
   heap_stats.global_handle_count = &global_handle_count;
@@ -166,9 +168,9 @@ void i::V8::FatalProcessOutOfMemory(const char* location, bool take_snapshot) {
   heap_stats.near_death_global_handle_count = &near_death_global_handle_count;
   int destroyed_global_handle_count;
   heap_stats.destroyed_global_handle_count = &destroyed_global_handle_count;
-  int memory_allocator_size;
+  intptr_t memory_allocator_size;
   heap_stats.memory_allocator_size = &memory_allocator_size;
-  int memory_allocator_capacity;
+  intptr_t memory_allocator_capacity;
   heap_stats.memory_allocator_capacity = &memory_allocator_capacity;
   int objects_per_type[LAST_TYPE + 1] = {0};
   heap_stats.objects_per_type = objects_per_type;
@@ -1135,13 +1137,13 @@ void ObjectTemplate::SetInternalFieldCount(int value) {
 
 ScriptData* ScriptData::PreCompile(const char* input, int length) {
   unibrow::Utf8InputBuffer<> buf(input, length);
-  return i::PreParse(i::Handle<i::String>(), &buf, NULL);
+  return i::Parser::PreParse(i::Handle<i::String>(), &buf, NULL);
 }
 
 
 ScriptData* ScriptData::PreCompile(v8::Handle<String> source) {
   i::Handle<i::String> str = Utils::OpenHandle(*source);
-  return i::PreParse(str, NULL, NULL);
+  return i::Parser::PreParse(str, NULL, NULL);
 }
 
 
@@ -1677,6 +1679,21 @@ Local<String> StackFrame::GetScriptName() const {
 }
 
 
+Local<String> StackFrame::GetScriptNameOrSourceURL() const {
+  if (IsDeadCheck("v8::StackFrame::GetScriptNameOrSourceURL()")) {
+    return Local<String>();
+  }
+  ENTER_V8;
+  HandleScope scope;
+  i::Handle<i::JSObject> self = Utils::OpenHandle(this);
+  i::Handle<i::Object> name = GetProperty(self, "scriptNameOrSourceURL");
+  if (!name->IsString()) {
+    return Local<String>();
+  }
+  return scope.Close(Local<String>::Cast(Utils::ToLocal(name)));
+}
+
+
 Local<String> StackFrame::GetFunctionName() const {
   if (IsDeadCheck("v8::StackFrame::GetFunctionName()")) return Local<String>();
   ENTER_V8;
@@ -1986,6 +2003,15 @@ void v8::Date::CheckCast(v8::Value* that) {
   ApiCheck(obj->HasSpecificClassOf(i::Heap::Date_symbol()),
            "v8::Date::Cast()",
            "Could not convert to date");
+}
+
+
+void v8::RegExp::CheckCast(v8::Value* that) {
+  if (IsDeadCheck("v8::RegExp::Cast()")) return;
+  i::Handle<i::Object> obj = Utils::OpenHandle(that);
+  ApiCheck(obj->IsJSRegExp(),
+           "v8::RegExp::Cast()",
+           "Could not convert to regular expression");
 }
 
 
@@ -3710,6 +3736,57 @@ double v8::Date::NumberValue() const {
 }
 
 
+static i::Handle<i::String> RegExpFlagsToString(RegExp::Flags flags) {
+  char flags_buf[3];
+  int num_flags = 0;
+  if ((flags & RegExp::kGlobal) != 0) flags_buf[num_flags++] = 'g';
+  if ((flags & RegExp::kMultiline) != 0) flags_buf[num_flags++] = 'm';
+  if ((flags & RegExp::kIgnoreCase) != 0) flags_buf[num_flags++] = 'i';
+  ASSERT(num_flags <= static_cast<int>(ARRAY_SIZE(flags_buf)));
+  return i::Factory::LookupSymbol(
+      i::Vector<const char>(flags_buf, num_flags));
+}
+
+
+Local<v8::RegExp> v8::RegExp::New(Handle<String> pattern,
+                                  Flags flags) {
+  EnsureInitialized("v8::RegExp::New()");
+  LOG_API("RegExp::New");
+  ENTER_V8;
+  EXCEPTION_PREAMBLE();
+  i::Handle<i::JSRegExp> obj = i::Execution::NewJSRegExp(
+      Utils::OpenHandle(*pattern),
+      RegExpFlagsToString(flags),
+      &has_pending_exception);
+  EXCEPTION_BAILOUT_CHECK(Local<v8::RegExp>());
+  return Utils::ToLocal(i::Handle<i::JSRegExp>::cast(obj));
+}
+
+
+Local<v8::String> v8::RegExp::GetSource() const {
+  if (IsDeadCheck("v8::RegExp::GetSource()")) return Local<v8::String>();
+  i::Handle<i::JSRegExp> obj = Utils::OpenHandle(this);
+  return Utils::ToLocal(i::Handle<i::String>(obj->Pattern()));
+}
+
+
+// Assert that the static flags cast in GetFlags is valid.
+#define REGEXP_FLAG_ASSERT_EQ(api_flag, internal_flag)        \
+  STATIC_ASSERT(static_cast<int>(v8::RegExp::api_flag) ==     \
+                static_cast<int>(i::JSRegExp::internal_flag))
+REGEXP_FLAG_ASSERT_EQ(kNone, NONE);
+REGEXP_FLAG_ASSERT_EQ(kGlobal, GLOBAL);
+REGEXP_FLAG_ASSERT_EQ(kIgnoreCase, IGNORE_CASE);
+REGEXP_FLAG_ASSERT_EQ(kMultiline, MULTILINE);
+#undef REGEXP_FLAG_ASSERT_EQ
+
+v8::RegExp::Flags v8::RegExp::GetFlags() const {
+  if (IsDeadCheck("v8::RegExp::GetFlags()")) return v8::RegExp::kNone;
+  i::Handle<i::JSRegExp> obj = Utils::OpenHandle(this);
+  return static_cast<RegExp::Flags>(obj->GetFlags().value());
+}
+
+
 Local<v8::Array> v8::Array::New(int length) {
   EnsureInitialized("v8::Array::New()");
   LOG_API("Array::New");
@@ -4262,6 +4339,11 @@ bool Debug::SetDebugEventListener(v8::Handle<v8::Object> that,
 void Debug::DebugBreak() {
   if (!i::V8::IsRunning()) return;
   i::StackGuard::DebugBreak();
+}
+
+
+void Debug::CancelDebugBreak() {
+  i::StackGuard::Continue(i::DEBUGBREAK);
 }
 
 

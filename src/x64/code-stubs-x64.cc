@@ -1413,20 +1413,8 @@ void GenericUnaryOpStub::Generate(MacroAssembler* masm) {
         __ j(equal, &done);
       }
       __ SmiNeg(rax, rax, &done);
+      __ jmp(&slow);  // zero, if not handled above, and Smi::kMinValue.
 
-      // Either zero or Smi::kMinValue, neither of which become a smi when
-      // negated. We handle negative zero here if required. We always enter
-      // the runtime system if we have Smi::kMinValue.
-      if (negative_zero_ == kStrictNegativeZero) {
-        __ SmiCompare(rax, Smi::FromInt(0));
-        __ j(not_equal, &slow);
-        __ Move(rax, Factory::minus_zero_value());
-        __ jmp(&done);
-      } else  {
-        __ SmiCompare(rax, Smi::FromInt(Smi::kMinValue));
-        __ j(equal, &slow);
-        __ jmp(&done);
-      }
       // Try floating point case.
       __ bind(&try_float);
     } else if (FLAG_debug_code) {
@@ -2135,7 +2123,7 @@ void CompareStub::Generate(MacroAssembler* masm) {
     __ JumpIfNotBothSmi(rax, rdx, &non_smi);
     __ subq(rdx, rax);
     __ j(no_overflow, &smi_done);
-    __ neg(rdx);  // Correct sign in case of overflow.
+    __ not_(rdx);  // Correct sign in case of overflow. rdx cannot be 0 here.
     __ bind(&smi_done);
     __ movq(rax, rdx);
     __ ret(0);
@@ -2406,16 +2394,7 @@ void CompareStub::BranchIfNonSymbol(MacroAssembler* masm,
 
 
 void StackCheckStub::Generate(MacroAssembler* masm) {
-  // Because builtins always remove the receiver from the stack, we
-  // have to fake one to avoid underflowing the stack. The receiver
-  // must be inserted below the return address on the stack so we
-  // temporarily store that in a register.
-  __ pop(rax);
-  __ Push(Smi::FromInt(0));
-  __ push(rax);
-
-  // Do tail-call to runtime routine.
-  __ TailCallRuntime(Runtime::kStackGuard, 1, 1);
+  __ TailCallRuntime(Runtime::kStackGuard, 0, 1);
 }
 
 
@@ -3801,7 +3780,7 @@ void SubStringStub::Generate(MacroAssembler* masm) {
   Label result_longer_than_two;
   __ movq(rcx, Operand(rsp, kToOffset));
   __ movq(rdx, Operand(rsp, kFromOffset));
-  __ JumpIfNotBothPositiveSmi(rcx, rdx, &runtime);
+  __ JumpUnlessBothNonNegativeSmi(rcx, rdx, &runtime);
 
   __ SmiSub(rcx, rcx, rdx);  // Overflow doesn't happen.
   __ cmpq(FieldOperand(rax, String::kLengthOffset), rcx);

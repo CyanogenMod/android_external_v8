@@ -938,6 +938,14 @@
 				>
 			</File>
 			<File
+				RelativePath="..\..\src\string-search.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\string-search.h"
+				>
+			</File>
+			<File
 				RelativePath="..\..\src\string-stream.cc"
 				>
 			</File>
@@ -1071,10 +1079,6 @@
 			</File>
 			<File
 				RelativePath="..\..\src\virtual-frame-heavy.cc"
-				>
-			</File>
-			<File
-				RelativePath="..\..\src\vm-state.cc"
 				>
 			</File>
 			<File

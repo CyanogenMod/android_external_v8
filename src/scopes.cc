@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -27,9 +27,12 @@
 
 #include "v8.h"
 
+#include "scopes.h"
+
+#include "bootstrapper.h"
+#include "compiler.h"
 #include "prettyprinter.h"
 #include "scopeinfo.h"
-#include "scopes.h"
 
 namespace v8 {
 namespace internal {
@@ -168,6 +171,25 @@ Scope::Scope(Scope* outer_scope, Type type)
 }
 
 
+bool Scope::Analyze(CompilationInfo* info) {
+  ASSERT(info->function() != NULL);
+  Scope* top = info->function()->scope();
+  while (top->outer_scope() != NULL) top = top->outer_scope();
+  top->AllocateVariables(info->calling_context());
+
+#ifdef DEBUG
+  if (Bootstrapper::IsActive()
+          ? FLAG_print_builtin_scopes
+          : FLAG_print_scopes) {
+    info->function()->scope()->Print();
+  }
+#endif
+
+  info->SetScope(info->function()->scope());
+  return true;  // Can not fail.
+}
+
+
 void Scope::Initialize(bool inside_with) {
   // Add this scope as a new inner scope of the outer scope.
   if (outer_scope_ != NULL) {
@@ -199,7 +221,6 @@ void Scope::Initialize(bool inside_with) {
                        true, Variable::ARGUMENTS);
   }
 }
-
 
 
 Variable* Scope::LocalLookup(Handle<String> name) {

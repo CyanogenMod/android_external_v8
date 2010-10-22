@@ -25,15 +25,16 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "v8.h"
-
-#include "vm-state.h"
+#ifndef V8_STRTOD_H_
+#define V8_STRTOD_H_
 
 namespace v8 {
 namespace internal {
 
-#ifdef ENABLE_VMSTATE_TRACKING
-AtomicWord VMState::current_state_ = 0;
-#endif
+// The buffer must only contain digits in the range [0-9]. It must not
+// contain a dot or a sign. It must not start with '0', and must not be empty.
+double Strtod(Vector<const char> buffer, int exponent);
 
 } }  // namespace v8::internal
+
+#endif  // V8_STRTOD_H_

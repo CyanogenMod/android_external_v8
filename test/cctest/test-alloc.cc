@@ -37,13 +37,13 @@ using namespace v8::internal;
 
 static Object* AllocateAfterFailures() {
   static int attempts = 0;
-  if (++attempts < 3) return Failure::RetryAfterGC(0);
+  if (++attempts < 3) return Failure::RetryAfterGC();
 
   // New space.
   NewSpace* new_space = Heap::new_space();
   static const int kNewSpaceFillerSize = ByteArray::SizeFor(0);
   while (new_space->Available() > kNewSpaceFillerSize) {
-    int available_before = new_space->Available();
+    int available_before = static_cast<int>(new_space->Available());
     CHECK(!Heap::AllocateByteArray(0)->IsFailure());
     if (available_before == new_space->Available()) {
       // It seems that we are avoiding new space allocations when

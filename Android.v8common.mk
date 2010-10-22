@@ -8,6 +8,7 @@ V8_LOCAL_SRC_FILES := \
 	src/ast.cc \
 	src/bootstrapper.cc \
 	src/builtins.cc \
+	src/cached-powers.cc \
 	src/checks.cc \
 	src/code-stubs.cc \
 	src/codegen.cc \
@@ -65,7 +66,9 @@ V8_LOCAL_SRC_FILES := \
 	src/serialize.cc \
 	src/snapshot-common.cc \
 	src/spaces.cc \
+	src/string-search.cc \
 	src/string-stream.cc \
+	src/strtod.cc \
 	src/stub-cache.cc \
 	src/token.cc \
 	src/top.cc \

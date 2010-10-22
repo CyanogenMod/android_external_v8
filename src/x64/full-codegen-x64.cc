@@ -61,6 +61,12 @@ void FullCodeGenerator::Generate(CompilationInfo* info) {
   SetFunctionPosition(function());
   Comment cmnt(masm_, "[ function compiled by full code generator");
 
+#ifdef DEBUG
+  if (strlen(FLAG_stop_at) > 0 &&
+      info->function()->name()->IsEqualTo(CStrVector(FLAG_stop_at))) {
+    __ int3();
+  }
+#endif
   __ push(rbp);  // Caller's frame pointer.
   __ movq(rbp, rsp);
   __ push(rsi);  // Callee's context.
@@ -767,7 +773,7 @@ void FullCodeGenerator::VisitForInStatement(ForInStatement* stmt) {
 
   // Get the current entry of the array into register rbx.
   __ movq(rbx, Operand(rsp, 2 * kPointerSize));
-  SmiIndex index = __ SmiToIndex(rax, rax, kPointerSizeLog2);
+  SmiIndex index = masm()->SmiToIndex(rax, rax, kPointerSizeLog2);
   __ movq(rbx, FieldOperand(rbx,
                             index.reg,
                             index.scale,
@@ -1407,7 +1413,7 @@ void FullCodeGenerator::EmitInlineSmiBinaryOp(Expression* expr,
   Label done, stub_call, smi_case;
   __ pop(rdx);
   __ movq(rcx, rax);
-  Condition smi = __ CheckBothSmi(rdx, rax);
+  Condition smi = masm()->CheckBothSmi(rdx, rax);
   __ j(smi, &smi_case);
 
   __ bind(&stub_call);
@@ -1965,8 +1971,8 @@ void FullCodeGenerator::EmitIsNonNegativeSmi(ZoneList<Expression*>* args) {
   context()->PrepareTest(&materialize_true, &materialize_false,
                          &if_true, &if_false, &fall_through);
 
-  Condition positive_smi = __ CheckPositiveSmi(rax);
-  Split(positive_smi, if_true, if_false, fall_through);
+  Condition non_negative_smi = masm()->CheckNonNegativeSmi(rax);
+  Split(non_negative_smi, if_true, if_false, fall_through);
 
   context()->Plug(if_true, if_false);
 }

@@ -1,4 +1,4 @@
-// Copyright 2006-2009 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -571,28 +571,6 @@ void Failure::FailurePrint(StringStream* accumulator) {
 
 void Failure::FailurePrint() {
   PrintF("Failure(%p)", reinterpret_cast<void*>(value()));
-}
-
-
-Failure* Failure::RetryAfterGC(int requested_bytes, AllocationSpace space) {
-  ASSERT((space & ~kSpaceTagMask) == 0);
-  // TODO(X64): Stop using Smi validation for non-smi checks, even if they
-  // happen to be identical at the moment.
-
-  int requested = requested_bytes >> kObjectAlignmentBits;
-  int value = (requested << kSpaceTagSize) | space;
-  // We can't very well allocate a heap number in this situation, and if the
-  // requested memory is so large it seems reasonable to say that this is an
-  // out of memory situation.  This fixes a crash in
-  // js1_5/Regress/regress-303213.js.
-  if (value >> kSpaceTagSize != requested ||
-      !Smi::IsValid(value) ||
-      value != ((value << kFailureTypeTagSize) >> kFailureTypeTagSize) ||
-      !Smi::IsValid(value << kFailureTypeTagSize)) {
-    Top::context()->mark_out_of_memory();
-    return Failure::OutOfMemoryException();
-  }
-  return Construct(RETRY_AFTER_GC, value);
 }
 
 
@@ -1180,7 +1158,11 @@ String* JSObject::constructor_name() {
   if (map()->constructor()->IsJSFunction()) {
     JSFunction* constructor = JSFunction::cast(map()->constructor());
     String* name = String::cast(constructor->shared()->name());
-    return name->length() > 0 ? name : constructor->shared()->inferred_name();
+    if (name->length() > 0) return name;
+    String* inferred_name = constructor->shared()->inferred_name();
+    if (inferred_name->length() > 0) return inferred_name;
+    Object* proto = GetPrototype();
+    if (proto->IsJSObject()) return JSObject::cast(proto)->constructor_name();
   }
   // If the constructor is not present, return "Object".
   return Heap::Object_symbol();
@@ -3601,9 +3583,17 @@ Object* FixedArray::AddKeysFromJSArray(JSArray* array) {
 
 Object* FixedArray::UnionOfKeys(FixedArray* other) {
   int len0 = length();
+#ifdef DEBUG
+  if (FLAG_enable_slow_asserts) {
+    for (int i = 0; i < len0; i++) {
+      ASSERT(get(i)->IsString() || get(i)->IsNumber());
+    }
+  }
+#endif
   int len1 = other->length();
-  // Optimize if either is empty.
-  if (len0 == 0) return other;
+  // Optimize if 'other' is empty.
+  // We cannot optimize if 'this' is empty, as other may have holes
+  // or non keys.
   if (len1 == 0) return this;
 
   // Compute how many elements are not in this.
@@ -3623,14 +3613,18 @@ Object* FixedArray::UnionOfKeys(FixedArray* other) {
   FixedArray* result = FixedArray::cast(obj);
   WriteBarrierMode mode = result->GetWriteBarrierMode(no_gc);
   for (int i = 0; i < len0; i++) {
-    result->set(i, get(i), mode);
+    Object* e = get(i);
+    ASSERT(e->IsString() || e->IsNumber());
+    result->set(i, e, mode);
   }
   // Fill in the extra keys.
   int index = 0;
   for (int y = 0; y < len1; y++) {
     Object* value = other->get(y);
     if (!value->IsTheHole() && !HasKey(this, value)) {
-      result->set(len0 + index, other->get(y), mode);
+      Object* e = other->get(y);
+      ASSERT(e->IsString() || e->IsNumber());
+      result->set(len0 + index, e, mode);
       index++;
     }
   }
@@ -5227,6 +5221,13 @@ Object* Oddball::Initialize(const char* to_string, Object* to_number) {
 }
 
 
+String* SharedFunctionInfo::DebugName() {
+  Object* n = name();
+  if (!n->IsString() || String::cast(n)->length() == 0) return inferred_name();
+  return String::cast(n);
+}
+
+
 bool SharedFunctionInfo::HasSourceCode() {
   return !script()->IsUndefined() &&
          !reinterpret_cast<Script*>(script())->source()->IsUndefined();
@@ -6454,7 +6455,7 @@ Object* JSObject::SetElementWithoutInterceptor(uint32_t index, Object* value) {
         // When we set the is_extensible flag to false we always force
         // the element into dictionary mode (and force them to stay there).
         if (!map()->is_extensible()) {
-          Handle<Object> number(Heap::NumberFromUint32(index));
+          Handle<Object> number(Factory::NewNumberFromUint(index));
           Handle<String> index_string(Factory::NumberToString(number));
           Handle<Object> args[1] = { index_string };
           return Top::Throw(*Factory::NewTypeError("object_not_extensible",
@@ -8568,7 +8569,9 @@ Object* NumberDictionary::Set(uint32_t key,
   details = PropertyDetails(details.attributes(),
                             details.type(),
                             DetailsAt(entry).index());
-  SetEntry(entry, NumberDictionaryShape::AsObject(key), value, details);
+  Object* object_key = NumberDictionaryShape::AsObject(key);
+  if (object_key->IsFailure()) return object_key;
+  SetEntry(entry, object_key, value, details);
   return this;
 }
 
@@ -8719,6 +8722,11 @@ Object* StringDictionary::TransformPropertiesToFastFor(
   int inobject_props = obj->map()->inobject_properties();
   int number_of_allocated_fields =
       number_of_fields + unused_property_fields - inobject_props;
+  if (number_of_allocated_fields < 0) {
+    // There is enough inobject space for all fields (including unused).
+    number_of_allocated_fields = 0;
+    unused_property_fields = inobject_props - number_of_fields;
+  }
 
   // Allocate the fixed array for the fields.
   Object* fields = Heap::AllocateFixedArray(number_of_allocated_fields);
