@@ -25,45 +25,71 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Flags: --expose-externalize-string --expose-gc
+// Flags: --always-full-compiler
 
-function test() {
-  assertEquals("0123", "aa0bb1cc2dd3".replace(/[a-z]/g, ""));
-  assertEquals("0123", "\u1234a0bb1cc2dd3".replace(/[\u1234a-z]/g, ""));
+var functionToCatch;
+var lineNumber;
 
-  var expected = "0123";
-  var cons = "a0b1c2d3";
-  for (var i = 0; i < 5; i++) {
-    expected += expected;
-    cons += cons;
-  }
-  assertEquals(expected, cons.replace(/[a-z]/g, ""));
-  cons = "\u12340b1c2d3";
-  for (var i = 0; i < 5; i++) {
-    cons += cons;
-  }
-  assertEquals(expected, cons.replace(/[\u1234a-z]/g, ""));
+function catchLineNumber () {
+  var x = {};
 
-  cons = "a0b1c2d3";
-  for (var i = 0; i < 5; i++) {
-    cons += cons;
-  }
-  externalizeString(cons, true/* force two-byte */);
-  assertEquals(expected, cons.replace(/[a-z]/g, ""));
-  cons = "\u12340b1c2d3";
-  for (var i = 0; i < 5; i++) {
-    cons += cons;
-  }
-  externalizeString(cons);
-  assertEquals(expected, cons.replace(/[\u1234a-z]/g, ""));
+  Error.prepareStackTrace = function (error, stackTrace) {
+    stackTrace.some(function (frame) {
+      if (frame.getFunction() == functionToCatch) {
+        lineNumber = frame.getLineNumber();
+        return true;
+      }
+      return false;
+    });
+    return lineNumber;
+  };
+
+  Error.captureStackTrace(x);
+  return x.stack;
 }
 
-test();
+function log() {
+  catchLineNumber();
+}
 
-// Clear the regexp cache to allow the GC to work.
-"foo".replace(/foo/g, "");
+function foo() {}
 
-// GC in order to free up things on the C side so we don't get
-// a memory leak.  This makes valgrind happy.
-gc();
-gc();
+function test1() {
+  log(foo() == foo()
+      ? 'a'
+      : 'b');
+}
+
+function test2() {
+  var o = { foo: function () {}}
+  log(o.foo() == o.foo()
+      ? 'a'
+      : 'b');
+}
+
+function test3() {
+  var o = { log: log, foo: function() { } };
+  o.log(o.foo() == o.foo()
+      ? 'a'
+      : 'b');
+
+}
+
+function test(f, expectedLineNumber) {
+  functionToCatch = f;
+  f();
+
+  assertEquals(expectedLineNumber, lineNumber);
+}
+
+test(test1, 58);
+test(test2, 65);
+test(test3, 72);
+
+eval(test1.toString() + "//@ sourceUrl=foo");
+eval(test2.toString() + "//@ sourceUrl=foo");
+eval(test3.toString() + "//@ sourceUrl=foo");
+
+test(test1, 2);
+test(test2, 3);
+test(test3, 3);

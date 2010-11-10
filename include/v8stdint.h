@@ -25,45 +25,29 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Flags: --expose-externalize-string --expose-gc
+// Load definitions of standard types.
 
-function test() {
-  assertEquals("0123", "aa0bb1cc2dd3".replace(/[a-z]/g, ""));
-  assertEquals("0123", "\u1234a0bb1cc2dd3".replace(/[\u1234a-z]/g, ""));
+#ifndef V8STDINT_H_
+#define V8STDINT_H_
 
-  var expected = "0123";
-  var cons = "a0b1c2d3";
-  for (var i = 0; i < 5; i++) {
-    expected += expected;
-    cons += cons;
-  }
-  assertEquals(expected, cons.replace(/[a-z]/g, ""));
-  cons = "\u12340b1c2d3";
-  for (var i = 0; i < 5; i++) {
-    cons += cons;
-  }
-  assertEquals(expected, cons.replace(/[\u1234a-z]/g, ""));
+#include <stdio.h>
 
-  cons = "a0b1c2d3";
-  for (var i = 0; i < 5; i++) {
-    cons += cons;
-  }
-  externalizeString(cons, true/* force two-byte */);
-  assertEquals(expected, cons.replace(/[a-z]/g, ""));
-  cons = "\u12340b1c2d3";
-  for (var i = 0; i < 5; i++) {
-    cons += cons;
-  }
-  externalizeString(cons);
-  assertEquals(expected, cons.replace(/[\u1234a-z]/g, ""));
-}
+#if defined(_WIN32) && !defined(__MINGW32__)
 
-test();
+typedef signed char int8_t;
+typedef unsigned char uint8_t;
+typedef short int16_t;  // NOLINT
+typedef unsigned short uint16_t;  // NOLINT
+typedef int int32_t;
+typedef unsigned int uint32_t;
+typedef __int64 int64_t;
+typedef unsigned __int64 uint64_t;
+// intptr_t and friends are defined in crtdefs.h through stdio.h.
 
-// Clear the regexp cache to allow the GC to work.
-"foo".replace(/foo/g, "");
+#else
 
-// GC in order to free up things on the C side so we don't get
-// a memory leak.  This makes valgrind happy.
-gc();
-gc();
+#include <stdint.h>
+
+#endif
+
+#endif  // V8STDINT_H_

@@ -61,6 +61,7 @@ V8_LOCAL_SRC_FILES := \
 	src/rewriter.cc \
 	src/runtime.cc \
 	src/scanner.cc \
+	src/scanner-base.cc \
 	src/scopeinfo.cc \
 	src/scopes.cc \
 	src/serialize.cc \

@@ -1424,66 +1424,6 @@ static MaybeObject* Runtime_RegExpConstructResult(Arguments args) {
 }
 
 
-static MaybeObject* Runtime_RegExpCloneResult(Arguments args) {
-  ASSERT(args.length() == 1);
-  Map* regexp_result_map;
-  {
-    AssertNoAllocation no_gc;
-    HandleScope handles;
-    regexp_result_map = Top::global_context()->regexp_result_map();
-  }
-  if (!args[0]->IsJSArray()) return args[0];
-
-  JSArray* result = JSArray::cast(args[0]);
-  // Arguments to RegExpCloneResult should always be fresh RegExp exec call
-  // results (either a fresh JSRegExpResult or null).
-  // If the argument is not a JSRegExpResult, or isn't unmodified, just return
-  // the argument uncloned.
-  if (result->map() != regexp_result_map) return result;
-
-  // Having the original JSRegExpResult map guarantees that we have
-  // fast elements and no properties except the two in-object properties.
-  ASSERT(result->HasFastElements());
-  ASSERT(result->properties() == Heap::empty_fixed_array());
-  ASSERT_EQ(2, regexp_result_map->inobject_properties());
-
-  Object* new_array_alloc;
-  { MaybeObject* maybe_new_array_alloc =
-        Heap::AllocateRaw(JSRegExpResult::kSize, NEW_SPACE, OLD_POINTER_SPACE);
-    if (!maybe_new_array_alloc->ToObject(&new_array_alloc)) {
-      return maybe_new_array_alloc;
-    }
-  }
-
-  // Set HeapObject map to JSRegExpResult map.
-  reinterpret_cast<HeapObject*>(new_array_alloc)->set_map(regexp_result_map);
-
-  JSArray* new_array = JSArray::cast(new_array_alloc);
-
-  // Copy JSObject properties.
-  new_array->set_properties(result->properties());  // Empty FixedArray.
-
-  // Copy JSObject elements as copy-on-write.
-  FixedArray* elements = FixedArray::cast(result->elements());
-  if (elements != Heap::empty_fixed_array()) {
-    elements->set_map(Heap::fixed_cow_array_map());
-  }
-  new_array->set_elements(elements);
-
-  // Copy JSArray length.
-  new_array->set_length(result->length());
-
-  // Copy JSRegExpResult in-object property fields input and index.
-  new_array->FastPropertyAtPut(JSRegExpResult::kIndexIndex,
-                               result->FastPropertyAt(
-                                   JSRegExpResult::kIndexIndex));
-  new_array->FastPropertyAtPut(JSRegExpResult::kInputIndex,
-                               result->FastPropertyAt(
-                                   JSRegExpResult::kInputIndex));
-  return new_array;
-}
-
-
 static MaybeObject* Runtime_RegExpInitializeObject(Arguments args) {
   AssertNoAllocation no_alloc;
   ASSERT(args.length() == 5);
@@ -7129,20 +7069,31 @@ static MaybeObject* Runtime_GlobalReceiver(Arguments args) {
 }
 
 
+static MaybeObject* Runtime_ParseJson(Arguments args) {
+  HandleScope scope;
+  ASSERT_EQ(1, args.length());
+  CONVERT_ARG_CHECKED(String, source, 0);
+
+  Handle<Object> result = JsonParser::Parse(source);
+  if (result.is_null()) {
+    // Syntax error or stack overflow in scanner.
+    ASSERT(Top::has_pending_exception());
+    return Failure::Exception();
+  }
+  return *result;
+}
+
+
 static MaybeObject* Runtime_CompileString(Arguments args) {
   HandleScope scope;
-  ASSERT_EQ(2, args.length());
+  ASSERT_EQ(1, args.length());
   CONVERT_ARG_CHECKED(String, source, 0);
-  CONVERT_ARG_CHECKED(Oddball, is_json, 1)
 
   // Compile source string in the global context.
   Handle<Context> context(Top::context()->global_context());
-  Compiler::ValidationState validate = (is_json->IsTrue())
-    ? Compiler::VALIDATE_JSON : Compiler::DONT_VALIDATE_JSON;
   Handle<SharedFunctionInfo> shared = Compiler::CompileEval(source,
                                                             context,
-                                                            true,
-                                                            validate);
+                                                            true);
   if (shared.is_null()) return Failure::Exception();
   Handle<JSFunction> fun =
       Factory::NewFunctionFromSharedFunctionInfo(shared, context, NOT_TENURED);
@@ -7157,8 +7108,7 @@ static ObjectPair CompileGlobalEval(Handle<String> source,
   Handle<SharedFunctionInfo> shared = Compiler::CompileEval(
       source,
       Handle<Context>(Top::context()),
-      Top::context()->IsGlobalContext(),
-      Compiler::DONT_VALIDATE_JSON);
+      Top::context()->IsGlobalContext());
   if (shared.is_null()) return MakePair(Failure::Exception(), NULL);
   Handle<JSFunction> compiled = Factory::NewFunctionFromSharedFunctionInfo(
       shared,
@@ -8881,12 +8831,6 @@ static MaybeObject* Runtime_DebugPrintScopes(Arguments args) {
 }
 
 
-static MaybeObject* Runtime_GetCFrames(Arguments args) {
-  // See bug 906.
-  return Heap::undefined_value();
-}
-
-
 static MaybeObject* Runtime_GetThreadCount(Arguments args) {
   HandleScope scope;
   ASSERT(args.length() == 1);
@@ -9370,8 +9314,7 @@ static MaybeObject* Runtime_DebugEvaluate(Arguments args) {
   Handle<SharedFunctionInfo> shared =
       Compiler::CompileEval(function_source,
                             context,
-                            context->IsGlobalContext(),
-                            Compiler::DONT_VALIDATE_JSON);
+                            context->IsGlobalContext());
   if (shared.is_null()) return Failure::Exception();
   Handle<JSFunction> compiled_function =
       Factory::NewFunctionFromSharedFunctionInfo(shared, context);
@@ -9442,8 +9385,7 @@ static MaybeObject* Runtime_DebugEvaluateGlobal(Arguments args) {
   Handle<SharedFunctionInfo> shared =
       Compiler::CompileEval(source,
                             context,
-                            true,
-                            Compiler::DONT_VALIDATE_JSON);
+                            true);
   if (shared.is_null()) return Failure::Exception();
   Handle<JSFunction> compiled_function =
       Handle<JSFunction>(Factory::NewFunctionFromSharedFunctionInfo(shared,
