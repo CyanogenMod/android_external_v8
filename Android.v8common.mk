@@ -6,6 +6,7 @@ V8_LOCAL_SRC_FILES := \
 	src/api.cc \
 	src/assembler.cc \
 	src/ast.cc \
+	src/bignum.cc \
 	src/bootstrapper.cc \
 	src/builtins.cc \
 	src/cached-powers.cc \
