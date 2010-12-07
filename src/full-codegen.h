@@ -348,7 +348,7 @@ class FullCodeGenerator: public AstVisitor {
 
   // Platform-specific support for allocating a new closure based on
   // the given function info.
-  void EmitNewClosure(Handle<SharedFunctionInfo> info);
+  void EmitNewClosure(Handle<SharedFunctionInfo> info, bool pretenure);
 
   // Platform-specific support for compiling assignments.
 
@@ -463,9 +463,6 @@ class FullCodeGenerator: public AstVisitor {
   // Load a value from the current context. Indices are defined as an enum
   // in v8::internal::Context.
   void LoadContextField(Register dst, int context_index);
-
-  // Create an operand for a context field.
-  MemOperand ContextOperand(Register context, int context_index);
 
   // AST node visit functions.
 #define DECLARE_VISIT(type) virtual void Visit##type(type* node);

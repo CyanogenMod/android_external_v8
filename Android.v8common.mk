@@ -7,6 +7,7 @@ V8_LOCAL_SRC_FILES := \
 	src/assembler.cc \
 	src/ast.cc \
 	src/bignum.cc \
+	src/bignum-dtoa.cc \
 	src/bootstrapper.cc \
 	src/builtins.cc \
 	src/cached-powers.cc \
@@ -27,6 +28,8 @@ V8_LOCAL_SRC_FILES := \
 	src/diy-fp.cc \
 	src/dtoa.cc \
 	src/execution.cc \
+	src/extensions/externalize-string-extension.cc \
+	src/extensions/gc-extension.cc \
 	src/factory.cc \
 	src/fast-dtoa.cc \
 	src/fixed-dtoa.cc \
@@ -54,6 +57,8 @@ V8_LOCAL_SRC_FILES := \
 	src/objects-visiting.cc \
 	src/oprofile-agent.cc \
 	src/parser.cc \
+	src/preparse-data.cc \
+	src/preparser.cc \
 	src/property.cc \
 	src/regexp-macro-assembler.cc \
 	src/regexp-macro-assembler-irregexp.cc \
@@ -131,9 +136,6 @@ ifeq ($(DEBUG_V8),true)
 		src/prettyprinter.cc \
 		src/regexp-macro-assembler-tracer.cc
 endif
-
-V8_LOCAL_SRC_FILES += \
-	src/dtoa-config.c
 
 # The order of these JS library sources is important. The order here determines
 # the ordering of the JS code in libraries.cc, which must be in a specific order

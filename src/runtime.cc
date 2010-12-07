@@ -5020,11 +5020,12 @@ static int CopyCachedAsciiCharsToArray(const char* chars,
 // For example, "foo" => ["f", "o", "o"].
 static MaybeObject* Runtime_StringToArray(Arguments args) {
   HandleScope scope;
-  ASSERT(args.length() == 1);
+  ASSERT(args.length() == 2);
   CONVERT_ARG_CHECKED(String, s, 0);
+  CONVERT_NUMBER_CHECKED(uint32_t, limit, Uint32, args[1]);
 
   s->TryFlatten();
-  const int length = s->length();
+  const int length = static_cast<int>(Min<uint32_t>(s->length(), limit));
 
   Handle<FixedArray> elements;
   if (s->IsFlat() && s->IsAsciiRepresentation()) {
@@ -6340,15 +6341,20 @@ static MaybeObject* Runtime_NewArgumentsFast(Arguments args) {
 
 static MaybeObject* Runtime_NewClosure(Arguments args) {
   HandleScope scope;
-  ASSERT(args.length() == 2);
+  ASSERT(args.length() == 3);
   CONVERT_ARG_CHECKED(Context, context, 0);
   CONVERT_ARG_CHECKED(SharedFunctionInfo, shared, 1);
+  CONVERT_BOOLEAN_CHECKED(pretenure, args[2]);
 
-  PretenureFlag pretenure = (context->global_context() == *context)
-      ? TENURED       // Allocate global closures in old space.
-      : NOT_TENURED;  // Allocate local closures in new space.
+  // Allocate global closures in old space and allocate local closures
+  // in new space. Additionally pretenure closures that are assigned
+  // directly to properties.
+  pretenure = pretenure || (context->global_context() == *context);
+  PretenureFlag pretenure_flag = pretenure ? TENURED : NOT_TENURED;
   Handle<JSFunction> result =
-      Factory::NewFunctionFromSharedFunctionInfo(shared, context, pretenure);
+      Factory::NewFunctionFromSharedFunctionInfo(shared,
+                                                 context,
+                                                 pretenure_flag);
   return *result;
 }
 
@@ -6386,7 +6392,7 @@ static void TrySettingInlineConstructStub(Handle<JSFunction> function) {
   }
   if (function->shared()->CanGenerateInlineConstructor(*prototype)) {
     ConstructStubCompiler compiler;
-    MaybeObject* code = compiler.CompileConstructStub(function->shared());
+    MaybeObject* code = compiler.CompileConstructStub(*function);
     if (!code->IsFailure()) {
       function->shared()->set_construct_stub(
           Code::cast(code->ToObjectUnchecked()));
@@ -6454,7 +6460,6 @@ static MaybeObject* Runtime_NewObject(Arguments args) {
     // track one initial_map at a time, so we force the completion before the
     // function is called as a constructor for the first time.
     shared->CompleteInobjectSlackTracking();
-    TrySettingInlineConstructStub(function);
   }
 
   bool first_allocation = !shared->live_objects_may_exist();

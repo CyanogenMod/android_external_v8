@@ -204,6 +204,10 @@ class StubCache : public AllStatic {
                                                             InLoopFlag in_loop,
                                                             Code::Kind kind);
 
+  static Handle<Code> ComputeCallInitialize(int argc, InLoopFlag in_loop);
+
+  static Handle<Code> ComputeKeyedCallInitialize(int argc, InLoopFlag in_loop);
+
   MUST_USE_RESULT static MaybeObject* ComputeCallPreMonomorphic(
       int argc,
       InLoopFlag in_loop,
@@ -736,7 +740,7 @@ class ConstructStubCompiler: public StubCompiler {
  public:
   explicit ConstructStubCompiler() {}
 
-  MUST_USE_RESULT MaybeObject* CompileConstructStub(SharedFunctionInfo* shared);
+  MUST_USE_RESULT MaybeObject* CompileConstructStub(JSFunction* function);
 
  private:
   MaybeObject* GetCode();

@@ -115,7 +115,6 @@ static void DefaultFatalErrorHandler(const char* location,
 }
 
 
-
 static FatalErrorCallback& GetFatalErrorHandler() {
   if (exception_behavior == NULL) {
     exception_behavior = DefaultFatalErrorHandler;
@@ -123,6 +122,10 @@ static FatalErrorCallback& GetFatalErrorHandler() {
   return exception_behavior;
 }
 
+
+void i::FatalProcessOutOfMemory(const char* location) {
+  i::V8::FatalProcessOutOfMemory(location, false);
+}
 
 
 // When V8 cannot allocated memory FatalProcessOutOfMemory is called.
@@ -2448,6 +2451,15 @@ Local<String> v8::Object::ObjectProtoToString() {
 }
 
 
+Local<String> v8::Object::GetConstructorName() {
+  ON_BAILOUT("v8::Object::GetConstructorName()", return Local<v8::String>());
+  ENTER_V8;
+  i::Handle<i::JSObject> self = Utils::OpenHandle(this);
+  i::Handle<i::String> name(self->constructor_name());
+  return Utils::ToLocal(name);
+}
+
+
 bool v8::Object::Delete(v8::Handle<String> key) {
   ON_BAILOUT("v8::Object::Delete()", return false);
   ENTER_V8;
@@ -4666,9 +4678,11 @@ Handle<Value> HeapGraphEdge::GetName() const {
     case i::HeapGraphEdge::kContextVariable:
     case i::HeapGraphEdge::kInternal:
     case i::HeapGraphEdge::kProperty:
+    case i::HeapGraphEdge::kShortcut:
       return Handle<String>(ToApi<String>(i::Factory::LookupAsciiSymbol(
           edge->name())));
     case i::HeapGraphEdge::kElement:
+    case i::HeapGraphEdge::kHidden:
       return Handle<Number>(ToApi<Number>(i::Factory::NewNumberFromInt(
           edge->index())));
     default: UNREACHABLE();
@@ -4758,15 +4772,9 @@ int HeapGraphNode::GetSelfSize() const {
 }
 
 
-int HeapGraphNode::GetReachableSize() const {
-  IsDeadCheck("v8::HeapSnapshot::GetReachableSize");
-  return ToInternal(this)->ReachableSize();
-}
-
-
-int HeapGraphNode::GetRetainedSize() const {
+int HeapGraphNode::GetRetainedSize(bool exact) const {
   IsDeadCheck("v8::HeapSnapshot::GetRetainedSize");
-  return ToInternal(this)->RetainedSize();
+  return ToInternal(this)->RetainedSize(exact);
 }
 
 
@@ -4806,6 +4814,12 @@ const HeapGraphPath* HeapGraphNode::GetRetainingPath(int index) const {
   IsDeadCheck("v8::HeapSnapshot::GetRetainingPath");
   return reinterpret_cast<const HeapGraphPath*>(
       ToInternal(this)->GetRetainingPaths()->at(index));
+}
+
+
+const HeapGraphNode* HeapGraphNode::GetDominatorNode() const {
+  IsDeadCheck("v8::HeapSnapshot::GetDominatorNode");
+  return reinterpret_cast<const HeapGraphNode*>(ToInternal(this)->dominator());
 }
 
 

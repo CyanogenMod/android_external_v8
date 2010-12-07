@@ -219,6 +219,11 @@ const DwVfpRegister d13 = { 13 };
 const DwVfpRegister d14 = { 14 };
 const DwVfpRegister d15 = { 15 };
 
+// VFP FPSCR constants.
+static const uint32_t kVFPExceptionMask = 0xf;
+static const uint32_t kVFPRoundingModeMask = 3 << 22;
+static const uint32_t kVFPFlushToZeroMask = 1 << 24;
+static const uint32_t kVFPRoundToMinusInfinityBits = 2 << 22;
 
 // Coprocessor register
 struct CRegister {
@@ -1074,7 +1079,22 @@ class Assembler : public Malloced {
              const Condition cond = al);
 
   // Pseudo instructions
-  void nop(int type = 0);
+
+  // Different nop operations are used by the code generator to detect certain
+  // states of the generated code.
+  enum NopMarkerTypes {
+    NON_MARKING_NOP = 0,
+    DEBUG_BREAK_NOP,
+    // IC markers.
+    PROPERTY_ACCESS_INLINED,
+    PROPERTY_ACCESS_INLINED_CONTEXT,
+    PROPERTY_ACCESS_INLINED_CONTEXT_DONT_DELETE,
+    // Helper values.
+    LAST_CODE_MARKER,
+    FIRST_IC_MARKER = PROPERTY_ACCESS_INLINED
+  };
+
+  void nop(int type = 0);   // 0 is the default non-marking type.
 
   void push(Register src, Condition cond = al) {
     str(src, MemOperand(sp, 4, NegPreIndex), cond);
@@ -1146,7 +1166,6 @@ class Assembler : public Malloced {
   static void instr_at_put(byte* pc, Instr instr) {
     *reinterpret_cast<Instr*>(pc) = instr;
   }
-  static bool IsNop(Instr instr, int type = 0);
   static bool IsBranch(Instr instr);
   static int GetBranchOffset(Instr instr);
   static bool IsLdrRegisterImmediate(Instr instr);
@@ -1163,6 +1182,8 @@ class Assembler : public Malloced {
   static bool IsLdrRegFpOffset(Instr instr);
   static bool IsStrRegFpNegOffset(Instr instr);
   static bool IsLdrRegFpNegOffset(Instr instr);
+  static bool IsLdrPcImmediateOffset(Instr instr);
+  static bool IsNop(Instr instr, int type = NON_MARKING_NOP);
 
 
  protected:

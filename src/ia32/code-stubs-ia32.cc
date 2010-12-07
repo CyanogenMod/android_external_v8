@@ -80,8 +80,9 @@ void FastNewClosureStub::Generate(MacroAssembler* masm) {
   __ pop(edx);
   __ push(esi);
   __ push(edx);
+  __ push(Immediate(Factory::false_value()));
   __ push(ecx);  // Restore return address.
-  __ TailCallRuntime(Runtime::kNewClosure, 2, 1);
+  __ TailCallRuntime(Runtime::kNewClosure, 3, 1);
 }
 
 
@@ -3055,35 +3056,6 @@ void CEntryStub::GenerateThrowTOS(MacroAssembler* masm) {
 
   STATIC_ASSERT(StackHandlerConstants::kPCOffset == 3 * kPointerSize);
   __ ret(0);
-}
-
-
-void ApiGetterEntryStub::Generate(MacroAssembler* masm) {
-  __ PrepareCallApiFunction(kStackSpace, kArgc);
-  STATIC_ASSERT(kArgc == 2);
-  __ mov(ApiParameterOperand(0), ebx);  // name.
-  __ mov(ApiParameterOperand(1), eax);  // arguments pointer.
-  __ CallApiFunctionAndReturn(fun(), kArgc);
-}
-
-
-void ApiCallEntryStub::Generate(MacroAssembler* masm) {
-  __ PrepareCallApiFunction(kStackSpace, kArgc);
-  STATIC_ASSERT(kArgc == 5);
-
-  // Allocate the v8::Arguments structure in the arguments' space since
-  // it's not controlled by GC.
-  __ mov(ApiParameterOperand(1), eax);  // v8::Arguments::implicit_args_.
-  __ mov(ApiParameterOperand(2), ebx);  // v8::Arguments::values_.
-  __ mov(ApiParameterOperand(3), edx);  // v8::Arguments::length_.
-  // v8::Arguments::is_construct_call_.
-  __ mov(ApiParameterOperand(4), Immediate(0));
-
-  // v8::InvocationCallback's argument.
-  __ lea(eax, ApiParameterOperand(1));
-  __ mov(ApiParameterOperand(0), eax);
-
-  __ CallApiFunctionAndReturn(fun(), kArgc);
 }
 
 
