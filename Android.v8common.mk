@@ -6,8 +6,11 @@ V8_LOCAL_SRC_FILES := \
 	src/api.cc \
 	src/assembler.cc \
 	src/ast.cc \
+	src/bignum.cc \
+	src/bignum-dtoa.cc \
 	src/bootstrapper.cc \
 	src/builtins.cc \
+	src/cached-powers.cc \
 	src/checks.cc \
 	src/circular-queue.cc \
 	src/code-stubs.cc \
@@ -27,9 +30,7 @@ V8_LOCAL_SRC_FILES := \
 	src/dtoa.cc \
 	src/execution.cc \
 	src/factory.cc \
-	src/fast-codegen.cc \
 	src/flags.cc \
-	src/flow-graph.cc \
 	src/frame-element.cc \
 	src/frames.cc \
 	src/full-codegen.cc \
@@ -51,8 +52,11 @@ V8_LOCAL_SRC_FILES := \
 	src/mark-compact.cc \
 	src/messages.cc \
 	src/objects.cc \
+	src/objects-visiting.cc \
 	src/oprofile-agent.cc \
 	src/parser.cc \
+	src/preparser.cc \
+	src/preparse-data.cc \
 	src/profile-generator.cc \
 	src/property.cc \
 	src/regexp-macro-assembler.cc \
@@ -61,13 +65,16 @@ V8_LOCAL_SRC_FILES := \
 	src/register-allocator.cc \
 	src/rewriter.cc \
 	src/runtime.cc \
+	src/scanner-base.cc \
 	src/scanner.cc \
 	src/scopeinfo.cc \
 	src/scopes.cc \
 	src/serialize.cc \
 	src/snapshot-common.cc \
 	src/spaces.cc \
+	src/string-search.cc \
 	src/string-stream.cc \
+	src/strtod.cc \
 	src/stub-cache.cc \
 	src/token.cc \
 	src/top.cc \
@@ -80,16 +87,17 @@ V8_LOCAL_SRC_FILES := \
 	src/variables.cc \
 	src/virtual-frame.cc \
 	src/version.cc \
-	src/vm-state.cc \
-	src/zone.cc
+	src/zone.cc \
+	src/extensions/gc-extension.cc \
+	src/extensions/externalize-string-extension.cc
 
 ifeq ($(TARGET_ARCH),arm)
   V8_LOCAL_SRC_FILES += \
-		src/arm/fast-codegen-arm.cc \
 		src/jump-target-light.cc \
 		src/virtual-frame-light.cc \
 		src/arm/assembler-arm.cc \
 		src/arm/builtins-arm.cc \
+		src/arm/code-stubs-arm.cc \
 		src/arm/codegen-arm.cc \
 		src/arm/constants-arm.cc \
 		src/arm/cpu-arm.cc \
@@ -132,9 +140,6 @@ ifeq ($(DEBUG_V8),true)
 		src/prettyprinter.cc \
 		src/regexp-macro-assembler-tracer.cc
 endif
-
-V8_LOCAL_SRC_FILES += \
-	src/dtoa-config.c
 
 V8_LOCAL_JS_LIBRARY_FILES := \
 	src/runtime.js \

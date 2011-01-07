@@ -30,6 +30,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
 #include "globals.h"
 #include "checks.h"

@@ -817,14 +817,14 @@ class Sampler::PlatformData : public Malloced {
         signal_handler_installed_(false),
         vm_tgid_(getpid()),
         // Glibc doesn't provide a wrapper for gettid(2).
-        vm_tid_(syscall(SYS_gettid)),
+        vm_tid_(syscall(__NR_gettid)),
         signal_sender_launched_(false) {
   }
 
   void SignalSender() {
     while (sampler_->IsActive()) {
       // Glibc doesn't provide a wrapper for tgkill(2).
-      syscall(SYS_tgkill, vm_tgid_, vm_tid_, SIGPROF);
+      syscall(__NR_tgkill, vm_tgid_, vm_tid_, SIGPROF);
       // Convert ms to us and subtract 100 us to compensate delays
       // occuring during signal delivery.
       const useconds_t interval = sampler_->interval_ * 1000 - 100;

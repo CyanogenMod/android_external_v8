@@ -54,9 +54,13 @@ LOCAL_CFLAGS := \
 	-Wno-endif-labels \
 	-Wno-import \
 	-Wno-format \
+	-Wno-psabi \
 	-ansi \
 	-fno-rtti \
 	-DENABLE_DEBUGGER_SUPPORT \
+	-DENABLE_LOGGING_AND_PROFILING \
+	-DENABLE_VMSTATE_TRACKING \
+	-DV8_NATIVE_REGEXP \
 	-O3 \
 	-DCAN_USE_UNALIGNED_ACCESSES
 

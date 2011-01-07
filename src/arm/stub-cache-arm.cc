@@ -1836,6 +1836,9 @@ MaybeObject* CallStubCompiler::CompileMathFloorCall(Object* object,
   //  -- ...
   //  -- sp[argc * 4]           : receiver
   // -----------------------------------
+  // Causes CRASH with Mr. Doob website on our targets!! 
+  // Disabling this feature for now.
+  return Heap::undefined_value();
 
   if (!CpuFeatures::IsSupported(VFP3)) return Heap::undefined_value();
   CpuFeatures::Scope scope_vfp3(VFP3);
