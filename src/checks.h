@@ -30,10 +30,7 @@
 
 #include <string.h>
 
-#include "flags.h"
-
 extern "C" void V8_Fatal(const char* file, int line, const char* format, ...);
-void API_Fatal(const char* location, const char* format, ...);
 
 // The FATAL, UNREACHABLE and UNIMPLEMENTED macros are useful during
 // development, but they should not be relied on in the final product.
@@ -155,9 +152,9 @@ static inline void CheckNonEqualsHelper(const char* file,
 static inline void CheckEqualsHelper(const char* file,
                                      int line,
                                      const char* expected_source,
-                                     void* expected,
+                                     const void* expected,
                                      const char* value_source,
-                                     void* value) {
+                                     const void* value) {
   if (expected != value) {
     V8_Fatal(file, line,
              "CHECK_EQ(%s, %s) failed\n#   Expected: %p\n#   Found: %p",
@@ -170,9 +167,9 @@ static inline void CheckEqualsHelper(const char* file,
 static inline void CheckNonEqualsHelper(const char* file,
                                         int line,
                                         const char* expected_source,
-                                        void* expected,
+                                        const void* expected,
                                         const char* value_source,
-                                        void* value) {
+                                        const void* value) {
   if (expected == value) {
     V8_Fatal(file, line, "CHECK_NE(%s, %s) failed\n#   Value: %p",
              expected_source, value_source, value);
@@ -224,28 +221,6 @@ static inline void CheckNonEqualsHelper(const char* file,
 }
 
 
-namespace v8 {
-  class Value;
-  template <class T> class Handle;
-}
-
-
-void CheckNonEqualsHelper(const char* file,
-                          int line,
-                          const char* unexpected_source,
-                          v8::Handle<v8::Value> unexpected,
-                          const char* value_source,
-                          v8::Handle<v8::Value> value);
-
-
-void CheckEqualsHelper(const char* file,
-                       int line,
-                       const char* expected_source,
-                       v8::Handle<v8::Value> expected,
-                       const char* value_source,
-                       v8::Handle<v8::Value> value);
-
-
 #define CHECK_EQ(expected, value) CheckEqualsHelper(__FILE__, __LINE__, \
   #expected, expected, #value, value)
 
@@ -279,29 +254,35 @@ template <int> class StaticAssertionHelper { };
     SEMI_STATIC_JOIN(__StaticAssertTypedef__, __LINE__)
 
 
+namespace v8 { namespace internal {
+
+bool EnableSlowAsserts();
+
+} }  // namespace v8::internal
+
 // The ASSERT macro is equivalent to CHECK except that it only
-// generates code in debug builds.  Ditto STATIC_ASSERT.
+// generates code in debug builds.
 #ifdef DEBUG
 #define ASSERT_RESULT(expr)  CHECK(expr)
 #define ASSERT(condition)    CHECK(condition)
 #define ASSERT_EQ(v1, v2)    CHECK_EQ(v1, v2)
-#define ASSERT_NE(v1, v2)   CHECK_NE(v1, v2)
-#define STATIC_ASSERT(test)  STATIC_CHECK(test)
-#define SLOW_ASSERT(condition) if (FLAG_enable_slow_asserts) CHECK(condition)
+#define ASSERT_NE(v1, v2)    CHECK_NE(v1, v2)
+#define ASSERT_GE(v1, v2)    CHECK_GE(v1, v2)
+#define SLOW_ASSERT(condition) if (EnableSlowAsserts()) CHECK(condition)
 #else
 #define ASSERT_RESULT(expr)     (expr)
 #define ASSERT(condition)      ((void) 0)
 #define ASSERT_EQ(v1, v2)      ((void) 0)
-#define ASSERT_NE(v1, v2)     ((void) 0)
-#define STATIC_ASSERT(test)    ((void) 0)
+#define ASSERT_NE(v1, v2)      ((void) 0)
+#define ASSERT_GE(v1, v2)      ((void) 0)
 #define SLOW_ASSERT(condition) ((void) 0)
 #endif
-
-
-#define ASSERT_TAG_ALIGNED(address) \
-  ASSERT((reinterpret_cast<intptr_t>(address) & kHeapObjectTagMask) == 0)
-
-#define ASSERT_SIZE_TAG_ALIGNED(size) ASSERT((size & kHeapObjectTagMask) == 0)
+// Static asserts has no impact on runtime performance, so they can be
+// safely enabled in release mode. Moreover, the ((void) 0) expression
+// obeys different syntax rules than typedef's, e.g. it can't appear
+// inside class declaration, this leads to inconsistency between debug
+// and release compilation modes behaviour.
+#define STATIC_ASSERT(test)  STATIC_CHECK(test)
 
 #define ASSERT_NOT_NULL(p)  ASSERT_NE(NULL, p)
 

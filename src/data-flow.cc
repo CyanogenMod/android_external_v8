@@ -42,7 +42,7 @@ void BitVector::Print() {
     if (Contains(i)) {
       if (!first) PrintF(",");
       first = false;
-      PrintF("%d");
+      PrintF("%d", i);
     }
   }
   PrintF("}");
@@ -50,258 +50,14 @@ void BitVector::Print() {
 #endif
 
 
-void AstLabeler::Label(CompilationInfo* info) {
+bool AssignedVariablesAnalyzer::Analyze(CompilationInfo* info) {
   info_ = info;
-  VisitStatements(info_->function()->body());
-}
-
-
-void AstLabeler::VisitStatements(ZoneList<Statement*>* stmts) {
-  for (int i = 0, len = stmts->length(); i < len; i++) {
-    Visit(stmts->at(i));
-  }
-}
-
-
-void AstLabeler::VisitDeclarations(ZoneList<Declaration*>* decls) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitBlock(Block* stmt) {
-  VisitStatements(stmt->statements());
-}
-
-
-void AstLabeler::VisitExpressionStatement(
-    ExpressionStatement* stmt) {
-  Visit(stmt->expression());
-}
-
-
-void AstLabeler::VisitEmptyStatement(EmptyStatement* stmt) {
-  // Do nothing.
-}
-
-
-void AstLabeler::VisitIfStatement(IfStatement* stmt) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitContinueStatement(ContinueStatement* stmt) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitBreakStatement(BreakStatement* stmt) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitReturnStatement(ReturnStatement* stmt) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitWithEnterStatement(
-    WithEnterStatement* stmt) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitWithExitStatement(WithExitStatement* stmt) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitSwitchStatement(SwitchStatement* stmt) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitDoWhileStatement(DoWhileStatement* stmt) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitWhileStatement(WhileStatement* stmt) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitForStatement(ForStatement* stmt) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitForInStatement(ForInStatement* stmt) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitTryCatchStatement(TryCatchStatement* stmt) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitTryFinallyStatement(
-    TryFinallyStatement* stmt) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitDebuggerStatement(
-    DebuggerStatement* stmt) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitFunctionLiteral(FunctionLiteral* expr) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitSharedFunctionInfoLiteral(
-    SharedFunctionInfoLiteral* expr) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitConditional(Conditional* expr) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitSlot(Slot* expr) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitVariableProxy(VariableProxy* expr) {
-  expr->set_num(next_number_++);
-  Variable* var = expr->var();
-  if (var->is_global() && !var->is_this()) {
-    info_->set_has_globals(true);
-  }
-}
-
-
-void AstLabeler::VisitLiteral(Literal* expr) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitRegExpLiteral(RegExpLiteral* expr) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitObjectLiteral(ObjectLiteral* expr) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitArrayLiteral(ArrayLiteral* expr) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitCatchExtensionObject(
-    CatchExtensionObject* expr) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitAssignment(Assignment* expr) {
-  Property* prop = expr->target()->AsProperty();
-  ASSERT(prop != NULL);
-  ASSERT(prop->key()->IsPropertyName());
-  VariableProxy* proxy = prop->obj()->AsVariableProxy();
-  USE(proxy);
-  ASSERT(proxy != NULL && proxy->var()->is_this());
-  info()->set_has_this_properties(true);
-
-  prop->obj()->set_num(AstNode::kNoNumber);
-  prop->key()->set_num(AstNode::kNoNumber);
-  Visit(expr->value());
-  expr->set_num(next_number_++);
-}
-
-
-void AstLabeler::VisitThrow(Throw* expr) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitProperty(Property* expr) {
-  ASSERT(expr->key()->IsPropertyName());
-  VariableProxy* proxy = expr->obj()->AsVariableProxy();
-  USE(proxy);
-  ASSERT(proxy != NULL && proxy->var()->is_this());
-  info()->set_has_this_properties(true);
-
-  expr->obj()->set_num(AstNode::kNoNumber);
-  expr->key()->set_num(AstNode::kNoNumber);
-  expr->set_num(next_number_++);
-}
-
-
-void AstLabeler::VisitCall(Call* expr) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitCallNew(CallNew* expr) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitCallRuntime(CallRuntime* expr) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitUnaryOperation(UnaryOperation* expr) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitCountOperation(CountOperation* expr) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitBinaryOperation(BinaryOperation* expr) {
-  Visit(expr->left());
-  Visit(expr->right());
-  expr->set_num(next_number_++);
-}
-
-
-void AstLabeler::VisitCompareOperation(CompareOperation* expr) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitThisFunction(ThisFunction* expr) {
-  UNREACHABLE();
-}
-
-
-void AstLabeler::VisitDeclaration(Declaration* decl) {
-  UNREACHABLE();
-}
-
-
-AssignedVariablesAnalyzer::AssignedVariablesAnalyzer(FunctionLiteral* fun)
-    : fun_(fun),
-      av_(fun->scope()->num_parameters() + fun->scope()->num_stack_slots()) {}
-
-
-void AssignedVariablesAnalyzer::Analyze() {
-  ASSERT(av_.length() > 0);
-  VisitStatements(fun_->body());
+  Scope* scope = info->scope();
+  int variables = scope->num_parameters() + scope->num_stack_slots();
+  if (variables == 0) return true;
+  av_.ExpandTo(variables);
+  VisitStatements(info->function()->body());
+  return !HasStackOverflow();
 }
 
 
@@ -317,6 +73,9 @@ Variable* AssignedVariablesAnalyzer::FindSmiLoopVariable(ForStatement* stmt) {
   // We only deal with local variables.
   Variable* loop_var = init->target()->AsVariableProxy()->AsVariable();
   if (loop_var == NULL || !loop_var->IsStackAllocated()) return NULL;
+
+  // Don't try to get clever with const or dynamic variables.
+  if (loop_var->mode() != Variable::VAR) return NULL;
 
   // The initial value has to be a smi.
   Literal* init_lit = init->value()->AsLiteral();
@@ -367,11 +126,11 @@ Variable* AssignedVariablesAnalyzer::FindSmiLoopVariable(ForStatement* stmt) {
 int AssignedVariablesAnalyzer::BitIndex(Variable* var) {
   ASSERT(var != NULL);
   ASSERT(var->IsStackAllocated());
-  Slot* slot = var->slot();
+  Slot* slot = var->AsSlot();
   if (slot->type() == Slot::PARAMETER) {
     return slot->index();
   } else {
-    return fun_->scope()->num_parameters() + slot->index();
+    return info_->scope()->num_parameters() + slot->index();
   }
 }
 
@@ -391,7 +150,7 @@ void AssignedVariablesAnalyzer::MarkIfTrivial(Expression* expr) {
       !var->is_arguments() &&
       var->mode() != Variable::CONST &&
       (var->is_this() || !av_.Contains(BitIndex(var)))) {
-    expr->AsVariableProxy()->set_is_trivial(true);
+    expr->AsVariableProxy()->MarkAsTrivial();
   }
 }
 
@@ -486,9 +245,7 @@ void AssignedVariablesAnalyzer::VisitWhileStatement(WhileStatement* stmt) {
 
 void AssignedVariablesAnalyzer::VisitForStatement(ForStatement* stmt) {
   if (stmt->init() != NULL) Visit(stmt->init());
-
   if (stmt->cond() != NULL) ProcessExpression(stmt->cond());
-
   if (stmt->next() != NULL) Visit(stmt->next());
 
   // Process loop body. After visiting the loop body av_ contains
@@ -501,7 +258,6 @@ void AssignedVariablesAnalyzer::VisitForStatement(ForStatement* stmt) {
   if (var != NULL && !av_.Contains(BitIndex(var))) {
     stmt->set_loop_variable(var);
   }
-
   av_.Union(saved_av);
 }
 
@@ -709,13 +465,20 @@ void AssignedVariablesAnalyzer::VisitCallRuntime(CallRuntime* expr) {
 
 void AssignedVariablesAnalyzer::VisitUnaryOperation(UnaryOperation* expr) {
   ASSERT(av_.IsEmpty());
+  MarkIfTrivial(expr->expression());
   Visit(expr->expression());
+}
+
+
+void AssignedVariablesAnalyzer::VisitIncrementOperation(
+    IncrementOperation* expr) {
+  UNREACHABLE();
 }
 
 
 void AssignedVariablesAnalyzer::VisitCountOperation(CountOperation* expr) {
   ASSERT(av_.IsEmpty());
-
+  if (expr->is_prefix()) MarkIfTrivial(expr->expression());
   Visit(expr->expression());
 
   Variable* var = expr->expression()->AsVariableProxy()->AsVariable();
@@ -738,6 +501,13 @@ void AssignedVariablesAnalyzer::VisitCompareOperation(CompareOperation* expr) {
   Visit(expr->right());
   MarkIfTrivial(expr->left());
   ProcessExpression(expr->left());
+}
+
+
+void AssignedVariablesAnalyzer::VisitCompareToNull(CompareToNull* expr) {
+  ASSERT(av_.IsEmpty());
+  MarkIfTrivial(expr->expression());
+  Visit(expr->expression());
 }
 
 

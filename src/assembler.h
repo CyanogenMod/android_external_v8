@@ -38,6 +38,7 @@
 #include "runtime.h"
 #include "top.h"
 #include "token.h"
+#include "objects.h"
 
 namespace v8 {
 namespace internal {
@@ -56,7 +57,7 @@ class Label BASE_EMBEDDED {
 
   INLINE(void Unuse())            { pos_ = 0; }
 
-  INLINE(bool is_bound()  const)  { return pos_ <  0; }
+  INLINE(bool is_bound() const)  { return pos_ <  0; }
   INLINE(bool is_unused() const)  { return pos_ == 0; }
   INLINE(bool is_linked() const)  { return pos_ >  0; }
 
@@ -91,6 +92,57 @@ class Label BASE_EMBEDDED {
 
 
 // -----------------------------------------------------------------------------
+// NearLabels are labels used for short jumps (in Intel jargon).
+// NearLabels should be used if it can be guaranteed that the jump range is
+// within -128 to +127. We already use short jumps when jumping backwards,
+// so using a NearLabel will only have performance impact if used for forward
+// jumps.
+class NearLabel BASE_EMBEDDED {
+ public:
+  NearLabel() { Unuse(); }
+  ~NearLabel() { ASSERT(!is_linked()); }
+
+  void Unuse() {
+    pos_ = -1;
+    unresolved_branches_ = 0;
+#ifdef DEBUG
+    for (int i = 0; i < kMaxUnresolvedBranches; i++) {
+      unresolved_positions_[i] = -1;
+    }
+#endif
+  }
+
+  int pos() {
+    ASSERT(is_bound());
+    return pos_;
+  }
+
+  bool is_bound() { return pos_ >= 0; }
+  bool is_linked() { return !is_bound() && unresolved_branches_ > 0; }
+  bool is_unused() { return !is_bound() && unresolved_branches_ == 0; }
+
+  void bind_to(int position) {
+    ASSERT(!is_bound());
+    pos_ = position;
+  }
+
+  void link_to(int position) {
+    ASSERT(!is_bound());
+    ASSERT(unresolved_branches_ < kMaxUnresolvedBranches);
+    unresolved_positions_[unresolved_branches_++] = position;
+  }
+
+ private:
+  static const int kMaxUnresolvedBranches = 8;
+  int pos_;
+  int unresolved_branches_;
+  int unresolved_positions_[kMaxUnresolvedBranches];
+
+  friend class Assembler;
+};
+
+
+// -----------------------------------------------------------------------------
 // Relocation information
 
 
@@ -117,9 +169,9 @@ class RelocInfo BASE_EMBEDDED {
   enum Mode {
     // Please note the order is important (see IsCodeTarget, IsGCRelocMode).
     CONSTRUCT_CALL,  // code target that is a call to a JavaScript constructor.
-    CODE_TARGET_CONTEXT,  // code target used for contextual loads.
-    DEBUG_BREAK,
-    CODE_TARGET,         // code target which is not any of the above.
+    CODE_TARGET_CONTEXT,  // Code target used for contextual loads.
+    DEBUG_BREAK,  // Code target for the debugger statement.
+    CODE_TARGET,  // Code target which is not any of the above.
     EMBEDDED_OBJECT,
 
     // Everything after runtime_entry (inclusive) is not GC'ed.
@@ -128,6 +180,7 @@ class RelocInfo BASE_EMBEDDED {
     COMMENT,
     POSITION,  // See comment for kNoPosition above.
     STATEMENT_POSITION,  // See comment for kNoPosition above.
+    DEBUG_BREAK_SLOT,  // Additional code inserted for debug break slot.
     EXTERNAL_REFERENCE,  // The address of an external C++ function.
     INTERNAL_REFERENCE,  // An address inside the same function.
 
@@ -173,13 +226,16 @@ class RelocInfo BASE_EMBEDDED {
   static inline bool IsInternalReference(Mode mode) {
     return mode == INTERNAL_REFERENCE;
   }
+  static inline bool IsDebugBreakSlot(Mode mode) {
+    return mode == DEBUG_BREAK_SLOT;
+  }
   static inline int ModeMask(Mode mode) { return 1 << mode; }
 
   // Accessors
-  byte* pc() const  { return pc_; }
+  byte* pc() const { return pc_; }
   void set_pc(byte* pc) { pc_ = pc; }
   Mode rmode() const {  return rmode_; }
-  intptr_t data() const  { return data_; }
+  intptr_t data() const { return data_; }
 
   // Apply a relocation by delta bytes
   INLINE(void apply(intptr_t delta));
@@ -199,9 +255,23 @@ class RelocInfo BASE_EMBEDDED {
   INLINE(Object** target_object_address());
   INLINE(void set_target_object(Object* target));
 
-  // Read the address of the word containing the target_address. Can only
-  // be called if IsCodeTarget(rmode_) || rmode_ == RUNTIME_ENTRY.
+  // Read the address of the word containing the target_address in an
+  // instruction stream.  What this means exactly is architecture-independent.
+  // The only architecture-independent user of this function is the serializer.
+  // The serializer uses it to find out how many raw bytes of instruction to
+  // output before the next target.  Architecture-independent code shouldn't
+  // dereference the pointer it gets back from this.
   INLINE(Address target_address_address());
+  // This indicates how much space a target takes up when deserializing a code
+  // stream.  For most architectures this is just the size of a pointer.  For
+  // an instruction like movw/movt where the target bits are mixed into the
+  // instruction bits the size of the target will be zero, indicating that the
+  // serializer should not step forwards in memory after a target is resolved
+  // and written.  In this case the target_address_address function above
+  // should return the end of the instructions to be patched, allowing the
+  // deserializer to deserialize the instructions as raw bytes and put them in
+  // place, ready to be patched with the target.
+  INLINE(int target_address_size());
 
   // Read/modify the reference in the instruction this relocation
   // applies to; can only be called if rmode_ is external_reference
@@ -213,8 +283,11 @@ class RelocInfo BASE_EMBEDDED {
   INLINE(Address call_address());
   INLINE(void set_call_address(Address target));
   INLINE(Object* call_object());
-  INLINE(Object** call_object_address());
   INLINE(void set_call_object(Object* target));
+  INLINE(Object** call_object_address());
+
+  template<typename StaticVisitor> inline void Visit();
+  inline void Visit(ObjectVisitor* v);
 
   // Patch the code with some other code.
   void PatchCode(byte* instructions, int instruction_count);
@@ -225,6 +298,10 @@ class RelocInfo BASE_EMBEDDED {
   // Check whether this return sequence has been patched
   // with a call to the debugger.
   INLINE(bool IsPatchedReturnSequence());
+
+  // Check whether this debug break slot has been patched with a call to the
+  // debugger.
+  INLINE(bool IsPatchedDebugBreakSlotSequence());
 
 #ifdef ENABLE_DISASSEMBLER
   // Printing
@@ -313,7 +390,7 @@ class RelocIterator: public Malloced {
   explicit RelocIterator(const CodeDesc& desc, int mode_mask = -1);
 
   // Iteration
-  bool done() const  { return done_; }
+  bool done() const { return done_; }
   void next();
 
   // Return pointer valid until next next().
@@ -405,6 +482,7 @@ class ExternalReference BASE_EMBEDDED {
   static ExternalReference fill_heap_number_with_random_function();
   static ExternalReference random_uint32_function();
   static ExternalReference transcendental_cache_array_address();
+  static ExternalReference delete_handle_scope_extensions();
 
   // Static data in the keyed lookup cache.
   static ExternalReference keyed_lookup_cache_keys();
@@ -442,9 +520,9 @@ class ExternalReference BASE_EMBEDDED {
   static ExternalReference double_fp_operation(Token::Value operation);
   static ExternalReference compare_doubles();
 
-  static ExternalReference handle_scope_extensions_address();
   static ExternalReference handle_scope_next_address();
   static ExternalReference handle_scope_limit_address();
+  static ExternalReference handle_scope_level_address();
 
   static ExternalReference scheduled_exception_address();
 
@@ -503,6 +581,67 @@ class ExternalReference BASE_EMBEDDED {
   }
 
   void* address_;
+};
+
+
+// -----------------------------------------------------------------------------
+// Position recording support
+
+enum PositionRecordingType { FORCED_POSITION, NORMAL_POSITION };
+
+class PositionsRecorder BASE_EMBEDDED {
+ public:
+  explicit PositionsRecorder(Assembler* assembler)
+      : assembler_(assembler),
+        current_position_(RelocInfo::kNoPosition),
+        current_position_recording_type_(NORMAL_POSITION),
+        written_position_(RelocInfo::kNoPosition),
+        current_statement_position_(RelocInfo::kNoPosition),
+        written_statement_position_(RelocInfo::kNoPosition) { }
+
+  // Set current position to pos. If recording_type is FORCED_POSITION then
+  // WriteRecordedPositions will write this position even if it is equal to
+  // statement position previously written for another pc.
+  void RecordPosition(int pos,
+                      PositionRecordingType recording_type = NORMAL_POSITION);
+
+  // Set current statement position to pos.
+  void RecordStatementPosition(int pos);
+
+  // Write recorded positions to relocation information.
+  bool WriteRecordedPositions();
+
+  int current_position() const { return current_position_; }
+
+  int current_statement_position() const { return current_statement_position_; }
+
+ private:
+  Assembler* assembler_;
+
+  int current_position_;
+  PositionRecordingType current_position_recording_type_;
+  int written_position_;
+
+  int current_statement_position_;
+  int written_statement_position_;
+};
+
+
+class PreserveStatementPositionScope BASE_EMBEDDED {
+ public:
+  explicit PreserveStatementPositionScope(PositionsRecorder* positions_recorder)
+      : positions_recorder_(positions_recorder),
+        statement_position_(positions_recorder->current_statement_position()) {}
+
+  ~PreserveStatementPositionScope() {
+    if (statement_position_ != RelocInfo::kNoPosition) {
+      positions_recorder_->RecordStatementPosition(statement_position_);
+    }
+  }
+
+ private:
+  PositionsRecorder* positions_recorder_;
+  int statement_position_;
 };
 
 

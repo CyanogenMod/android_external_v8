@@ -486,7 +486,7 @@ void Shell::Initialize() {
 
   // Start the debugger agent if requested.
   if (i::FLAG_debugger_agent) {
-    v8::Debug::EnableAgent("d8 shell", i::FLAG_debugger_port);
+    v8::Debug::EnableAgent("d8 shell", i::FLAG_debugger_port, true);
   }
 
   // Start the in-process debugger if requested.
@@ -576,6 +576,9 @@ Handle<String> Shell::ReadFile(const char* name) {
 void Shell::RunShell() {
   LineEditor* editor = LineEditor::Get();
   printf("V8 version %s [console: %s]\n", V8::GetVersion(), editor->name());
+  if (i::FLAG_debugger) {
+    printf("JavaScript debugger enabled\n");
+  }
   editor->Open();
   while (true) {
     Locker locker;

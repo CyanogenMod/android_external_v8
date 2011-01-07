@@ -73,13 +73,13 @@ namespace internal {
 
 // Core register.
 struct Register {
-  bool is_valid() const  { return 0 <= code_ && code_ < kNumRegisters; }
-  bool is(Register reg) const  { return code_ == reg.code_; }
-  int code() const  {
+  bool is_valid() const { return 0 <= code_ && code_ < kNumRegisters; }
+  bool is(Register reg) const { return code_ == reg.code_; }
+  int code() const {
     ASSERT(is_valid());
     return code_;
   }
-  int bit() const  {
+  int bit() const {
     ASSERT(is_valid());
     return 1 << code_;
   }
@@ -129,13 +129,13 @@ Register ToRegister(int num);
 
 // Coprocessor register.
 struct FPURegister {
-  bool is_valid() const  { return 0 <= code_ && code_ < kNumFPURegister ; }
-  bool is(FPURegister creg) const  { return code_ == creg.code_; }
-  int code() const  {
+  bool is_valid() const { return 0 <= code_ && code_ < kNumFPURegister ; }
+  bool is(FPURegister creg) const { return code_ == creg.code_; }
+  int code() const {
     ASSERT(is_valid());
     return code_;
   }
-  int bit() const  {
+  int bit() const {
     ASSERT(is_valid());
     return 1 << code_;
   }
@@ -355,6 +355,9 @@ class Assembler : public Malloced {
   // to jump to.
   static const int kPatchReturnSequenceAddressOffset = kInstrSize;
 
+  // Distance between start of patched debug break slot and the emitted address
+  // to jump to.
+  static const int kPatchDebugBreakSlotAddressOffset = kInstrSize;
 
   // ---------------------------------------------------------------------------
   // Code generation.
@@ -518,7 +521,7 @@ class Assembler : public Malloced {
 
   void RecordPosition(int pos);
   void RecordStatementPosition(int pos);
-  void WriteRecordedPositions();
+  bool WriteRecordedPositions();
 
   int32_t pc_offset() const { return pc_ - buffer_; }
   int32_t current_position() const { return current_position_; }
@@ -662,4 +665,3 @@ class Assembler : public Malloced {
 } }  // namespace v8::internal
 
 #endif  // V8_ARM_ASSEMBLER_MIPS_H_
-

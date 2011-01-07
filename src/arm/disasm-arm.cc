@@ -101,12 +101,14 @@ class Decoder {
   void PrintSRegister(int reg);
   void PrintDRegister(int reg);
   int FormatVFPRegister(Instr* instr, const char* format);
+  void PrintMovwMovt(Instr* instr);
   int FormatVFPinstruction(Instr* instr, const char* format);
   void PrintCondition(Instr* instr);
   void PrintShiftRm(Instr* instr);
   void PrintShiftImm(Instr* instr);
+  void PrintShiftSat(Instr* instr);
   void PrintPU(Instr* instr);
-  void PrintSoftwareInterrupt(SoftwareInterruptCodes swi);
+  void PrintSoftwareInterrupt(SoftwareInterruptCodes svc);
 
   // Handle formatting of instructions and their options.
   int FormatRegister(Instr* instr, const char* option);
@@ -124,8 +126,8 @@ class Decoder {
   void DecodeType4(Instr* instr);
   void DecodeType5(Instr* instr);
   void DecodeType6(Instr* instr);
-  void DecodeType7(Instr* instr);
-  void DecodeUnconditional(Instr* instr);
+  // Type 7 includes special Debugger instructions.
+  int DecodeType7(Instr* instr);
   // For VFP support.
   void DecodeTypeVFP(Instr* instr);
   void DecodeType6CoprocessorIns(Instr* instr);
@@ -247,6 +249,18 @@ void Decoder::PrintShiftImm(Instr* instr) {
 }
 
 
+// Print the optional shift and immediate used by saturating instructions.
+void Decoder::PrintShiftSat(Instr* instr) {
+  int shift = instr->Bits(11, 7);
+  if (shift > 0) {
+    out_buffer_pos_ += v8i::OS::SNPrintF(out_buffer_ + out_buffer_pos_,
+                                         ", %s #%d",
+                                         shift_names[instr->Bit(6) * 2],
+                                         instr->Bits(11, 7));
+  }
+}
+
+
 // Print PU formatting to reduce complexity of FormatOption.
 void Decoder::PrintPU(Instr* instr) {
   switch (instr->PUField()) {
@@ -276,8 +290,8 @@ void Decoder::PrintPU(Instr* instr) {
 
 // Print SoftwareInterrupt codes. Factoring this out reduces the complexity of
 // the FormatOption method.
-void Decoder::PrintSoftwareInterrupt(SoftwareInterruptCodes swi) {
-  switch (swi) {
+void Decoder::PrintSoftwareInterrupt(SoftwareInterruptCodes svc) {
+  switch (svc) {
     case call_rt_redirected:
       Print("call_rt_redirected");
       return;
@@ -285,9 +299,16 @@ void Decoder::PrintSoftwareInterrupt(SoftwareInterruptCodes swi) {
       Print("break_point");
       return;
     default:
-      out_buffer_pos_ += v8i::OS::SNPrintF(out_buffer_ + out_buffer_pos_,
-                                           "%d",
-                                           swi);
+      if (svc >= stop) {
+        out_buffer_pos_ += v8i::OS::SNPrintF(out_buffer_ + out_buffer_pos_,
+                                             "%d - 0x%x",
+                                             svc & kStopCodeMask,
+                                             svc & kStopCodeMask);
+      } else {
+        out_buffer_pos_ += v8i::OS::SNPrintF(out_buffer_ + out_buffer_pos_,
+                                             "%d",
+                                             svc);
+      }
       return;
   }
 }
@@ -375,6 +396,16 @@ int Decoder::FormatVFPinstruction(Instr* instr, const char* format) {
 }
 
 
+// Print the movw or movt instruction.
+void Decoder::PrintMovwMovt(Instr* instr) {
+  int imm = instr->ImmedMovwMovtField();
+  int rd = instr->RdField();
+  PrintRegister(rd);
+  out_buffer_pos_ += v8i::OS::SNPrintF(out_buffer_ + out_buffer_pos_,
+                                       ", #%d", imm);
+}
+
+
 // FormatOption takes a formatting string and interprets it based on
 // the current instructions. The format string points to the first
 // character of the option string (the option escape has already been
@@ -401,6 +432,26 @@ int Decoder::FormatOption(Instr* instr, const char* format) {
       PrintCondition(instr);
       return 4;
     }
+    case 'd': {  // 'd: vmov double immediate.
+      double d = instr->DoubleImmedVmov();
+      out_buffer_pos_ += v8i::OS::SNPrintF(out_buffer_ + out_buffer_pos_,
+                                           "#%g", d);
+      return 1;
+    }
+    case 'f': {  // 'f: bitfield instructions - v7 and above.
+      uint32_t lsbit = instr->Bits(11, 7);
+      uint32_t width = instr->Bits(20, 16) + 1;
+      if (instr->Bit(21) == 0) {
+        // BFC/BFI:
+        // Bits 20-16 represent most-significant bit. Covert to width.
+        width -= lsbit;
+        ASSERT(width > 0);
+      }
+      ASSERT((width + lsbit) <= 32);
+      out_buffer_pos_ += v8i::OS::SNPrintF(out_buffer_ + out_buffer_pos_,
+                                           "#%d, #%d", lsbit, width);
+      return 1;
+    }
     case 'h': {  // 'h: halfword operation for extra loads and stores
       if (instr->HasH()) {
         Print("h");
@@ -409,6 +460,20 @@ int Decoder::FormatOption(Instr* instr, const char* format) {
       }
       return 1;
     }
+    case 'i': {  // 'i: immediate value from adjacent bits.
+      // Expects tokens in the form imm%02d@%02d, ie. imm05@07, imm10@16
+      int width = (format[3] - '0') * 10 + (format[4] - '0');
+      int lsb   = (format[6] - '0') * 10 + (format[7] - '0');
+
+      ASSERT((width >= 1) && (width <= 32));
+      ASSERT((lsb >= 0) && (lsb <= 31));
+      ASSERT((width + lsb) <= 32);
+
+      out_buffer_pos_ += v8i::OS::SNPrintF(out_buffer_ + out_buffer_pos_,
+                                           "%d",
+                                           instr->Bits(width + lsb - 1, lsb));
+      return 8;
+    }
     case 'l': {  // 'l: branch and link
       if (instr->HasLink()) {
         Print("l");
@@ -416,7 +481,12 @@ int Decoder::FormatOption(Instr* instr, const char* format) {
       return 1;
     }
     case 'm': {
-      if (format[1] == 'e') {  // 'memop: load/store instructions
+      if (format[1] == 'w') {
+        // 'mw: movt/movw instructions.
+        PrintMovwMovt(instr);
+        return 2;
+      }
+      if (format[1] == 'e') {  // 'memop: load/store instructions.
         ASSERT(STRING_STARTS_WITH(format, "memop"));
         if (instr->HasL()) {
           Print("ldr");
@@ -446,16 +516,6 @@ int Decoder::FormatOption(Instr* instr, const char* format) {
         out_buffer_pos_ += v8i::OS::SNPrintF(out_buffer_ + out_buffer_pos_,
                                              "%d", instr->Offset12Field());
         return 5;
-      } else if ((format[3] == '1') && (format[4] == '6')) {
-        ASSERT(STRING_STARTS_WITH(format, "off16to20"));
-        out_buffer_pos_ += v8i::OS::SNPrintF(out_buffer_ + out_buffer_pos_,
-                                           "%d", instr->Bits(20, 16) +1);
-        return 9;
-      } else if (format[3] == '7') {
-        ASSERT(STRING_STARTS_WITH(format, "off7to11"));
-        out_buffer_pos_ += v8i::OS::SNPrintF(out_buffer_ + out_buffer_pos_,
-                                            "%d", instr->ShiftAmountField());
-        return 8;
       } else if (format[3] == '0') {
         // 'off0to3and8to19 16-bit immediate encoded in bits 19-8 and 3-0.
         ASSERT(STRING_STARTS_WITH(format, "off0to3and8to19"));
@@ -481,7 +541,7 @@ int Decoder::FormatOption(Instr* instr, const char* format) {
       return FormatRegister(instr, format);
     }
     case 's': {
-      if (format[1] == 'h') {  // 'shift_op or 'shift_rm
+      if (format[1] == 'h') {  // 'shift_op or 'shift_rm or 'shift_sat.
         if (format[6] == 'o') {  // 'shift_op
           ASSERT(STRING_STARTS_WITH(format, "shift_op"));
           if (instr->TypeField() == 0) {
@@ -491,14 +551,18 @@ int Decoder::FormatOption(Instr* instr, const char* format) {
             PrintShiftImm(instr);
           }
           return 8;
+        } else if (format[6] == 's') {  // 'shift_sat.
+          ASSERT(STRING_STARTS_WITH(format, "shift_sat"));
+          PrintShiftSat(instr);
+          return 9;
         } else {  // 'shift_rm
           ASSERT(STRING_STARTS_WITH(format, "shift_rm"));
           PrintShiftRm(instr);
           return 8;
         }
-      } else if (format[1] == 'w') {  // 'swi
-        ASSERT(STRING_STARTS_WITH(format, "swi"));
-        PrintSoftwareInterrupt(instr->SwiField());
+      } else if (format[1] == 'v') {  // 'svc
+        ASSERT(STRING_STARTS_WITH(format, "svc"));
+        PrintSoftwareInterrupt(instr->SvcField());
         return 3;
       } else if (format[1] == 'i') {  // 'sign: signed extra loads and stores
         ASSERT(STRING_STARTS_WITH(format, "sign"));
@@ -772,7 +836,7 @@ void Decoder::DecodeType01(Instr* instr) {
         if (instr->HasS()) {
           Format(instr, "tst'cond 'rn, 'shift_op");
         } else {
-          Unknown(instr);  // not used by V8
+          Format(instr, "movw'cond 'mw");
         }
         break;
       }
@@ -790,7 +854,7 @@ void Decoder::DecodeType01(Instr* instr) {
         if (instr->HasS()) {
           Format(instr, "cmp'cond 'rn, 'shift_op");
         } else {
-          Unknown(instr);  // not used by V8
+          Format(instr, "movt'cond 'mw");
         }
         break;
       }
@@ -871,8 +935,16 @@ void Decoder::DecodeType3(Instr* instr) {
       break;
     }
     case 1: {
-      ASSERT(!instr->HasW());
-      Format(instr, "'memop'cond'b 'rd, ['rn], +'shift_rm");
+      if (instr->HasW()) {
+        ASSERT(instr->Bits(5, 4) == 0x1);
+        if (instr->Bit(22) == 0x1) {
+          Format(instr, "usat 'rd, #'imm05@16, 'rm'shift_sat");
+        } else {
+          UNREACHABLE();  // SSAT.
+        }
+      } else {
+        Format(instr, "'memop'cond'b 'rd, ['rn], +'shift_rm");
+      }
       break;
     }
     case 2: {
@@ -882,10 +954,26 @@ void Decoder::DecodeType3(Instr* instr) {
     case 3: {
       if (instr->HasW() && (instr->Bits(6, 4) == 0x5)) {
         uint32_t widthminus1 = static_cast<uint32_t>(instr->Bits(20, 16));
-        uint32_t lsbit = static_cast<uint32_t>(instr->ShiftAmountField());
+        uint32_t lsbit = static_cast<uint32_t>(instr->Bits(11, 7));
         uint32_t msbit = widthminus1 + lsbit;
         if (msbit <= 31) {
-          Format(instr, "ubfx'cond 'rd, 'rm, #'off7to11, #'off16to20");
+          if (instr->Bit(22)) {
+            Format(instr, "ubfx'cond 'rd, 'rm, 'f");
+          } else {
+            Format(instr, "sbfx'cond 'rd, 'rm, 'f");
+          }
+        } else {
+          UNREACHABLE();
+        }
+      } else if (!instr->HasW() && (instr->Bits(6, 4) == 0x1)) {
+        uint32_t lsbit = static_cast<uint32_t>(instr->Bits(11, 7));
+        uint32_t msbit = static_cast<uint32_t>(instr->Bits(20, 16));
+        if (msbit >= lsbit) {
+          if (instr->RmField() == 15) {
+            Format(instr, "bfc'cond 'rd, 'f");
+          } else {
+            Format(instr, "bfi'cond 'rd, 'rm, 'f");
+          }
         } else {
           UNREACHABLE();
         }
@@ -923,72 +1011,27 @@ void Decoder::DecodeType6(Instr* instr) {
 }
 
 
-void Decoder::DecodeType7(Instr* instr) {
+int Decoder::DecodeType7(Instr* instr) {
   if (instr->Bit(24) == 1) {
-    Format(instr, "swi'cond 'swi");
+    if (instr->SvcField() >= stop) {
+      Format(instr, "stop'cond 'svc");
+      // Also print the stop message. Its address is encoded
+      // in the following 4 bytes.
+      out_buffer_pos_ +=
+        v8i::OS::SNPrintF(out_buffer_ + out_buffer_pos_,
+                          "\n  %p  %08x       stop message: %s",
+                          reinterpret_cast<int32_t*>(instr + Instr::kInstrSize),
+                          *reinterpret_cast<char**>(instr + Instr::kInstrSize),
+                          *reinterpret_cast<char**>(instr + Instr::kInstrSize));
+      // We have decoded 2 * Instr::kInstrSize bytes.
+      return 2 * Instr::kInstrSize;
+    } else {
+      Format(instr, "svc'cond 'svc");
+    }
   } else {
     DecodeTypeVFP(instr);
   }
-}
-
-void Decoder::DecodeUnconditional(Instr* instr) {
-  if (instr->Bits(7, 4) == 0xB && instr->Bits(27, 25) == 0 && instr->HasL()) {
-    Format(instr, "'memop'h'pu 'rd, ");
-    bool immediate = instr->HasB();
-    switch (instr->PUField()) {
-      case 0: {
-        // Post index, negative.
-        if (instr->HasW()) {
-          Unknown(instr);
-          break;
-        }
-        if (immediate) {
-          Format(instr, "['rn], #-'imm12");
-        } else {
-          Format(instr, "['rn], -'rm");
-        }
-        break;
-      }
-      case 1: {
-        // Post index, positive.
-        if (instr->HasW()) {
-          Unknown(instr);
-          break;
-        }
-        if (immediate) {
-          Format(instr, "['rn], #+'imm12");
-        } else {
-          Format(instr, "['rn], +'rm");
-        }
-        break;
-      }
-      case 2: {
-        // Pre index or offset, negative.
-        if (immediate) {
-          Format(instr, "['rn, #-'imm12]'w");
-        } else {
-          Format(instr, "['rn, -'rm]'w");
-        }
-        break;
-      }
-      case 3: {
-        // Pre index or offset, positive.
-        if (immediate) {
-          Format(instr, "['rn, #+'imm12]'w");
-        } else {
-          Format(instr, "['rn, +'rm]'w");
-        }
-        break;
-      }
-      default: {
-        // The PU field is a 2-bit field.
-        UNREACHABLE();
-        break;
-      }
-    }
-    return;
-  }
-  Format(instr, "break 'msg");
+  return Instr::kInstrSize;
 }
 
 
@@ -1002,7 +1045,9 @@ void Decoder::DecodeUnconditional(Instr* instr) {
 // Dd = vmul(Dn, Dm)
 // Dd = vdiv(Dn, Dm)
 // vcmp(Dd, Dm)
-// VMRS
+// vmrs
+// vmsr
+// Dd = vsqrt(Dm)
 void Decoder::DecodeTypeVFP(Instr* instr) {
   ASSERT((instr->TypeField() == 7) && (instr->Bit(24) == 0x0) );
   ASSERT(instr->Bits(11, 9) == 0x5);
@@ -1010,7 +1055,14 @@ void Decoder::DecodeTypeVFP(Instr* instr) {
   if (instr->Bit(4) == 0) {
     if (instr->Opc1Field() == 0x7) {
       // Other data processing instructions
-      if ((instr->Opc2Field() == 0x7) && (instr->Opc3Field() == 0x3)) {
+      if ((instr->Opc2Field() == 0x0) && (instr->Opc3Field() == 0x1)) {
+        // vmov register to register.
+        if (instr->SzField() == 0x1) {
+          Format(instr, "vmov.f64'cond 'Dd, 'Dm");
+        } else {
+          Format(instr, "vmov.f32'cond 'Sd, 'Sm");
+        }
+      } else if ((instr->Opc2Field() == 0x7) && (instr->Opc3Field() == 0x3)) {
         DecodeVCVTBetweenDoubleAndSingle(instr);
       } else if ((instr->Opc2Field() == 0x8) && (instr->Opc3Field() & 0x1)) {
         DecodeVCVTBetweenFloatingPointAndInteger(instr);
@@ -1020,6 +1072,14 @@ void Decoder::DecodeTypeVFP(Instr* instr) {
       } else if (((instr->Opc2Field() == 0x4) || (instr->Opc2Field() == 0x5)) &&
                  (instr->Opc3Field() & 0x1)) {
         DecodeVCMP(instr);
+      } else if (((instr->Opc2Field() == 0x1)) && (instr->Opc3Field() == 0x3)) {
+        Format(instr, "vsqrt.f64'cond 'Dd, 'Dm");
+      } else if (instr->Opc3Field() == 0x0) {
+        if (instr->SzField() == 0x1) {
+          Format(instr, "vmov.f64'cond 'Dd, 'd");
+        } else {
+          Unknown(instr);  // Not used by V8.
+        }
       } else {
         Unknown(instr);  // Not used by V8.
       }
@@ -1052,16 +1112,22 @@ void Decoder::DecodeTypeVFP(Instr* instr) {
     if ((instr->VCField() == 0x0) &&
         (instr->VAField() == 0x0)) {
       DecodeVMOVBetweenCoreAndSinglePrecisionRegisters(instr);
-    } else if ((instr->VLField() == 0x1) &&
-               (instr->VCField() == 0x0) &&
+    } else if ((instr->VCField() == 0x0) &&
                (instr->VAField() == 0x7) &&
                (instr->Bits(19, 16) == 0x1)) {
-      if (instr->Bits(15, 12) == 0xF)
-        Format(instr, "vmrs'cond APSR, FPSCR");
-      else
-        Unknown(instr);  // Not used by V8.
-    } else {
-      Unknown(instr);  // Not used by V8.
+      if (instr->VLField() == 0) {
+        if (instr->Bits(15, 12) == 0xF) {
+          Format(instr, "vmsr'cond FPSCR, APSR");
+        } else {
+          Format(instr, "vmsr'cond FPSCR, 'rt");
+        }
+      } else {
+        if (instr->Bits(15, 12) == 0xF) {
+          Format(instr, "vmrs'cond APSR, FPSCR");
+        } else {
+          Format(instr, "vmrs'cond 'rt, FPSCR");
+        }
+      }
     }
   }
 }
@@ -1091,7 +1157,13 @@ void Decoder::DecodeVCMP(Instr* instr) {
   bool raise_exception_for_qnan = (instr->Bit(7) == 0x1);
 
   if (dp_operation && !raise_exception_for_qnan) {
-    Format(instr, "vcmp.f64'cond 'Dd, 'Dm");
+    if (instr->Opc2Field() == 0x4) {
+      Format(instr, "vcmp.f64'cond 'Dd, 'Dm");
+    } else if (instr->Opc2Field() == 0x5) {
+      Format(instr, "vcmp.f64'cond 'Dd, #0.0");
+    } else {
+      Unknown(instr);  // invalid
+    }
   } else {
     Unknown(instr);  // Not used by V8.
   }
@@ -1166,17 +1238,19 @@ void Decoder::DecodeType6CoprocessorIns(Instr* instr) {
   if (instr->CoprocessorField() == 0xA) {
     switch (instr->OpcodeField()) {
       case 0x8:
+      case 0xA:
         if (instr->HasL()) {
-          Format(instr, "vldr'cond 'Sd, ['rn - 4*'off8]");
+          Format(instr, "vldr'cond 'Sd, ['rn - 4*'imm08@00]");
         } else {
-          Format(instr, "vstr'cond 'Sd, ['rn - 4*'off8]");
+          Format(instr, "vstr'cond 'Sd, ['rn - 4*'imm08@00]");
         }
         break;
       case 0xC:
+      case 0xE:
         if (instr->HasL()) {
-          Format(instr, "vldr'cond 'Sd, ['rn + 4*'off8]");
+          Format(instr, "vldr'cond 'Sd, ['rn + 4*'imm08@00]");
         } else {
-          Format(instr, "vstr'cond 'Sd, ['rn + 4*'off8]");
+          Format(instr, "vstr'cond 'Sd, ['rn + 4*'imm08@00]");
         }
         break;
       default:
@@ -1197,16 +1271,16 @@ void Decoder::DecodeType6CoprocessorIns(Instr* instr) {
         break;
       case 0x8:
         if (instr->HasL()) {
-          Format(instr, "vldr'cond 'Dd, ['rn - 4*'off8]");
+          Format(instr, "vldr'cond 'Dd, ['rn - 4*'imm08@00]");
         } else {
-          Format(instr, "vstr'cond 'Dd, ['rn - 4*'off8]");
+          Format(instr, "vstr'cond 'Dd, ['rn - 4*'imm08@00]");
         }
         break;
       case 0xC:
         if (instr->HasL()) {
-          Format(instr, "vldr'cond 'Dd, ['rn + 4*'off8]");
+          Format(instr, "vldr'cond 'Dd, ['rn + 4*'imm08@00]");
         } else {
-          Format(instr, "vstr'cond 'Dd, ['rn + 4*'off8]");
+          Format(instr, "vstr'cond 'Dd, ['rn + 4*'imm08@00]");
         }
         break;
       default:
@@ -1227,7 +1301,7 @@ int Decoder::InstructionDecode(byte* instr_ptr) {
                                        "%08x       ",
                                        instr->InstructionBits());
   if (instr->ConditionField() == special_condition) {
-    DecodeUnconditional(instr);
+    UNIMPLEMENTED();
     return Instr::kInstrSize;
   }
   switch (instr->TypeField()) {
@@ -1257,8 +1331,7 @@ int Decoder::InstructionDecode(byte* instr_ptr) {
       break;
     }
     case 7: {
-      DecodeType7(instr);
-      break;
+      return DecodeType7(instr);
     }
     default: {
       // The type field is 3-bits in the ARM encoding.

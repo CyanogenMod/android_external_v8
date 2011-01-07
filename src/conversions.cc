@@ -33,20 +33,11 @@
 #include "conversions-inl.h"
 #include "dtoa.h"
 #include "factory.h"
-#include "scanner.h"
+#include "scanner-base.h"
+#include "strtod.h"
 
 namespace v8 {
 namespace internal {
-
-int HexValue(uc32 c) {
-  if ('0' <= c && c <= '9')
-    return c - '0';
-  if ('a' <= c && c <= 'f')
-    return c - 'a' + 10;
-  if ('A' <= c && c <= 'F')
-    return c - 'A' + 10;
-  return -1;
-}
 
 namespace {
 
@@ -103,8 +94,6 @@ static bool SubStringEquals(Iterator* current,
 }
 
 
-extern "C" double gay_strtod(const char* s00, const char** se);
-
 // Maximum number of significant digits in decimal representation.
 // The longest possible double in decimal representation is
 // (2^53 - 1) * 2 ^ -1074 that is (2 ^ 53 - 1) * 5 ^ 1074 / 10 ^ 1074
@@ -122,7 +111,7 @@ static const double JUNK_STRING_VALUE = OS::nan_value();
 template <class Iterator, class EndMark>
 static inline bool AdvanceToNonspace(Iterator* current, EndMark end) {
   while (*current != end) {
-    if (!Scanner::kIsWhiteSpace.get(**current)) return true;
+    if (!ScannerConstants::kIsWhiteSpace.get(**current)) return true;
     ++*current;
   }
   return false;
@@ -353,8 +342,9 @@ static double InternalStringToInt(Iterator current, EndMark end, int radix) {
     }
 
     ASSERT(buffer_pos < kBufferSize);
-    buffer[buffer_pos++] = '\0';
-    return sign ? -gay_strtod(buffer, NULL) : gay_strtod(buffer, NULL);
+    buffer[buffer_pos] = '\0';
+    Vector<const char> buffer_vector(buffer, buffer_pos);
+    return sign ? -Strtod(buffer_vector, 0) : Strtod(buffer_vector, 0);
   }
 
   // The following code causes accumulating rounding error for numbers greater
@@ -458,13 +448,12 @@ static double InternalStringToDouble(Iterator current,
   bool sign = false;
 
   if (*current == '+') {
-    // Ignore leading sign; skip following spaces.
+    // Ignore leading sign.
     ++current;
-    if (!AdvanceToNonspace(&current, end)) return JUNK_STRING_VALUE;
+    if (current == end) return JUNK_STRING_VALUE;
   } else if (*current == '-') {
-    buffer[buffer_pos++] = '-';
     ++current;
-    if (!AdvanceToNonspace(&current, end)) return JUNK_STRING_VALUE;
+    if (current == end) return JUNK_STRING_VALUE;
     sign = true;
   }
 
@@ -478,8 +467,8 @@ static double InternalStringToDouble(Iterator current,
       return JUNK_STRING_VALUE;
     }
 
-    ASSERT(buffer_pos == 0 || buffer[0] == '-');
-    return buffer_pos > 0 ? -V8_INFINITY : V8_INFINITY;
+    ASSERT(buffer_pos == 0);
+    return sign ? -V8_INFINITY : V8_INFINITY;
   }
 
   bool leading_zero = false;
@@ -496,7 +485,6 @@ static double InternalStringToDouble(Iterator current,
         return JUNK_STRING_VALUE;  // "0x".
       }
 
-      bool sign = (buffer_pos > 0 && buffer[0] == '-');
       return InternalStringToIntDouble<4>(current,
                                           end,
                                           sign,
@@ -533,6 +521,9 @@ static double InternalStringToDouble(Iterator current,
   }
 
   if (*current == '.') {
+    if (octal && !allow_trailing_junk) return JUNK_STRING_VALUE;
+    if (octal) goto parsing_done;
+
     ++current;
     if (current == end) {
       if (significant_digits == 0 && !leading_zero) {
@@ -553,16 +544,16 @@ static double InternalStringToDouble(Iterator current,
       }
     }
 
-    ASSERT(buffer_pos < kBufferSize);
-    buffer[buffer_pos++] = '.';
+    // We don't emit a '.', but adjust the exponent instead.
     fractional_part = true;
 
-    // There is the fractional part.
+    // There is a fractional part.
     while (*current >= '0' && *current <= '9') {
       if (significant_digits < kMaxSignificantDigits) {
         ASSERT(buffer_pos < kBufferSize);
         buffer[buffer_pos++] = static_cast<char>(*current);
         significant_digits++;
+        exponent--;
       } else {
         // Ignore insignificant digits in the fractional part.
         nonzero_digit_dropped = nonzero_digit_dropped || *current != '0';
@@ -638,59 +629,24 @@ static double InternalStringToDouble(Iterator current,
   exponent += insignificant_digits;
 
   if (octal) {
-    bool sign = buffer[0] == '-';
-    int start_pos = (sign ? 1 : 0);
-
-    return InternalStringToIntDouble<3>(buffer + start_pos,
+    return InternalStringToIntDouble<3>(buffer,
                                         buffer + buffer_pos,
                                         sign,
                                         allow_trailing_junk);
   }
 
   if (nonzero_digit_dropped) {
-    if (insignificant_digits) buffer[buffer_pos++] = '.';
     buffer[buffer_pos++] = '1';
-  }
-
-  // If the number has no more than kMaxDigitsInInt digits and doesn't have
-  // fractional part it could be parsed faster (without checks for
-  // spaces, overflow, etc.).
-  const int kMaxDigitsInInt = 9 * sizeof(int) / 4;  // NOLINT
-
-  if (exponent != 0) {
-    ASSERT(buffer_pos < kBufferSize);
-    buffer[buffer_pos++] = 'e';
-    if (exponent < 0) {
-      ASSERT(buffer_pos < kBufferSize);
-      buffer[buffer_pos++] = '-';
-      exponent = -exponent;
-    }
-    if (exponent > 999) exponent = 999;  // Result will be Infinity or 0 or -0.
-
-    const int exp_digits = 3;
-    for (int i = 0; i < exp_digits; i++) {
-      buffer[buffer_pos + exp_digits - 1 - i] = '0' + exponent % 10;
-      exponent /= 10;
-    }
-    ASSERT(exponent == 0);
-    buffer_pos += exp_digits;
-  } else if (!fractional_part && significant_digits <= kMaxDigitsInInt) {
-    if (significant_digits == 0) return SignedZero(sign);
-    ASSERT(buffer_pos > 0);
-    int num = 0;
-    int start_pos = (buffer[0] == '-' ? 1 : 0);
-    for (int i = start_pos; i < buffer_pos; i++) {
-      ASSERT(buffer[i] >= '0' && buffer[i] <= '9');
-      num = 10 * num + (buffer[i] - '0');
-    }
-    return static_cast<double>(start_pos == 0 ? num : -num);
+    exponent--;
   }
 
   ASSERT(buffer_pos < kBufferSize);
   buffer[buffer_pos] = '\0';
 
-  return gay_strtod(buffer, NULL);
+  double converted = Strtod(Vector<const char>(buffer, buffer_pos), exponent);
+  return sign ? -converted : converted;
 }
+
 
 double StringToDouble(String* str, int flags, double empty_string_val) {
   StringShape shape(str);
@@ -733,15 +689,17 @@ double StringToInt(String* str, int radix) {
 
 double StringToDouble(const char* str, int flags, double empty_string_val) {
   const char* end = str + StrLength(str);
-
   return InternalStringToDouble(str, end, flags, empty_string_val);
 }
 
 
-extern "C" char* dtoa(double d, int mode, int ndigits,
-                      int* decpt, int* sign, char** rve);
+double StringToDouble(Vector<const char> str,
+                      int flags,
+                      double empty_string_val) {
+  const char* end = str.start() + str.length();
+  return InternalStringToDouble(str.start(), end, flags, empty_string_val);
+}
 
-extern "C" void freedtoa(char* s);
 
 const char* DoubleToCString(double v, Vector<char> buffer) {
   StringBuilder builder(buffer.start(), buffer.length());
@@ -766,21 +724,13 @@ const char* DoubleToCString(double v, Vector<char> buffer) {
     default: {
       int decimal_point;
       int sign;
-      char* decimal_rep;
-      bool used_gay_dtoa = false;
       const int kV8DtoaBufferCapacity = kBase10MaximalLength + 1;
-      char v8_dtoa_buffer[kV8DtoaBufferCapacity];
+      char decimal_rep[kV8DtoaBufferCapacity];
       int length;
 
-      if (DoubleToAscii(v, DTOA_SHORTEST, 0,
-                        Vector<char>(v8_dtoa_buffer, kV8DtoaBufferCapacity),
-                        &sign, &length, &decimal_point)) {
-        decimal_rep = v8_dtoa_buffer;
-      } else {
-        decimal_rep = dtoa(v, 0, 0, &decimal_point, &sign, NULL);
-        used_gay_dtoa = true;
-        length = StrLength(decimal_rep);
-      }
+      DoubleToAscii(v, DTOA_SHORTEST, 0,
+                    Vector<char>(decimal_rep, kV8DtoaBufferCapacity),
+                    &sign, &length, &decimal_point);
 
       if (sign) builder.AddCharacter('-');
 
@@ -814,8 +764,6 @@ const char* DoubleToCString(double v, Vector<char> buffer) {
         if (exponent < 0) exponent = -exponent;
         builder.AddFormatted("%d", exponent);
       }
-
-      if (used_gay_dtoa) freedtoa(decimal_rep);
     }
   }
   return builder.Finalize();
@@ -843,7 +791,7 @@ const char* IntToCString(int n, Vector<char> buffer) {
 
 
 char* DoubleToFixedCString(double value, int f) {
-  const int kMaxDigitsBeforePoint = 20;
+  const int kMaxDigitsBeforePoint = 21;
   const double kFirstNonFixed = 1e21;
   const int kMaxDigitsAfterPoint = 20;
   ASSERT(f >= 0);
@@ -867,16 +815,14 @@ char* DoubleToFixedCString(double value, int f) {
   // Find a sufficiently precise decimal representation of n.
   int decimal_point;
   int sign;
-  // Add space for the '.' and the '\0' byte.
+  // Add space for the '\0' byte.
   const int kDecimalRepCapacity =
-      kMaxDigitsBeforePoint + kMaxDigitsAfterPoint + 2;
+      kMaxDigitsBeforePoint + kMaxDigitsAfterPoint + 1;
   char decimal_rep[kDecimalRepCapacity];
   int decimal_rep_length;
-  bool status = DoubleToAscii(value, DTOA_FIXED, f,
-                              Vector<char>(decimal_rep, kDecimalRepCapacity),
-                              &sign, &decimal_rep_length, &decimal_point);
-  USE(status);
-  ASSERT(status);
+  DoubleToAscii(value, DTOA_FIXED, f,
+                Vector<char>(decimal_rep, kDecimalRepCapacity),
+                &sign, &decimal_rep_length, &decimal_point);
 
   // Create a representation that is padded with zeros if needed.
   int zero_prefix_length = 0;
@@ -949,8 +895,9 @@ static char* CreateExponentialRepresentation(char* decimal_rep,
 
 
 char* DoubleToExponentialCString(double value, int f) {
+  const int kMaxDigitsAfterPoint = 20;
   // f might be -1 to signal that f was undefined in JavaScript.
-  ASSERT(f >= -1 && f <= 20);
+  ASSERT(f >= -1 && f <= kMaxDigitsAfterPoint);
 
   bool negative = false;
   if (value < 0) {
@@ -961,30 +908,42 @@ char* DoubleToExponentialCString(double value, int f) {
   // Find a sufficiently precise decimal representation of n.
   int decimal_point;
   int sign;
-  char* decimal_rep = NULL;
+  // f corresponds to the digits after the point. There is always one digit
+  // before the point. The number of requested_digits equals hence f + 1.
+  // And we have to add one character for the null-terminator.
+  const int kV8DtoaBufferCapacity = kMaxDigitsAfterPoint + 1 + 1;
+  // Make sure that the buffer is big enough, even if we fall back to the
+  // shortest representation (which happens when f equals -1).
+  ASSERT(kBase10MaximalLength <= kMaxDigitsAfterPoint + 1);
+  char decimal_rep[kV8DtoaBufferCapacity];
+  int decimal_rep_length;
+
   if (f == -1) {
-    decimal_rep = dtoa(value, 0, 0, &decimal_point, &sign, NULL);
-    f = StrLength(decimal_rep) - 1;
+    DoubleToAscii(value, DTOA_SHORTEST, 0,
+                  Vector<char>(decimal_rep, kV8DtoaBufferCapacity),
+                  &sign, &decimal_rep_length, &decimal_point);
+    f = decimal_rep_length - 1;
   } else {
-    decimal_rep = dtoa(value, 2, f + 1, &decimal_point, &sign, NULL);
+    DoubleToAscii(value, DTOA_PRECISION, f + 1,
+                  Vector<char>(decimal_rep, kV8DtoaBufferCapacity),
+                  &sign, &decimal_rep_length, &decimal_point);
   }
-  int decimal_rep_length = StrLength(decimal_rep);
   ASSERT(decimal_rep_length > 0);
   ASSERT(decimal_rep_length <= f + 1);
-  USE(decimal_rep_length);
 
   int exponent = decimal_point - 1;
   char* result =
       CreateExponentialRepresentation(decimal_rep, exponent, negative, f+1);
-
-  freedtoa(decimal_rep);
 
   return result;
 }
 
 
 char* DoubleToPrecisionCString(double value, int p) {
-  ASSERT(p >= 1 && p <= 21);
+  const int kMinimalDigits = 1;
+  const int kMaximalDigits = 21;
+  ASSERT(p >= kMinimalDigits && p <= kMaximalDigits);
+  USE(kMinimalDigits);
 
   bool negative = false;
   if (value < 0) {
@@ -995,8 +954,14 @@ char* DoubleToPrecisionCString(double value, int p) {
   // Find a sufficiently precise decimal representation of n.
   int decimal_point;
   int sign;
-  char* decimal_rep = dtoa(value, 2, p, &decimal_point, &sign, NULL);
-  int decimal_rep_length = StrLength(decimal_rep);
+  // Add one for the terminating null character.
+  const int kV8DtoaBufferCapacity = kMaximalDigits + 1;
+  char decimal_rep[kV8DtoaBufferCapacity];
+  int decimal_rep_length;
+
+  DoubleToAscii(value, DTOA_PRECISION, p,
+                Vector<char>(decimal_rep, kV8DtoaBufferCapacity),
+                &sign, &decimal_rep_length, &decimal_point);
   ASSERT(decimal_rep_length <= p);
 
   int exponent = decimal_point - 1;
@@ -1040,7 +1005,6 @@ char* DoubleToPrecisionCString(double value, int p) {
     result = builder.Finalize();
   }
 
-  freedtoa(decimal_rep);
   return result;
 }
 

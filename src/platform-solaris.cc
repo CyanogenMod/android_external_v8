@@ -107,6 +107,12 @@ int OS::ActivationFrameAlignment() {
 }
 
 
+void OS::ReleaseStore(volatile AtomicWord* ptr, AtomicWord value) {
+  __asm__ __volatile__("" : : : "memory");
+  *ptr = value;
+}
+
+
 const char* OS::LocalTimezone(double time) {
   if (isnan(time)) return "";
   time_t tv = static_cast<time_t>(floor(time/msPerSecond));
@@ -247,6 +253,10 @@ PosixMemoryMappedFile::~PosixMemoryMappedFile() {
 
 
 void OS::LogSharedLibraryAddresses() {
+}
+
+
+void OS::SignalCodeMovingGC() {
 }
 
 
@@ -592,7 +602,11 @@ class Sampler::PlatformData : public Malloced {
 
 
 Sampler::Sampler(int interval, bool profiling)
-    : interval_(interval), profiling_(profiling), active_(false) {
+    : interval_(interval),
+      profiling_(profiling),
+      synchronous_(profiling),
+      active_(false),
+      samples_taken_(0) {
   data_ = new PlatformData();
 }
 

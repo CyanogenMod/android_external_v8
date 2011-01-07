@@ -107,14 +107,14 @@ class VirtualFrame : public ZoneObject {
   // Construct a virtual frame as a clone of an existing one.
   explicit inline VirtualFrame(VirtualFrame* original);
 
-  inline CodeGenerator* cgen();
+  inline CodeGenerator* cgen() const;
   inline MacroAssembler* masm();
 
   // The number of elements on the virtual frame.
-  int element_count() { return element_count_; }
+  int element_count() const { return element_count_; }
 
   // The height of the virtual expression stack.
-  inline int height();
+  inline int height() const;
 
   bool is_used(int num) {
     switch (num) {
@@ -154,15 +154,12 @@ class VirtualFrame : public ZoneObject {
   // Forget elements from the top of the frame to match an actual frame (eg,
   // the frame after a runtime call).  No code is emitted except to bring the
   // frame to a spilled state.
-  void Forget(int count) {
-    SpillAll();
-    element_count_ -= count;
-  }
+  void Forget(int count);
 
   // Spill all values from the frame to memory.
   void SpillAll();
 
-  void AssertIsSpilled() {
+  void AssertIsSpilled() const {
     ASSERT(top_of_stack_state_ == NO_TOS_REGISTERS);
     ASSERT(register_allocation_map_ == 0);
   }
@@ -184,14 +181,23 @@ class VirtualFrame : public ZoneObject {
   // Make this virtual frame have a state identical to an expected virtual
   // frame.  As a side effect, code may be emitted to make this frame match
   // the expected one.
-  void MergeTo(VirtualFrame* expected);
+  void MergeTo(VirtualFrame* expected, Condition cond = al);
+  void MergeTo(const VirtualFrame* expected, Condition cond = al);
+
+  // Checks whether this frame can be branched to by the other frame.
+  bool IsCompatibleWith(const VirtualFrame* other) const {
+    return (tos_known_smi_map_ & (~other->tos_known_smi_map_)) == 0;
+  }
+
+  inline void ForgetTypeInfo() {
+    tos_known_smi_map_ = 0;
+  }
 
   // Detach a frame from its code generator, perhaps temporarily.  This
   // tells the register allocator that it is free to use frame-internal
   // registers.  Used when the code generator's frame is switched from this
   // one to NULL by an unconditional jump.
   void DetachFromCodeGenerator() {
-    AssertIsSpilled();
   }
 
   // (Re)attach a frame to its code generator.  This informs the register
@@ -199,7 +205,6 @@ class VirtualFrame : public ZoneObject {
   // Used when a code generator's frame is switched from NULL to this one by
   // binding a label.
   void AttachToCodeGenerator() {
-    AssertIsSpilled();
   }
 
   // Emit code for the physical JS entry and exit frame sequences.  After
@@ -209,10 +214,9 @@ class VirtualFrame : public ZoneObject {
   void Enter();
   void Exit();
 
-  // Prepare for returning from the frame by spilling locals and
-  // dropping all non-locals elements in the virtual frame.  This
+  // Prepare for returning from the frame by elements in the virtual frame. This
   // avoids generating unnecessary merge code when jumping to the
-  // shared return site.  Emits code for spills.
+  // shared return site. No spill code emitted. Value to return should be in r0.
   inline void PrepareForReturn();
 
   // Number of local variables after when we use a loop for allocating.
@@ -232,6 +236,11 @@ class VirtualFrame : public ZoneObject {
     int adjusted_index = index - kVirtualElements[top_of_stack_state_];
     ASSERT(adjusted_index >= 0);
     return MemOperand(sp, adjusted_index * kPointerSize);
+  }
+
+  bool KnownSmiAt(int index) {
+    if (index >= kTOSKnownSmiMapSize) return false;
+    return (tos_known_smi_map_ & (1 << index)) != 0;
   }
 
   // A frame-allocated local as an assembly operand.
@@ -323,6 +332,10 @@ class VirtualFrame : public ZoneObject {
   // must be copied to a scratch register before modification.
   Register Peek();
 
+  // Look at the value beneath the top of the stack.  The register returned is
+  // aliased and must be copied to a scratch register before modification.
+  Register Peek2();
+
   // Duplicate the top of stack.
   void Dup();
 
@@ -331,6 +344,9 @@ class VirtualFrame : public ZoneObject {
 
   // Flushes all registers, but it puts a copy of the top-of-stack in r0.
   void SpillAllButCopyTOSToR0();
+
+  // Flushes all registers, but it puts a copy of the top-of-stack in r1.
+  void SpillAllButCopyTOSToR1();
 
   // Flushes all registers, but it puts a copy of the top-of-stack in r1
   // and the next value on the stack in r0.
@@ -352,9 +368,9 @@ class VirtualFrame : public ZoneObject {
 
   // Push an element on top of the expression stack and emit a
   // corresponding push instruction.
-  void EmitPush(Register reg);
-  void EmitPush(Operand operand);
-  void EmitPush(MemOperand operand);
+  void EmitPush(Register reg, TypeInfo type_info = TypeInfo::Unknown());
+  void EmitPush(Operand operand, TypeInfo type_info = TypeInfo::Unknown());
+  void EmitPush(MemOperand operand, TypeInfo type_info = TypeInfo::Unknown());
   void EmitPushRoot(Heap::RootListIndex index);
 
   // Overwrite the nth thing on the stack.  If the nth position is in a
@@ -419,6 +435,8 @@ class VirtualFrame : public ZoneObject {
   int element_count_;
   TopOfStack top_of_stack_state_:3;
   int register_allocation_map_:kNumberOfAllocatedRegisters;
+  static const int kTOSKnownSmiMapSize = 4;
+  unsigned tos_known_smi_map_:kTOSKnownSmiMapSize;
 
   // The index of the element that is at the processor's stack pointer
   // (the sp register).  For now since everything is in memory it is given
@@ -426,13 +444,13 @@ class VirtualFrame : public ZoneObject {
   int stack_pointer() { return element_count_ - 1; }
 
   // The number of frame-allocated locals and parameters respectively.
-  inline int parameter_count();
-  inline int local_count();
+  inline int parameter_count() const;
+  inline int local_count() const;
 
   // The index of the element that is at the processor's frame pointer
   // (the fp register).  The parameters, receiver, function, and context
   // are below the frame pointer.
-  inline int frame_pointer();
+  inline int frame_pointer() const;
 
   // The index of the first parameter.  The receiver lies below the first
   // parameter.
@@ -448,10 +466,10 @@ class VirtualFrame : public ZoneObject {
 
   // The index of the first local.  Between the frame pointer and the
   // locals lies the return address.
-  inline int local0_index();
+  inline int local0_index() const;
 
   // The index of the base of the expression stack.
-  inline int expression_base_index();
+  inline int expression_base_index() const;
 
   // Convert a frame index into a frame pointer relative offset into the
   // actual stack.
@@ -469,9 +487,28 @@ class VirtualFrame : public ZoneObject {
 
   // Emit instructions to get the top of stack state from where we are to where
   // we want to be.
-  void MergeTOSTo(TopOfStack expected_state);
+  void MergeTOSTo(TopOfStack expected_state, Condition cond = al);
 
-  inline bool Equals(VirtualFrame* other);
+  inline bool Equals(const VirtualFrame* other);
+
+  inline void LowerHeight(int count) {
+    element_count_ -= count;
+    if (count >= kTOSKnownSmiMapSize) {
+      tos_known_smi_map_ = 0;
+    } else {
+      tos_known_smi_map_ >>= count;
+    }
+  }
+
+  inline void RaiseHeight(int count, unsigned known_smi_map = 0) {
+    ASSERT(count >= 32 || known_smi_map < (1u << count));
+    element_count_ += count;
+    if (count >= kTOSKnownSmiMapSize) {
+      tos_known_smi_map_ = known_smi_map;
+    } else {
+      tos_known_smi_map_ = ((tos_known_smi_map_ << count) | known_smi_map);
+    }
+  }
 
   friend class JumpTarget;
 };

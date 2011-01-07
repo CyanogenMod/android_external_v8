@@ -75,11 +75,6 @@ static inline uint32_t DoubleToUint32(double x) {
 }
 
 
-// Returns the value (0 .. 15) of a hexadecimal character c.
-// If c is not a legal hexadecimal character, returns a value < 0.
-int HexValue(uc32 c);
-
-
 // Enumeration for allowing octals and ignoring junk when converting
 // strings to numbers.
 enum ConversionFlags {
@@ -96,8 +91,12 @@ static inline uint32_t NumberToUint32(Object* number);
 
 
 // Converts a string into a double value according to ECMA-262 9.3.1
-double StringToDouble(const char* str, int flags, double empty_string_val = 0);
 double StringToDouble(String* str, int flags, double empty_string_val = 0);
+double StringToDouble(Vector<const char> str,
+                      int flags,
+                      double empty_string_val = 0);
+// This version expects a zero-terminated character array.
+double StringToDouble(const char* str, int flags, double empty_string_val = 0);
 
 // Converts a string into an integer.
 double StringToInt(String* str, int radix);

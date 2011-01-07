@@ -74,6 +74,8 @@ class JumpTarget : public ZoneObject {  // Shadows are dynamically allocated.
 
   inline CodeGenerator* cgen();
 
+  Label* entry_label() { return &entry_label_; }
+
   const VirtualFrame* entry_frame() const {
     return entry_frame_set_ ? &entry_frame_ : NULL;
   }
@@ -99,8 +101,7 @@ class JumpTarget : public ZoneObject {  // Shadows are dynamically allocated.
 
   // Emit a conditional branch to the target.  There must be a current
   // frame at the branch.  The current frame will fall through to the
-  // code after the branch.  The arg is a result that is live both at
-  // the target and the fall-through.
+  // code after the branch.
   virtual void Branch(Condition cc, Hint hint = no_hint);
 
   // Bind a jump target.  If there is no current frame at the binding
@@ -117,6 +118,9 @@ class JumpTarget : public ZoneObject {  // Shadows are dynamically allocated.
  protected:
   // Has an entry frame been found?
   bool entry_frame_set_;
+
+  // Can we branch backwards to this label?
+  Directionality direction_;
 
   // The frame used on entry to the block and expected at backward
   // jumps to the block.  Set the first time something branches to this
@@ -148,6 +152,7 @@ class BreakTarget : public JumpTarget {
  public:
   // Construct a break target.
   inline BreakTarget();
+  inline BreakTarget(JumpTarget::Directionality direction);
 
   virtual ~BreakTarget() {}
 

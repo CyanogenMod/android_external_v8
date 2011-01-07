@@ -120,6 +120,9 @@ class Utf8 {
   static inline unsigned Encode(char* out, uchar c);
   static const byte* ReadBlock(Buffer<const char*> str, byte* buffer,
       unsigned capacity, unsigned* chars_read, unsigned* offset);
+  static uchar CalculateValue(const byte* str,
+                              unsigned length,
+                              unsigned* cursor);
   static const uchar kBadChar = 0xFFFD;
   static const unsigned kMaxEncodedSize   = 4;
   static const unsigned kMaxOneByteChar   = 0x7f;
@@ -131,9 +134,6 @@ class Utf8 {
   template <unsigned s> friend class Utf8InputBuffer;
   friend class Test;
   static inline uchar ValueOf(const byte* str,
-                              unsigned length,
-                              unsigned* cursor);
-  static uchar CalculateValue(const byte* str,
                               unsigned length,
                               unsigned* cursor);
 };
@@ -210,6 +210,7 @@ class Utf8InputBuffer : public InputBuffer<Utf8, Buffer<const char*>, s> {
         Buffer<const char*>(data, length));
   }
 };
+
 
 struct Uppercase {
   static bool Is(uchar c);

@@ -67,7 +67,9 @@ function testAssignmentArgument(x) {
   assertEquals(7, x);
 }
 
-testAssignmentArgument();
+for (var i = 0; i < 10000; i++) {
+  testAssignmentArgument();
+}
 assertEquals(6, x);
 
 __defineSetter__('x', function() { throw 42; });
@@ -91,7 +93,7 @@ function testInitSlowCaseExtension() {
   var source = "";
   // Introduce 100 properties on the context extension object to force
   // it in slow case.
-  for (var i = 0; i < 100; i++) source += ("var a" + i + " = i;");
+  for (var i = 0; i < 100; i++) source += ("var a" + i + " = " + i + ";");
   source += "const x = 10; assertEquals(10, x); x = 11; assertEquals(10, x)";
   eval(source);
 }

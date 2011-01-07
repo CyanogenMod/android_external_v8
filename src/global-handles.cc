@@ -151,13 +151,14 @@ class GlobalHandles::Node : public Malloced {
   bool PostGarbageCollectionProcessing() {
     if (state_ != Node::PENDING) return false;
     LOG(HandleEvent("GlobalHandle::Processing", handle().location()));
+    WeakReferenceCallback func = callback();
+    if (func == NULL) {
+      Destroy();
+      return false;
+    }
     void* par = parameter();
     state_ = NEAR_DEATH;
     set_parameter(NULL);
-    // The callback function is resolved as late as possible to preserve old
-    // behavior.
-    WeakReferenceCallback func = callback();
-    if (func == NULL) return false;
 
     v8::Persistent<v8::Object> object = ToApi<v8::Object>(handle());
     {
@@ -178,6 +179,9 @@ class GlobalHandles::Node : public Malloced {
       VMState state(EXTERNAL);
       func(object, par);
     }
+    // Absense of explicit cleanup or revival of weak handle
+    // in most of the cases would lead to memory leak.
+    ASSERT(state_ != NEAR_DEATH);
     return true;
   }
 
@@ -220,6 +224,12 @@ class GlobalHandles::Pool BASE_EMBEDDED {
       current_->previous = NULL;
       next_ = current_->nodes;
       limit_ = current_->nodes + kNodesPerChunk;
+    }
+
+    ~Pool() {
+      if (current_ != NULL) {
+        Release();
+      }
     }
 
     Node* Allocate() {
@@ -362,13 +372,14 @@ void GlobalHandles::IdentifyWeakHandles(WeakSlotCallback f) {
 
 int post_gc_processing_count = 0;
 
-void GlobalHandles::PostGarbageCollectionProcessing() {
+bool GlobalHandles::PostGarbageCollectionProcessing() {
   // Process weak global handle callbacks. This must be done after the
   // GC is completely done, because the callbacks may invoke arbitrary
   // API functions.
   // At the same time deallocate all DESTROYED nodes.
   ASSERT(Heap::gc_state() == Heap::NOT_IN_GC);
   const int initial_post_gc_processing_count = ++post_gc_processing_count;
+  bool next_gc_likely_to_collect_more = false;
   Node** p = &head_;
   while (*p != NULL) {
     if ((*p)->PostGarbageCollectionProcessing()) {
@@ -389,6 +400,7 @@ void GlobalHandles::PostGarbageCollectionProcessing() {
       }
       node->set_next_free(first_deallocated());
       set_first_deallocated(node);
+      next_gc_likely_to_collect_more = true;
     } else {
       p = (*p)->next_addr();
     }
@@ -397,6 +409,8 @@ void GlobalHandles::PostGarbageCollectionProcessing() {
   if (first_deallocated()) {
     first_deallocated()->set_next(head());
   }
+
+  return next_gc_likely_to_collect_more;
 }
 
 
@@ -473,7 +487,7 @@ void GlobalHandles::PrintStats() {
   }
 
   PrintF("Global Handle Statistics:\n");
-  PrintF("  allocated memory = %dB\n", sizeof(Node) * total);
+  PrintF("  allocated memory = %" V8_PTR_PREFIX "dB\n", sizeof(Node) * total);
   PrintF("  # weak       = %d\n", weak);
   PrintF("  # pending    = %d\n", pending);
   PrintF("  # near_death = %d\n", near_death);
@@ -484,8 +498,10 @@ void GlobalHandles::PrintStats() {
 void GlobalHandles::Print() {
   PrintF("Global handles:\n");
   for (Node* current = head_; current != NULL; current = current->next()) {
-    PrintF("  handle %p to %p (weak=%d)\n", current->handle().location(),
-           *current->handle(), current->state_ == Node::WEAK);
+    PrintF("  handle %p to %p (weak=%d)\n",
+           reinterpret_cast<void*>(current->handle().location()),
+           reinterpret_cast<void*>(*current->handle()),
+           current->state_ == Node::WEAK);
   }
 }
 

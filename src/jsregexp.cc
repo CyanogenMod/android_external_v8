@@ -125,7 +125,8 @@ Handle<Object> RegExpImpl::Compile(Handle<JSRegExp> re,
   PostponeInterruptsScope postpone;
   RegExpCompileData parse_result;
   FlatStringReader reader(pattern);
-  if (!ParseRegExp(&reader, flags.is_multiline(), &parse_result)) {
+  if (!RegExpParser::ParseRegExp(&reader, flags.is_multiline(),
+                                 &parse_result)) {
     // Throw an exception if we fail to parse the pattern.
     ThrowRegExpException(re,
                          pattern,
@@ -267,7 +268,8 @@ bool RegExpImpl::CompileIrregexp(Handle<JSRegExp> re, bool is_ascii) {
 
   RegExpCompileData compile_data;
   FlatStringReader reader(pattern);
-  if (!ParseRegExp(&reader, flags.is_multiline(), &compile_data)) {
+  if (!RegExpParser::ParseRegExp(&reader, flags.is_multiline(),
+                                 &compile_data)) {
     // Throw an exception if we fail to parse the pattern.
     // THIS SHOULD NOT HAPPEN. We already pre-parsed it successfully once.
     ThrowRegExpException(re,
@@ -356,7 +358,16 @@ int RegExpImpl::IrregexpPrepare(Handle<JSRegExp> regexp,
   if (!subject->IsFlat()) {
     FlattenString(subject);
   }
-  bool is_ascii = subject->IsAsciiRepresentation();
+  // Check the asciiness of the underlying storage.
+  bool is_ascii;
+  {
+    AssertNoAllocation no_gc;
+    String* sequential_string = *subject;
+    if (subject->IsConsString()) {
+      sequential_string =  ConsString::cast(*subject)->first();
+    }
+    is_ascii = sequential_string->IsAsciiRepresentation();
+  }
   if (!EnsureCompiledIrregexp(regexp, is_ascii)) {
     return -1;
   }
@@ -371,15 +382,21 @@ int RegExpImpl::IrregexpPrepare(Handle<JSRegExp> regexp,
 }
 
 
-RegExpImpl::IrregexpResult RegExpImpl::IrregexpExecOnce(Handle<JSRegExp> regexp,
-                                                        Handle<String> subject,
-                                                        int index,
-                                                        Vector<int> output) {
+RegExpImpl::IrregexpResult RegExpImpl::IrregexpExecOnce(
+    Handle<JSRegExp> regexp,
+    Handle<String> subject,
+    int index,
+    Vector<int32_t> output) {
   Handle<FixedArray> irregexp(FixedArray::cast(regexp->data()));
 
   ASSERT(index >= 0);
   ASSERT(index <= subject->length());
   ASSERT(subject->IsFlat());
+
+  // A flat ASCII string might have a two-byte first part.
+  if (subject->IsConsString()) {
+    subject = Handle<String>(ConsString::cast(*subject)->first());
+  }
 
 #ifndef V8_INTERPRETED_REGEXP
   ASSERT(output.length() >=
@@ -407,7 +424,7 @@ RegExpImpl::IrregexpResult RegExpImpl::IrregexpExecOnce(Handle<JSRegExp> regexp,
     // If result is RETRY, the string has changed representation, and we
     // must restart from scratch.
     // In this case, it means we must make sure we are prepared to handle
-    // the, potentially, differen subject (the string can switch between
+    // the, potentially, different subject (the string can switch between
     // being internal and external, and even between being ASCII and UC16,
     // but the characters are always the same).
     IrregexpPrepare(regexp, subject);
@@ -464,11 +481,9 @@ Handle<Object> RegExpImpl::IrregexpExec(Handle<JSRegExp> jsregexp,
 
   OffsetsVector registers(required_registers);
 
-  IrregexpResult res = IrregexpExecOnce(jsregexp,
-                                        subject,
-                                        previous_index,
-                                        Vector<int>(registers.vector(),
-                                                    registers.length()));
+  IrregexpResult res = RegExpImpl::IrregexpExecOnce(
+      jsregexp, subject, previous_index, Vector<int32_t>(registers.vector(),
+                                                         registers.length()));
   if (res == RE_SUCCESS) {
     int capture_register_count =
         (IrregexpNumberOfCaptures(FixedArray::cast(jsregexp->data())) + 1) * 2;
@@ -1258,7 +1273,7 @@ static int GetCaseIndependentLetters(uc16 character,
                                      bool ascii_subject,
                                      unibrow::uchar* letters) {
   int length = uncanonicalize.get(character, '\0', letters);
-  // Unibrow returns 0 or 1 for characters where case independependence is
+  // Unibrow returns 0 or 1 for characters where case independence is
   // trivial.
   if (length == 0) {
     letters[0] = character;
@@ -1747,9 +1762,11 @@ bool RegExpNode::EmitQuickCheck(RegExpCompiler* compiler,
     if ((mask & char_mask) == char_mask) need_mask = false;
     mask &= char_mask;
   } else {
-    // For 2-character preloads in ASCII mode we also use a 16 bit load with
-    // zero extend.
+    // For 2-character preloads in ASCII mode or 1-character preloads in
+    // TWO_BYTE mode we also use a 16 bit load with zero extend.
     if (details->characters() == 2 && compiler->ascii()) {
+      if ((mask & 0x7f7f) == 0x7f7f) need_mask = false;
+    } else if (details->characters() == 1 && !compiler->ascii()) {
       if ((mask & 0xffff) == 0xffff) need_mask = false;
     } else {
       if (mask == 0xffffffff) need_mask = false;
@@ -4010,74 +4027,48 @@ void CharacterRange::AddCaseEquivalents(ZoneList<CharacterRange>* ranges,
         ranges->Add(CharacterRange::Singleton(chars[i]));
       }
     }
-  } else if (bottom <= kRangeCanonicalizeMax &&
-             top <= kRangeCanonicalizeMax) {
+  } else {
     // If this is a range we expand the characters block by block,
     // expanding contiguous subranges (blocks) one at a time.
     // The approach is as follows.  For a given start character we
-    // look up the block that contains it, for instance 'a' if the
-    // start character is 'c'.  A block is characterized by the property
-    // that all characters uncanonicalize in the same way as the first
-    // element, except that each entry in the result is incremented
-    // by the distance from the first element.  So a-z is a block
-    // because 'a' uncanonicalizes to ['a', 'A'] and the k'th letter
-    // uncanonicalizes to ['a' + k, 'A' + k].
-    // Once we've found the start point we look up its uncanonicalization
+    // look up the remainder of the block that contains it (represented
+    // by the end point), for instance we find 'z' if the character
+    // is 'c'.  A block is characterized by the property
+    // that all characters uncanonicalize in the same way, except that
+    // each entry in the result is incremented by the distance from the first
+    // element.  So a-z is a block because 'a' uncanonicalizes to ['a', 'A'] and
+    // the k'th letter uncanonicalizes to ['a' + k, 'A' + k].
+    // Once we've found the end point we look up its uncanonicalization
     // and produce a range for each element.  For instance for [c-f]
-    // we look up ['a', 'A'] and produce [c-f] and [C-F].  We then only
+    // we look up ['z', 'Z'] and produce [c-f] and [C-F].  We then only
     // add a range if it is not already contained in the input, so [c-f]
     // will be skipped but [C-F] will be added.  If this range is not
     // completely contained in a block we do this for all the blocks
-    // covered by the range.
+    // covered by the range (handling characters that is not in a block
+    // as a "singleton block").
     unibrow::uchar range[unibrow::Ecma262UnCanonicalize::kMaxWidth];
-    // First, look up the block that contains the 'bottom' character.
-    int length = canonrange.get(bottom, '\0', range);
-    if (length == 0) {
-      range[0] = bottom;
-    } else {
-      ASSERT_EQ(1, length);
-    }
     int pos = bottom;
-    // The start of the current block.  Note that except for the first
-    // iteration 'start' is always equal to 'pos'.
-    int start;
-    // If it is not the start point of a block the entry contains the
-    // offset of the character from the start point.
-    if ((range[0] & kStartMarker) == 0) {
-      start = pos - range[0];
-    } else {
-      start = pos;
-    }
-    // Then we add the ranges one at a time, incrementing the current
-    // position to be after the last block each time.  The position
-    // always points to the start of a block.
     while (pos < top) {
-      length = canonrange.get(start, '\0', range);
+      int length = canonrange.get(pos, '\0', range);
+      uc16 block_end;
       if (length == 0) {
-        range[0] = start;
+        block_end = pos;
       } else {
         ASSERT_EQ(1, length);
+        block_end = range[0];
       }
-      ASSERT((range[0] & kStartMarker) != 0);
-      // The start point of a block contains the distance to the end
-      // of the range.
-      int block_end = start + (range[0] & kPayloadMask) - 1;
       int end = (block_end > top) ? top : block_end;
-      length = uncanonicalize.get(start, '\0', range);
+      length = uncanonicalize.get(block_end, '\0', range);
       for (int i = 0; i < length; i++) {
         uc32 c = range[i];
-        uc16 range_from = c + (pos - start);
-        uc16 range_to = c + (end - start);
+        uc16 range_from = c - (block_end - pos);
+        uc16 range_to = c - (block_end - end);
         if (!(bottom <= range_from && range_to <= top)) {
           ranges->Add(CharacterRange(range_from, range_to));
         }
       }
-      start = pos = block_end + 1;
+      pos = end + 1;
     }
-  } else {
-    // Unibrow ranges don't work for high characters due to the "2^11 bug".
-    // Therefore we do something dumber for these ranges.
-    AddUncanonicals(ranges, bottom, top);
   }
 }
 
@@ -4192,20 +4183,14 @@ static void AddUncanonicals(ZoneList<CharacterRange>* ranges,
   // 0xa800 - 0xfaff
   // 0xfc00 - 0xfeff
   const int boundary_count = 18;
-  // The ASCII boundary and the kRangeCanonicalizeMax boundary are also in this
-  // array.  This is to split up big ranges and not because they actually denote
-  // a case-mapping-free-zone.
-  ASSERT(CharacterRange::kRangeCanonicalizeMax < 0x600);
-  const int kFirstRealCaselessZoneIndex = 2;
-  int boundaries[] = {0x80, CharacterRange::kRangeCanonicalizeMax,
+  int boundaries[] = {
       0x600, 0x1000, 0x1100, 0x1d00, 0x2000, 0x2100, 0x2200, 0x2400, 0x2500,
       0x2c00, 0x2e00, 0xa600, 0xa800, 0xfb00, 0xfc00, 0xff00};
 
   // Special ASCII rule from spec can save us some work here.
   if (bottom == 0x80 && top == 0xffff) return;
 
-  // We have optimized support for this range.
-  if (top <= CharacterRange::kRangeCanonicalizeMax) {
+  if (top <= boundaries[0]) {
     CharacterRange range(bottom, top);
     range.AddCaseEquivalents(ranges, false);
     return;
@@ -4222,8 +4207,7 @@ static void AddUncanonicals(ZoneList<CharacterRange>* ranges,
   }
 
   // If we are completely in a zone with no case mappings then we are done.
-  // We start at 2 so as not to except the ASCII range from mappings.
-  for (int i = kFirstRealCaselessZoneIndex; i < boundary_count; i += 2) {
+  for (int i = 0; i < boundary_count; i += 2) {
     if (bottom >= boundaries[i] && top < boundaries[i + 1]) {
 #ifdef DEBUG
       for (int j = bottom; j <= top; j++) {
@@ -5198,7 +5182,10 @@ RegExpEngine::CompilationResult RegExpEngine::Compile(RegExpCompileData* data,
                                                     &compiler,
                                                     compiler.accept());
   RegExpNode* node = captured_body;
-  if (!data->tree->IsAnchored()) {
+  bool is_end_anchored = data->tree->IsAnchoredAtEnd();
+  bool is_start_anchored = data->tree->IsAnchoredAtStart();
+  int max_length = data->tree->max_match();
+  if (!is_start_anchored) {
     // Add a .*? at the beginning, outside the body capture, unless
     // this expression is anchored at the beginning.
     RegExpNode* loop_node =
@@ -5253,6 +5240,15 @@ RegExpEngine::CompilationResult RegExpEngine::Compile(RegExpCompileData* data,
   EmbeddedVector<byte, 1024> codes;
   RegExpMacroAssemblerIrregexp macro_assembler(codes);
 #endif  // V8_INTERPRETED_REGEXP
+
+  // Inserted here, instead of in Assembler, because it depends on information
+  // in the AST that isn't replicated in the Node structure.
+  static const int kMaxBacksearchLimit = 1024;
+  if (is_end_anchored &&
+      !is_start_anchored &&
+      max_length < kMaxBacksearchLimit) {
+    macro_assembler.SetCurrentPositionFromEnd(max_length);
+  }
 
   return compiler.Assemble(&macro_assembler,
                            node,

@@ -29,8 +29,7 @@ var $JSON = global.JSON;
 
 function ParseJSONUnfiltered(text) {
   var s = $String(text);
-  var f = %CompileString(text, true);
-  return f();
+  return %ParseJson(s);
 }
 
 function Revive(holder, name, reviver) {
@@ -68,15 +67,13 @@ function JSONParse(text, reviver) {
 }
 
 var characterQuoteCache = {
+  '\b': '\\b',  // ASCII 8, Backspace
+  '\t': '\\t',  // ASCII 9, Tab
+  '\n': '\\n',  // ASCII 10, Newline
+  '\f': '\\f',  // ASCII 12, Formfeed
+  '\r': '\\r',  // ASCII 13, Carriage Return
   '\"': '\\"',
-  '\\': '\\\\',
-  '/': '\\/',
-  '\b': '\\b',
-  '\f': '\\f',
-  '\n': '\\n',
-  '\r': '\\r',
-  '\t': '\\t',
-  '\x0B': '\\u000b'
+  '\\': '\\\\'
 };
 
 function QuoteSingleJSONCharacter(c) {
@@ -95,7 +92,7 @@ function QuoteSingleJSONCharacter(c) {
 }
 
 function QuoteJSONString(str) {
-  var quotable = /[\\\"\x00-\x1f\x80-\uffff]/g;
+  var quotable = /[\\\"\x00-\x1f]/g;
   return '"' + str.replace(quotable, QuoteSingleJSONCharacter) + '"';
 }
 
@@ -207,7 +204,7 @@ function JSONSerialize(key, holder, replacer, stack, indent, gap) {
     } else if (IS_STRING_WRAPPER(value)) {
       value = $String(value);
     } else if (IS_BOOLEAN_WRAPPER(value)) {
-      value = $Boolean(value);
+      value =  %_ValueOf(value);
     }
   }
   switch (typeof value) {
@@ -241,7 +238,7 @@ function JSONStringify(value, replacer, space) {
   }
   var gap;
   if (IS_NUMBER(space)) {
-    space = $Math.min(space, 10);
+    space = $Math.min(ToInteger(space), 10);
     gap = "";
     for (var i = 0; i < space; i++) {
       gap += " ";

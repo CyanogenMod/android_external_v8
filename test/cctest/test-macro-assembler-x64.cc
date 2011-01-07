@@ -57,10 +57,10 @@ using v8::internal::rsp;
 using v8::internal::r8;
 using v8::internal::r9;
 using v8::internal::r11;
-using v8::internal::r12;  // Remember: r12..r15 are callee save!
+using v8::internal::r12;
 using v8::internal::r13;
 using v8::internal::r14;
-using v8::internal::r15;
+using v8::internal::times_pointer_size;
 using v8::internal::FUNCTION_CAST;
 using v8::internal::CodeDesc;
 using v8::internal::less_equal;
@@ -75,6 +75,8 @@ using v8::internal::positive;
 using v8::internal::Smi;
 using v8::internal::kSmiTagMask;
 using v8::internal::kSmiValueSize;
+using v8::internal::kPointerSize;
+using v8::internal::kIntSize;
 
 // Test the x64 assembler by compiling some simple functions into
 // a buffer and executing them.  These tests do not initialize the
@@ -88,6 +90,24 @@ using v8::internal::kSmiValueSize;
 typedef int (*F0)();
 
 #define __ masm->
+
+
+static void EntryCode(MacroAssembler* masm) {
+  // Smi constant register is callee save.
+  __ push(v8::internal::kSmiConstantRegister);
+  __ InitializeSmiConstantRegister();
+}
+
+
+static void ExitCode(MacroAssembler* masm) {
+  // Return -1 if kSmiConstantRegister was clobbered during the test.
+  __ Move(rdx, Smi::FromInt(1));
+  __ cmpq(rdx, v8::internal::kSmiConstantRegister);
+  __ movq(rdx, Immediate(-1));
+  __ cmovq(not_equal, rax, rdx);
+  __ pop(v8::internal::kSmiConstantRegister);
+}
+
 
 TEST(Smi) {
   // Check that C++ Smi operations work as expected.
@@ -136,6 +156,7 @@ TEST(SmiMove) {
   MacroAssembler assembler(buffer, static_cast<int>(actual_size));
   MacroAssembler* masm = &assembler;  // Create a pointer for the __ macro.
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
   TestMoveSmi(masm, &exit, 1, Smi::FromInt(0));
@@ -153,6 +174,7 @@ TEST(SmiMove) {
 
   __ xor_(rax, rax);  // Success.
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -222,6 +244,7 @@ TEST(SmiCompare) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
   TestSmiCompare(masm, &exit, 0x10, 0, 0);
@@ -246,6 +269,7 @@ TEST(SmiCompare) {
 
   __ xor_(rax, rax);  // Success.
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -269,6 +293,7 @@ TEST(Integer32ToSmi) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
   __ movq(rax, Immediate(1));  // Test number.
@@ -346,6 +371,7 @@ TEST(Integer32ToSmi) {
 
   __ xor_(rax, rax);  // Success.
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -394,6 +420,7 @@ TEST(Integer64PlusConstantToSmi) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
   int64_t twice_max = static_cast<int64_t>(Smi::kMaxValue) * 2;
@@ -413,6 +440,7 @@ TEST(Integer64PlusConstantToSmi) {
 
   __ xor_(rax, rax);  // Success.
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -435,6 +463,7 @@ TEST(SmiCheck) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
   Condition cond;
 
@@ -490,40 +519,40 @@ TEST(SmiCheck) {
   __ incq(rax);
   __ movl(rcx, Immediate(0));
   __ Integer32ToSmi(rcx, rcx);
-  cond = masm->CheckPositiveSmi(rcx);  // Zero counts as positive.
+  cond = masm->CheckNonNegativeSmi(rcx);
   __ j(NegateCondition(cond), &exit);
 
   __ incq(rax);
   __ xor_(rcx, Immediate(kSmiTagMask));
-  cond = masm->CheckPositiveSmi(rcx);  // "zero" non-smi.
+  cond = masm->CheckNonNegativeSmi(rcx);  // "zero" non-smi.
   __ j(cond, &exit);
 
   __ incq(rax);
   __ movq(rcx, Immediate(-1));
   __ Integer32ToSmi(rcx, rcx);
-  cond = masm->CheckPositiveSmi(rcx);  // Negative smis are not positive.
+  cond = masm->CheckNonNegativeSmi(rcx);  // Negative smis are not positive.
   __ j(cond, &exit);
 
   __ incq(rax);
   __ movq(rcx, Immediate(Smi::kMinValue));
   __ Integer32ToSmi(rcx, rcx);
-  cond = masm->CheckPositiveSmi(rcx);  // Most negative smi is not positive.
+  cond = masm->CheckNonNegativeSmi(rcx);  // Most negative smi is not positive.
   __ j(cond, &exit);
 
   __ incq(rax);
   __ xor_(rcx, Immediate(kSmiTagMask));
-  cond = masm->CheckPositiveSmi(rcx);  // "Negative" non-smi.
+  cond = masm->CheckNonNegativeSmi(rcx);  // "Negative" non-smi.
   __ j(cond, &exit);
 
   __ incq(rax);
   __ movq(rcx, Immediate(Smi::kMaxValue));
   __ Integer32ToSmi(rcx, rcx);
-  cond = masm->CheckPositiveSmi(rcx);  // Most positive smi is positive.
+  cond = masm->CheckNonNegativeSmi(rcx);  // Most positive smi is positive.
   __ j(NegateCondition(cond), &exit);
 
   __ incq(rax);
   __ xor_(rcx, Immediate(kSmiTagMask));
-  cond = masm->CheckPositiveSmi(rcx);  // "Positive" non-smi.
+  cond = masm->CheckNonNegativeSmi(rcx);  // "Positive" non-smi.
   __ j(cond, &exit);
 
   // CheckIsMinSmi
@@ -610,6 +639,7 @@ TEST(SmiCheck) {
   __ xor_(rax, rax);
 
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -680,6 +710,7 @@ TEST(SmiNeg) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
   TestSmiNeg(masm, &exit, 0x10, 0);
@@ -693,6 +724,7 @@ TEST(SmiNeg) {
 
   __ xor_(rax, rax);  // Success.
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -765,6 +797,7 @@ TEST(SmiAdd) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
   // No-overflow tests.
@@ -779,6 +812,7 @@ TEST(SmiAdd) {
 
   __ xor_(rax, rax);  // Success.
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -952,6 +986,7 @@ TEST(SmiSub) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
   SmiSubTest(masm, &exit, 0x10, 1, 2);
@@ -974,6 +1009,7 @@ TEST(SmiSub) {
 
   __ xor_(rax, rax);  // Success.
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -1039,6 +1075,7 @@ TEST(SmiMul) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
   TestSmiMul(masm, &exit, 0x10, 0, 0);
@@ -1058,6 +1095,7 @@ TEST(SmiMul) {
 
   __ xor_(rax, rax);  // Success.
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -1078,51 +1116,51 @@ void TestSmiDiv(MacroAssembler* masm, Label* exit, int id, int x, int y) {
 #endif
   bool fraction = !division_by_zero && !overflow && (x % y != 0);
   __ Move(r11, Smi::FromInt(x));
-  __ Move(r12, Smi::FromInt(y));
+  __ Move(r14, Smi::FromInt(y));
   if (!fraction && !overflow && !negative_zero && !division_by_zero) {
     // Division succeeds
     __ movq(rcx, r11);
-    __ movq(r15, Immediate(id));
+    __ movq(r12, Immediate(id));
     int result = x / y;
     __ Move(r8, Smi::FromInt(result));
-    __ SmiDiv(r9, rcx, r12, exit);
-    // Might have destroyed rcx and r12.
-    __ incq(r15);
+    __ SmiDiv(r9, rcx, r14, exit);
+    // Might have destroyed rcx and r14.
+    __ incq(r12);
     __ SmiCompare(r9, r8);
     __ j(not_equal, exit);
 
-    __ incq(r15);
+    __ incq(r12);
     __ movq(rcx, r11);
-    __ Move(r12, Smi::FromInt(y));
+    __ Move(r14, Smi::FromInt(y));
     __ SmiCompare(rcx, r11);
     __ j(not_equal, exit);
 
-    __ incq(r15);
-    __ SmiDiv(rcx, rcx, r12, exit);
+    __ incq(r12);
+    __ SmiDiv(rcx, rcx, r14, exit);
 
-    __ incq(r15);
+    __ incq(r12);
     __ SmiCompare(rcx, r8);
     __ j(not_equal, exit);
   } else {
     // Division fails.
-    __ movq(r15, Immediate(id + 8));
+    __ movq(r12, Immediate(id + 8));
 
     Label fail_ok, fail_ok2;
     __ movq(rcx, r11);
-    __ SmiDiv(r9, rcx, r12, &fail_ok);
+    __ SmiDiv(r9, rcx, r14, &fail_ok);
     __ jmp(exit);
     __ bind(&fail_ok);
 
-    __ incq(r15);
+    __ incq(r12);
     __ SmiCompare(rcx, r11);
     __ j(not_equal, exit);
 
-    __ incq(r15);
-    __ SmiDiv(rcx, rcx, r12, &fail_ok2);
+    __ incq(r12);
+    __ SmiDiv(rcx, rcx, r14, &fail_ok2);
     __ jmp(exit);
     __ bind(&fail_ok2);
 
-    __ incq(r15);
+    __ incq(r12);
     __ SmiCompare(rcx, r11);
     __ j(not_equal, exit);
   }
@@ -1142,10 +1180,11 @@ TEST(SmiDiv) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
+  __ push(r14);
   __ push(r12);
-  __ push(r15);
   TestSmiDiv(masm, &exit, 0x10, 1, 1);
   TestSmiDiv(masm, &exit, 0x20, 1, 0);
   TestSmiDiv(masm, &exit, 0x30, -1, 0);
@@ -1167,11 +1206,12 @@ TEST(SmiDiv) {
   TestSmiDiv(masm, &exit, 0x130, Smi::kMinValue, Smi::kMinValue);
   TestSmiDiv(masm, &exit, 0x140, Smi::kMinValue, -1);
 
-  __ xor_(r15, r15);  // Success.
+  __ xor_(r12, r12);  // Success.
   __ bind(&exit);
-  __ movq(rax, r15);
-  __ pop(r15);
+  __ movq(rax, r12);
   __ pop(r12);
+  __ pop(r14);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -1189,47 +1229,47 @@ void TestSmiMod(MacroAssembler* masm, Label* exit, int id, int x, int y) {
   bool negative_zero = (!fraction && x < 0);
   __ Move(rcx, Smi::FromInt(x));
   __ movq(r11, rcx);
-  __ Move(r12, Smi::FromInt(y));
+  __ Move(r14, Smi::FromInt(y));
   if (!division_overflow && !negative_zero && !division_by_zero) {
     // Modulo succeeds
-    __ movq(r15, Immediate(id));
+    __ movq(r12, Immediate(id));
     int result = x % y;
     __ Move(r8, Smi::FromInt(result));
-    __ SmiMod(r9, rcx, r12, exit);
+    __ SmiMod(r9, rcx, r14, exit);
 
-    __ incq(r15);
+    __ incq(r12);
     __ SmiCompare(r9, r8);
     __ j(not_equal, exit);
 
-    __ incq(r15);
+    __ incq(r12);
     __ SmiCompare(rcx, r11);
     __ j(not_equal, exit);
 
-    __ incq(r15);
-    __ SmiMod(rcx, rcx, r12, exit);
+    __ incq(r12);
+    __ SmiMod(rcx, rcx, r14, exit);
 
-    __ incq(r15);
+    __ incq(r12);
     __ SmiCompare(rcx, r8);
     __ j(not_equal, exit);
   } else {
     // Modulo fails.
-    __ movq(r15, Immediate(id + 8));
+    __ movq(r12, Immediate(id + 8));
 
     Label fail_ok, fail_ok2;
-    __ SmiMod(r9, rcx, r12, &fail_ok);
+    __ SmiMod(r9, rcx, r14, &fail_ok);
     __ jmp(exit);
     __ bind(&fail_ok);
 
-    __ incq(r15);
+    __ incq(r12);
     __ SmiCompare(rcx, r11);
     __ j(not_equal, exit);
 
-    __ incq(r15);
-    __ SmiMod(rcx, rcx, r12, &fail_ok2);
+    __ incq(r12);
+    __ SmiMod(rcx, rcx, r14, &fail_ok2);
     __ jmp(exit);
     __ bind(&fail_ok2);
 
-    __ incq(r15);
+    __ incq(r12);
     __ SmiCompare(rcx, r11);
     __ j(not_equal, exit);
   }
@@ -1249,10 +1289,11 @@ TEST(SmiMod) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
+  __ push(r14);
   __ push(r12);
-  __ push(r15);
   TestSmiMod(masm, &exit, 0x10, 1, 1);
   TestSmiMod(masm, &exit, 0x20, 1, 0);
   TestSmiMod(masm, &exit, 0x30, -1, 0);
@@ -1274,11 +1315,12 @@ TEST(SmiMod) {
   TestSmiMod(masm, &exit, 0x130, Smi::kMinValue, Smi::kMinValue);
   TestSmiMod(masm, &exit, 0x140, Smi::kMinValue, -1);
 
-  __ xor_(r15, r15);  // Success.
+  __ xor_(r12, r12);  // Success.
   __ bind(&exit);
-  __ movq(rax, r15);
-  __ pop(r15);
+  __ movq(rax, r12);
   __ pop(r12);
+  __ pop(r14);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -1333,7 +1375,7 @@ TEST(SmiIndex) {
   // Allocate an executable page of memory.
   size_t actual_size;
   byte* buffer =
-      static_cast<byte*>(OS::Allocate(Assembler::kMinimalBufferSize * 2,
+      static_cast<byte*>(OS::Allocate(Assembler::kMinimalBufferSize * 3,
                                       &actual_size,
                                       true));
   CHECK(buffer);
@@ -1342,6 +1384,7 @@ TEST(SmiIndex) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
   TestSmiIndex(masm, &exit, 0x10, 0);
@@ -1352,6 +1395,7 @@ TEST(SmiIndex) {
 
   __ xor_(rax, rax);  // Success.
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -1408,6 +1452,7 @@ TEST(SmiSelectNonSmi) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);  // Avoid inline checks.
+  EntryCode(masm);
   Label exit;
 
   TestSelectNonSmi(masm, &exit, 0x10, 0, 0);
@@ -1422,6 +1467,7 @@ TEST(SmiSelectNonSmi) {
 
   __ xor_(rax, rax);  // Success.
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -1484,6 +1530,7 @@ TEST(SmiAnd) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
   TestSmiAnd(masm, &exit, 0x10, 0, 0);
@@ -1500,6 +1547,7 @@ TEST(SmiAnd) {
 
   __ xor_(rax, rax);  // Success.
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -1562,6 +1610,7 @@ TEST(SmiOr) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
   TestSmiOr(masm, &exit, 0x10, 0, 0);
@@ -1580,6 +1629,7 @@ TEST(SmiOr) {
 
   __ xor_(rax, rax);  // Success.
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -1642,6 +1692,7 @@ TEST(SmiXor) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
   TestSmiXor(masm, &exit, 0x10, 0, 0);
@@ -1660,6 +1711,7 @@ TEST(SmiXor) {
 
   __ xor_(rax, rax);  // Success.
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -1706,6 +1758,7 @@ TEST(SmiNot) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
   TestSmiNot(masm, &exit, 0x10, 0);
@@ -1719,6 +1772,7 @@ TEST(SmiNot) {
 
   __ xor_(rax, rax);  // Success.
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -1790,7 +1844,7 @@ TEST(SmiShiftLeft) {
   // Allocate an executable page of memory.
   size_t actual_size;
   byte* buffer =
-      static_cast<byte*>(OS::Allocate(Assembler::kMinimalBufferSize * 3,
+      static_cast<byte*>(OS::Allocate(Assembler::kMinimalBufferSize * 4,
                                       &actual_size,
                                       true));
   CHECK(buffer);
@@ -1799,6 +1853,7 @@ TEST(SmiShiftLeft) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
   TestSmiShiftLeft(masm, &exit, 0x10, 0);
@@ -1811,6 +1866,7 @@ TEST(SmiShiftLeft) {
 
   __ xor_(rax, rax);  // Success.
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -1893,7 +1949,7 @@ TEST(SmiShiftLogicalRight) {
   // Allocate an executable page of memory.
   size_t actual_size;
   byte* buffer =
-      static_cast<byte*>(OS::Allocate(Assembler::kMinimalBufferSize * 2,
+      static_cast<byte*>(OS::Allocate(Assembler::kMinimalBufferSize * 3,
                                       &actual_size,
                                       true));
   CHECK(buffer);
@@ -1902,6 +1958,7 @@ TEST(SmiShiftLogicalRight) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
   TestSmiShiftLogicalRight(masm, &exit, 0x10, 0);
@@ -1914,6 +1971,7 @@ TEST(SmiShiftLogicalRight) {
 
   __ xor_(rax, rax);  // Success.
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -1968,6 +2026,7 @@ TEST(SmiShiftArithmeticRight) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
   TestSmiShiftArithmeticRight(masm, &exit, 0x10, 0);
@@ -1980,6 +2039,7 @@ TEST(SmiShiftArithmeticRight) {
 
   __ xor_(rax, rax);  // Success.
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -2029,6 +2089,7 @@ TEST(PositiveSmiTimesPowerOfTwoToInteger64) {
 
   MacroAssembler* masm = &assembler;
   masm->set_allow_stub_calls(false);
+  EntryCode(masm);
   Label exit;
 
   TestPositiveSmiPowerUp(masm, &exit, 0x20, 0);
@@ -2043,6 +2104,7 @@ TEST(PositiveSmiTimesPowerOfTwoToInteger64) {
 
   __ xor_(rax, rax);  // Success.
   __ bind(&exit);
+  ExitCode(masm);
   __ ret(0);
 
   CodeDesc desc;
@@ -2051,6 +2113,362 @@ TEST(PositiveSmiTimesPowerOfTwoToInteger64) {
   int result = FUNCTION_CAST<F0>(buffer)();
   CHECK_EQ(0, result);
 }
+
+
+TEST(OperandOffset) {
+  int data[256];
+  for (int i = 0; i < 256; i++) { data[i] = i * 0x01010101; }
+
+  // Allocate an executable page of memory.
+  size_t actual_size;
+  byte* buffer =
+      static_cast<byte*>(OS::Allocate(Assembler::kMinimalBufferSize * 2,
+                                      &actual_size,
+                                      true));
+  CHECK(buffer);
+  HandleScope handles;
+  MacroAssembler assembler(buffer, static_cast<int>(actual_size));
+
+  MacroAssembler* masm = &assembler;
+  masm->set_allow_stub_calls(false);
+  Label exit;
+
+  EntryCode(masm);
+  __ push(r13);
+  __ push(r14);
+  __ push(rbx);
+  __ push(rbp);
+  __ push(Immediate(0x100));  // <-- rbp
+  __ movq(rbp, rsp);
+  __ push(Immediate(0x101));
+  __ push(Immediate(0x102));
+  __ push(Immediate(0x103));
+  __ push(Immediate(0x104));
+  __ push(Immediate(0x105));  // <-- rbx
+  __ push(Immediate(0x106));
+  __ push(Immediate(0x107));
+  __ push(Immediate(0x108));
+  __ push(Immediate(0x109));  // <-- rsp
+  // rbp = rsp[9]
+  // r12 = rsp[3]
+  // rbx = rsp[5]
+  // r13 = rsp[7]
+  __ lea(r14, Operand(rsp, 3 * kPointerSize));
+  __ lea(r13, Operand(rbp, -3 * kPointerSize));
+  __ lea(rbx, Operand(rbp, -5 * kPointerSize));
+  __ movl(rcx, Immediate(2));
+  __ movq(r8, reinterpret_cast<uintptr_t>(&data[128]), RelocInfo::NONE);
+  __ movl(rax, Immediate(1));
+
+  Operand sp0 = Operand(rsp, 0);
+
+  // Test 1.
+  __ movl(rdx, sp0);  // Sanity check.
+  __ cmpl(rdx, Immediate(0x109));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  // Test 2.
+  // Zero to non-zero displacement.
+  __ movl(rdx, Operand(sp0, 2 * kPointerSize));
+  __ cmpl(rdx, Immediate(0x107));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  Operand sp2 = Operand(rsp, 2 * kPointerSize);
+
+  // Test 3.
+  __ movl(rdx, sp2);  // Sanity check.
+  __ cmpl(rdx, Immediate(0x107));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(sp2, 2 * kPointerSize));
+  __ cmpl(rdx, Immediate(0x105));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  // Non-zero to zero displacement.
+  __ movl(rdx, Operand(sp2, -2 * kPointerSize));
+  __ cmpl(rdx, Immediate(0x109));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  Operand sp2c2 = Operand(rsp, rcx, times_pointer_size, 2 * kPointerSize);
+
+  // Test 6.
+  __ movl(rdx, sp2c2);  // Sanity check.
+  __ cmpl(rdx, Immediate(0x105));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(sp2c2, 2 * kPointerSize));
+  __ cmpl(rdx, Immediate(0x103));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  // Non-zero to zero displacement.
+  __ movl(rdx, Operand(sp2c2, -2 * kPointerSize));
+  __ cmpl(rdx, Immediate(0x107));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+
+  Operand bp0 = Operand(rbp, 0);
+
+  // Test 9.
+  __ movl(rdx, bp0);  // Sanity check.
+  __ cmpl(rdx, Immediate(0x100));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  // Zero to non-zero displacement.
+  __ movl(rdx, Operand(bp0, -2 * kPointerSize));
+  __ cmpl(rdx, Immediate(0x102));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  Operand bp2 = Operand(rbp, -2 * kPointerSize);
+
+  // Test 11.
+  __ movl(rdx, bp2);  // Sanity check.
+  __ cmpl(rdx, Immediate(0x102));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  // Non-zero to zero displacement.
+  __ movl(rdx, Operand(bp2, 2 * kPointerSize));
+  __ cmpl(rdx, Immediate(0x100));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(bp2, -2 * kPointerSize));
+  __ cmpl(rdx, Immediate(0x104));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  Operand bp2c4 = Operand(rbp, rcx, times_pointer_size, -4 * kPointerSize);
+
+  // Test 14:
+  __ movl(rdx, bp2c4);  // Sanity check.
+  __ cmpl(rdx, Immediate(0x102));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(bp2c4, 2 * kPointerSize));
+  __ cmpl(rdx, Immediate(0x100));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(bp2c4, -2 * kPointerSize));
+  __ cmpl(rdx, Immediate(0x104));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  Operand bx0 = Operand(rbx, 0);
+
+  // Test 17.
+  __ movl(rdx, bx0);  // Sanity check.
+  __ cmpl(rdx, Immediate(0x105));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(bx0, 5 * kPointerSize));
+  __ cmpl(rdx, Immediate(0x100));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(bx0, -4 * kPointerSize));
+  __ cmpl(rdx, Immediate(0x109));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  Operand bx2 = Operand(rbx, 2 * kPointerSize);
+
+  // Test 20.
+  __ movl(rdx, bx2);  // Sanity check.
+  __ cmpl(rdx, Immediate(0x103));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(bx2, 2 * kPointerSize));
+  __ cmpl(rdx, Immediate(0x101));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  // Non-zero to zero displacement.
+  __ movl(rdx, Operand(bx2, -2 * kPointerSize));
+  __ cmpl(rdx, Immediate(0x105));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  Operand bx2c2 = Operand(rbx, rcx, times_pointer_size, -2 * kPointerSize);
+
+  // Test 23.
+  __ movl(rdx, bx2c2);  // Sanity check.
+  __ cmpl(rdx, Immediate(0x105));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(bx2c2, 2 * kPointerSize));
+  __ cmpl(rdx, Immediate(0x103));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(bx2c2, -2 * kPointerSize));
+  __ cmpl(rdx, Immediate(0x107));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  Operand r80 = Operand(r8, 0);
+
+  // Test 26.
+  __ movl(rdx, r80);  // Sanity check.
+  __ cmpl(rdx, Immediate(0x80808080));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(r80, -8 * kIntSize));
+  __ cmpl(rdx, Immediate(0x78787878));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(r80, 8 * kIntSize));
+  __ cmpl(rdx, Immediate(0x88888888));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(r80, -64 * kIntSize));
+  __ cmpl(rdx, Immediate(0x40404040));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(r80, 64 * kIntSize));
+  __ cmpl(rdx, Immediate(0xC0C0C0C0));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  Operand r88 = Operand(r8, 8 * kIntSize);
+
+  // Test 31.
+  __ movl(rdx, r88);  // Sanity check.
+  __ cmpl(rdx, Immediate(0x88888888));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(r88, -8 * kIntSize));
+  __ cmpl(rdx, Immediate(0x80808080));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(r88, 8 * kIntSize));
+  __ cmpl(rdx, Immediate(0x90909090));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(r88, -64 * kIntSize));
+  __ cmpl(rdx, Immediate(0x48484848));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(r88, 64 * kIntSize));
+  __ cmpl(rdx, Immediate(0xC8C8C8C8));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+
+  Operand r864 = Operand(r8, 64 * kIntSize);
+
+  // Test 36.
+  __ movl(rdx, r864);  // Sanity check.
+  __ cmpl(rdx, Immediate(0xC0C0C0C0));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(r864, -8 * kIntSize));
+  __ cmpl(rdx, Immediate(0xB8B8B8B8));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(r864, 8 * kIntSize));
+  __ cmpl(rdx, Immediate(0xC8C8C8C8));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(r864, -64 * kIntSize));
+  __ cmpl(rdx, Immediate(0x80808080));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(r864, 32 * kIntSize));
+  __ cmpl(rdx, Immediate(0xE0E0E0E0));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  // 32-bit offset to 8-bit offset.
+  __ movl(rdx, Operand(r864, -60 * kIntSize));
+  __ cmpl(rdx, Immediate(0x84848484));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(r864, 60 * kIntSize));
+  __ cmpl(rdx, Immediate(0xFCFCFCFC));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  // Test unaligned offsets.
+
+  // Test 43.
+  __ movl(rdx, Operand(r80, 2));
+  __ cmpl(rdx, Immediate(0x81818080));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(r80, -2));
+  __ cmpl(rdx, Immediate(0x80807F7F));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(r80, 126));
+  __ cmpl(rdx, Immediate(0xA0A09F9F));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(r80, -126));
+  __ cmpl(rdx, Immediate(0x61616060));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(r80, 254));
+  __ cmpl(rdx, Immediate(0xC0C0BFBF));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  __ movl(rdx, Operand(r80, -254));
+  __ cmpl(rdx, Immediate(0x41414040));
+  __ j(not_equal, &exit);
+  __ incq(rax);
+
+  // Success.
+
+  __ movl(rax, Immediate(0));
+  __ bind(&exit);
+  __ lea(rsp, Operand(rbp, kPointerSize));
+  __ pop(rbp);
+  __ pop(rbx);
+  __ pop(r14);
+  __ pop(r13);
+  ExitCode(masm);
+  __ ret(0);
+
+
+  CodeDesc desc;
+  masm->GetCode(&desc);
+  // Call the function from C++.
+  int result = FUNCTION_CAST<F0>(buffer)();
+  CHECK_EQ(0, result);
+}
+
 
 
 #undef __

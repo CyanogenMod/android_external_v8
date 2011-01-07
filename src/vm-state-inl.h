@@ -74,8 +74,10 @@ VMState::VMState(StateTag state)
   if (state == EXTERNAL) state = OTHER;
 #endif
   state_ = state;
-  previous_ = current_state_;  // Save the previous state.
-  current_state_ = this;       // Install the new state.
+  // Save the previous state.
+  previous_ = Top::current_vm_state();
+  // Install the new state.
+  Top::set_current_vm_state(this);
 
 #ifdef ENABLE_LOGGING_AND_PROFILING
   if (FLAG_log_state_changes) {
@@ -103,7 +105,8 @@ VMState::VMState(StateTag state)
 
 VMState::~VMState() {
   if (disabled_) return;
-  current_state_ = previous_;  // Return to the previous state.
+  // Return to the previous state.
+  Top::set_current_vm_state(previous_);
 
 #ifdef ENABLE_LOGGING_AND_PROFILING
   if (FLAG_log_state_changes) {

@@ -63,7 +63,7 @@ function testArgumentCount(name, argc) {
     try {
       func = makeFunction(name, i);
     } catch (e) {
-      if (e != "SyntaxError: illegal access") throw e;
+      if (e != "SyntaxError: Illegal access") throw e;
     }
     if (func === null && i == argc) {
       throw "unexpected exception";
@@ -129,7 +129,6 @@ var knownProblems = {
   // which means that we have to propagate errors back.
   "SetFunctionBreakPoint": true,
   "SetScriptBreakPoint": true,
-  "ChangeBreakOnException": true,
   "PrepareStep": true,
 
   // Too slow.
@@ -174,6 +173,13 @@ var knownProblems = {
   // This function performs some checks compile time (it requires its first
   // argument to be a compile time smi).
   "_GetFromCache": true,
+
+  // This function expects its first argument to be a non-smi.
+  "_IsStringWrapperSafeForDefaultValueOf" : true,
+
+  // Only applicable to strings.
+  "_HasCachedArrayIndex": true,
+  "_GetCachedArrayIndex": true
 };
 
 var currentlyUncallable = {

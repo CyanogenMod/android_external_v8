@@ -45,10 +45,12 @@ class Descriptor BASE_EMBEDDED {
     return Smi::cast(value)->value();
   }
 
-  Object* KeyToSymbol() {
+  MUST_USE_RESULT MaybeObject* KeyToSymbol() {
     if (!StringShape(key_).IsSymbol()) {
-      Object* result = Heap::LookupSymbol(key_);
-      if (result->IsFailure()) return result;
+      Object* result;
+      { MaybeObject* maybe_result = Heap::LookupSymbol(key_);
+        if (!maybe_result->ToObject(&result)) return maybe_result;
+      }
       key_ = String::cast(result);
     }
     return key_;
@@ -115,8 +117,8 @@ class MapTransitionDescriptor: public Descriptor {
 // the same CONSTANT_FUNCTION field.
 class ConstTransitionDescriptor: public Descriptor {
  public:
-  explicit ConstTransitionDescriptor(String* key)
-      : Descriptor(key, Smi::FromInt(0), NONE, CONSTANT_TRANSITION) { }
+  explicit ConstTransitionDescriptor(String* key, Map* map)
+      : Descriptor(key, map, NONE, CONSTANT_TRANSITION) { }
 };
 
 
@@ -260,7 +262,7 @@ class LookupResult BASE_EMBEDDED {
 
   Map* GetTransitionMap() {
     ASSERT(lookup_type_ == DESCRIPTOR_TYPE);
-    ASSERT(type() == MAP_TRANSITION);
+    ASSERT(type() == MAP_TRANSITION || type() == CONSTANT_TRANSITION);
     return Map::cast(GetValue());
   }
 

@@ -28,6 +28,8 @@
 #ifndef V8_TOKEN_H_
 #define V8_TOKEN_H_
 
+#include "checks.h"
+
 namespace v8 {
 namespace internal {
 
@@ -220,6 +222,10 @@ class Token {
   }
 
   // Predicates
+  static bool IsKeyword(Value tok) {
+    return token_type[tok] == 'K';
+  }
+
   static bool IsAssignmentOp(Value tok) {
     return INIT_VAR <= tok && tok <= ASSIGN_MOD;
   }
@@ -244,6 +250,10 @@ class Token {
     return op == INC || op == DEC;
   }
 
+  static bool IsShiftOp(Value op) {
+    return (SHL <= op) && (op <= SHR);
+  }
+
   // Returns a string corresponding to the JS token string
   // (.e., "<" for the token LT) or NULL if the token doesn't
   // have a (unique) string (e.g. an IDENTIFIER).
@@ -263,6 +273,7 @@ class Token {
   static const char* name_[NUM_TOKENS];
   static const char* string_[NUM_TOKENS];
   static int8_t precedence_[NUM_TOKENS];
+  static const char token_type[NUM_TOKENS];
 };
 
 } }  // namespace v8::internal

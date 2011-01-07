@@ -28,7 +28,8 @@
 #ifndef V8_DATEPARSER_H_
 #define V8_DATEPARSER_H_
 
-#include "scanner.h"
+#include "char-predicates-inl.h"
+#include "scanner-base.h"
 
 namespace v8 {
 namespace internal {
@@ -86,23 +87,45 @@ class DateParser : public AllStatic {
       return n;
     }
 
+    // Read a string of digits, take the first three or fewer as an unsigned
+    // number of milliseconds, and ignore any digits after the first three.
+    int ReadMilliseconds() {
+      has_read_number_ = true;
+      int n = 0;
+      int power;
+      for (power = 100; IsAsciiDigit(); Next(), power = power / 10) {
+        n = n + power * (ch_ - '0');
+      }
+      return n;
+    }
+
     // Read a word (sequence of chars. >= 'A'), fill the given buffer with a
     // lower-case prefix, and pad any remainder of the buffer with zeroes.
     // Return word length.
     int ReadWord(uint32_t* prefix, int prefix_size) {
       int len;
       for (len = 0; IsAsciiAlphaOrAbove(); Next(), len++) {
-        if (len < prefix_size) prefix[len] = GetAsciiAlphaLower();
+        if (len < prefix_size) prefix[len] = AsciiAlphaToLower(ch_);
       }
       for (int i = len; i < prefix_size; i++) prefix[i] = 0;
       return len;
     }
 
     // The skip methods return whether they actually skipped something.
-    bool Skip(uint32_t c) { return ch_ == c ?  (Next(), true) : false; }
+    bool Skip(uint32_t c) {
+      if (ch_ == c) {
+        Next();
+        return true;
+      }
+      return false;
+    }
 
     bool SkipWhiteSpace() {
-      return Scanner::kIsWhiteSpace.get(ch_) ? (Next(), true) : false;
+      if (ScannerConstants::kIsWhiteSpace.get(ch_)) {
+        Next();
+        return true;
+      }
+      return false;
     }
 
     bool SkipParentheses() {
@@ -130,10 +153,6 @@ class DateParser : public AllStatic {
     bool HasReadNumber() const { return has_read_number_; }
 
    private:
-    // If current character is in 'A'-'Z' or 'a'-'z', return its lower-case.
-    // Else, return something outside of 'A'-'Z' and 'a'-'z'.
-    uint32_t GetAsciiAlphaLower() const { return ch_ | 32; }
-
     int index_;
     Vector<Char> buffer_;
     bool has_read_number_;

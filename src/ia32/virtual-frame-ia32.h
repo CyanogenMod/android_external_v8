@@ -139,6 +139,22 @@ class VirtualFrame: public ZoneObject {
     if (is_used(reg)) SpillElementAt(register_location(reg));
   }
 
+  // Make the two registers distinct and spill them.  Returns the second
+  // register.  If the registers were not distinct then it returns the new
+  // second register.
+  Result MakeDistinctAndSpilled(Result* left, Result* right) {
+    Spill(left->reg());
+    Spill(right->reg());
+    if (left->reg().is(right->reg())) {
+      RegisterAllocator* allocator = cgen()->allocator();
+      Result fresh = allocator->Allocate();
+      ASSERT(fresh.is_valid());
+      masm()->mov(fresh.reg(), right->reg());
+      return fresh;
+    }
+    return *right;
+  }
+
   // Spill all occurrences of an arbitrary register if possible.  Return the
   // register spilled or no_reg if it was not possible to free any register
   // (ie, they all have frame-external references).
@@ -359,6 +375,9 @@ class VirtualFrame: public ZoneObject {
   // of the frame and dropped by the call.  The argument count does not
   // include the receiver.
   Result CallCallIC(RelocInfo::Mode mode, int arg_count, int loop_nesting);
+
+  // Call keyed call IC.  Same calling convention as CallCallIC.
+  Result CallKeyedCallIC(RelocInfo::Mode mode, int arg_count, int loop_nesting);
 
   // Allocate and call JS function as constructor.  Arguments,
   // receiver (global object), and function are found on top of the
@@ -615,7 +634,7 @@ class VirtualFrame: public ZoneObject {
   inline bool Equals(VirtualFrame* other);
 
   // Classes that need raw access to the elements_ array.
-  friend class DeferredCode;
+  friend class FrameRegisterState;
   friend class JumpTarget;
 };
 

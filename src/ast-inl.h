@@ -45,7 +45,9 @@ SwitchStatement::SwitchStatement(ZoneStringList* labels)
 
 
 IterationStatement::IterationStatement(ZoneStringList* labels)
-    : BreakableStatement(labels, TARGET_FOR_ANONYMOUS), body_(NULL) {
+    : BreakableStatement(labels, TARGET_FOR_ANONYMOUS),
+      body_(NULL),
+      continue_target_(JumpTarget::BIDIRECTIONAL) {
 }
 
 
@@ -62,8 +64,7 @@ ForStatement::ForStatement(ZoneStringList* labels)
       cond_(NULL),
       next_(NULL),
       may_have_function_literal_(true),
-      loop_variable_(NULL),
-      peel_this_loop_(false) {
+      loop_variable_(NULL) {
 }
 
 

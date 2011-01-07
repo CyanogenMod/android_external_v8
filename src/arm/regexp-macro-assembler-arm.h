@@ -100,6 +100,7 @@ class RegExpMacroAssemblerARM: public NativeRegExpMacroAssembler {
                             StackCheckFlag check_stack_limit);
   virtual void ReadCurrentPositionFromRegister(int reg);
   virtual void ReadStackPointerFromRegister(int reg);
+  virtual void SetCurrentPositionFromEnd(int by);
   virtual void SetRegister(int register_index, int to);
   virtual void Succeed();
   virtual void WriteCurrentPositionToRegister(int reg, int cp_offset);
@@ -240,22 +241,6 @@ class RegExpMacroAssemblerARM: public NativeRegExpMacroAssembler {
   Label exit_label_;
   Label check_preempt_label_;
   Label stack_overflow_label_;
-};
-
-
-// Enter C code from generated RegExp code in a way that allows
-// the C code to fix the return address in case of a GC.
-// Currently only needed on ARM.
-class RegExpCEntryStub: public CodeStub {
- public:
-  RegExpCEntryStub() {}
-  virtual ~RegExpCEntryStub() {}
-  void Generate(MacroAssembler* masm);
-
- private:
-  Major MajorKey() { return RegExpCEntry; }
-  int MinorKey() { return 0; }
-  const char* GetName() { return "RegExpCEntryStub"; }
 };
 
 #endif  // V8_INTERPRETED_REGEXP

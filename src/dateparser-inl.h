@@ -59,14 +59,16 @@ bool DateParser::Parse(Vector<Char> str, FixedArray* out) {
       } else if (in.Skip('.') && time.IsExpecting(n)) {
         time.Add(n);
         if (!in.IsAsciiDigit()) return false;
-        int n = in.ReadUnsignedNumber();
+        int n = in.ReadMilliseconds();
         time.AddFinal(n);
       } else if (tz.IsExpecting(n)) {
         tz.SetAbsoluteMinute(n);
       } else if (time.IsExpecting(n)) {
         time.AddFinal(n);
-        // Require end, white space or Z immediately after finalizing time.
-        if (!in.IsEnd() && !in.SkipWhiteSpace() && !in.Is('Z')) return false;
+        // Require end, white space, "Z", "+" or "-" immediately after
+        // finalizing time.
+        if (!in.IsEnd() && !in.SkipWhiteSpace() && !in.Is('Z') &&
+            !in.IsAsciiSign()) return false;
       } else {
         if (!day.Add(n)) return false;
         in.Skip('-');  // Ignore suffix '-' for year, month, or day.

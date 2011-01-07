@@ -42,11 +42,23 @@ assertEquals(1.1, Math.min(2.2, 3.3, 1.1));
 
 // Prepare a non-Smi zero value.
 function returnsNonSmi(){ return 0.25; }
-var ZERO = returnsNonSmi() - returnsNonSmi();
+var ZERO = (function() {
+  var z;
+  // We have to have a loop here because the first time we get a Smi from the
+  // runtime system.  After a while the binary op IC settles down and we get
+  // a non-Smi from the generated code.
+  for (var i = 0; i < 10; i++) {
+    z = returnsNonSmi() - returnsNonSmi();
+  }
+  return z;
+})();
 assertEquals(0, ZERO);
 assertEquals(Infinity, 1/ZERO);
 assertEquals(-Infinity, 1/-ZERO);
-assertFalse(%_IsSmi(ZERO));
+// Here we would like to have assertFalse(%_IsSmi(ZERO));  This is, however,
+// unreliable, since a new space exhaustion at a critical moment could send
+// us into the runtime system, which would quite legitimately put a Smi zero
+// here.
 assertFalse(%_IsSmi(-ZERO));
 
 var o = {};

@@ -25,8 +25,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "v8.h"
-
+#include "../include/v8stdint.h"
 #include "token.h"
 
 namespace v8 {
@@ -52,5 +51,13 @@ int8_t Token::precedence_[NUM_TOKENS] = {
 };
 #undef T
 
+
+#define KT(a, b, c) 'T',
+#define KK(a, b, c) 'K',
+const char Token::token_type[] = {
+  TOKEN_LIST(KT, KK, IGNORE_TOKEN)
+};
+#undef KT
+#undef KK
 
 } }  // namespace v8::internal

@@ -31,6 +31,7 @@
 #ifdef ENABLE_LOGGING_AND_PROFILING
 
 #include "circular-queue.h"
+#include "unbound-queue.h"
 
 namespace v8 {
 namespace internal {
@@ -40,6 +41,7 @@ class CodeEntry;
 class CodeMap;
 class CpuProfile;
 class CpuProfilesCollection;
+class HashMap;
 class ProfileGenerator;
 class TokenEnumerator;
 
@@ -104,6 +106,11 @@ class CodeAliasEventRecord : public CodeEventRecord {
 
 class TickSampleEventRecord BASE_EMBEDDED {
  public:
+  TickSampleEventRecord()
+      : filler(1) {
+    ASSERT(filler != SamplingCircularQueue::kClear);
+  }
+
   // The first machine word of a TickSampleEventRecord must not ever
   // become equal to SamplingCircularQueue::kClear.  As both order and
   // TickSample's first field are not reliable in this sense (order
@@ -118,9 +125,6 @@ class TickSampleEventRecord BASE_EMBEDDED {
   }
 
   INLINE(static TickSampleEventRecord* init(void* value));
-
- private:
-  DISALLOW_IMPLICIT_CONSTRUCTORS(TickSampleEventRecord);
 };
 
 
@@ -129,7 +133,7 @@ class TickSampleEventRecord BASE_EMBEDDED {
 class ProfilerEventsProcessor : public Thread {
  public:
   explicit ProfilerEventsProcessor(ProfileGenerator* generator);
-  virtual ~ProfilerEventsProcessor() { }
+  virtual ~ProfilerEventsProcessor();
 
   // Thread control.
   virtual void Run();
@@ -158,6 +162,11 @@ class ProfilerEventsProcessor : public Thread {
   void RegExpCodeCreateEvent(Logger::LogEventsAndTags tag,
                              const char* prefix, String* name,
                              Address start, unsigned size);
+  // Puts current stack into tick sample events buffer.
+  void AddCurrentStack();
+  bool IsKnownFunction(Address start);
+  void ProcessMovedFunctions();
+  void RememberMovedFunction(JSFunction* function);
 
   // Tick sample events are filled directly in the buffer of the circular
   // queue (because the structure is of fixed width, but usually not all
@@ -178,12 +187,24 @@ class ProfilerEventsProcessor : public Thread {
   bool ProcessTicks(unsigned dequeue_order);
 
   INLINE(static bool FilterOutCodeCreateEvent(Logger::LogEventsAndTags tag));
+  INLINE(static bool AddressesMatch(void* key1, void* key2)) {
+    return key1 == key2;
+  }
+  INLINE(static uint32_t AddressHash(Address addr)) {
+    return ComputeIntegerHash(
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(addr)));
+  }
 
   ProfileGenerator* generator_;
   bool running_;
-  CircularQueue<CodeEventsContainer> events_buffer_;
+  UnboundQueue<CodeEventsContainer> events_buffer_;
   SamplingCircularQueue ticks_buffer_;
+  UnboundQueue<TickSampleEventRecord> ticks_from_vm_buffer_;
   unsigned enqueue_order_;
+
+  // Used from the VM thread.
+  HashMap* known_functions_;
+  List<JSFunction*> moved_functions_;
 };
 
 } }  // namespace v8::internal
@@ -233,13 +254,18 @@ class CpuProfiler {
                               String* source, int line);
   static void CodeCreateEvent(Logger::LogEventsAndTags tag,
                               Code* code, int args_count);
+  static void CodeMovingGCEvent() {}
   static void CodeMoveEvent(Address from, Address to);
   static void CodeDeleteEvent(Address from);
   static void FunctionCreateEvent(JSFunction* function);
+  // Reports function creation in case we had missed it (e.g.
+  // if it was created from compiled code).
+  static void FunctionCreateEventFromMove(JSFunction* function);
   static void FunctionMoveEvent(Address from, Address to);
   static void FunctionDeleteEvent(Address from);
   static void GetterCallbackEvent(String* name, Address entry_point);
   static void RegExpCodeCreateEvent(Code* code, String* source);
+  static void ProcessMovedFunctions();
   static void SetterCallbackEvent(String* name, Address entry_point);
 
   static INLINE(bool is_profiling()) {
@@ -254,7 +280,7 @@ class CpuProfiler {
   void StartProcessorIfNotStarted();
   CpuProfile* StopCollectingProfile(const char* title);
   CpuProfile* StopCollectingProfile(Object* security_token, String* title);
-  void StopProcessorIfLastProfile();
+  void StopProcessorIfLastProfile(const char* title);
 
   CpuProfilesCollection* profiles_;
   unsigned next_profile_uid_;

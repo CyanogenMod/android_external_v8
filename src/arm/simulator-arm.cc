@@ -26,6 +26,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <stdlib.h>
+#include <math.h>
 #include <cstdarg>
 #include "v8.h"
 
@@ -36,7 +37,7 @@
 #include "arm/constants-arm.h"
 #include "arm/simulator-arm.h"
 
-#if !defined(__arm__)
+#if defined(USE_SIMULATOR)
 
 // Only build the simulator if not compiling for real ARM hardware.
 namespace assembler {
@@ -111,15 +112,29 @@ static void InitializeCoverage() {
 
 
 void Debugger::Stop(Instr* instr) {
-  char* str = reinterpret_cast<char*>(instr->InstructionBits() & 0x0fffffff);
-  if (strlen(str) > 0) {
+  // Get the stop code.
+  uint32_t code = instr->SvcField() & kStopCodeMask;
+  // Retrieve the encoded address, which comes just after this stop.
+  char** msg_address =
+    reinterpret_cast<char**>(sim_->get_pc() + Instr::kInstrSize);
+  char* msg = *msg_address;
+  ASSERT(msg != NULL);
+
+  // Update this stop description.
+  if (isWatchedStop(code) && !watched_stops[code].desc) {
+    watched_stops[code].desc = msg;
+  }
+
+  if (strlen(msg) > 0) {
     if (coverage_log != NULL) {
-      fprintf(coverage_log, "%s\n", str);
+      fprintf(coverage_log, "%s\n", msg);
       fflush(coverage_log);
     }
-    instr->SetInstructionBits(0xe1a00000);  // Overwrite with nop.
+    // Overwrite the instruction and address with nops.
+    instr->SetInstructionBits(kNopInstr);
+    reinterpret_cast<Instr*>(msg_address)->SetInstructionBits(kNopInstr);
   }
-  sim_->set_pc(sim_->get_pc() + Instr::kInstrSize);
+  sim_->set_pc(sim_->get_pc() + 2 * Instr::kInstrSize);
 }
 
 #else  // ndef GENERATED_CODE_COVERAGE
@@ -129,9 +144,16 @@ static void InitializeCoverage() {
 
 
 void Debugger::Stop(Instr* instr) {
-  const char* str = (const char*)(instr->InstructionBits() & 0x0fffffff);
-  PrintF("Simulator hit %s\n", str);
-  sim_->set_pc(sim_->get_pc() + Instr::kInstrSize);
+  // Get the stop code.
+  uint32_t code = instr->SvcField() & kStopCodeMask;
+  // Retrieve the encoded address, which comes just after this stop.
+  char* msg = *reinterpret_cast<char**>(sim_->get_pc() + Instr::kInstrSize);
+  // Update this stop description.
+  if (sim_->isWatchedStop(code) && !sim_->watched_stops[code].desc) {
+    sim_->watched_stops[code].desc = msg;
+  }
+  PrintF("Simulator hit %s\n", msg);
+  sim_->set_pc(sim_->get_pc() + 2 * Instr::kInstrSize);
   Debug();
 }
 #endif
@@ -293,7 +315,7 @@ void Debugger::Debug() {
             } else if (GetVFPSingleValue(arg1, &svalue)) {
               PrintF("%s: %f \n", arg1, svalue);
             } else if (GetVFPDoubleValue(arg1, &dvalue)) {
-              PrintF("%s: %lf \n", arg1, dvalue);
+              PrintF("%s: %f \n", arg1, dvalue);
             } else {
               PrintF("%s unrecognized\n", arg1);
             }
@@ -348,7 +370,8 @@ void Debugger::Debug() {
         end = cur + words;
 
         while (cur < end) {
-          PrintF("  0x%08x:  0x%08x %10d\n", cur, *cur, *cur);
+          PrintF("  0x%08x:  0x%08x %10d\n",
+                 reinterpret_cast<intptr_t>(cur), *cur, *cur);
           cur++;
         }
       } else if (strcmp(cmd, "disasm") == 0) {
@@ -357,6 +380,7 @@ void Debugger::Debug() {
         // use a reasonably large buffer
         v8::internal::EmbeddedVector<char, 256> buffer;
 
+        byte* prev = NULL;
         byte* cur = NULL;
         byte* end = NULL;
 
@@ -366,9 +390,9 @@ void Debugger::Debug() {
         } else if (argc == 2) {
           int32_t value;
           if (GetValue(arg1, &value)) {
-            cur = reinterpret_cast<byte*>(value);
-            // no length parameter passed, assume 10 instructions
-            end = cur + (10 * Instr::kInstrSize);
+            cur = reinterpret_cast<byte*>(sim_->get_pc());
+            // Disassemble <arg1> instructions.
+            end = cur + (value * Instr::kInstrSize);
           }
         } else {
           int32_t value1;
@@ -380,9 +404,10 @@ void Debugger::Debug() {
         }
 
         while (cur < end) {
-          dasm.InstructionDecode(buffer, cur);
-          PrintF("  0x%08x  %s\n", cur, buffer.start());
-          cur += Instr::kInstrSize;
+          prev = cur;
+          cur += dasm.InstructionDecode(buffer, cur);
+          PrintF("  0x%08x  %s\n",
+                 reinterpret_cast<intptr_t>(prev), buffer.start());
         }
       } else if (strcmp(cmd, "gdb") == 0) {
         PrintF("relinquishing control to gdb\n");
@@ -415,13 +440,58 @@ void Debugger::Debug() {
         PrintF("OVERFLOW flag: %d; ", sim_->overflow_vfp_flag_);
         PrintF("UNDERFLOW flag: %d; ", sim_->underflow_vfp_flag_);
         PrintF("INEXACT flag: %d; ", sim_->inexact_vfp_flag_);
-      } else if (strcmp(cmd, "unstop") == 0) {
-        intptr_t stop_pc = sim_->get_pc() - Instr::kInstrSize;
+      } else if (strcmp(cmd, "stop") == 0) {
+        int32_t value;
+        intptr_t stop_pc = sim_->get_pc() - 2 * Instr::kInstrSize;
         Instr* stop_instr = reinterpret_cast<Instr*>(stop_pc);
-        if (stop_instr->ConditionField() == special_condition) {
-          stop_instr->SetInstructionBits(kNopInstr);
+        Instr* msg_address =
+          reinterpret_cast<Instr*>(stop_pc + Instr::kInstrSize);
+        if ((argc == 2) && (strcmp(arg1, "unstop") == 0)) {
+          // Remove the current stop.
+          if (sim_->isStopInstruction(stop_instr)) {
+            stop_instr->SetInstructionBits(kNopInstr);
+            msg_address->SetInstructionBits(kNopInstr);
+          } else {
+            PrintF("Not at debugger stop.\n");
+          }
+        } else if (argc == 3) {
+          // Print information about all/the specified breakpoint(s).
+          if (strcmp(arg1, "info") == 0) {
+            if (strcmp(arg2, "all") == 0) {
+              PrintF("Stop information:\n");
+              for (uint32_t i = 0; i < sim_->kNumOfWatchedStops; i++) {
+                sim_->PrintStopInfo(i);
+              }
+            } else if (GetValue(arg2, &value)) {
+              sim_->PrintStopInfo(value);
+            } else {
+              PrintF("Unrecognized argument.\n");
+            }
+          } else if (strcmp(arg1, "enable") == 0) {
+            // Enable all/the specified breakpoint(s).
+            if (strcmp(arg2, "all") == 0) {
+              for (uint32_t i = 0; i < sim_->kNumOfWatchedStops; i++) {
+                sim_->EnableStop(i);
+              }
+            } else if (GetValue(arg2, &value)) {
+              sim_->EnableStop(value);
+            } else {
+              PrintF("Unrecognized argument.\n");
+            }
+          } else if (strcmp(arg1, "disable") == 0) {
+            // Disable all/the specified breakpoint(s).
+            if (strcmp(arg2, "all") == 0) {
+              for (uint32_t i = 0; i < sim_->kNumOfWatchedStops; i++) {
+                sim_->DisableStop(i);
+              }
+            } else if (GetValue(arg2, &value)) {
+              sim_->DisableStop(value);
+            } else {
+              PrintF("Unrecognized argument.\n");
+            }
+          }
         } else {
-          PrintF("Not at debugger stop.");
+          PrintF("Wrong usage. Use help command for more information.\n");
         }
       } else if ((strcmp(cmd, "t") == 0) || strcmp(cmd, "trace") == 0) {
         ::v8::internal::FLAG_trace_sim = !::v8::internal::FLAG_trace_sim;
@@ -452,11 +522,29 @@ void Debugger::Debug() {
         PrintF("  set a break point on the address\n");
         PrintF("del\n");
         PrintF("  delete the breakpoint\n");
-        PrintF("unstop\n");
-        PrintF("  ignore the stop instruction at the current location");
-        PrintF("  from now on\n");
         PrintF("trace (alias 't')\n");
         PrintF("  toogle the tracing of all executed statements\n");
+        PrintF("stop feature:\n");
+        PrintF("  Description:\n");
+        PrintF("    Stops are debug instructions inserted by\n");
+        PrintF("    the Assembler::stop() function.\n");
+        PrintF("    When hitting a stop, the Simulator will\n");
+        PrintF("    stop and and give control to the Debugger.\n");
+        PrintF("    The first %d stop codes are watched:\n",
+               Simulator::kNumOfWatchedStops);
+        PrintF("    - They can be enabled / disabled: the Simulator\n");
+        PrintF("       will / won't stop when hitting them.\n");
+        PrintF("    - The Simulator keeps track of how many times they \n");
+        PrintF("      are met. (See the info command.) Going over a\n");
+        PrintF("      disabled stop still increases its counter. \n");
+        PrintF("  Commands:\n");
+        PrintF("    stop info all/<code> : print infos about number <code>\n");
+        PrintF("      or all stop(s).\n");
+        PrintF("    stop enable/disable all/<code> : enables / disables\n");
+        PrintF("      all or number <code> stop(s)\n");
+        PrintF("    stop unstop\n");
+        PrintF("      ignore the stop instruction at the current location\n");
+        PrintF("      from now on\n");
       } else {
         PrintF("Unknown command: %s\n", cmd);
       }
@@ -617,6 +705,7 @@ Simulator::Simulator() {
   z_flag_FPSCR_ = false;
   c_flag_FPSCR_ = false;
   v_flag_FPSCR_ = false;
+  FPSCR_rounding_mode_ = RZ;
 
   inv_op_vfp_flag_ = false;
   div_zero_vfp_flag_ = false;
@@ -640,9 +729,9 @@ Simulator::Simulator() {
 // the simulator.  The external reference will be a function compiled for the
 // host architecture.  We need to call that function instead of trying to
 // execute it with the simulator.  We do that by redirecting the external
-// reference to a swi (software-interrupt) instruction that is handled by
+// reference to a svc (Supervisor Call) instruction that is handled by
 // the simulator.  We write the original destination of the jump just at a known
-// offset from the swi instruction so the simulator knows what to call.
+// offset from the svc instruction so the simulator knows what to call.
 class Redirection {
  public:
   Redirection(void* external_function, bool fp_return)
@@ -726,6 +815,10 @@ void Simulator::set_register(int reg, int32_t value) {
 // the special case of accessing the PC register.
 int32_t Simulator::get_register(int reg) const {
   ASSERT((reg >= 0) && (reg < num_registers));
+  // Stupid code added to avoid bug in GCC.
+  // See: http://gcc.gnu.org/bugzilla/show_bug.cgi?id=43949
+  if (reg >= num_registers) return 0;
+  // End stupid code.
   return registers_[reg] + ((reg == pc) ? Instr::kPCReadOffset : 0);
 }
 
@@ -1056,7 +1149,7 @@ uintptr_t Simulator::StackLimit() const {
 // Unsupported instructions use Format to print an error and stop execution.
 void Simulator::Format(Instr* instr, const char* format) {
   PrintF("Simulator found unsupported instruction:\n 0x%08x: %s\n",
-         instr, format);
+         reinterpret_cast<intptr_t>(instr), format);
   UNIMPLEMENTED();
 }
 
@@ -1377,7 +1470,9 @@ void Simulator::HandleRList(Instr* instr, bool load) {
     }
     case 3: {
       // Print("ib");
-      UNIMPLEMENTED();
+      start_address = rn_val + 4;
+      end_address = rn_val + (num_regs * 4);
+      rn_val = end_address;
       break;
     }
     default: {
@@ -1425,8 +1520,8 @@ typedef double (*SimulatorRuntimeFPCall)(int32_t arg0,
 // Software interrupt instructions are used by the simulator to call into the
 // C-based V8 runtime.
 void Simulator::SoftwareInterrupt(Instr* instr) {
-  int swi = instr->SwiField();
-  switch (swi) {
+  int svc = instr->SvcField();
+  switch (svc) {
     case call_rt_redirected: {
       // Check if stack is aligned. Error if not aligned is reported below to
       // include information on the function called.
@@ -1496,9 +1591,98 @@ void Simulator::SoftwareInterrupt(Instr* instr) {
       dbg.Debug();
       break;
     }
+    // stop uses all codes greater than 1 << 23.
     default: {
-      UNREACHABLE();
-      break;
+      if (svc >= (1 << 23)) {
+        uint32_t code = svc & kStopCodeMask;
+        if (isWatchedStop(code)) {
+          IncreaseStopCounter(code);
+        }
+        // Stop if it is enabled, otherwise go on jumping over the stop
+        // and the message address.
+        if (isEnabledStop(code)) {
+          Debugger dbg(this);
+          dbg.Stop(instr);
+        } else {
+          set_pc(get_pc() + 2 * Instr::kInstrSize);
+        }
+      } else {
+        // This is not a valid svc code.
+        UNREACHABLE();
+        break;
+      }
+    }
+  }
+}
+
+
+// Stop helper functions.
+bool Simulator::isStopInstruction(Instr* instr) {
+  return (instr->Bits(27, 24) == 0xF) && (instr->SvcField() >= stop);
+}
+
+
+bool Simulator::isWatchedStop(uint32_t code) {
+  ASSERT(code <= kMaxStopCode);
+  return code < kNumOfWatchedStops;
+}
+
+
+bool Simulator::isEnabledStop(uint32_t code) {
+  ASSERT(code <= kMaxStopCode);
+  // Unwatched stops are always enabled.
+  return !isWatchedStop(code) ||
+    !(watched_stops[code].count & kStopDisabledBit);
+}
+
+
+void Simulator::EnableStop(uint32_t code) {
+  ASSERT(isWatchedStop(code));
+  if (!isEnabledStop(code)) {
+    watched_stops[code].count &= ~kStopDisabledBit;
+  }
+}
+
+
+void Simulator::DisableStop(uint32_t code) {
+  ASSERT(isWatchedStop(code));
+  if (isEnabledStop(code)) {
+    watched_stops[code].count |= kStopDisabledBit;
+  }
+}
+
+
+void Simulator::IncreaseStopCounter(uint32_t code) {
+  ASSERT(code <= kMaxStopCode);
+  ASSERT(isWatchedStop(code));
+  if ((watched_stops[code].count & ~(1 << 31)) == 0x7fffffff) {
+    PrintF("Stop counter for code %i has overflowed.\n"
+           "Enabling this code and reseting the counter to 0.\n", code);
+    watched_stops[code].count = 0;
+    EnableStop(code);
+  } else {
+    watched_stops[code].count++;
+  }
+}
+
+
+// Print a stop status.
+void Simulator::PrintStopInfo(uint32_t code) {
+  ASSERT(code <= kMaxStopCode);
+  if (!isWatchedStop(code)) {
+    PrintF("Stop not watched.");
+  } else {
+    const char* state = isEnabledStop(code) ? "Enabled" : "Disabled";
+    int32_t count = watched_stops[code].count & ~kStopDisabledBit;
+    // Don't print the state of unused breakpoints.
+    if (count != 0) {
+      if (watched_stops[code].desc) {
+        PrintF("stop %i - 0x%x: \t%s, \tcounter = %i, \t%s\n",
+               code, code, state, count, watched_stops[code].desc);
+      } else {
+        PrintF("stop %i - 0x%x: \t%s, \tcounter = %i\n",
+               code, code, state, count);
+      }
     }
   }
 }
@@ -1859,7 +2043,9 @@ void Simulator::DecodeType01(Instr* instr) {
           SetNZFlags(alu_out);
           SetCFlag(shifter_carry_out);
         } else {
-          UNIMPLEMENTED();
+          // Format(instr, "movw'cond 'rd, 'imm").
+          alu_out = instr->ImmedMovwMovtField();
+          set_register(rd, alu_out);
         }
         break;
       }
@@ -1888,7 +2074,10 @@ void Simulator::DecodeType01(Instr* instr) {
           SetCFlag(!BorrowFrom(rn_val, shifter_operand));
           SetVFlag(OverflowFrom(alu_out, rn_val, shifter_operand, false));
         } else {
-          UNIMPLEMENTED();
+          // Format(instr, "movt'cond 'rd, 'imm").
+          alu_out = (get_register(rd) & 0xffff) |
+              (instr->ImmedMovwMovtField() << 16);
+          set_register(rd, alu_out);
         }
         break;
       }
@@ -2031,7 +2220,6 @@ void Simulator::DecodeType2(Instr* instr) {
 
 
 void Simulator::DecodeType3(Instr* instr) {
-  ASSERT(instr->Bits(6, 4) == 0x5 || instr->Bit(4) == 0);
   int rd = instr->RdField();
   int rn = instr->RnField();
   int32_t rn_val = get_register(rn);
@@ -2042,11 +2230,41 @@ void Simulator::DecodeType3(Instr* instr) {
     case 0: {
       ASSERT(!instr->HasW());
       Format(instr, "'memop'cond'b 'rd, ['rn], -'shift_rm");
+      UNIMPLEMENTED();
       break;
     }
     case 1: {
-      ASSERT(!instr->HasW());
-      Format(instr, "'memop'cond'b 'rd, ['rn], +'shift_rm");
+      if (instr->HasW()) {
+        ASSERT(instr->Bits(5, 4) == 0x1);
+
+        if (instr->Bit(22) == 0x1) {  // USAT.
+          int32_t sat_pos = instr->Bits(20, 16);
+          int32_t sat_val = (1 << sat_pos) - 1;
+          int32_t shift = instr->Bits(11, 7);
+          int32_t shift_type = instr->Bit(6);
+          int32_t rm_val = get_register(instr->RmField());
+          if (shift_type == 0) {  // LSL
+            rm_val <<= shift;
+          } else {  // ASR
+            rm_val >>= shift;
+          }
+          // If saturation occurs, the Q flag should be set in the CPSR.
+          // There is no Q flag yet, and no instruction (MRS) to read the
+          // CPSR directly.
+          if (rm_val > sat_val) {
+            rm_val = sat_val;
+          } else if (rm_val < 0) {
+            rm_val = 0;
+          }
+          set_register(rd, rm_val);
+        } else {  // SSAT.
+          UNIMPLEMENTED();
+        }
+        return;
+      } else {
+        Format(instr, "'memop'cond'b 'rd, ['rn], +'shift_rm");
+        UNIMPLEMENTED();
+      }
       break;
     }
     case 2: {
@@ -2058,17 +2276,47 @@ void Simulator::DecodeType3(Instr* instr) {
       break;
     }
     case 3: {
-      // UBFX.
       if (instr->HasW() && (instr->Bits(6, 4) == 0x5)) {
         uint32_t widthminus1 = static_cast<uint32_t>(instr->Bits(20, 16));
-        uint32_t lsbit = static_cast<uint32_t>(instr->ShiftAmountField());
+        uint32_t lsbit = static_cast<uint32_t>(instr->Bits(11, 7));
         uint32_t msbit = widthminus1 + lsbit;
         if (msbit <= 31) {
-          uint32_t rm_val =
-              static_cast<uint32_t>(get_register(instr->RmField()));
-          uint32_t extr_val = rm_val << (31 - msbit);
-          extr_val = extr_val >> (31 - widthminus1);
-          set_register(instr->RdField(), extr_val);
+          if (instr->Bit(22)) {
+            // ubfx - unsigned bitfield extract.
+            uint32_t rm_val =
+                static_cast<uint32_t>(get_register(instr->RmField()));
+            uint32_t extr_val = rm_val << (31 - msbit);
+            extr_val = extr_val >> (31 - widthminus1);
+            set_register(instr->RdField(), extr_val);
+          } else {
+            // sbfx - signed bitfield extract.
+            int32_t rm_val = get_register(instr->RmField());
+            int32_t extr_val = rm_val << (31 - msbit);
+            extr_val = extr_val >> (31 - widthminus1);
+            set_register(instr->RdField(), extr_val);
+          }
+        } else {
+          UNREACHABLE();
+        }
+        return;
+      } else if (!instr->HasW() && (instr->Bits(6, 4) == 0x1)) {
+        uint32_t lsbit = static_cast<uint32_t>(instr->Bits(11, 7));
+        uint32_t msbit = static_cast<uint32_t>(instr->Bits(20, 16));
+        if (msbit >= lsbit) {
+          // bfc or bfi - bitfield clear/insert.
+          uint32_t rd_val =
+              static_cast<uint32_t>(get_register(instr->RdField()));
+          uint32_t bitcount = msbit - lsbit + 1;
+          uint32_t mask = (1 << bitcount) - 1;
+          rd_val &= ~(mask << lsbit);
+          if (instr->RmField() != 15) {
+            // bfi - bitfield insert.
+            uint32_t rm_val =
+                static_cast<uint32_t>(get_register(instr->RmField()));
+            rm_val &= mask;
+            rd_val |= rm_val << lsbit;
+          }
+          set_register(instr->RdField(), rd_val);
         } else {
           UNREACHABLE();
         }
@@ -2143,80 +2391,6 @@ void Simulator::DecodeType7(Instr* instr) {
 }
 
 
-void Simulator::DecodeUnconditional(Instr* instr) {
-  if (instr->Bits(7, 4) == 0x0B && instr->Bits(27, 25) == 0 && instr->HasL()) {
-    // Load halfword instruction, either register or immediate offset.
-    int rd = instr->RdField();
-    int rn = instr->RnField();
-    int32_t rn_val = get_register(rn);
-    int32_t addr = 0;
-    int32_t offset;
-    if (instr->Bit(22) == 0) {
-      // Register offset.
-      int rm = instr->RmField();
-      offset = get_register(rm);
-    } else {
-      // Immediate offset
-      offset = instr->Bits(3, 0) + (instr->Bits(11, 8) << 4);
-    }
-    switch (instr->PUField()) {
-      case 0: {
-        // Post index, negative.
-        ASSERT(!instr->HasW());
-        addr = rn_val;
-        rn_val -= offset;
-        set_register(rn, rn_val);
-        break;
-      }
-      case 1: {
-        // Post index, positive.
-        ASSERT(!instr->HasW());
-        addr = rn_val;
-        rn_val += offset;
-        set_register(rn, rn_val);
-        break;
-      }
-      case 2: {
-        // Pre index or offset, negative.
-        rn_val -= offset;
-        addr = rn_val;
-        if (instr->HasW()) {
-          set_register(rn, rn_val);
-        }
-        break;
-      }
-      case 3: {
-        // Pre index or offset, positive.
-        rn_val += offset;
-        addr = rn_val;
-        if (instr->HasW()) {
-          set_register(rn, rn_val);
-        }
-        break;
-      }
-      default: {
-        // The PU field is a 2-bit field.
-        UNREACHABLE();
-        break;
-      }
-    }
-    // Not sign extending, so load as unsigned.
-    uint16_t halfword = ReadH(addr, instr);
-    set_register(rd, halfword);
-  } else {
-    Debugger dbg(this);
-    dbg.Stop(instr);
-  }
-}
-
-
-// Depending on value of last_bit flag glue register code from vm and m values
-// (where m is expected to be a single bit).
-static int GlueRegCode(bool last_bit, int vm, int m) {
-  return last_bit ? ((vm << 1) | m) : ((m << 4) | vm);
-}
-
-
 // void Simulator::DecodeTypeVFP(Instr* instr)
 // The Following ARMv7 VFPv instructions are currently supported.
 // vmov :Sn = Rt
@@ -2228,19 +2402,32 @@ static int GlueRegCode(bool last_bit, int vm, int m) {
 // Dd = vmul(Dn, Dm)
 // Dd = vdiv(Dn, Dm)
 // vcmp(Dd, Dm)
-// VMRS
+// vmrs
+// Dd = vsqrt(Dm)
 void Simulator::DecodeTypeVFP(Instr* instr) {
   ASSERT((instr->TypeField() == 7) && (instr->Bit(24) == 0x0) );
   ASSERT(instr->Bits(11, 9) == 0x5);
 
-  int vm = instr->VmField();
-  int vd = instr->VdField();
-  int vn = instr->VnField();
+  // Obtain double precision register codes.
+  int vm = instr->VFPMRegCode(kDoublePrecision);
+  int vd = instr->VFPDRegCode(kDoublePrecision);
+  int vn = instr->VFPNRegCode(kDoublePrecision);
 
   if (instr->Bit(4) == 0) {
     if (instr->Opc1Field() == 0x7) {
       // Other data processing instructions
-      if ((instr->Opc2Field() == 0x7) && (instr->Opc3Field() == 0x3)) {
+      if ((instr->Opc2Field() == 0x0) && (instr->Opc3Field() == 0x1)) {
+        // vmov register to register.
+        if (instr->SzField() == 0x1) {
+          int m = instr->VFPMRegCode(kDoublePrecision);
+          int d = instr->VFPDRegCode(kDoublePrecision);
+          set_d_register_from_double(d, get_double_from_d_register(m));
+        } else {
+          int m = instr->VFPMRegCode(kSinglePrecision);
+          int d = instr->VFPDRegCode(kSinglePrecision);
+          set_s_register_from_float(d, get_float_from_s_register(m));
+        }
+      } else if ((instr->Opc2Field() == 0x7) && (instr->Opc3Field() == 0x3)) {
         DecodeVCVTBetweenDoubleAndSingle(instr);
       } else if ((instr->Opc2Field() == 0x8) && (instr->Opc3Field() & 0x1)) {
         DecodeVCVTBetweenFloatingPointAndInteger(instr);
@@ -2250,6 +2437,18 @@ void Simulator::DecodeTypeVFP(Instr* instr) {
       } else if (((instr->Opc2Field() == 0x4) || (instr->Opc2Field() == 0x5)) &&
                  (instr->Opc3Field() & 0x1)) {
         DecodeVCMP(instr);
+      } else if (((instr->Opc2Field() == 0x1)) && (instr->Opc3Field() == 0x3)) {
+        // vsqrt
+        double dm_value = get_double_from_d_register(vm);
+        double dd_value = sqrt(dm_value);
+        set_d_register_from_double(vd, dd_value);
+      } else if (instr->Opc3Field() == 0x0) {
+        // vmov immediate.
+        if (instr->SzField() == 0x1) {
+          set_d_register_from_double(vd, instr->DoubleImmedVmov());
+        } else {
+          UNREACHABLE();  // Not used by v8.
+        }
       } else {
         UNREACHABLE();  // Not used by V8.
       }
@@ -2303,10 +2502,45 @@ void Simulator::DecodeTypeVFP(Instr* instr) {
                (instr->VAField() == 0x7) &&
                (instr->Bits(19, 16) == 0x1)) {
       // vmrs
-      if (instr->RtField() == 0xF)
+      uint32_t rt = instr->RtField();
+      if (rt == 0xF) {
         Copy_FPSCR_to_APSR();
-      else
-        UNIMPLEMENTED();  // Not used by V8.
+      } else {
+        // Emulate FPSCR from the Simulator flags.
+        uint32_t fpscr = (n_flag_FPSCR_ << 31) |
+                         (z_flag_FPSCR_ << 30) |
+                         (c_flag_FPSCR_ << 29) |
+                         (v_flag_FPSCR_ << 28) |
+                         (inexact_vfp_flag_ << 4) |
+                         (underflow_vfp_flag_ << 3) |
+                         (overflow_vfp_flag_ << 2) |
+                         (div_zero_vfp_flag_ << 1) |
+                         (inv_op_vfp_flag_ << 0) |
+                         (FPSCR_rounding_mode_ << 22);
+        set_register(rt, fpscr);
+      }
+    } else if ((instr->VLField() == 0x0) &&
+               (instr->VCField() == 0x0) &&
+               (instr->VAField() == 0x7) &&
+               (instr->Bits(19, 16) == 0x1)) {
+      // vmsr
+      uint32_t rt = instr->RtField();
+      if (rt == pc) {
+        UNREACHABLE();
+      } else {
+        uint32_t rt_value = get_register(rt);
+        n_flag_FPSCR_ = (rt_value >> 31) & 1;
+        z_flag_FPSCR_ = (rt_value >> 30) & 1;
+        c_flag_FPSCR_ = (rt_value >> 29) & 1;
+        v_flag_FPSCR_ = (rt_value >> 28) & 1;
+        inexact_vfp_flag_ = (rt_value >> 4) & 1;
+        underflow_vfp_flag_ = (rt_value >> 3) & 1;
+        overflow_vfp_flag_ = (rt_value >> 2) & 1;
+        div_zero_vfp_flag_ = (rt_value >> 1) & 1;
+        inv_op_vfp_flag_ = (rt_value >> 0) & 1;
+        FPSCR_rounding_mode_ =
+          static_cast<FPSCRRoundingModes>((rt_value >> 22) & 3);
+      }
     } else {
       UNIMPLEMENTED();  // Not used by V8.
     }
@@ -2319,7 +2553,7 @@ void Simulator::DecodeVMOVBetweenCoreAndSinglePrecisionRegisters(Instr* instr) {
          (instr->VAField() == 0x0));
 
   int t = instr->RtField();
-  int n  = GlueRegCode(true, instr->VnField(), instr->NField());
+  int n = instr->VFPNRegCode(kSinglePrecision);
   bool to_arm_register = (instr->VLField() == 0x1);
 
   if (to_arm_register) {
@@ -2336,21 +2570,30 @@ void Simulator::DecodeVCMP(Instr* instr) {
   ASSERT((instr->Bit(4) == 0) && (instr->Opc1Field() == 0x7));
   ASSERT(((instr->Opc2Field() == 0x4) || (instr->Opc2Field() == 0x5)) &&
          (instr->Opc3Field() & 0x1));
-
   // Comparison.
-  bool dp_operation = (instr->SzField() == 1);
+
+  VFPRegPrecision precision = kSinglePrecision;
+  if (instr->SzField() == 1) {
+    precision = kDoublePrecision;
+  }
 
   if (instr->Bit(7) != 0) {
     // Raising exceptions for quiet NaNs are not supported.
     UNIMPLEMENTED();  // Not used by V8.
   }
 
-  int d = GlueRegCode(!dp_operation, instr->VdField(), instr->DField());
-  int m = GlueRegCode(!dp_operation, instr->VmField(), instr->MField());
+  int d = instr->VFPDRegCode(precision);
+  int m = 0;
+  if (instr->Opc2Field() == 0x4) {
+    m = instr->VFPMRegCode(precision);
+  }
 
-  if (dp_operation) {
+  if (precision == kDoublePrecision) {
     double dd_value = get_double_from_d_register(d);
-    double dm_value = get_double_from_d_register(m);
+    double dm_value = 0.0;
+    if (instr->Opc2Field() == 0x4) {
+      dm_value = get_double_from_d_register(m);
+    }
 
     Compute_FPSCR_Flags(dd_value, dm_value);
   } else {
@@ -2363,11 +2606,17 @@ void Simulator::DecodeVCVTBetweenDoubleAndSingle(Instr* instr) {
   ASSERT((instr->Bit(4) == 0) && (instr->Opc1Field() == 0x7));
   ASSERT((instr->Opc2Field() == 0x7) && (instr->Opc3Field() == 0x3));
 
-  bool double_to_single = (instr->SzField() == 1);
-  int dst = GlueRegCode(double_to_single, instr->VdField(), instr->DField());
-  int src = GlueRegCode(!double_to_single, instr->VmField(), instr->MField());
+  VFPRegPrecision dst_precision = kDoublePrecision;
+  VFPRegPrecision src_precision = kSinglePrecision;
+  if (instr->SzField() == 1) {
+    dst_precision = kSinglePrecision;
+    src_precision = kDoublePrecision;
+  }
 
-  if (double_to_single) {
+  int dst = instr->VFPDRegCode(dst_precision);
+  int src = instr->VFPMRegCode(src_precision);
+
+  if (dst_precision == kSinglePrecision) {
     double val = get_double_from_d_register(src);
     set_s_register_from_float(dst, static_cast<float>(val));
   } else {
@@ -2383,47 +2632,89 @@ void Simulator::DecodeVCVTBetweenFloatingPointAndInteger(Instr* instr) {
          (((instr->Opc2Field() >> 1) == 0x6) && (instr->Opc3Field() & 0x1)));
 
   // Conversion between floating-point and integer.
-  int vd = instr->VdField();
-  int d = instr->DField();
-  int vm = instr->VmField();
-  int m = instr->MField();
-
   bool to_integer = (instr->Bit(18) == 1);
-  bool dp_operation = (instr->SzField() == 1);
+
+  VFPRegPrecision src_precision = kSinglePrecision;
+  if (instr->SzField() == 1) {
+    src_precision = kDoublePrecision;
+  }
+
   if (to_integer) {
     bool unsigned_integer = (instr->Bit(16) == 0);
+    FPSCRRoundingModes mode;
     if (instr->Bit(7) != 1) {
-      // Only rounding towards zero supported.
-      UNIMPLEMENTED();  // Not used by V8.
-    }
-
-    int dst = GlueRegCode(true, vd, d);
-    int src = GlueRegCode(!dp_operation, vm, m);
-
-    if (dp_operation) {
-      double val = get_double_from_d_register(src);
-
-      int sint = unsigned_integer ? static_cast<uint32_t>(val) :
-                                    static_cast<int32_t>(val);
-
-      set_s_register_from_sinteger(dst, sint);
+      // Use FPSCR defined rounding mode.
+      mode = FPSCR_rounding_mode_;
+      // Only RZ and RM modes are supported.
+      ASSERT((mode == RM) || (mode == RZ));
     } else {
-      float val = get_float_from_s_register(src);
-
-      int sint = unsigned_integer ? static_cast<uint32_t>(val) :
-                                      static_cast<int32_t>(val);
-
-      set_s_register_from_sinteger(dst, sint);
+      // VFP uses round towards zero by default.
+      mode = RZ;
     }
+
+    int dst = instr->VFPDRegCode(kSinglePrecision);
+    int src = instr->VFPMRegCode(src_precision);
+    int32_t kMaxInt = v8::internal::kMaxInt;
+    int32_t kMinInt = v8::internal::kMinInt;
+    switch (mode) {
+      case RM:
+        if (src_precision == kDoublePrecision) {
+          double val = get_double_from_d_register(src);
+
+          inv_op_vfp_flag_ = (val > kMaxInt) || (val < kMinInt) || (val != val);
+
+          int sint = unsigned_integer ? static_cast<uint32_t>(val) :
+                                        static_cast<int32_t>(val);
+          sint = sint > val ? sint - 1 : sint;
+
+          set_s_register_from_sinteger(dst, sint);
+        } else {
+          float val = get_float_from_s_register(src);
+
+          inv_op_vfp_flag_ = (val > kMaxInt) || (val < kMinInt) || (val != val);
+
+          int sint = unsigned_integer ? static_cast<uint32_t>(val) :
+                                        static_cast<int32_t>(val);
+          sint = sint > val ? sint - 1 : sint;
+
+          set_s_register_from_sinteger(dst, sint);
+        }
+        break;
+      case RZ:
+        if (src_precision == kDoublePrecision) {
+          double val = get_double_from_d_register(src);
+
+          inv_op_vfp_flag_ = (val > kMaxInt) || (val < kMinInt) || (val != val);
+
+          int sint = unsigned_integer ? static_cast<uint32_t>(val) :
+                                        static_cast<int32_t>(val);
+
+          set_s_register_from_sinteger(dst, sint);
+        } else {
+          float val = get_float_from_s_register(src);
+
+          inv_op_vfp_flag_ = (val > kMaxInt) || (val < kMinInt) || (val != val);
+
+          int sint = unsigned_integer ? static_cast<uint32_t>(val) :
+                                        static_cast<int32_t>(val);
+
+          set_s_register_from_sinteger(dst, sint);
+        }
+        break;
+
+      default:
+        UNREACHABLE();
+    }
+
   } else {
     bool unsigned_integer = (instr->Bit(7) == 0);
 
-    int dst = GlueRegCode(!dp_operation, vd, d);
-    int src = GlueRegCode(true, vm, m);
+    int dst = instr->VFPDRegCode(src_precision);
+    int src = instr->VFPMRegCode(kSinglePrecision);
 
     int val = get_sinteger_from_s_register(src);
 
-    if (dp_operation) {
+    if (src_precision == kDoublePrecision) {
       if (unsigned_integer) {
         set_d_register_from_double(dst,
                                    static_cast<double>((uint32_t)val));
@@ -2454,9 +2745,11 @@ void Simulator::DecodeType6CoprocessorIns(Instr* instr) {
   if (instr->CoprocessorField() == 0xA) {
     switch (instr->OpcodeField()) {
       case 0x8:
-      case 0xC: {  // Load and store float to memory.
+      case 0xA:
+      case 0xC:
+      case 0xE: {  // Load and store single precision float to memory.
         int rn = instr->RnField();
-        int vd = instr->VdField();
+        int vd = instr->VFPDRegCode(kSinglePrecision);
         int offset = instr->Immed8Field();
         if (!instr->HasU()) {
           offset = -offset;
@@ -2544,10 +2837,10 @@ void Simulator::InstructionDecode(Instr* instr) {
     v8::internal::EmbeddedVector<char, 256> buffer;
     dasm.InstructionDecode(buffer,
                            reinterpret_cast<byte*>(instr));
-    PrintF("  0x%08x  %s\n", instr, buffer.start());
+    PrintF("  0x%08x  %s\n", reinterpret_cast<intptr_t>(instr), buffer.start());
   }
   if (instr->ConditionField() == special_condition) {
-    DecodeUnconditional(instr);
+    UNIMPLEMENTED();
   } else if (ConditionallyExecute(instr)) {
     switch (instr->TypeField()) {
       case 0:
@@ -2732,6 +3025,6 @@ uintptr_t Simulator::PopAddress() {
 
 } }  // namespace assembler::arm
 
-#endif  // __arm__
+#endif  // USE_SIMULATOR
 
 #endif  // V8_TARGET_ARCH_ARM

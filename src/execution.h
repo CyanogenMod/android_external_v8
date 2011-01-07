@@ -105,6 +105,11 @@ class Execution : public AllStatic {
   // Create a new date object from 'time'.
   static Handle<Object> NewDate(double time, bool* exc);
 
+  // Create a new regular expression object from 'pattern' and 'flags'.
+  static Handle<JSRegExp> NewJSRegExp(Handle<String> pattern,
+                                      Handle<String> flags,
+                                      bool* exc);
+
   // Used to implement [] notation on strings (calls JS code)
   static Handle<Object> CharAt(Handle<String> str, uint32_t index);
 
@@ -127,7 +132,7 @@ class Execution : public AllStatic {
 
   // If the stack guard is triggered, but it is not an actual
   // stack overflow, then handle the interruption accordingly.
-  static Object* HandleStackGuardInterrupt();
+  MUST_USE_RESULT static MaybeObject* HandleStackGuardInterrupt();
 
   // Get a function delegate (or undefined) for the given non-function
   // object. Used for support calling objects as functions.
@@ -183,6 +188,9 @@ class StackGuard : public AllStatic {
   // have the global V8 lock if you are using multiple V8 threads.
   static uintptr_t climit() {
     return thread_local_.climit_;
+  }
+  static uintptr_t real_climit() {
+    return thread_local_.real_climit_;
   }
   static uintptr_t jslimit() {
     return thread_local_.jslimit_;
@@ -307,18 +315,6 @@ class PostponeInterruptsScope BASE_EMBEDDED {
     }
   }
 };
-
-
-class GCExtension : public v8::Extension {
- public:
-  GCExtension() : v8::Extension("v8/gc", kSource) {}
-  virtual v8::Handle<v8::FunctionTemplate> GetNativeFunction(
-      v8::Handle<v8::String> name);
-  static v8::Handle<v8::Value> GC(const v8::Arguments& args);
- private:
-  static const char* kSource;
-};
-
 
 } }  // namespace v8::internal
 

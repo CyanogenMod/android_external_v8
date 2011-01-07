@@ -1,4 +1,29 @@
-// Copyright 2006-2009 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are
+// met:
+//
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//     * Redistributions in binary form must reproduce the above
+//       copyright notice, this list of conditions and the following
+//       disclaimer in the documentation and/or other materials provided
+//       with the distribution.
+//     * Neither the name of Google Inc. nor the names of its
+//       contributors may be used to endorse or promote products derived
+//       from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
 // Tests of profiler-related functions from log.h
 
@@ -107,11 +132,17 @@ v8::Handle<v8::FunctionTemplate> TraceExtension::GetNativeFunction(
 
 
 Address TraceExtension::GetFP(const v8::Arguments& args) {
-  CHECK_EQ(1, args.Length());
-  // CodeGenerator::GenerateGetFramePointer pushes EBP / RBP value
-  // on stack. In 64-bit mode we can't use Smi operations code because
-  // they check that value is within Smi bounds.
+  // Convert frame pointer from encoding as smis in the arguments to a pointer.
+  CHECK_EQ(2, args.Length());  // Ignore second argument on 32-bit platform.
+#if defined(V8_HOST_ARCH_32_BIT)
   Address fp = *reinterpret_cast<Address*>(*args[0]);
+#elif defined(V8_HOST_ARCH_64_BIT)
+  int64_t low_bits = *reinterpret_cast<uint64_t*>(*args[0]) >> 32;
+  int64_t high_bits = *reinterpret_cast<uint64_t*>(*args[1]);
+  Address fp = reinterpret_cast<Address>(high_bits | low_bits);
+#else
+#error Host architecture is neither 32-bit nor 64-bit.
+#endif
   printf("Trace: %p\n", fp);
   return fp;
 }
@@ -168,28 +199,8 @@ static void InitializeVM() {
 }
 
 
-static Handle<JSFunction> CompileFunction(const char* source) {
-  Handle<JSFunction> result(JSFunction::cast(
-      *v8::Utils::OpenHandle(*Script::Compile(String::New(source)))));
-  return result;
-}
-
-
-static Local<Value> GetGlobalProperty(const char* name) {
-  return env->Global()->Get(String::New(name));
-}
-
-
-static Handle<JSFunction> GetGlobalJSFunction(const char* name) {
-  Handle<JSFunction> result(JSFunction::cast(
-      *v8::Utils::OpenHandle(*GetGlobalProperty(name))));
-  return result;
-}
-
-
-static void CheckObjectIsJSFunction(const char* func_name,
-                                    Address addr) {
-  i::Object* obj = reinterpret_cast<i::Object*>(addr);
+static void CheckJSFunctionAtAddress(const char* func_name, Address addr) {
+  i::Object* obj = i::HeapObject::FromAddress(addr);
   CHECK(obj->IsJSFunction());
   CHECK(JSFunction::cast(obj)->shared()->name()->IsString());
   i::SmartPointer<char> found_name =
@@ -200,71 +211,63 @@ static void CheckObjectIsJSFunction(const char* func_name,
 }
 
 
-static void SetGlobalProperty(const char* name, Local<Value> value) {
-  env->Global()->Set(String::New(name), value);
+// This C++ function is called as a constructor, to grab the frame pointer
+// from the calling function.  When this function runs, the stack contains
+// a C_Entry frame and a Construct frame above the calling function's frame.
+static v8::Handle<Value> construct_call(const v8::Arguments& args) {
+  i::StackFrameIterator frame_iterator;
+  CHECK(frame_iterator.frame()->is_exit());
+  frame_iterator.Advance();
+  CHECK(frame_iterator.frame()->is_construct());
+  frame_iterator.Advance();
+  i::StackFrame* calling_frame = frame_iterator.frame();
+  CHECK(calling_frame->is_java_script());
+
+#if defined(V8_HOST_ARCH_32_BIT)
+  int32_t low_bits = reinterpret_cast<int32_t>(calling_frame->fp());
+  args.This()->Set(v8_str("low_bits"), v8_num(low_bits >> 1));
+#elif defined(V8_HOST_ARCH_64_BIT)
+  uint64_t fp = reinterpret_cast<uint64_t>(calling_frame->fp());
+  int32_t low_bits = static_cast<int32_t>(fp & 0xffffffff);
+  int32_t high_bits = static_cast<int32_t>(fp >> 32);
+  args.This()->Set(v8_str("low_bits"), v8_num(low_bits));
+  args.This()->Set(v8_str("high_bits"), v8_num(high_bits));
+#else
+#error Host architecture is neither 32-bit nor 64-bit.
+#endif
+  return args.This();
 }
 
 
-static Handle<v8::internal::String> NewString(const char* s) {
-  return i::Factory::NewStringFromAscii(i::CStrVector(s));
+// Use the API to create a JSFunction object that calls the above C++ function.
+void CreateFramePointerGrabberConstructor(const char* constructor_name) {
+    Local<v8::FunctionTemplate> constructor_template =
+        v8::FunctionTemplate::New(construct_call);
+    constructor_template->SetClassName(v8_str("FPGrabber"));
+    Local<Function> fun = constructor_template->GetFunction();
+    env->Global()->Set(v8_str(constructor_name), fun);
 }
-
-
-namespace v8 {
-namespace internal {
-
-class CodeGeneratorPatcher {
- public:
-  CodeGeneratorPatcher() {
-    CodeGenerator::InlineRuntimeLUT genGetFramePointer =
-        {&CodeGenerator::GenerateGetFramePointer, "_GetFramePointer", 0};
-    // _RandomHeapNumber is just used as a dummy function that has zero
-    // arguments, the same as the _GetFramePointer function we actually patch
-    // in.
-    bool result = CodeGenerator::PatchInlineRuntimeEntry(
-        NewString("_RandomHeapNumber"),
-        genGetFramePointer, &oldInlineEntry);
-    CHECK(result);
-  }
-
-  ~CodeGeneratorPatcher() {
-    CHECK(CodeGenerator::PatchInlineRuntimeEntry(
-        NewString("_GetFramePointer"),
-        oldInlineEntry, NULL));
-  }
-
- private:
-  CodeGenerator::InlineRuntimeLUT oldInlineEntry;
-};
-
-} }  // namespace v8::internal
 
 
 // Creates a global function named 'func_name' that calls the tracing
 // function 'trace_func_name' with an actual EBP register value,
-// shifted right to be presented as Smi.
+// encoded as one or two Smis.
 static void CreateTraceCallerFunction(const char* func_name,
                                       const char* trace_func_name) {
   i::EmbeddedVector<char, 256> trace_call_buf;
-  i::OS::SNPrintF(trace_call_buf, "%s(%%_GetFramePointer());", trace_func_name);
+  i::OS::SNPrintF(trace_call_buf,
+                  "function %s() {"
+                  "  fp = new FPGrabber();"
+                  "  %s(fp.low_bits, fp.high_bits);"
+                  "}",
+                  func_name, trace_func_name);
+
+  // Create the FPGrabber function, which grabs the caller's frame pointer
+  // when called as a constructor.
+  CreateFramePointerGrabberConstructor("FPGrabber");
 
   // Compile the script.
-  i::CodeGeneratorPatcher patcher;
-  bool allow_natives_syntax = i::FLAG_allow_natives_syntax;
-  i::FLAG_allow_natives_syntax = true;
-  Handle<JSFunction> func = CompileFunction(trace_call_buf.start());
-  CHECK(!func.is_null());
-  i::FLAG_allow_natives_syntax = allow_natives_syntax;
-  func->shared()->set_name(*NewString(func_name));
-
-#ifdef DEBUG
-  v8::internal::Code* func_code = func->code();
-  CHECK(func_code->IsCode());
-  func_code->Print();
-#endif
-
-  SetGlobalProperty(func_name, v8::ToApi<Value>(func));
-  CHECK_EQ(*func, *GetGlobalJSFunction(func_name));
+  CompileRun(trace_call_buf.start());
 }
 
 
@@ -273,13 +276,6 @@ static void CreateTraceCallerFunction(const char* func_name,
 // StackTracer uses Top::c_entry_fp as a starting point for stack
 // walking.
 TEST(CFromJSStackTrace) {
-#if defined(V8_HOST_ARCH_IA32) || defined(V8_HOST_ARCH_X64)
-  // TODO(711) The hack of replacing the inline runtime function
-  // RandomHeapNumber with GetFrameNumber does not work with the way the full
-  // compiler generates inline runtime calls.
-  i::FLAG_force_full_compiler = false;
-#endif
-
   TickSample sample;
   InitTraceEnv(&sample);
 
@@ -299,13 +295,13 @@ TEST(CFromJSStackTrace) {
   // script [JS]
   //   JSTrace() [JS]
   //     JSFuncDoTrace() [JS] [captures EBP value and encodes it as Smi]
-  //       trace(EBP encoded as Smi) [native (extension)]
+  //       trace(EBP) [native (extension)]
   //         DoTrace(EBP) [native]
   //           StackTracer::Trace
   CHECK_GT(sample.frames_count, 1);
   // Stack tracing will start from the first JS function, i.e. "JSFuncDoTrace"
-  CheckObjectIsJSFunction("JSFuncDoTrace", sample.stack[0]);
-  CheckObjectIsJSFunction("JSTrace", sample.stack[1]);
+  CheckJSFunctionAtAddress("JSFuncDoTrace", sample.stack[0]);
+  CheckJSFunctionAtAddress("JSTrace", sample.stack[1]);
 }
 
 
@@ -315,13 +311,6 @@ TEST(CFromJSStackTrace) {
 // Top::c_entry_fp value. In this case, StackTracer uses passed frame
 // pointer value as a starting point for stack walking.
 TEST(PureJSStackTrace) {
-#if defined(V8_HOST_ARCH_IA32) || defined(V8_HOST_ARCH_X64)
-  // TODO(711) The hack of replacing the inline runtime function
-  // RandomHeapNumber with GetFrameNumber does not work with the way the full
-  // compiler generates inline runtime calls.
-  i::FLAG_force_full_compiler = false;
-#endif
-
   TickSample sample;
   InitTraceEnv(&sample);
 
@@ -344,19 +333,18 @@ TEST(PureJSStackTrace) {
   // script [JS]
   //   OuterJSTrace() [JS]
   //     JSTrace() [JS]
-  //       JSFuncDoTrace() [JS] [captures EBP value and encodes it as Smi]
-  //         js_trace(EBP encoded as Smi) [native (extension)]
+  //       JSFuncDoTrace() [JS]
+  //         js_trace(EBP) [native (extension)]
   //           DoTraceHideCEntryFPAddress(EBP) [native]
   //             StackTracer::Trace
   //
   // The last JS function called. It is only visible through
   // sample.function, as its return address is above captured EBP value.
-  CHECK_EQ(GetGlobalJSFunction("JSFuncDoTrace")->address(),
-           sample.function);
+  CheckJSFunctionAtAddress("JSFuncDoTrace", sample.function);
   CHECK_GT(sample.frames_count, 1);
   // Stack sampling will start from the caller of JSFuncDoTrace, i.e. "JSTrace"
-  CheckObjectIsJSFunction("JSTrace", sample.stack[0]);
-  CheckObjectIsJSFunction("OuterJSTrace", sample.stack[1]);
+  CheckJSFunctionAtAddress("JSTrace", sample.stack[0]);
+  CheckJSFunctionAtAddress("OuterJSTrace", sample.stack[1]);
 }
 
 

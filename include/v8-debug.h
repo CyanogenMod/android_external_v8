@@ -76,7 +76,8 @@ enum DebugEvent {
   NewFunction = 3,
   BeforeCompile = 4,
   AfterCompile  = 5,
-  ScriptCollected = 6
+  ScriptCollected = 6,
+  BreakForCommand = 7
 };
 
 
@@ -141,7 +142,7 @@ class EXPORT Debug {
 
     virtual ~Message() {}
   };
-  
+
 
   /**
    * An event details object passed to the debug event listener.
@@ -171,6 +172,13 @@ class EXPORT Debug {
      * Client data passed with the corresponding callbak whet it was registered.
      */
     virtual Handle<Value> GetCallbackData() const = 0;
+
+    /**
+     * Client data passed to DebugBreakForCommand function. The
+     * debugger takes ownership of the data and will delete it even if
+     * there is no message handler.
+     */
+    virtual ClientData* GetClientData() const = 0;
 
     virtual ~EventDetails() {}
   };
@@ -245,8 +253,17 @@ class EXPORT Debug {
   static bool SetDebugEventListener(v8::Handle<v8::Object> that,
                                     Handle<Value> data = Handle<Value>());
 
-  // Break execution of JavaScript.
+  // Schedule a debugger break to happen when JavaScript code is run.
   static void DebugBreak();
+
+  // Remove scheduled debugger break if it has not happened yet.
+  static void CancelDebugBreak();
+
+  // Break execution of JavaScript (this method can be invoked from a
+  // non-VM thread) for further client command execution on a VM
+  // thread. Client data is then passed in EventDetails to
+  // EventCallback at the moment when the VM actually stops.
+  static void DebugBreakForCommand(ClientData* data = NULL);
 
   // Message based interface. The message protocol is JSON. NOTE the message
   // handler thread is not supported any more parameter must be false.
@@ -283,7 +300,7 @@ class EXPORT Debug {
   * get access to information otherwise not available during normal JavaScript
   * execution e.g. details on stack frames. Receiver of the function call will
   * be the debugger context global object, however this is a subject to change.
-  * The following example show a JavaScript function which when passed to 
+  * The following example show a JavaScript function which when passed to
   * v8::Debug::Call will return the current line of JavaScript execution.
   *
   * \code

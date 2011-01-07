@@ -200,7 +200,7 @@ class VirtualFrame : public ZoneObject {
   inline void PrepareForReturn();
 
   // Number of local variables after when we use a loop for allocating.
-  static const int kLocalVarBound = 7;
+  static const int kLocalVarBound = 14;
 
   // Allocate and initialize the frame-allocated locals.
   void AllocateStackSlots();
@@ -329,45 +329,28 @@ class VirtualFrame : public ZoneObject {
                        int arg_count);
 
   // Call load IC.  Name and receiver are found on top of the frame.
-  // Receiver is not dropped.
+  // Both are dropped.
   Result CallLoadIC(RelocInfo::Mode mode);
 
   // Call keyed load IC.  Key and receiver are found on top of the
-  // frame.  They are not dropped.
+  // frame.  Both are dropped.
   Result CallKeyedLoadIC(RelocInfo::Mode mode);
 
-
-  // Calling a store IC and a keyed store IC differ only by which ic is called
-  // and by the order of the three arguments on the frame.
-  Result CallCommonStoreIC(Handle<Code> ic,
-                           Result* value,
-                           Result *key,
-                           Result* receiver);
-
-  // Call store IC.  Name, value, and receiver are found on top
-  // of the frame.  All are dropped.
-  Result CallStoreIC() {
-    Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Initialize));
-    Result name = Pop();
-    Result value = Pop();
-    Result receiver = Pop();
-    return CallCommonStoreIC(ic, &value, &name, &receiver);
-  }
+  // Call store IC.  If the load is contextual, value is found on top of the
+  // frame.  If not, value and receiver are on the frame.  Both are dropped.
+  Result CallStoreIC(Handle<String> name, bool is_contextual);
 
   // Call keyed store IC.  Value, key, and receiver are found on top
-  // of the frame.  All are dropped.
-  Result CallKeyedStoreIC() {
-    Handle<Code> ic(Builtins::builtin(Builtins::KeyedStoreIC_Initialize));
-    Result value = Pop();
-    Result key = Pop();
-    Result receiver = Pop();
-    return CallCommonStoreIC(ic, &value, &key, &receiver);
-  }
+  // of the frame.  All three are dropped.
+  Result CallKeyedStoreIC();
 
   // Call call IC.  Function name, arguments, and receiver are found on top
   // of the frame and dropped by the call.
   // The argument count does not include the receiver.
   Result CallCallIC(RelocInfo::Mode mode, int arg_count, int loop_nesting);
+
+  // Call keyed call IC.  Same calling convention as CallCallIC.
+  Result CallKeyedCallIC(RelocInfo::Mode mode, int arg_count, int loop_nesting);
 
   // Allocate and call JS function as constructor.  Arguments,
   // receiver (global object), and function are found on top of the
@@ -385,6 +368,13 @@ class VirtualFrame : public ZoneObject {
 
   // Duplicate the top element of the frame.
   void Dup() { PushFrameSlotAt(element_count() - 1); }
+
+  // Duplicate the n'th element from the top of the frame.
+  // Dup(1) is equivalent to Dup().
+  void Dup(int n) {
+    ASSERT(n > 0);
+    PushFrameSlotAt(element_count() - n);
+  }
 
   // Pop an element from the top of the expression stack.  Returns a
   // Result, which may be a constant or a register.
@@ -590,7 +580,7 @@ class VirtualFrame : public ZoneObject {
   inline bool Equals(VirtualFrame* other);
 
   // Classes that need raw access to the elements_ array.
-  friend class DeferredCode;
+  friend class FrameRegisterState;
   friend class JumpTarget;
 };
 

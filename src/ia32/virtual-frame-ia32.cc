@@ -33,6 +33,7 @@
 #include "register-allocator-inl.h"
 #include "scopes.h"
 #include "virtual-frame-inl.h"
+#include "stub-cache.h"
 
 namespace v8 {
 namespace internal {
@@ -1034,7 +1035,7 @@ Result VirtualFrame::CallKeyedLoadIC(RelocInfo::Mode mode) {
 
 Result VirtualFrame::CallStoreIC(Handle<String> name, bool is_contextual) {
   // Value and (if not contextual) receiver are on top of the frame.
-  //  The IC expects name in ecx, value in eax, and receiver in edx.
+  // The IC expects name in ecx, value in eax, and receiver in edx.
   Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Initialize));
   Result value = Pop();
   if (is_contextual) {
@@ -1108,7 +1109,25 @@ Result VirtualFrame::CallCallIC(RelocInfo::Mode mode,
   // The IC expects the name in ecx and the rest on the stack and
   // drops them all.
   InLoopFlag in_loop = loop_nesting > 0 ? IN_LOOP : NOT_IN_LOOP;
-  Handle<Code> ic = cgen()->ComputeCallInitialize(arg_count, in_loop);
+  Handle<Code> ic = StubCache::ComputeCallInitialize(arg_count, in_loop);
+  // Spill args, receiver, and function.  The call will drop args and
+  // receiver.
+  Result name = Pop();
+  PrepareForCall(arg_count + 1, arg_count + 1);  // Arguments + receiver.
+  name.ToRegister(ecx);
+  name.Unuse();
+  return RawCallCodeObject(ic, mode);
+}
+
+
+Result VirtualFrame::CallKeyedCallIC(RelocInfo::Mode mode,
+                                     int arg_count,
+                                     int loop_nesting) {
+  // Function name, arguments, and receiver are on top of the frame.
+  // The IC expects the name in ecx and the rest on the stack and
+  // drops them all.
+  InLoopFlag in_loop = loop_nesting > 0 ? IN_LOOP : NOT_IN_LOOP;
+  Handle<Code> ic = StubCache::ComputeKeyedCallInitialize(arg_count, in_loop);
   // Spill args, receiver, and function.  The call will drop args and
   // receiver.
   Result name = Pop();
@@ -1125,9 +1144,9 @@ Result VirtualFrame::CallConstructor(int arg_count) {
   // and receiver on the stack.
   Handle<Code> ic(Builtins::builtin(Builtins::JSConstructCall));
   // Duplicate the function before preparing the frame.
-  PushElementAt(arg_count + 1);
+  PushElementAt(arg_count);
   Result function = Pop();
-  PrepareForCall(arg_count + 1, arg_count + 1);  // Spill args and receiver.
+  PrepareForCall(arg_count + 1, arg_count + 1);  // Spill function and args.
   function.ToRegister(edi);
 
   // Constructors are called with the number of arguments in register
@@ -1295,7 +1314,7 @@ void VirtualFrame::Push(Expression* expr) {
 
   VariableProxy* proxy = expr->AsVariableProxy();
   if (proxy != NULL) {
-    Slot* slot = proxy->var()->slot();
+    Slot* slot = proxy->var()->AsSlot();
     if (slot->type() == Slot::LOCAL) {
       PushLocalAt(slot->index());
       return;

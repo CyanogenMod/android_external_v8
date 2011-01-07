@@ -84,6 +84,12 @@ void OS::Setup() {
 }
 
 
+void OS::ReleaseStore(volatile AtomicWord* ptr, AtomicWord value) {
+  __asm__ __volatile__("" : : : "memory");
+  *ptr = value;
+}
+
+
 uint64_t OS::CpuFeaturesImpliedByPlatform() {
   return 0;  // FreeBSD runs on anything.
 }
@@ -192,9 +198,10 @@ void OS::Abort() {
 
 
 void OS::DebugBreak() {
-#if (defined(__arm__) || defined(__thumb__)) && \
-    defined(CAN_USE_ARMV5_INSTRUCTIONS)
+#if (defined(__arm__) || defined(__thumb__))
+# if defined(CAN_USE_ARMV5_INSTRUCTIONS)
   asm("bkpt 0");
+# endif
 #else
   asm("int $3");
 #endif
@@ -284,13 +291,17 @@ void OS::LogSharedLibraryAddresses() {
 }
 
 
+void OS::SignalCodeMovingGC() {
+}
+
+
 int OS::StackWalk(Vector<OS::StackFrame> frames) {
   int frames_size = frames.length();
   ScopedVector<void*> addresses(frames_size);
 
   int frames_count = backtrace(addresses.start(), frames_size);
 
-  char** symbols = backtrace_symbols(addresses, frames_count);
+  char** symbols = backtrace_symbols(addresses.start(), frames_count);
   if (symbols == NULL) {
     return kStackWalkError;
   }
@@ -606,7 +617,11 @@ class Sampler::PlatformData : public Malloced {
 
 
 Sampler::Sampler(int interval, bool profiling)
-    : interval_(interval), profiling_(profiling), active_(false) {
+    : interval_(interval),
+      profiling_(profiling),
+      synchronous_(profiling),
+      active_(false),
+      samples_taken_(0) {
   data_ = new PlatformData();
 }
 

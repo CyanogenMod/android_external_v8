@@ -34,9 +34,6 @@ bugs: FAIL
 # too long to run in debug mode on ARM.
 fuzz-natives: PASS, SKIP if ($mode == release || $arch == arm)
 
-# Issue 494: new snapshot code breaks mjsunit/apply on mac debug snapshot.
-apply: PASS, FAIL if ($system == macos && $mode == debug)
-
 big-object-literal: PASS, SKIP if ($arch == arm)
 
 # Issue 488: this test sometimes times out.
@@ -47,6 +44,10 @@ unicode-case-overoptimization: PASS, TIMEOUT if ($arch == arm)
 
 # Skip long running test in debug and allow it to timeout in release mode.
 regress/regress-524: (PASS || TIMEOUT), SKIP if $mode == debug
+
+# Stack manipulations in LiveEdit are buggy - see bug 915
+debug-liveedit-check-stack: SKIP
+debug-liveedit-patch-positions-replace: SKIP
 
 [ $arch == arm ]
 
@@ -64,19 +65,10 @@ array-splice: PASS || TIMEOUT
 # Skip long running test in debug mode on ARM.
 string-indexof-2: PASS, SKIP if $mode == debug
 
-# Stack manipulations in LiveEdit is implemented for ia32 only.
-debug-liveedit-check-stack: SKIP
 
 [ $arch == mips ]
 
-# Stack manipulations in LiveEdit is implemented for ia32 only.
-debug-liveedit-check-stack: SKIP
-
 # Skip all tests on MIPS.
 *: SKIP
-
-[ $arch == x64 ]
-# Stack manipulations in LiveEdit is implemented for ia32 only.
-debug-liveedit-check-stack: SKIP
 
 

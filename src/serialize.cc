@@ -229,20 +229,18 @@ void ExternalReferenceTable::PopulateTable() {
       DEBUG_ADDRESS,
       Debug::k_after_break_target_address << kDebugIdShift,
       "Debug::after_break_target_address()");
+  Add(Debug_Address(Debug::k_debug_break_slot_address).address(),
+      DEBUG_ADDRESS,
+      Debug::k_debug_break_slot_address << kDebugIdShift,
+      "Debug::debug_break_slot_address()");
   Add(Debug_Address(Debug::k_debug_break_return_address).address(),
       DEBUG_ADDRESS,
       Debug::k_debug_break_return_address << kDebugIdShift,
       "Debug::debug_break_return_address()");
-  const char* debug_register_format = "Debug::register_address(%i)";
-  int dr_format_length = StrLength(debug_register_format);
-  for (int i = 0; i < kNumJSCallerSaved; ++i) {
-    Vector<char> name = Vector<char>::New(dr_format_length + 1);
-    OS::SNPrintF(name, debug_register_format, i);
-    Add(Debug_Address(Debug::k_register_address, i).address(),
-        DEBUG_ADDRESS,
-        Debug::k_register_address << kDebugIdShift | i,
-        name.start());
-  }
+  Add(Debug_Address(Debug::k_restarter_frame_function_pointer).address(),
+      DEBUG_ADDRESS,
+      Debug::k_restarter_frame_function_pointer << kDebugIdShift,
+      "Debug::restarter_frame_function_pointer_address()");
 #endif
 
   // Stat counters
@@ -292,10 +290,6 @@ void ExternalReferenceTable::PopulateTable() {
     Add(Top::get_address_from_id((Top::AddressId)i), TOP_ADDRESS, i, chars);
   }
 
-  // Extensions
-  Add(FUNCTION_ADDR(GCExtension::GC), EXTENSION, 1,
-      "GCExtension::GC");
-
   // Accessors
 #define ACCESSOR_DESCRIPTOR_DECLARATION(name) \
   Add((Address)&Accessors::name, \
@@ -339,6 +333,11 @@ void ExternalReferenceTable::PopulateTable() {
       3,
       "V8::Random");
 
+  Add(ExternalReference::delete_handle_scope_extensions().address(),
+      RUNTIME_ENTRY,
+      3,
+      "HandleScope::DeleteExtensions");
+
   // Miscellaneous
   Add(ExternalReference::the_hole_value_location().address(),
       UNCLASSIFIED,
@@ -356,95 +355,121 @@ void ExternalReferenceTable::PopulateTable() {
       UNCLASSIFIED,
       5,
       "StackGuard::address_of_real_jslimit()");
+#ifndef V8_INTERPRETED_REGEXP
   Add(ExternalReference::address_of_regexp_stack_limit().address(),
       UNCLASSIFIED,
       6,
       "RegExpStack::limit_address()");
-  Add(ExternalReference::new_space_start().address(),
+  Add(ExternalReference::address_of_regexp_stack_memory_address().address(),
       UNCLASSIFIED,
       7,
+      "RegExpStack::memory_address()");
+  Add(ExternalReference::address_of_regexp_stack_memory_size().address(),
+      UNCLASSIFIED,
+      8,
+      "RegExpStack::memory_size()");
+  Add(ExternalReference::address_of_static_offsets_vector().address(),
+      UNCLASSIFIED,
+      9,
+      "OffsetsVector::static_offsets_vector");
+#endif  // V8_INTERPRETED_REGEXP
+  Add(ExternalReference::new_space_start().address(),
+      UNCLASSIFIED,
+      10,
       "Heap::NewSpaceStart()");
   Add(ExternalReference::new_space_mask().address(),
       UNCLASSIFIED,
-      8,
+      11,
       "Heap::NewSpaceMask()");
   Add(ExternalReference::heap_always_allocate_scope_depth().address(),
       UNCLASSIFIED,
-      9,
+      12,
       "Heap::always_allocate_scope_depth()");
   Add(ExternalReference::new_space_allocation_limit_address().address(),
       UNCLASSIFIED,
-      10,
+      13,
       "Heap::NewSpaceAllocationLimitAddress()");
   Add(ExternalReference::new_space_allocation_top_address().address(),
       UNCLASSIFIED,
-      11,
+      14,
       "Heap::NewSpaceAllocationTopAddress()");
 #ifdef ENABLE_DEBUGGER_SUPPORT
   Add(ExternalReference::debug_break().address(),
       UNCLASSIFIED,
-      12,
+      15,
       "Debug::Break()");
   Add(ExternalReference::debug_step_in_fp_address().address(),
       UNCLASSIFIED,
-      13,
+      16,
       "Debug::step_in_fp_addr()");
 #endif
   Add(ExternalReference::double_fp_operation(Token::ADD).address(),
       UNCLASSIFIED,
-      14,
+      17,
       "add_two_doubles");
   Add(ExternalReference::double_fp_operation(Token::SUB).address(),
       UNCLASSIFIED,
-      15,
+      18,
       "sub_two_doubles");
   Add(ExternalReference::double_fp_operation(Token::MUL).address(),
       UNCLASSIFIED,
-      16,
+      19,
       "mul_two_doubles");
   Add(ExternalReference::double_fp_operation(Token::DIV).address(),
       UNCLASSIFIED,
-      17,
+      20,
       "div_two_doubles");
   Add(ExternalReference::double_fp_operation(Token::MOD).address(),
       UNCLASSIFIED,
-      18,
+      21,
       "mod_two_doubles");
   Add(ExternalReference::compare_doubles().address(),
       UNCLASSIFIED,
-      19,
+      22,
       "compare_doubles");
 #ifndef V8_INTERPRETED_REGEXP
   Add(ExternalReference::re_case_insensitive_compare_uc16().address(),
       UNCLASSIFIED,
-      20,
+      23,
       "NativeRegExpMacroAssembler::CaseInsensitiveCompareUC16()");
   Add(ExternalReference::re_check_stack_guard_state().address(),
       UNCLASSIFIED,
-      21,
+      24,
       "RegExpMacroAssembler*::CheckStackGuardState()");
   Add(ExternalReference::re_grow_stack().address(),
       UNCLASSIFIED,
-      22,
+      25,
       "NativeRegExpMacroAssembler::GrowStack()");
   Add(ExternalReference::re_word_character_map().address(),
       UNCLASSIFIED,
-      23,
+      26,
       "NativeRegExpMacroAssembler::word_character_map");
 #endif  // V8_INTERPRETED_REGEXP
   // Keyed lookup cache.
   Add(ExternalReference::keyed_lookup_cache_keys().address(),
       UNCLASSIFIED,
-      24,
+      27,
       "KeyedLookupCache::keys()");
   Add(ExternalReference::keyed_lookup_cache_field_offsets().address(),
       UNCLASSIFIED,
-      25,
+      28,
       "KeyedLookupCache::field_offsets()");
   Add(ExternalReference::transcendental_cache_array_address().address(),
       UNCLASSIFIED,
-      26,
+      29,
       "TranscendentalCache::caches()");
+  Add(ExternalReference::handle_scope_next_address().address(),
+      UNCLASSIFIED,
+      30,
+      "HandleScope::next");
+  Add(ExternalReference::handle_scope_limit_address().address(),
+      UNCLASSIFIED,
+      31,
+      "HandleScope::limit");
+  Add(ExternalReference::handle_scope_level_address().address(),
+      UNCLASSIFIED,
+      32,
+      "HandleScope::level");
 }
 
 
@@ -460,6 +485,7 @@ ExternalReferenceEncoder::ExternalReferenceEncoder()
 
 uint32_t ExternalReferenceEncoder::Encode(Address key) const {
   int index = IndexOf(key);
+  ASSERT(key == NULL || index >= 0);
   return index >=0 ? ExternalReferenceTable::instance()->code(index) : 0;
 }
 
@@ -487,7 +513,7 @@ void ExternalReferenceEncoder::Put(Address key, int index) {
 
 
 ExternalReferenceDecoder::ExternalReferenceDecoder()
-  : encodings_(NewArray<Address*>(kTypeCodeCount)) {
+    : encodings_(NewArray<Address*>(kTypeCodeCount)) {
   ExternalReferenceTable* external_references =
       ExternalReferenceTable::instance();
   for (int type = kFirstTypeCode; type < kTypeCodeCount; ++type) {
@@ -525,14 +551,16 @@ Address Deserializer::Allocate(int space_index, Space* space, int size) {
   if (!SpaceIsLarge(space_index)) {
     ASSERT(!SpaceIsPaged(space_index) ||
            size <= Page::kPageSize - Page::kObjectStartOffset);
-    Object* new_allocation;
+    MaybeObject* maybe_new_allocation;
     if (space_index == NEW_SPACE) {
-      new_allocation = reinterpret_cast<NewSpace*>(space)->AllocateRaw(size);
+      maybe_new_allocation =
+          reinterpret_cast<NewSpace*>(space)->AllocateRaw(size);
     } else {
-      new_allocation = reinterpret_cast<PagedSpace*>(space)->AllocateRaw(size);
+      maybe_new_allocation =
+          reinterpret_cast<PagedSpace*>(space)->AllocateRaw(size);
     }
+    Object* new_allocation = maybe_new_allocation->ToObjectUnchecked();
     HeapObject* new_object = HeapObject::cast(new_allocation);
-    ASSERT(!new_object->IsFailure());
     address = new_object->address();
     high_water_[space_index] = address + size;
   } else {
@@ -541,14 +569,14 @@ Address Deserializer::Allocate(int space_index, Space* space, int size) {
     LargeObjectSpace* lo_space = reinterpret_cast<LargeObjectSpace*>(space);
     Object* new_allocation;
     if (space_index == kLargeData) {
-      new_allocation = lo_space->AllocateRaw(size);
+      new_allocation = lo_space->AllocateRaw(size)->ToObjectUnchecked();
     } else if (space_index == kLargeFixedArray) {
-      new_allocation = lo_space->AllocateRawFixedArray(size);
+      new_allocation =
+          lo_space->AllocateRawFixedArray(size)->ToObjectUnchecked();
     } else {
       ASSERT_EQ(kLargeCode, space_index);
-      new_allocation = lo_space->AllocateRawCode(size);
+      new_allocation = lo_space->AllocateRawCode(size)->ToObjectUnchecked();
     }
-    ASSERT(!new_allocation->IsFailure());
     HeapObject* new_object = HeapObject::cast(new_allocation);
     // Record all large objects in the same space.
     address = new_object->address();
@@ -606,6 +634,8 @@ void Deserializer::Deserialize() {
   external_reference_decoder_ = new ExternalReferenceDecoder();
   Heap::IterateStrongRoots(this, VISIT_ONLY_STRONG);
   Heap::IterateWeakRoots(this, VISIT_ALL);
+
+  Heap::set_global_contexts_list(Heap::undefined_value());
 }
 
 
@@ -808,6 +838,12 @@ void Deserializer::ReadChunk(Object** current,
   CASE_STATEMENT(where, how, within, kLargeFixedArray)                         \
   CASE_BODY(where, how, within, kAnyOldSpace, kUnknownOffsetFromStart)
 
+#define ONE_PER_CODE_SPACE(where, how, within)                                 \
+  CASE_STATEMENT(where, how, within, CODE_SPACE)                               \
+  CASE_BODY(where, how, within, CODE_SPACE, kUnknownOffsetFromStart)           \
+  CASE_STATEMENT(where, how, within, kLargeCode)                               \
+  CASE_BODY(where, how, within, LO_SPACE, kUnknownOffsetFromStart)
+
 #define EMIT_COMMON_REFERENCE_PATTERNS(pseudo_space_number,                    \
                                        space_number,                           \
                                        offset_from_start)                      \
@@ -839,6 +875,8 @@ void Deserializer::ReadChunk(Object** current,
       // Deserialize a new object and write a pointer to it to the current
       // object.
       ONE_PER_SPACE(kNewObject, kPlain, kStartOfObject)
+      // Support for direct instruction pointers in functions
+      ONE_PER_CODE_SPACE(kNewObject, kPlain, kFirstInstruction)
       // Deserialize a new code object and write a pointer to its first
       // instruction to the current code object.
       ONE_PER_SPACE(kNewObject, kFromCode, kFirstInstruction)
@@ -847,11 +885,14 @@ void Deserializer::ReadChunk(Object** current,
       ALL_SPACES(kBackref, kPlain, kStartOfObject)
       // Find a recently deserialized code object using its offset from the
       // current allocation point and write a pointer to its first instruction
-      // to the current code object.
+      // to the current code object or the instruction pointer in a function
+      // object.
       ALL_SPACES(kBackref, kFromCode, kFirstInstruction)
+      ALL_SPACES(kBackref, kPlain, kFirstInstruction)
       // Find an already deserialized object using its offset from the start
       // and write a pointer to it to the current object.
       ALL_SPACES(kFromStart, kPlain, kStartOfObject)
+      ALL_SPACES(kFromStart, kPlain, kFirstInstruction)
       // Find an already deserialized code object using its offset from the
       // start and write a pointer to its first instruction to the current code
       // object.
@@ -869,6 +910,14 @@ void Deserializer::ReadChunk(Object** current,
       CASE_BODY(kPartialSnapshotCache,
                 kPlain,
                 kStartOfObject,
+                0,
+                kUnknownOffsetFromStart)
+      // Find an code entry in the partial snapshots cache and
+      // write a pointer to it to the current object.
+      CASE_STATEMENT(kPartialSnapshotCache, kPlain, kFirstInstruction, 0)
+      CASE_BODY(kPartialSnapshotCache,
+                kPlain,
+                kFirstInstruction,
                 0,
                 kUnknownOffsetFromStart)
       // Find an external reference and write a pointer to it to the current
@@ -1299,7 +1348,7 @@ void Serializer::ObjectSerializer::VisitRuntimeEntry(RelocInfo* rinfo) {
   }
   sink_->Put(kExternalReference + representation, "ExternalReference");
   sink_->PutInt(encoding, "reference id");
-  bytes_processed_so_far_ += Assembler::kExternalTargetSize;
+  bytes_processed_so_far_ += rinfo->target_address_size();
 }
 
 
@@ -1309,7 +1358,15 @@ void Serializer::ObjectSerializer::VisitCodeTarget(RelocInfo* rinfo) {
   OutputRawData(target_start);
   Code* target = Code::GetCodeFromTargetAddress(rinfo->target_address());
   serializer_->SerializeObject(target, kFromCode, kFirstInstruction);
-  bytes_processed_so_far_ += Assembler::kCallTargetSize;
+  bytes_processed_so_far_ += rinfo->target_address_size();
+}
+
+
+void Serializer::ObjectSerializer::VisitCodeEntry(Address entry_address) {
+  Code* target = Code::cast(Code::GetObjectFromEntryAddress(entry_address));
+  OutputRawData(entry_address);
+  serializer_->SerializeObject(target, kPlain, kFirstInstruction);
+  bytes_processed_so_far_ += kPointerSize;
 }
 
 

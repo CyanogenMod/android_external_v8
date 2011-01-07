@@ -90,7 +90,7 @@ Handle<Object> Context::Lookup(Handle<String> name, ContextLookupFlags flags,
 
   do {
     if (FLAG_trace_contexts) {
-      PrintF(" - looking in context %p", *context);
+      PrintF(" - looking in context %p", reinterpret_cast<void*>(*context));
       if (context->IsGlobalContext()) PrintF(" (global context)");
       PrintF("\n");
     }
@@ -110,7 +110,8 @@ Handle<Object> Context::Lookup(Handle<String> name, ContextLookupFlags flags,
       if (*attributes != ABSENT) {
         // property found
         if (FLAG_trace_contexts) {
-          PrintF("=> found property in context object %p\n", *extension);
+          PrintF("=> found property in context object %p\n",
+                 reinterpret_cast<void*>(*extension));
         }
         return extension;
       }
@@ -120,9 +121,10 @@ Handle<Object> Context::Lookup(Handle<String> name, ContextLookupFlags flags,
       // we have context-local slots
 
       // check non-parameter locals in context
-      Handle<Code> code(context->closure()->code());
+      Handle<SerializedScopeInfo> scope_info(
+          context->closure()->shared()->scope_info());
       Variable::Mode mode;
-      int index = ScopeInfo<>::ContextSlotIndex(*code, *name, &mode);
+      int index = scope_info->ContextSlotIndex(*name, &mode);
       ASSERT(index < 0 || index >= MIN_CONTEXT_SLOTS);
       if (index >= 0) {
         // slot found
@@ -150,13 +152,11 @@ Handle<Object> Context::Lookup(Handle<String> name, ContextLookupFlags flags,
       }
 
       // check parameter locals in context
-      int param_index = ScopeInfo<>::ParameterIndex(*code, *name);
+      int param_index = scope_info->ParameterIndex(*name);
       if (param_index >= 0) {
         // slot found.
         int index =
-            ScopeInfo<>::ContextSlotIndex(*code,
-                                          Heap::arguments_shadow_symbol(),
-                                          NULL);
+            scope_info->ContextSlotIndex(Heap::arguments_shadow_symbol(), NULL);
         ASSERT(index >= 0);  // arguments must exist and be in the heap context
         Handle<JSObject> arguments(JSObject::cast(context->get(index)));
         ASSERT(arguments->HasLocalProperty(Heap::length_symbol()));
@@ -170,7 +170,7 @@ Handle<Object> Context::Lookup(Handle<String> name, ContextLookupFlags flags,
 
       // check intermediate context (holding only the function name variable)
       if (follow_context_chain) {
-        int index = ScopeInfo<>::FunctionContextSlotIndex(*code, *name);
+        int index = scope_info->FunctionContextSlotIndex(*name);
         if (index >= 0) {
           // slot found
           if (FLAG_trace_contexts) {
@@ -216,18 +216,19 @@ bool Context::GlobalIfNotShadowedByEval(Handle<String> name) {
     ASSERT(context->is_function_context());
 
     // Check non-parameter locals.
-    Handle<Code> code(context->closure()->code());
+    Handle<SerializedScopeInfo> scope_info(
+        context->closure()->shared()->scope_info());
     Variable::Mode mode;
-    int index = ScopeInfo<>::ContextSlotIndex(*code, *name, &mode);
+    int index = scope_info->ContextSlotIndex(*name, &mode);
     ASSERT(index < 0 || index >= MIN_CONTEXT_SLOTS);
     if (index >= 0) return false;
 
     // Check parameter locals.
-    int param_index = ScopeInfo<>::ParameterIndex(*code, *name);
+    int param_index = scope_info->ParameterIndex(*name);
     if (param_index >= 0) return false;
 
     // Check context only holding the function name variable.
-    index = ScopeInfo<>::FunctionContextSlotIndex(*code, *name);
+    index = scope_info->FunctionContextSlotIndex(*name);
     if (index >= 0) return false;
     context = Context::cast(context->closure()->context());
   }

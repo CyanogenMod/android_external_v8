@@ -29,7 +29,6 @@
 #define V8_DEBUG_H_
 
 #include "assembler.h"
-#include "code-stubs.h"
 #include "debug-agent.h"
 #include "execution.h"
 #include "factory.h"
@@ -146,6 +145,11 @@ class BreakLocationIterator {
   void SetDebugBreakAtReturn();
   void ClearDebugBreakAtReturn();
 
+  bool IsDebugBreakSlot();
+  bool IsDebugBreakAtSlot();
+  void SetDebugBreakAtSlot();
+  void ClearDebugBreakAtSlot();
+
   DISALLOW_COPY_AND_ASSIGN(BreakLocationIterator);
 };
 
@@ -225,13 +229,14 @@ class Debug {
 
   static Object* Break(Arguments args);
   static void SetBreakPoint(Handle<SharedFunctionInfo> shared,
-                            int source_position,
-                            Handle<Object> break_point_object);
+                            Handle<Object> break_point_object,
+                            int* source_position);
   static void ClearBreakPoint(Handle<Object> break_point_object);
   static void ClearAllBreakPoints();
   static void FloodWithOneShot(Handle<SharedFunctionInfo> shared);
   static void FloodHandlerWithOneShot();
   static void ChangeBreakOnException(ExceptionBreakType type, bool enable);
+  static bool IsBreakOnException(ExceptionBreakType type);
   static void PrepareStep(StepAction step_action, int step_count);
   static void ClearStepping();
   static bool StepNextContinue(BreakLocationIterator* break_location_iterator,
@@ -264,6 +269,9 @@ class Debug {
 
   // Check whether a global object is the debug global object.
   static bool IsDebugGlobal(GlobalObject* global);
+
+  // Check whether this frame is just about to return.
+  static bool IsBreakAtReturn(JavaScriptFrame* frame);
 
   // Fast check to see if any break points are active.
   inline static bool has_break_points() { return has_break_points_; }
@@ -323,12 +331,17 @@ class Debug {
   enum AddressId {
     k_after_break_target_address,
     k_debug_break_return_address,
-    k_register_address
+    k_debug_break_slot_address,
+    k_restarter_frame_function_pointer
   };
 
   // Support for setting the address to jump to when returning from break point.
   static Address* after_break_target_address() {
     return reinterpret_cast<Address*>(&thread_local_.after_break_target_);
+  }
+  static Address* restarter_frame_function_pointer_address() {
+    Object*** address = &thread_local_.restarter_frame_function_pointer_;
+    return reinterpret_cast<Address*>(address);
   }
 
   // Support for saving/restoring registers when handling debug break calls.
@@ -340,6 +353,12 @@ class Debug {
   static Code* debug_break_return() { return debug_break_return_; }
   static Code** debug_break_return_address() {
     return &debug_break_return_;
+  }
+
+  // Access to the debug break in debug break slot code.
+  static Code* debug_break_slot() { return debug_break_slot_; }
+  static Code** debug_break_slot_address() {
+    return &debug_break_slot_;
   }
 
   static const int kEstimatedNofDebugInfoEntries = 16;
@@ -370,6 +389,7 @@ class Debug {
   static void AfterGarbageCollection();
 
   // Code generator routines.
+  static void GenerateSlot(MacroAssembler* masm);
   static void GenerateLoadICDebugBreak(MacroAssembler* masm);
   static void GenerateStoreICDebugBreak(MacroAssembler* masm);
   static void GenerateKeyedLoadICDebugBreak(MacroAssembler* masm);
@@ -377,17 +397,51 @@ class Debug {
   static void GenerateConstructCallDebugBreak(MacroAssembler* masm);
   static void GenerateReturnDebugBreak(MacroAssembler* masm);
   static void GenerateStubNoRegistersDebugBreak(MacroAssembler* masm);
+  static void GenerateSlotDebugBreak(MacroAssembler* masm);
   static void GeneratePlainReturnLiveEdit(MacroAssembler* masm);
+
+  // FrameDropper is a code replacement for a JavaScript frame with possibly
+  // several frames above.
+  // There is no calling conventions here, because it never actually gets
+  // called, it only gets returned to.
   static void GenerateFrameDropperLiveEdit(MacroAssembler* masm);
 
   // Called from stub-cache.cc.
   static void GenerateCallICDebugBreak(MacroAssembler* masm);
 
-  static void FramesHaveBeenDropped(StackFrame::Id new_break_frame_id);
+  // Describes how exactly a frame has been dropped from stack.
+  enum FrameDropMode {
+    // No frame has been dropped.
+    FRAMES_UNTOUCHED,
+    // The top JS frame had been calling IC stub. IC stub mustn't be called now.
+    FRAME_DROPPED_IN_IC_CALL,
+    // The top JS frame had been calling debug break slot stub. Patch the
+    // address this stub jumps to in the end.
+    FRAME_DROPPED_IN_DEBUG_SLOT_CALL,
+    // The top JS frame had been calling some C++ function. The return address
+    // gets patched automatically.
+    FRAME_DROPPED_IN_DIRECT_CALL
+  };
 
-  static void SetUpFrameDropperFrame(StackFrame* bottom_js_frame,
-                                     Handle<Code> code);
+  static void FramesHaveBeenDropped(StackFrame::Id new_break_frame_id,
+                                    FrameDropMode mode,
+                                    Object** restarter_frame_function_pointer);
+
+  // Initializes an artificial stack frame. The data it contains is used for:
+  //  a. successful work of frame dropper code which eventually gets control,
+  //  b. being compatible with regular stack structure for various stack
+  //     iterators.
+  // Returns address of stack allocated pointer to restarted function,
+  // the value that is called 'restarter_frame_function_pointer'. The value
+  // at this address (possibly updated by GC) may be used later when preparing
+  // 'step in' operation.
+  static Object** SetUpFrameDropperFrame(StackFrame* bottom_js_frame,
+                                         Handle<Code> code);
+
   static const int kFrameDropperFrameSize;
+
+  // Architecture-specific constant.
+  static const bool kFrameDropperSupported;
 
  private:
   static bool CompileDebuggerScript(int index);
@@ -454,14 +508,20 @@ class Debug {
     // Storage location for jump when exiting debug break calls.
     Address after_break_target_;
 
-    // Indicates that LiveEdit has patched the stack.
-    bool frames_are_dropped_;
+    // Stores the way how LiveEdit has patched the stack. It is used when
+    // debugger returns control back to user script.
+    FrameDropMode frame_drop_mode_;
 
     // Top debugger entry.
     EnterDebugger* debugger_entry_;
 
     // Pending interrupts scheduled while debugging.
     int pending_interrupts_;
+
+    // When restarter frame is on stack, stores the address
+    // of the pointer to function being restarted. Otherwise (most of the time)
+    // stores NULL. This pointer is used with 'step in' implementation.
+    Object** restarter_frame_function_pointer_;
   };
 
   // Storage location for registers when handling debug break calls
@@ -471,6 +531,9 @@ class Debug {
 
   // Code to call for handling debug break on return.
   static Code* debug_break_return_;
+
+  // Code to call for handling debug break in debug break slots.
+  static Code* debug_break_slot_;
 
   DISALLOW_COPY_AND_ASSIGN(Debug);
 };
@@ -530,18 +593,21 @@ class EventDetailsImpl : public v8::Debug::EventDetails {
   EventDetailsImpl(DebugEvent event,
                    Handle<JSObject> exec_state,
                    Handle<JSObject> event_data,
-                   Handle<Object> callback_data);
+                   Handle<Object> callback_data,
+                   v8::Debug::ClientData* client_data);
   virtual DebugEvent GetEvent() const;
   virtual v8::Handle<v8::Object> GetExecutionState() const;
   virtual v8::Handle<v8::Object> GetEventData() const;
   virtual v8::Handle<v8::Context> GetEventContext() const;
   virtual v8::Handle<v8::Value> GetCallbackData() const;
+  virtual v8::Debug::ClientData* GetClientData() const;
  private:
   DebugEvent event_;  // Debug event causing the break.
-  Handle<JSObject> exec_state_;  // Current execution state.
-  Handle<JSObject> event_data_;  // Data associated with the event.
-  Handle<Object> callback_data_;  // User data passed with the callback when
-                                  // it was registered.
+  Handle<JSObject> exec_state_;         // Current execution state.
+  Handle<JSObject> event_data_;         // Data associated with the event.
+  Handle<Object> callback_data_;        // User data passed with the callback
+                                        // when it was registered.
+  v8::Debug::ClientData* client_data_;  // Data passed to DebugBreakForCommand.
 };
 
 
@@ -670,6 +736,9 @@ class Debugger {
   // Check whether there are commands in the command queue.
   static bool HasCommands();
 
+  // Enqueue a debugger command to the command queue for event listeners.
+  static void EnqueueDebugCommand(v8::Debug::ClientData* client_data = NULL);
+
   static Handle<Object> Call(Handle<JSFunction> fun,
                              Handle<Object> data,
                              bool* pending_exception);
@@ -717,6 +786,17 @@ class Debugger {
   static bool IsDebuggerActive();
 
  private:
+  static void CallEventCallback(v8::DebugEvent event,
+                                Handle<Object> exec_state,
+                                Handle<Object> event_data,
+                                v8::Debug::ClientData* client_data);
+  static void CallCEventCallback(v8::DebugEvent event,
+                                 Handle<Object> exec_state,
+                                 Handle<Object> event_data,
+                                 v8::Debug::ClientData* client_data);
+  static void CallJSEventCallback(v8::DebugEvent event,
+                                  Handle<Object> exec_state,
+                                  Handle<Object> event_data);
   static void ListenersChanged();
 
   static Mutex* debugger_access_;  // Mutex guarding debugger variables.
@@ -738,6 +818,8 @@ class Debugger {
   static const int kQueueInitialSize = 4;
   static LockingCommandMessageQueue command_queue_;
   static Semaphore* command_received_;  // Signaled for each command received.
+
+  static LockingCommandMessageQueue event_command_queue_;
 
   friend class EnterDebugger;
 };
@@ -851,8 +933,6 @@ class EnterDebugger BASE_EMBEDDED {
 // Stack allocated class for disabling break.
 class DisableBreak BASE_EMBEDDED {
  public:
-  // Enter the debugger by storing the previous top context and setting the
-  // current top context to the debugger context.
   explicit DisableBreak(bool disable_break)  {
     prev_disable_break_ = Debug::disable_break();
     Debug::set_disable_break(disable_break);
@@ -872,10 +952,7 @@ class DisableBreak BASE_EMBEDDED {
 // code.
 class Debug_Address {
  public:
-  Debug_Address(Debug::AddressId id, int reg = 0)
-    : id_(id), reg_(reg) {
-    ASSERT(reg == 0 || id == Debug::k_register_address);
-  }
+  explicit Debug_Address(Debug::AddressId id) : id_(id) { }
 
   static Debug_Address AfterBreakTarget() {
     return Debug_Address(Debug::k_after_break_target_address);
@@ -885,8 +962,8 @@ class Debug_Address {
     return Debug_Address(Debug::k_debug_break_return_address);
   }
 
-  static Debug_Address Register(int reg) {
-    return Debug_Address(Debug::k_register_address, reg);
+  static Debug_Address RestarterFrameFunctionPointer() {
+    return Debug_Address(Debug::k_restarter_frame_function_pointer);
   }
 
   Address address() const {
@@ -895,8 +972,11 @@ class Debug_Address {
         return reinterpret_cast<Address>(Debug::after_break_target_address());
       case Debug::k_debug_break_return_address:
         return reinterpret_cast<Address>(Debug::debug_break_return_address());
-      case Debug::k_register_address:
-        return reinterpret_cast<Address>(Debug::register_address(reg_));
+      case Debug::k_debug_break_slot_address:
+        return reinterpret_cast<Address>(Debug::debug_break_slot_address());
+      case Debug::k_restarter_frame_function_pointer:
+        return reinterpret_cast<Address>(
+            Debug::restarter_frame_function_pointer_address());
       default:
         UNREACHABLE();
         return NULL;
@@ -904,7 +984,6 @@ class Debug_Address {
   }
  private:
   Debug::AddressId id_;
-  int reg_;
 };
 
 // The optional thread that Debug Agent may use to temporary call V8 to process

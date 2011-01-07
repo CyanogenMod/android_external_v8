@@ -100,6 +100,12 @@ double OS::DaylightSavingsOffset(double time) {
 }
 
 
+int OS::GetLastError() {
+  UNIMPLEMENTED();
+  return 0;
+}
+
+
 // Returns the local time offset in milliseconds east of UTC without
 // taking daylight savings time into account.
 double OS::LocalTimeOffset() {
@@ -230,6 +236,11 @@ OS::MemoryMappedFile* OS::MemoryMappedFile::create(const char* name, int size,
 
 
 void OS::LogSharedLibraryAddresses() {
+  UNIMPLEMENTED();
+}
+
+
+void OS::SignalCodeMovingGC() {
   UNIMPLEMENTED();
 }
 

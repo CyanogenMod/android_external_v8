@@ -134,16 +134,6 @@ class ApiFunction {
 };
 
 
-v8::Arguments::Arguments(v8::Local<v8::Value> data,
-                         v8::Local<v8::Object> holder,
-                         v8::Local<v8::Function> callee,
-                         bool is_construct_call,
-                         void** values, int length)
-    : data_(data), holder_(holder), callee_(callee),
-      is_construct_call_(is_construct_call),
-      values_(values), length_(length) { }
-
-
 enum ExtensionTraversalState {
   UNVISITED, VISITED, INSTALLED
 };
@@ -184,6 +174,8 @@ class Utils {
       v8::internal::Handle<v8::internal::JSFunction> obj);
   static inline Local<String> ToLocal(
       v8::internal::Handle<v8::internal::String> obj);
+  static inline Local<RegExp> ToLocal(
+      v8::internal::Handle<v8::internal::JSRegExp> obj);
   static inline Local<Object> ToLocal(
       v8::internal::Handle<v8::internal::JSObject> obj);
   static inline Local<Array> ToLocal(
@@ -219,6 +211,8 @@ class Utils {
       OpenHandle(const ObjectTemplate* that);
   static inline v8::internal::Handle<v8::internal::Object>
       OpenHandle(const Data* data);
+  static inline v8::internal::Handle<v8::internal::JSRegExp>
+      OpenHandle(const RegExp* data);
   static inline v8::internal::Handle<v8::internal::JSObject>
       OpenHandle(const v8::Object* data);
   static inline v8::internal::Handle<v8::internal::JSArray>
@@ -275,6 +269,7 @@ MAKE_TO_LOCAL(ToLocal, Context, Context)
 MAKE_TO_LOCAL(ToLocal, Object, Value)
 MAKE_TO_LOCAL(ToLocal, JSFunction, Function)
 MAKE_TO_LOCAL(ToLocal, String, String)
+MAKE_TO_LOCAL(ToLocal, JSRegExp, RegExp)
 MAKE_TO_LOCAL(ToLocal, JSObject, Object)
 MAKE_TO_LOCAL(ToLocal, JSArray, Array)
 MAKE_TO_LOCAL(ToLocal, Proxy, External)
@@ -307,6 +302,7 @@ MAKE_OPEN_HANDLE(ObjectTemplate, ObjectTemplateInfo)
 MAKE_OPEN_HANDLE(Signature, SignatureInfo)
 MAKE_OPEN_HANDLE(TypeSwitch, TypeSwitchInfo)
 MAKE_OPEN_HANDLE(Data, Object)
+MAKE_OPEN_HANDLE(RegExp, JSRegExp)
 MAKE_OPEN_HANDLE(Object, JSObject)
 MAKE_OPEN_HANDLE(Array, JSArray)
 MAKE_OPEN_HANDLE(String, String)
@@ -357,7 +353,7 @@ class HandleScopeImplementer {
 
 
   inline internal::Object** GetSpareOrNewBlock();
-  inline void DeleteExtensions(int extensions);
+  inline void DeleteExtensions(internal::Object** prev_limit);
 
   inline void IncrementCallDepth() {call_depth_++;}
   inline void DecrementCallDepth() {call_depth_--;}
@@ -469,25 +465,28 @@ internal::Object** HandleScopeImplementer::GetSpareOrNewBlock() {
 }
 
 
-void HandleScopeImplementer::DeleteExtensions(int extensions) {
-  if (spare_ != NULL) {
-    DeleteArray(spare_);
-    spare_ = NULL;
-  }
-  for (int i = extensions; i > 1; --i) {
-    internal::Object** block = blocks_.RemoveLast();
+void HandleScopeImplementer::DeleteExtensions(internal::Object** prev_limit) {
+  while (!blocks_.is_empty()) {
+    internal::Object** block_start = blocks_.last();
+    internal::Object** block_limit = block_start + kHandleBlockSize;
 #ifdef DEBUG
-    v8::ImplementationUtilities::ZapHandleRange(block,
-                                                &block[kHandleBlockSize]);
+    // NoHandleAllocation may make the prev_limit to point inside the block.
+    if (block_start <= prev_limit && prev_limit <= block_limit) break;
+#else
+    if (prev_limit == block_limit) break;
 #endif
-    DeleteArray(block);
-  }
-  spare_ = blocks_.RemoveLast();
+
+    blocks_.RemoveLast();
 #ifdef DEBUG
-  v8::ImplementationUtilities::ZapHandleRange(
-      spare_,
-      &spare_[kHandleBlockSize]);
+    v8::ImplementationUtilities::ZapHandleRange(block_start, block_limit);
 #endif
+    if (spare_ != NULL) {
+      DeleteArray(spare_);
+    }
+    spare_ = block_start;
+  }
+  ASSERT((blocks_.is_empty() && prev_limit == NULL) ||
+         (!blocks_.is_empty() && prev_limit != NULL));
 }
 
 } }  // namespace v8::internal

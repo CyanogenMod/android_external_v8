@@ -69,10 +69,10 @@ TEST(0) {
 
   CodeDesc desc;
   assm.GetCode(&desc);
-  Object* code = Heap::CreateCode(desc,
-                                  NULL,
-                                  Code::ComputeFlags(Code::STUB),
-                                  Handle<Object>(Heap::undefined_value()));
+  Object* code = Heap::CreateCode(
+      desc,
+      Code::ComputeFlags(Code::STUB),
+      Handle<Object>(Heap::undefined_value()))->ToObjectChecked();
   CHECK(code->IsCode());
 #ifdef DEBUG
   Code::cast(code)->Print();
@@ -92,7 +92,7 @@ TEST(1) {
   Label L, C;
 
   __ mov(r1, Operand(r0));
-  __ mov(r0, Operand(0));
+  __ mov(r0, Operand(0, RelocInfo::NONE));
   __ b(&C);
 
   __ bind(&L);
@@ -100,16 +100,16 @@ TEST(1) {
   __ sub(r1, r1, Operand(1));
 
   __ bind(&C);
-  __ teq(r1, Operand(0));
+  __ teq(r1, Operand(0, RelocInfo::NONE));
   __ b(ne, &L);
   __ mov(pc, Operand(lr));
 
   CodeDesc desc;
   assm.GetCode(&desc);
-  Object* code = Heap::CreateCode(desc,
-                                  NULL,
-                                  Code::ComputeFlags(Code::STUB),
-                                  Handle<Object>(Heap::undefined_value()));
+  Object* code = Heap::CreateCode(
+      desc,
+      Code::ComputeFlags(Code::STUB),
+      Handle<Object>(Heap::undefined_value()))->ToObjectChecked();
   CHECK(code->IsCode());
 #ifdef DEBUG
   Code::cast(code)->Print();
@@ -137,7 +137,7 @@ TEST(2) {
   __ sub(r1, r1, Operand(1));
 
   __ bind(&C);
-  __ teq(r1, Operand(0));
+  __ teq(r1, Operand(0, RelocInfo::NONE));
   __ b(ne, &L);
   __ mov(pc, Operand(lr));
 
@@ -152,10 +152,10 @@ TEST(2) {
 
   CodeDesc desc;
   assm.GetCode(&desc);
-  Object* code = Heap::CreateCode(desc,
-                                  NULL,
-                                  Code::ComputeFlags(Code::STUB),
-                                  Handle<Object>(Heap::undefined_value()));
+  Object* code = Heap::CreateCode(
+      desc,
+      Code::ComputeFlags(Code::STUB),
+      Handle<Object>(Heap::undefined_value()))->ToObjectChecked();
   CHECK(code->IsCode());
 #ifdef DEBUG
   Code::cast(code)->Print();
@@ -200,10 +200,10 @@ TEST(3) {
 
   CodeDesc desc;
   assm.GetCode(&desc);
-  Object* code = Heap::CreateCode(desc,
-                                  NULL,
-                                  Code::ComputeFlags(Code::STUB),
-                                  Handle<Object>(Heap::undefined_value()));
+  Object* code = Heap::CreateCode(
+      desc,
+      Code::ComputeFlags(Code::STUB),
+      Handle<Object>(Heap::undefined_value()))->ToObjectChecked();
   CHECK(code->IsCode());
 #ifdef DEBUG
   Code::cast(code)->Print();
@@ -230,11 +230,17 @@ TEST(4) {
     double a;
     double b;
     double c;
+    double d;
+    double e;
+    double f;
+    int i;
+    float x;
+    float y;
   } T;
   T t;
 
   // Create a function that accepts &t, and loads, manipulates, and stores
-  // the doubles t.a, t.b, and t.c.
+  // the doubles and floats.
   Assembler assm(NULL, 0);
   Label L, C;
 
@@ -256,14 +262,42 @@ TEST(4) {
     __ vmov(d4, r2, r3);
     __ vstr(d4, r4, OFFSET_OF(T, b));
 
+    // Load t.x and t.y, switch values, and store back to the struct.
+    __ vldr(s0, r4, OFFSET_OF(T, x));
+    __ vldr(s31, r4, OFFSET_OF(T, y));
+    __ vmov(s16, s0);
+    __ vmov(s0, s31);
+    __ vmov(s31, s16);
+    __ vstr(s0, r4, OFFSET_OF(T, x));
+    __ vstr(s31, r4, OFFSET_OF(T, y));
+
+    // Move a literal into a register that can be encoded in the instruction.
+    __ vmov(d4, 1.0);
+    __ vstr(d4, r4, OFFSET_OF(T, e));
+
+    // Move a literal into a register that requires 64 bits to encode.
+    // 0x3ff0000010000000 = 1.000000059604644775390625
+    __ vmov(d4, 1.000000059604644775390625);
+    __ vstr(d4, r4, OFFSET_OF(T, d));
+
+    // Convert from floating point to integer.
+    __ vmov(d4, 2.0);
+    __ vcvt_s32_f64(s31, d4);
+    __ vstr(s31, r4, OFFSET_OF(T, i));
+
+    // Convert from integer to floating point.
+    __ mov(lr, Operand(42));
+    __ vmov(s31, lr);
+    __ vcvt_f64_s32(d4, s31);
+    __ vstr(d4, r4, OFFSET_OF(T, f));
     __ ldm(ia_w, sp, r4.bit() | fp.bit() | pc.bit());
 
     CodeDesc desc;
     assm.GetCode(&desc);
-    Object* code = Heap::CreateCode(desc,
-                                    NULL,
-                                    Code::ComputeFlags(Code::STUB),
-                                    Handle<Object>(Heap::undefined_value()));
+    Object* code = Heap::CreateCode(
+        desc,
+        Code::ComputeFlags(Code::STUB),
+        Handle<Object>(Heap::undefined_value()))->ToObjectChecked();
     CHECK(code->IsCode());
 #ifdef DEBUG
     Code::cast(code)->Print();
@@ -272,11 +306,162 @@ TEST(4) {
     t.a = 1.5;
     t.b = 2.75;
     t.c = 17.17;
+    t.d = 0.0;
+    t.e = 0.0;
+    t.f = 0.0;
+    t.i = 0;
+    t.x = 4.5;
+    t.y = 9.0;
     Object* dummy = CALL_GENERATED_CODE(f, &t, 0, 0, 0, 0);
     USE(dummy);
+    CHECK_EQ(4.5, t.y);
+    CHECK_EQ(9.0, t.x);
+    CHECK_EQ(2, t.i);
+    CHECK_EQ(42.0, t.f);
+    CHECK_EQ(1.0, t.e);
+    CHECK_EQ(1.000000059604644775390625, t.d);
     CHECK_EQ(4.25, t.c);
     CHECK_EQ(4.25, t.b);
     CHECK_EQ(1.5, t.a);
+  }
+}
+
+
+TEST(5) {
+  // Test the ARMv7 bitfield instructions.
+  InitializeVM();
+  v8::HandleScope scope;
+
+  Assembler assm(NULL, 0);
+
+  if (CpuFeatures::IsSupported(ARMv7)) {
+    CpuFeatures::Scope scope(ARMv7);
+    // On entry, r0 = 0xAAAAAAAA = 0b10..10101010.
+    __ ubfx(r0, r0, 1, 12);  // 0b00..010101010101 = 0x555
+    __ sbfx(r0, r0, 0, 5);   // 0b11..111111110101 = -11
+    __ bfc(r0, 1, 3);        // 0b11..111111110001 = -15
+    __ mov(r1, Operand(7));
+    __ bfi(r0, r1, 3, 3);    // 0b11..111111111001 = -7
+    __ mov(pc, Operand(lr));
+
+    CodeDesc desc;
+    assm.GetCode(&desc);
+    Object* code = Heap::CreateCode(
+        desc,
+        Code::ComputeFlags(Code::STUB),
+        Handle<Object>(Heap::undefined_value()))->ToObjectChecked();
+    CHECK(code->IsCode());
+#ifdef DEBUG
+    Code::cast(code)->Print();
+#endif
+    F1 f = FUNCTION_CAST<F1>(Code::cast(code)->entry());
+    int res = reinterpret_cast<int>(
+                CALL_GENERATED_CODE(f, 0xAAAAAAAA, 0, 0, 0, 0));
+    ::printf("f() = %d\n", res);
+    CHECK_EQ(-7, res);
+  }
+}
+
+
+TEST(6) {
+  // Test saturating instructions.
+  InitializeVM();
+  v8::HandleScope scope;
+
+  Assembler assm(NULL, 0);
+
+  if (CpuFeatures::IsSupported(ARMv7)) {
+    CpuFeatures::Scope scope(ARMv7);
+    __ usat(r1, 8, Operand(r0));           // Sat 0xFFFF to 0-255 = 0xFF.
+    __ usat(r2, 12, Operand(r0, ASR, 9));  // Sat (0xFFFF>>9) to 0-4095 = 0x7F.
+    __ usat(r3, 1, Operand(r0, LSL, 16));  // Sat (0xFFFF<<16) to 0-1 = 0x0.
+    __ add(r0, r1, Operand(r2));
+    __ add(r0, r0, Operand(r3));
+    __ mov(pc, Operand(lr));
+
+    CodeDesc desc;
+    assm.GetCode(&desc);
+    Object* code = Heap::CreateCode(
+        desc,
+        Code::ComputeFlags(Code::STUB),
+        Handle<Object>(Heap::undefined_value()))->ToObjectChecked();
+    CHECK(code->IsCode());
+#ifdef DEBUG
+    Code::cast(code)->Print();
+#endif
+    F1 f = FUNCTION_CAST<F1>(Code::cast(code)->entry());
+    int res = reinterpret_cast<int>(
+                CALL_GENERATED_CODE(f, 0xFFFF, 0, 0, 0, 0));
+    ::printf("f() = %d\n", res);
+    CHECK_EQ(382, res);
+  }
+}
+
+
+static void TestRoundingMode(int32_t mode, double value, int expected) {
+  InitializeVM();
+  v8::HandleScope scope;
+
+  Assembler assm(NULL, 0);
+
+  __ vmrs(r1);
+  // Set custom FPSCR.
+  __ bic(r2, r1, Operand(((mode ^ 3) << 22) | 0xf));
+  __ orr(r2, r2, Operand(mode << 22));
+  __ vmsr(r2);
+
+  // Load value, convert, and move back result to r0.
+  __ vmov(d1, value);
+  __ vcvt_s32_f64(s0, d1, Assembler::FPSCRRounding, al);
+  __ vmov(r0, s0);
+
+  __ mov(pc, Operand(lr));
+
+  CodeDesc desc;
+  assm.GetCode(&desc);
+  Object* code = Heap::CreateCode(
+      desc,
+      Code::ComputeFlags(Code::STUB),
+      Handle<Object>(Heap::undefined_value()))->ToObjectChecked();
+  CHECK(code->IsCode());
+#ifdef DEBUG
+  Code::cast(code)->Print();
+#endif
+  F1 f = FUNCTION_CAST<F1>(Code::cast(code)->entry());
+  int res = reinterpret_cast<int>(
+              CALL_GENERATED_CODE(f, 0, 0, 0, 0, 0));
+  ::printf("res = %d\n", res);
+  CHECK_EQ(expected, res);
+}
+
+
+TEST(7) {
+  // Test vfp rounding modes.
+
+  // See ARM DDI 0406B Page A2-29.
+  enum FPSCRRoungingMode {
+    RN,   // Round to Nearest.
+    RP,   // Round towards Plus Infinity.
+    RM,   // Round towards Minus Infinity.
+    RZ    // Round towards zero.
+  };
+
+  if (CpuFeatures::IsSupported(VFP3)) {
+    CpuFeatures::Scope scope(VFP3);
+
+    TestRoundingMode(RZ,  0.5, 0);
+    TestRoundingMode(RZ, -0.5, 0);
+    TestRoundingMode(RZ,  123.7,  123);
+    TestRoundingMode(RZ, -123.7, -123);
+    TestRoundingMode(RZ,  123456.2,  123456);
+    TestRoundingMode(RZ, -123456.2, -123456);
+
+    TestRoundingMode(RM,  0.5, 0);
+    TestRoundingMode(RM, -0.5, -1);
+    TestRoundingMode(RM,  123.7, 123);
+    TestRoundingMode(RM, -123.7, -124);
+    TestRoundingMode(RM,  123456.2,  123456);
+    TestRoundingMode(RM, -123456.2, -123457);
   }
 }
 

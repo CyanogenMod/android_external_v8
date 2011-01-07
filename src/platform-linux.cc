@@ -33,6 +33,7 @@
 #include <signal.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <stdlib.h>
 
@@ -98,30 +99,12 @@ uint64_t OS::CpuFeaturesImpliedByPlatform() {
 
 
 #ifdef __arm__
-bool OS::ArmCpuHasFeature(CpuFeature feature) {
-  const char* search_string = NULL;
+static bool CPUInfoContainsString(const char * search_string) {
   const char* file_name = "/proc/cpuinfo";
-  // Simple detection of VFP at runtime for Linux.
-  // It is based on /proc/cpuinfo, which reveals hardware configuration
-  // to user-space applications.  According to ARM (mid 2009), no similar
-  // facility is universally available on the ARM architectures,
-  // so it's up to individual OSes to provide such.
-  //
   // This is written as a straight shot one pass parser
   // and not using STL string and ifstream because,
   // on Linux, it's reading from a (non-mmap-able)
   // character special device.
-  switch (feature) {
-    case VFP3:
-      search_string = "vfp";
-      break;
-    case ARMv7:
-      search_string = "ARMv7";
-      break;
-    default:
-      UNREACHABLE();
-  }
-
   FILE* f = NULL;
   const char* what = search_string;
 
@@ -148,6 +131,42 @@ bool OS::ArmCpuHasFeature(CpuFeature feature) {
   // Did not find string in the proc file.
   return false;
 }
+
+bool OS::ArmCpuHasFeature(CpuFeature feature) {
+  const char* search_string = NULL;
+  // Simple detection of VFP at runtime for Linux.
+  // It is based on /proc/cpuinfo, which reveals hardware configuration
+  // to user-space applications.  According to ARM (mid 2009), no similar
+  // facility is universally available on the ARM architectures,
+  // so it's up to individual OSes to provide such.
+  switch (feature) {
+    case VFP3:
+      search_string = "vfpv3";
+      break;
+    case ARMv7:
+      search_string = "ARMv7";
+      break;
+    default:
+      UNREACHABLE();
+  }
+
+  if (CPUInfoContainsString(search_string)) {
+    return true;
+  }
+
+  if (feature == VFP3) {
+    // Some old kernels will report vfp not vfpv3. Here we make a last attempt
+    // to detect vfpv3 by checking for vfp *and* neon, since neon is only
+    // available on architectures with vfpv3.
+    // Checking neon on its own is not enough as it is possible to have neon
+    // without vfp.
+    if (CPUInfoContainsString("vfp") && CPUInfoContainsString("neon")) {
+      return true;
+    }
+  }
+
+  return false;
+}
 #endif  // def __arm__
 
 
@@ -162,6 +181,29 @@ int OS::ActivationFrameAlignment() {
   // With gcc 4.4 the tree vectorization optimizer can generate code
   // that requires 16 byte alignment such as movdqa on x86.
   return 16;
+}
+
+
+#ifdef V8_TARGET_ARCH_ARM
+// 0xffff0fa0 is the hard coded address of a function provided by
+// the kernel which implements a memory barrier. On older
+// ARM architecture revisions (pre-v6) this may be implemented using
+// a syscall. This address is stable, and in active use (hard coded)
+// by at least glibc-2.7 and the Android C library.
+typedef void (*LinuxKernelMemoryBarrierFunc)(void);
+LinuxKernelMemoryBarrierFunc pLinuxKernelMemoryBarrier __attribute__((weak)) =
+    (LinuxKernelMemoryBarrierFunc) 0xffff0fa0;
+#endif
+
+void OS::ReleaseStore(volatile AtomicWord* ptr, AtomicWord value) {
+#if defined(V8_TARGET_ARCH_ARM) && defined(__arm__)
+  // Only use on ARM hardware.
+  pLinuxKernelMemoryBarrier();
+#else
+  __asm__ __volatile__("" : : : "memory");
+  // An x86 store acts as a release barrier.
+#endif
+  *ptr = value;
 }
 
 
@@ -213,6 +255,7 @@ size_t OS::AllocateAlignment() {
 void* OS::Allocate(const size_t requested,
                    size_t* allocated,
                    bool is_executable) {
+  // TODO(805): Port randomization of allocated executable memory to Linux.
   const size_t msize = RoundUp(requested, sysconf(_SC_PAGESIZE));
   int prot = PROT_READ | PROT_WRITE | (is_executable ? PROT_EXEC : 0);
   void* mbase = mmap(NULL, msize, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -266,9 +309,10 @@ void OS::Abort() {
 void OS::DebugBreak() {
 // TODO(lrn): Introduce processor define for runtime system (!= V8_ARCH_x,
 //  which is the architecture of generated code).
-#if (defined(__arm__) || defined(__thumb__)) && \
-    defined(CAN_USE_ARMV5_INSTRUCTIONS)
+#if (defined(__arm__) || defined(__thumb__))
+# if defined(CAN_USE_ARMV5_INSTRUCTIONS)
   asm("bkpt 0");
+# endif
 #elif defined(__mips__)
   asm("break");
 #else
@@ -368,6 +412,30 @@ void OS::LogSharedLibraryAddresses() {
   }
   free(lib_name);
   fclose(fp);
+#endif
+}
+
+
+static const char kGCFakeMmap[] = "/tmp/__v8_gc__";
+
+
+void OS::SignalCodeMovingGC() {
+#ifdef ENABLE_LOGGING_AND_PROFILING
+  // Support for ll_prof.py.
+  //
+  // The Linux profiler built into the kernel logs all mmap's with
+  // PROT_EXEC so that analysis tools can properly attribute ticks. We
+  // do a mmap with a name known by ll_prof.py and immediately munmap
+  // it. This injects a GC marker into the stream of events generated
+  // by the kernel and allows us to synchronize V8 code log and the
+  // kernel log.
+  int size = sysconf(_SC_PAGESIZE);
+  FILE* f = fopen(kGCFakeMmap, "w+");
+  void* addr = mmap(NULL, size, PROT_READ | PROT_EXEC, MAP_PRIVATE,
+                    fileno(f), 0);
+  ASSERT(addr != MAP_FAILED);
+  munmap(addr, size);
+  fclose(f);
 #endif
 }
 
@@ -665,7 +733,6 @@ Semaphore* OS::CreateSemaphore(int count) {
 #ifdef ENABLE_LOGGING_AND_PROFILING
 
 static Sampler* active_sampler_ = NULL;
-static pthread_t vm_thread_ = 0;
 
 
 #if !defined(__GLIBC__) && (defined(__arm__) || defined(__thumb__))
@@ -694,30 +761,6 @@ enum ArmRegisters {R15 = 15, R13 = 13, R11 = 11};
 #endif
 
 
-// A function that determines if a signal handler is called in the context
-// of a VM thread.
-//
-// The problem is that SIGPROF signal can be delivered to an arbitrary thread
-// (see http://code.google.com/p/google-perftools/issues/detail?id=106#c2)
-// So, if the signal is being handled in the context of a non-VM thread,
-// it means that the VM thread is running, and trying to sample its stack can
-// cause a crash.
-static inline bool IsVmThread() {
-  // In the case of a single VM thread, this check is enough.
-  if (pthread_equal(pthread_self(), vm_thread_)) return true;
-  // If there are multiple threads that use VM, they must have a thread id
-  // stored in TLS. To verify that the thread is really executing VM,
-  // we check Top's data. Having that ThreadManager::RestoreThread first
-  // restores ThreadLocalTop from TLS, and only then erases the TLS value,
-  // reading Top::thread_id() should not be affected by races.
-  if (ThreadManager::HasId() && !ThreadManager::IsArchived() &&
-      ThreadManager::CurrentId() == Top::thread_id()) {
-    return true;
-  }
-  return false;
-}
-
-
 static void ProfilerSignalHandler(int signal, siginfo_t* info, void* context) {
 #ifndef V8_HOST_ARCH_MIPS
   USE(info);
@@ -730,6 +773,7 @@ static void ProfilerSignalHandler(int signal, siginfo_t* info, void* context) {
 
   // We always sample the VM state.
   sample->state = VMState::current_state();
+
   // If profiling, we extract the current pc and sp.
   if (active_sampler_->IsProfiling()) {
     // Extracting the sample from the context is extremely machine dependent.
@@ -758,9 +802,7 @@ static void ProfilerSignalHandler(int signal, siginfo_t* info, void* context) {
     // Implement this on MIPS.
     UNIMPLEMENTED();
 #endif
-    if (IsVmThread()) {
-      active_sampler_->SampleStack(sample);
-    }
+    active_sampler_->SampleStack(sample);
   }
 
   active_sampler_->Tick(sample);
@@ -770,23 +812,66 @@ static void ProfilerSignalHandler(int signal, siginfo_t* info, void* context) {
 
 class Sampler::PlatformData : public Malloced {
  public:
-  PlatformData() {
-    signal_handler_installed_ = false;
+  explicit PlatformData(Sampler* sampler)
+      : sampler_(sampler),
+        signal_handler_installed_(false),
+        vm_tgid_(getpid()),
+        // Glibc doesn't provide a wrapper for gettid(2).
+        vm_tid_(syscall(SYS_gettid)),
+        signal_sender_launched_(false) {
   }
 
+  void SignalSender() {
+    while (sampler_->IsActive()) {
+      // Glibc doesn't provide a wrapper for tgkill(2).
+      syscall(SYS_tgkill, vm_tgid_, vm_tid_, SIGPROF);
+      // Convert ms to us and subtract 100 us to compensate delays
+      // occuring during signal delivery.
+      const useconds_t interval = sampler_->interval_ * 1000 - 100;
+      int result = usleep(interval);
+#ifdef DEBUG
+      if (result != 0 && errno != EINTR) {
+        fprintf(stderr,
+                "SignalSender usleep error; interval = %u, errno = %d\n",
+                interval,
+                errno);
+        ASSERT(result == 0 || errno == EINTR);
+      }
+#endif
+      USE(result);
+    }
+  }
+
+  Sampler* sampler_;
   bool signal_handler_installed_;
   struct sigaction old_signal_handler_;
-  struct itimerval old_timer_value_;
+  int vm_tgid_;
+  int vm_tid_;
+  bool signal_sender_launched_;
+  pthread_t signal_sender_thread_;
 };
 
 
+static void* SenderEntry(void* arg) {
+  Sampler::PlatformData* data =
+      reinterpret_cast<Sampler::PlatformData*>(arg);
+  data->SignalSender();
+  return 0;
+}
+
+
 Sampler::Sampler(int interval, bool profiling)
-    : interval_(interval), profiling_(profiling), active_(false) {
-  data_ = new PlatformData();
+    : interval_(interval),
+      profiling_(profiling),
+      synchronous_(profiling),
+      active_(false),
+      samples_taken_(0) {
+  data_ = new PlatformData(this);
 }
 
 
 Sampler::~Sampler() {
+  ASSERT(!data_->signal_sender_launched_);
   delete data_;
 }
 
@@ -796,41 +881,46 @@ void Sampler::Start() {
   // platforms.
   if (active_sampler_ != NULL) return;
 
-  vm_thread_ = pthread_self();
-
   // Request profiling signals.
   struct sigaction sa;
   sa.sa_sigaction = ProfilerSignalHandler;
   sigemptyset(&sa.sa_mask);
-  sa.sa_flags = SA_SIGINFO;
+  sa.sa_flags = SA_RESTART | SA_SIGINFO;
   if (sigaction(SIGPROF, &sa, &data_->old_signal_handler_) != 0) return;
   data_->signal_handler_installed_ = true;
 
-  // Set the itimer to generate a tick for each interval.
-  itimerval itimer;
-  itimer.it_interval.tv_sec = interval_ / 1000;
-  itimer.it_interval.tv_usec = (interval_ % 1000) * 1000;
-  itimer.it_value.tv_sec = itimer.it_interval.tv_sec;
-  itimer.it_value.tv_usec = itimer.it_interval.tv_usec;
-  setitimer(ITIMER_PROF, &itimer, &data_->old_timer_value_);
+  // Start a thread that sends SIGPROF signal to VM thread.
+  // Sending the signal ourselves instead of relying on itimer provides
+  // much better accuracy.
+  active_ = true;
+  if (pthread_create(
+          &data_->signal_sender_thread_, NULL, SenderEntry, data_) == 0) {
+    data_->signal_sender_launched_ = true;
+  }
 
   // Set this sampler as the active sampler.
   active_sampler_ = this;
-  active_ = true;
 }
 
 
 void Sampler::Stop() {
+  active_ = false;
+
+  // Wait for signal sender termination (it will exit after setting
+  // active_ to false).
+  if (data_->signal_sender_launched_) {
+    pthread_join(data_->signal_sender_thread_, NULL);
+    data_->signal_sender_launched_ = false;
+  }
+
   // Restore old signal handler
   if (data_->signal_handler_installed_) {
-    setitimer(ITIMER_PROF, &data_->old_timer_value_, NULL);
     sigaction(SIGPROF, &data_->old_signal_handler_, 0);
     data_->signal_handler_installed_ = false;
   }
 
   // This sampler is no longer the active sampler.
   active_sampler_ = NULL;
-  active_ = false;
 }
 
 

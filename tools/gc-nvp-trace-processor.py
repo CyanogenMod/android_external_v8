@@ -38,7 +38,7 @@
 
 
 from __future__ import with_statement
-import sys, types, re, subprocess
+import sys, types, re, subprocess, math
 
 def flatten(l):
   flat = []
@@ -47,8 +47,12 @@ def flatten(l):
 
 def split_nvp(s):
   t = {}
-  for m in re.finditer(r"(\w+)=(-?\d+)", s):
-    t[m.group(1)] = int(m.group(2))
+  for (name, value) in re.findall(r"(\w+)=([-\w]+)", s):
+    try:
+      t[name] = int(value)
+    except ValueError:
+      t[name] = value
+
   return t
 
 def parse_gc_trace(input):
@@ -211,6 +215,9 @@ def plot_all(plots, trace, prefix):
 def reclaimed_bytes(row):
   return row['total_size_before'] - row['total_size_after']
 
+def other_scope(r):
+  return r['pause'] - r['mark'] - r['sweep'] - r['compact']
+
 plots = [
   [
     Set('style fill solid 0.5 noborder'),
@@ -219,9 +226,7 @@ plots = [
     Plot(Item('Marking', 'mark', lc = 'purple'),
          Item('Sweep', 'sweep', lc = 'blue'),
          Item('Compaction', 'compact', lc = 'red'),
-         Item('Other',
-              lambda r: r['pause'] - r['mark'] - r['sweep'] - r['compact'],
-              lc = 'grey'))
+         Item('Other', other_scope, lc = 'grey'))
   ],
   [
     Set('style histogram rowstacked'),
@@ -256,19 +261,60 @@ plots = [
   ],
 ]
 
+def freduce(f, field, trace, init):
+  return reduce(lambda t,r: f(t, r[field]), trace, init)
+
+def calc_total(trace, field):
+  return freduce(lambda t,v: t + v, field, trace, 0)
+
+def calc_max(trace, field):
+  return freduce(lambda t,r: max(t, r), field, trace, 0)
+
+def count_nonzero(trace, field):
+  return freduce(lambda t,r: t if r == 0 else t + 1, field, trace, 0)
+
+
 def process_trace(filename):
   trace = parse_gc_trace(filename)
-  total_gc = reduce(lambda t,r: t + r['pause'], trace, 0)
-  max_gc = reduce(lambda t,r: max(t, r['pause']), trace, 0)
-  avg_gc = total_gc / len(trace)
+
+  marksweeps = filter(lambda r: r['gc'] == 'ms', trace)
+  markcompacts = filter(lambda r: r['gc'] == 'mc', trace)
+  scavenges = filter(lambda r: r['gc'] == 's', trace)
 
   charts = plot_all(plots, trace, filename)
 
+  def stats(out, prefix, trace, field):
+    n = len(trace)
+    total = calc_total(trace, field)
+    max = calc_max(trace, field)
+    if n > 0:
+      avg = total / n
+    else:
+      avg = 0
+    if n > 1:
+      dev = math.sqrt(freduce(lambda t,r: (r - avg) ** 2, field, trace, 0) /
+                      (n - 1))
+    else:
+      dev = 0
+
+    out.write('<tr><td>%s</td><td>%d</td><td>%d</td>'
+              '<td>%d</td><td>%d [dev %f]</td></tr>' %
+              (prefix, n, total, max, avg, dev))
+
+
   with open(filename + '.html', 'w') as out:
     out.write('<html><body>')
-    out.write('Total in GC: <b>%d</b><br/>' % total_gc)
-    out.write('Max in GC: <b>%d</b><br/>' % max_gc)
-    out.write('Avg in GC: <b>%d</b><br/>' % avg_gc)
+    out.write('<table>')
+    out.write('<tr><td>Phase</td><td>Count</td><td>Time (ms)</td>')
+    out.write('<td>Max</td><td>Avg</td></tr>')
+    stats(out, 'Total in GC', trace, 'pause')
+    stats(out, 'Scavenge', scavenges, 'pause')
+    stats(out, 'MarkSweep', marksweeps, 'pause')
+    stats(out, 'MarkCompact', markcompacts, 'pause')
+    stats(out, 'Mark', filter(lambda r: r['mark'] != 0, trace), 'mark')
+    stats(out, 'Sweep', filter(lambda r: r['sweep'] != 0, trace), 'sweep')
+    stats(out, 'Compact', filter(lambda r: r['compact'] != 0, trace), 'compact')
+    out.write('</table>')
     for chart in charts:
       out.write('<img src="%s">' % chart)
       out.write('</body></html>')

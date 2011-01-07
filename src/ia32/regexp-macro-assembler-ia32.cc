@@ -31,11 +31,9 @@
 
 #include "unicode.h"
 #include "log.h"
-#include "ast.h"
 #include "regexp-stack.h"
 #include "macro-assembler.h"
 #include "regexp-macro-assembler.h"
-#include "ia32/macro-assembler-ia32.h"
 #include "ia32/regexp-macro-assembler-ia32.h"
 
 namespace v8 {
@@ -135,7 +133,6 @@ int RegExpMacroAssemblerIA32::stack_limit_slack()  {
 
 void RegExpMacroAssemblerIA32::AdvanceCurrentPosition(int by) {
   if (by != 0) {
-    Label inside_string;
     __ add(Operand(edi), Immediate(by * char_size()));
   }
 }
@@ -872,7 +869,6 @@ Handle<Object> RegExpMacroAssemblerIA32::GetCode(Handle<String> source) {
   CodeDesc code_desc;
   masm_->GetCode(&code_desc);
   Handle<Code> code = Factory::NewCode(code_desc,
-                                       NULL,
                                        Code::ComputeFlags(Code::REGEXP),
                                        masm_->CodeObject());
   PROFILE(RegExpCodeCreateEvent(*code, *source));
@@ -967,6 +963,17 @@ void RegExpMacroAssemblerIA32::ReadStackPointerFromRegister(int reg) {
   __ add(backtrack_stackpointer(), Operand(ebp, kStackHighEnd));
 }
 
+void RegExpMacroAssemblerIA32::SetCurrentPositionFromEnd(int by)  {
+  NearLabel after_position;
+  __ cmp(edi, -by * char_size());
+  __ j(greater_equal, &after_position);
+  __ mov(edi, -by * char_size());
+  // On RegExp code entry (where this operation is used), the character before
+  // the current position is expected to be already loaded.
+  // We have advanced the position, so it's safe to read backwards.
+  LoadCurrentCharacterUnchecked(-1, 1);
+  __ bind(&after_position);
+}
 
 void RegExpMacroAssemblerIA32::SetRegister(int register_index, int to) {
   ASSERT(register_index >= num_saved_registers_);  // Reserved for positions!
@@ -1060,7 +1067,7 @@ int RegExpMacroAssemblerIA32::CheckStackGuardState(Address* return_address,
   ASSERT(*return_address <=
       re_code->instruction_start() + re_code->instruction_size());
 
-  Object* result = Execution::HandleStackGuardInterrupt();
+  MaybeObject* result = Execution::HandleStackGuardInterrupt();
 
   if (*code_handle != re_code) {  // Return address no longer valid
     int delta = *code_handle - re_code;

@@ -62,26 +62,21 @@ function StringValueOf() {
 
 // ECMA-262, section 15.5.4.4
 function StringCharAt(pos) {
-  var char_code = %_FastCharCodeAt(this, pos);
-  if (!%_IsSmi(char_code)) {
-    var subject = TO_STRING_INLINE(this);
-    var index = TO_INTEGER(pos);
-    if (index >= subject.length || index < 0) return "";
-    char_code = %StringCharCodeAt(subject, index);
+  var result = %_StringCharAt(this, pos);
+  if (%_IsSmi(result)) {
+    result = %_StringCharAt(TO_STRING_INLINE(this), TO_INTEGER(pos));
   }
-  return %_CharFromCode(char_code);
+  return result;
 }
 
 
 // ECMA-262 section 15.5.4.5
 function StringCharCodeAt(pos) {
-  var fast_answer = %_FastCharCodeAt(this, pos);
-  if (%_IsSmi(fast_answer)) {
-    return fast_answer;
+  var result = %_StringCharCodeAt(this, pos);
+  if (!%_IsSmi(result)) {
+    result = %_StringCharCodeAt(TO_STRING_INLINE(this), TO_INTEGER(pos));
   }
-  var subject = TO_STRING_INLINE(this);
-  var index = TO_INTEGER(pos);
-  return %StringCharCodeAt(subject, index);
+  return result;
 }
 
 
@@ -149,16 +144,6 @@ function StringLastIndexOf(searchString /* position */) {  // length == 1
 }
 
 
-function CloneDenseArray(array) {
-  if (array === null) return null;
-  var clone = new $Array(array.length);
-  for (var i = 0; i < array.length; i++) {
-    clone[i] = array[i];
-  }
-  return clone;
-}
-
-
 // ECMA-262 section 15.5.4.9
 //
 // This function is implementation specific.  For now, we do not
@@ -177,33 +162,12 @@ function StringMatch(regexp) {
   var subject = TO_STRING_INLINE(this);
   if (IS_REGEXP(regexp)) {
     if (!regexp.global) return regexp.exec(subject);
-
-    var cache = regExpCache;
-    var saveAnswer = false;
-
-    if (%_ObjectEquals(cache.type, 'match') &&
-        %_ObjectEquals(cache.regExp, regexp) &&
-        %_ObjectEquals(cache.subject, subject)) {
-      if (cache.answerSaved) {
-        return CloneDenseArray(cache.answer);
-      } else {
-        saveAnswer = true;
-      }
-    }
     %_Log('regexp', 'regexp-match,%0S,%1r', [subject, regexp]);
     // lastMatchInfo is defined in regexp.js.
-    var result = %StringMatch(subject, regexp, lastMatchInfo);
-    cache.type = 'match';
-    cache.regExp = regexp;
-    cache.subject = subject;
-    if (saveAnswer) cache.answer = CloneDenseArray(result);
-    cache.answerSaved = saveAnswer;
-    return result;
+    return %StringMatch(subject, regexp, lastMatchInfo);
   }
   // Non-regexp argument.
   regexp = new $RegExp(regexp);
-  // Don't check regexp exec cache, since the regexp is new.
-  // TODO(lrn): Change this if we start caching regexps here.
   return RegExpExecNoTests(regexp, subject, 0);
 }
 
@@ -214,11 +178,7 @@ function StringMatch(regexp) {
 function SubString(string, start, end) {
   // Use the one character string cache.
   if (start + 1 == end) {
-    var char_code = %_FastCharCodeAt(string, start);
-    if (!%_IsSmi(char_code)) {
-      char_code = %StringCharCodeAt(string, start);
-    }
-    return %_CharFromCode(char_code);
+    return %_StringCharAt(string, start);
   }
   return %_SubString(string, start, end);
 }
@@ -240,7 +200,6 @@ function StringReplace(search, replace) {
   if (IS_REGEXP(search)) {
     %_Log('regexp', 'regexp-replace,%0r,%1S', [search, subject]);
     if (IS_FUNCTION(replace)) {
-      regExpCache.type = 'none';
       if (search.global) {
         return StringReplaceGlobalRegExpWithFunction(subject, search, replace);
       } else {
@@ -282,24 +241,10 @@ function StringReplace(search, replace) {
 
 // Helper function for regular expressions in String.prototype.replace.
 function StringReplaceRegExp(subject, regexp, replace) {
-  var cache = regExpCache;
-  if (%_ObjectEquals(cache.regExp, regexp) &&
-      %_ObjectEquals(cache.type, 'replace') &&
-      %_ObjectEquals(cache.replaceString, replace) &&
-      %_ObjectEquals(cache.subject, subject)) {
-    return cache.answer;
-  }
-  replace = TO_STRING_INLINE(replace);
-  var answer = %StringReplaceRegExpWithString(subject,
-                                              regexp,
-                                              replace,
-                                              lastMatchInfo);
-  cache.subject = subject;
-  cache.regExp = regexp;
-  cache.replaceString = replace;
-  cache.answer = answer;
-  cache.type = 'replace';
-  return answer;
+  return %StringReplaceRegExpWithString(subject,
+                                        regexp,
+                                        TO_STRING_INLINE(replace),
+                                        lastMatchInfo);
 }
 
 
@@ -322,10 +267,7 @@ function ExpandReplacement(string, subject, matchInfo, builder) {
     var expansion = '$';
     var position = next + 1;
     if (position < length) {
-      var peek = %_FastCharCodeAt(string, position);
-      if (!%_IsSmi(peek)) {
-        peek = %StringCharCodeAt(string, position);
-      }
+      var peek = %_StringCharCodeAt(string, position);
       if (peek == 36) {         // $$
         ++position;
         builder.add('$');
@@ -343,10 +285,7 @@ function ExpandReplacement(string, subject, matchInfo, builder) {
         ++position;
         var n = peek - 48;
         if (position < length) {
-          peek = %_FastCharCodeAt(string, position);
-          if (!%_IsSmi(peek)) {
-            peek = %StringCharCodeAt(string, position);
-          }
+          peek = %_StringCharCodeAt(string, position);
           // $nn, 01 <= nn <= 99
           if (n != 0 && peek == 48 || peek >= 49 && peek <= 57) {
             var nn = n * 10 + (peek - 48);
@@ -613,39 +552,19 @@ function StringSplit(separator, limit) {
     var separator_length = separator.length;
 
     // If the separator string is empty then return the elements in the subject.
-    if (separator_length === 0) return %StringToArray(subject);
+    if (separator_length === 0) return %StringToArray(subject, limit);
 
     var result = %StringSplit(subject, separator, limit);
 
     return result;
   }
 
-  var cache = regExpCache;
-  var saveAnswer = false;
-
-  if (%_ObjectEquals(cache.type, 'split') &&
-      %_ObjectEquals(cache.regExp, separator) &&
-      %_ObjectEquals(cache.subject, subject)) {
-    if (cache.answerSaved) {
-      return CloneDenseArray(cache.answer);
-    } else {
-      saveAnswer = true;
-    }
-  }
-
-  cache.type = 'split';
-  cache.regExp = separator;
-  cache.subject = subject;
-
   %_Log('regexp', 'regexp-split,%0S,%1r', [subject, separator]);
 
   if (length === 0) {
-    cache.answerSaved = true;
-    if (splitMatch(separator, subject, 0, 0) != null) {
-      cache.answer = [];
+    if (DoRegExpExec(separator, subject, 0, 0) != null) {
       return [];
     }
-    cache.answer = [subject];
     return [subject];
   }
 
@@ -693,8 +612,6 @@ function StringSplit(separator, limit) {
 
     startIndex = currentIndex = endIndex;
   }
-  if (saveAnswer) cache.answer = CloneDenseArray(result);
-  cache.answerSaved = saveAnswer;
   return result;
 }
 
@@ -824,7 +741,7 @@ function StringFromCharCode(code) {
   var n = %_ArgumentsLength();
   if (n == 1) {
     if (!%_IsSmi(code)) code = ToNumber(code);
-    return %_CharFromCode(code & 0xffff);
+    return %_StringCharFromCode(code & 0xffff);
   }
 
   // NOTE: This is not super-efficient, but it is necessary because we
