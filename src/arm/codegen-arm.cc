@@ -1150,7 +1150,7 @@ void DeferredInlineSmiOperation::GenerateNonSmiInput() {
   }
   // Check that the *signed* result fits in a smi. Not necessary for AND, SAR
   // if the shift if more than 0 or SHR if the shit is more than 1.
-  if (!( (op_ == Token::AND) ||
+  if (!( (op_ == Token::AND && value_ >= 0) ||
         ((op_ == Token::SAR) && (shift_value > 0)) ||
         ((op_ == Token::SHR) && (shift_value > 1)))) {
     __ add(r3, int32, Operand(0x40000000), SetCC);
@@ -1411,8 +1411,10 @@ void CodeGenerator::SmiOperation(Token::Value op,
           default: UNREACHABLE();
         }
         deferred->BindExit();
-        TypeInfo result_type =
-            (op == Token::BIT_AND) ? TypeInfo::Smi() : TypeInfo::Integer32();
+        TypeInfo result_type = TypeInfo::Integer32();
+        if (op == Token::BIT_AND && int_value >= 0) {
+          result_type = TypeInfo::Smi();
+        }
         frame_->EmitPush(tos, result_type);
       }
       break;
@@ -5161,11 +5163,11 @@ class DeferredIsStringWrapperSafeForDefaultValueOf : public DeferredCode {
 
     // Set the bit in the map to indicate that it has been checked safe for
     // default valueOf and set true result.
-    __ ldr(scratch1_, FieldMemOperand(map_result_, Map::kBitField2Offset));
+    __ ldrb(scratch1_, FieldMemOperand(map_result_, Map::kBitField2Offset));
     __ orr(scratch1_,
            scratch1_,
            Operand(1 << Map::kStringWrapperSafeForDefaultValueOf));
-    __ str(scratch1_, FieldMemOperand(map_result_, Map::kBitField2Offset));
+    __ strb(scratch1_, FieldMemOperand(map_result_, Map::kBitField2Offset));
     __ mov(map_result_, Operand(1));
     __ jmp(exit_label());
     __ bind(&false_result);
@@ -7272,6 +7274,9 @@ void CodeGenerator::EmitKeyedStore(StaticType* key_type,
     }
 
     ASSERT(we_remembered_the_write_barrier);
+
+    // Make sure that r0 holds the value which is the result of the expression.
+    __ Move(r0, value);
 
     deferred->BindExit();
   } else {
