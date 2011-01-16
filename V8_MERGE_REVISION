@@ -1,5 +1,4 @@
 We use a V8 revision that has been used for a Chromium release.
 
-Note: we temporarily deviate from 9.0.597.x to pull v8 v2.5.9.9
-
+http://src.chromium.org/svn/releases/9.0.597.69/DEPS
 http://v8.googlecode.com/svn/branches/2.5@6333
