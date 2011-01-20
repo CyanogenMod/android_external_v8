@@ -1264,6 +1264,139 @@ void MacroAssembler::TailCallStub(CodeStub* stub, Condition cond) {
 }
 
 
+MaybeObject* MacroAssembler::TryTailCallStub(CodeStub* stub, Condition cond) {
+  ASSERT(allow_stub_calls());  // stub calls are not allowed in some stubs
+  Object* result;
+  { MaybeObject* maybe_result = stub->TryGetCode();
+    if (!maybe_result->ToObject(&result)) return maybe_result;
+  }
+  Jump(stub->GetCode(), RelocInfo::CODE_TARGET, cond);
+  return result;
+}
+
+void MacroAssembler::EnterExitFramePrologue(int unwind_space) {
+  add(ip, sp, Operand(unwind_space * kPointerSize));
+  // Push in reverse order: caller_fp, sp_on_exit, and caller_pc.
+  stm(db_w, sp, fp.bit() | ip.bit() | lr.bit());
+  mov(fp, Operand(sp));
+
+  mov(ip, Operand(CodeObject()));
+  push(ip);
+  mov(ip, Operand(ExitApiFrameConstants::kMarker));
+  push(ip);
+  push(ip);  // Exit Frame sp patched before call.
+
+  mov(ip, Operand(ExternalReference(Top::k_c_entry_fp_address)));
+  str(fp, MemOperand(ip));
+  mov(ip, Operand(ExternalReference(Top::k_context_address)));
+  str(cp, MemOperand(ip));
+}
+
+void MacroAssembler::EnterExitFrameEpilogue(int arg_stack_space) {
+  // Create space for the args.
+  sub(sp, sp, Operand(arg_stack_space * kPointerSize));
+
+  int frame_alignment = ActivationFrameAlignment();
+  int frame_alignment_mask = frame_alignment - 1;
+  if (frame_alignment > kPointerSize) {
+    ASSERT(frame_alignment == 2 * kPointerSize);
+    tst(sp, Operand(frame_alignment_mask));
+    // Stack alignment place holder need not be initialized as its below
+    // c_entry_fp_address and does not affect GC.
+    push(ip, nz);
+  }
+  str(sp, MemOperand(fp, ExitApiFrameConstants::kSPOffset));
+}
+
+void MacroAssembler::PrepareCallApiFunction(int arg_stack_space,
+                                            int unwind_space) {
+  EnterExitFramePrologue(unwind_space);
+  EnterExitFrameEpilogue(arg_stack_space);
+}
+
+static int AddressOffset(ExternalReference ref0, ExternalReference ref1) {
+  int64_t offset = (ref0.address() - ref1.address());
+  // Check that fits into int.
+  ASSERT(static_cast<int>(offset) == offset);
+  return static_cast<int>(offset);
+}
+
+MaybeObject* MacroAssembler::TryCallApiFunctionAndReturn(
+    ApiFunction* function) {
+  ExternalReference next_address =
+      ExternalReference::handle_scope_next_address();
+  const int kNextOffset = 0;
+  const int kLimitOffset = AddressOffset(
+      ExternalReference::handle_scope_limit_address(),
+      next_address);
+  const int kLevelOffset = AddressOffset(
+      ExternalReference::handle_scope_level_address(),
+      next_address);
+
+  // Allocate HandleScope in callee-save registers.
+  mov(r7, Operand(next_address));
+  ldr(r4, MemOperand(r7, kNextOffset));
+  ldr(r5, MemOperand(r7, kLimitOffset));
+  ldr(r6, MemOperand(r7, kLevelOffset));
+  add(r6, r6, Operand(1));
+  str(r6, MemOperand(r7, kLevelOffset));
+
+  // Call the api function.
+  Call(function->address(), RelocInfo::RUNTIME_ENTRY);
+
+  Label promote_scheduled_exception;
+  Label delete_allocated_handles;
+  Label leave_exit_frame;
+
+  // If result is non-zero, dereference to get the result value
+  // otherwise set it to undefined.
+  cmp(r0, Operand(0));
+  LoadRoot(r0, Heap::kUndefinedValueRootIndex, eq);
+  ldr(r0, MemOperand(r0), ne);
+
+  // No more valid handles (the result handle was the last one). Restore
+  // previous handle scope.
+  str(r4, MemOperand(r7, kNextOffset));
+  if (FLAG_debug_code) {
+    ldr(r1, MemOperand(r7, kLevelOffset));
+    cmp(r1, r6);
+    Check(eq, "Unexpected level after return from api call");
+  }
+  sub(r6, r6, Operand(1));
+  str(r6, MemOperand(r7, kLevelOffset));
+  ldr(ip, MemOperand(r7, kLimitOffset));
+  cmp(r5, ip);
+  b(ne, &delete_allocated_handles);
+
+  // Check if the function scheduled an exception.
+  bind(&leave_exit_frame);
+  LoadRoot(r4, Heap::kTheHoleValueRootIndex);
+  mov(ip, Operand(ExternalReference(Top::k_pending_exception_address)));
+  ldr(r5, MemOperand(ip));
+  cmp(r4, r5);
+  b(ne, &promote_scheduled_exception);
+  LeaveExitFrame();
+
+  bind(&promote_scheduled_exception);
+  MaybeObject* result = TryTailCallExternalReference(
+      ExternalReference(Runtime::kPromoteScheduledException), 0, 1);
+  if (result->IsFailure()) {
+    return result;
+  }
+
+  // HandleScope limit has changed. Delete allocated extensions.
+  bind(&delete_allocated_handles);
+  str(r5, MemOperand(r7, kLimitOffset));
+  mov(r4, r0);
+  PrepareCallCFunction(0, r5);
+  CallCFunction(ExternalReference::delete_handle_scope_extensions(), 0);
+  mov(r0, r4);
+  jmp(&leave_exit_frame);
+
+  return result;
+}
+
+
 void MacroAssembler::IllegalOperation(int num_arguments) {
   if (num_arguments > 0) {
     add(sp, sp, Operand(num_arguments * kPointerSize));
@@ -1506,6 +1639,15 @@ void MacroAssembler::TailCallExternalReference(const ExternalReference& ext,
   JumpToExternalReference(ext);
 }
 
+MaybeObject* MacroAssembler::TryTailCallExternalReference(
+    const ExternalReference& ext, int num_arguments, int result_size) {
+  // TODO(1236192): Most runtime routines don't need the number of
+  // arguments passed in because it is constant. At some point we
+  // should remove this need and make the runtime routine entry code
+  // smarter.
+  mov(r0, Operand(num_arguments));
+  return TryJumpToExternalReference(ext);
+}
 
 void MacroAssembler::TailCallRuntime(Runtime::FunctionId fid,
                                      int num_arguments,
@@ -1524,6 +1666,16 @@ void MacroAssembler::JumpToExternalReference(const ExternalReference& builtin) {
   Jump(stub.GetCode(), RelocInfo::CODE_TARGET);
 }
 
+MaybeObject* MacroAssembler::TryJumpToExternalReference(
+    const ExternalReference& builtin) {
+#if defined(__thumb__)
+  // Thumb mode builtin.
+  ASSERT((reinterpret_cast<intptr_t>(builtin.address()) & 1) == 1);
+#endif
+  mov(r1, Operand(builtin));
+  CEntryStub stub(1);
+  return TryTailCallStub(&stub);
+}
 
 void MacroAssembler::InvokeBuiltin(Builtins::JavaScript id,
                                    InvokeJSFlags flags) {

@@ -571,6 +571,11 @@ static void CompileCallLoadPropertyWithInterceptor(MacroAssembler* masm,
   __ CallStub(&stub);
 }
 
+#ifdef USE_SIMULATOR
+static const int kFastApiCallArguments = 4;
+#else
+static const int kFastApiCallArguments = 3;
+#endif
 
 // Reserves space for the extra arguments to FastHandleApiCall in the
 // caller's frame.
@@ -579,16 +584,15 @@ static void CompileCallLoadPropertyWithInterceptor(MacroAssembler* masm,
 static void ReserveSpaceForFastApiCall(MacroAssembler* masm,
                                        Register scratch) {
   __ mov(scratch, Operand(Smi::FromInt(0)));
-  __ push(scratch);
-  __ push(scratch);
-  __ push(scratch);
-  __ push(scratch);
+  for (int i = 0; i < kFastApiCallArguments; i++) {
+    __ push(scratch);
+  }
 }
 
 
 // Undoes the effects of ReserveSpaceForFastApiCall.
 static void FreeSpaceForFastApiCall(MacroAssembler* masm) {
-  __ Drop(4);
+  __ Drop(kFastApiCallArguments);
 }
 
 
@@ -636,6 +640,74 @@ static void GenerateFastApiCall(MacroAssembler* masm,
                 RelocInfo::CODE_TARGET, JUMP_FUNCTION);
 }
 
+#ifndef USE_SIMULATOR
+static bool GenerateFastApiDirectCall(MacroAssembler* masm,
+                                      const CallOptimization& optimization,
+                                      int argc,
+                                      Failure** failure) {
+  // ----------- S t a t e -------------
+  //  -- sp[0]              : holder (set by CheckPrototypes)
+  //  -- sp[4]              : callee js function
+  //  -- sp[8]              : call data
+  //  -- sp[12]             : last js argument
+  //  -- ...
+  //  -- sp[(argc + 3) * 4] : first js argument
+  //  -- sp[(argc + 4) * 4] : receiver
+  // -----------------------------------
+  // Get the function and setup the context.
+  JSFunction* function = optimization.constant_function();
+  __ mov(r5, Operand(Handle<JSFunction>(function)));
+  __ ldr(cp, FieldMemOperand(r5, JSFunction::kContextOffset));
+
+  // Pass the additional arguments FastHandleApiCall expects.
+  Object* call_data = optimization.api_call_info()->data();
+  Handle<CallHandlerInfo> api_call_info_handle(optimization.api_call_info());
+  if (Heap::InNewSpace(call_data)) {
+    __ Move(r0, api_call_info_handle);
+    __ ldr(r6, FieldMemOperand(r0, CallHandlerInfo::kDataOffset));
+  } else {
+    __ Move(r6, Handle<Object>(call_data));
+  }
+  __ stm(ib, sp, r5.bit() | r6.bit());
+
+  // r2 points to calldata as expected by Arguments class (refer layout above)
+  __ add(r2, sp, Operand(2 * kPointerSize));
+
+  Object* callback = optimization.api_call_info()->callback();
+  Address api_function_address = v8::ToCData<Address>(callback);
+  ApiFunction fun(api_function_address);
+
+  const int kApiStackSpace = 4;
+  __ PrepareCallApiFunction(kApiStackSpace,
+                            argc + kFastApiCallArguments + 1);
+  // v8::Arguments::implicit_args = data
+  __ str(r2, MemOperand(sp));
+  // v8::Arguments::values = last argument
+  __ add(ip, r2, Operand(argc * kPointerSize));
+  __ str(ip, MemOperand(sp, 1 * kPointerSize));
+  // v8::Arguments::length_ = argc
+  __ mov(ip, Operand(argc));
+  __ str(ip, MemOperand(sp, 2 * kPointerSize));
+  // v8::Arguments::is_construct_call = 0
+  __ mov(ip, Operand(0));
+  __ str(ip, MemOperand(sp, 3 * kPointerSize));
+  // r0 = v8::Arguments&
+  __ mov(r0, sp);
+
+  // Emitting a stub call may try to allocate (if the code is not
+  // already generated).  Do not allow the assembler to perform a
+  // garbage collection but instead return the allocation failure
+  // object.
+  MaybeObject* result =
+      masm->TryCallApiFunctionAndReturn(&fun);
+  if (result->IsFailure()) {
+    *failure = Failure::cast(result);
+    return false;
+  }
+  return true;
+}
+#endif
+
 
 class CallInterceptorCompiler BASE_EMBEDDED {
  public:
@@ -646,7 +718,7 @@ class CallInterceptorCompiler BASE_EMBEDDED {
         arguments_(arguments),
         name_(name) {}
 
-  void Compile(MacroAssembler* masm,
+  bool Compile(MacroAssembler* masm,
                JSObject* object,
                JSObject* holder,
                String* name,
@@ -655,7 +727,8 @@ class CallInterceptorCompiler BASE_EMBEDDED {
                Register scratch1,
                Register scratch2,
                Register scratch3,
-               Label* miss) {
+               Label* miss,
+               Failure **failure) {
     ASSERT(holder->HasNamedInterceptor());
     ASSERT(!holder->GetNamedInterceptor()->getter()->IsUndefined());
 
@@ -665,7 +738,7 @@ class CallInterceptorCompiler BASE_EMBEDDED {
     CallOptimization optimization(lookup);
 
     if (optimization.is_constant_call()) {
-      CompileCacheable(masm,
+      return CompileCacheable(masm,
                        object,
                        receiver,
                        scratch1,
@@ -675,7 +748,8 @@ class CallInterceptorCompiler BASE_EMBEDDED {
                        lookup,
                        name,
                        optimization,
-                       miss);
+                       miss,
+                       failure);
     } else {
       CompileRegular(masm,
                      object,
@@ -686,11 +760,12 @@ class CallInterceptorCompiler BASE_EMBEDDED {
                      name,
                      holder,
                      miss);
+      return true;
     }
   }
 
  private:
-  void CompileCacheable(MacroAssembler* masm,
+  bool CompileCacheable(MacroAssembler* masm,
                        JSObject* object,
                        Register receiver,
                        Register scratch1,
@@ -700,7 +775,8 @@ class CallInterceptorCompiler BASE_EMBEDDED {
                        LookupResult* lookup,
                        String* name,
                        const CallOptimization& optimization,
-                       Label* miss_label) {
+                       Label* miss_label,
+                       Failure **failure) {
     ASSERT(optimization.is_constant_call());
     ASSERT(!lookup->holder()->IsGlobalObject());
 
@@ -764,7 +840,17 @@ class CallInterceptorCompiler BASE_EMBEDDED {
 
     // Invoke function.
     if (can_do_fast_api_call) {
+#ifdef USE_SIMULATOR
       GenerateFastApiCall(masm, optimization, arguments_.immediate());
+#else
+      bool success = GenerateFastApiDirectCall(masm,
+                                               optimization,
+                                               arguments_.immediate(),
+                                               failure);
+      if (!success) {
+        return false;
+      }
+#endif
     } else {
       __ InvokeFunction(optimization.constant_function(), arguments_,
                         JUMP_FUNCTION);
@@ -782,6 +868,8 @@ class CallInterceptorCompiler BASE_EMBEDDED {
     if (can_do_fast_api_call) {
       FreeSpaceForFastApiCall(masm);
     }
+
+    return true;
   }
 
   void CompileRegular(MacroAssembler* masm,
@@ -2212,7 +2300,18 @@ MaybeObject* CallStubCompiler::CompileCallConstant(Object* object,
   }
 
   if (depth != kInvalidProtoDepth) {
+#ifdef USE_SIMULATOR
     GenerateFastApiCall(masm(), optimization, argc);
+#else
+    Failure* failure;
+    bool success = GenerateFastApiDirectCall(masm(),
+                                             optimization,
+                                             argc,
+                                             &failure);
+    if (!success) {
+      return failure;
+    }
+#endif
   } else {
     __ InvokeFunction(function, arguments(), JUMP_FUNCTION);
   }
@@ -2256,7 +2355,8 @@ MaybeObject* CallStubCompiler::CompileCallInterceptor(JSObject* object,
   __ ldr(r1, MemOperand(sp, argc * kPointerSize));
 
   CallInterceptorCompiler compiler(this, arguments(), r2);
-  compiler.Compile(masm(),
+  Failure *failure;
+  bool success =  compiler.Compile(masm(),
                    object,
                    holder,
                    name,
@@ -2265,7 +2365,11 @@ MaybeObject* CallStubCompiler::CompileCallInterceptor(JSObject* object,
                    r3,
                    r4,
                    r0,
-                   &miss);
+                   &miss,
+                   &failure);
+  if (!success) {
+      return false;
+  }
 
   // Move returned value, the function to call, to r1.
   __ mov(r1, r0);

@@ -573,6 +573,12 @@ class MacroAssembler: public Assembler {
   // Call a code stub.
   void TailCallStub(CodeStub* stub, Condition cond = al);
 
+  // Tail call a code stub (jump) and return the code object called.  Try to
+  // generate the code if necessary.  Do not perform a GC but instead return
+  // a retry after GC failure.
+  MUST_USE_RESULT MaybeObject* TryTailCallStub(CodeStub* stub,
+                                               Condition cond = al);
+
   // Call a runtime routine.
   void CallRuntime(Runtime::Function* f, int num_arguments);
 
@@ -589,6 +595,12 @@ class MacroAssembler: public Assembler {
   void TailCallExternalReference(const ExternalReference& ext,
                                  int num_arguments,
                                  int result_size);
+
+  // Tail call of a runtime routine (jump). Try to generate the code if
+  // necessary. Do not perform a GC but instead return a retry after GC
+  // failure.
+  MUST_USE_RESULT MaybeObject* TryTailCallExternalReference(
+      const ExternalReference& ext, int num_arguments, int result_size);
 
   // Convenience function: tail call a runtime routine (jump).
   void TailCallRuntime(Runtime::FunctionId fid,
@@ -613,8 +625,27 @@ class MacroAssembler: public Assembler {
   void CallCFunction(ExternalReference function, int num_arguments);
   void CallCFunction(Register function, int num_arguments);
 
+  // Creates the exit frame, pushes the arguments and aligns the stack
+  // for the C call. saves the fp and context in top.
+  // |arg_stack_space| - space allocated for the structure (e.g.
+  // v8::arguments in a direct call) on top of the exit frame.
+  // |unwind_space| - space to be unwound on exit (includes the call js
+  // arguments space and the additonal space allocated for the fast call).
+  void PrepareCallApiFunction(int arg_stack_space,
+                              int unwind_space);
+
+  void EnterExitFramePrologue(int arg_stack_space);
+  void EnterExitFrameEpilogue(int unwind_space);
+
+  // Calls an API function. Allocates HandleScope, extracts
+  // returned value from handle and propagates exceptions.
+  // Restores context.
+  MaybeObject* TryCallApiFunctionAndReturn(ApiFunction* function);
+
   // Jump to a runtime routine.
   void JumpToExternalReference(const ExternalReference& builtin);
+
+  MaybeObject* TryJumpToExternalReference(const ExternalReference& ext);
 
   // Invoke specified builtin JavaScript function. Adds an entry to
   // the unresolved list if the name does not resolve.
