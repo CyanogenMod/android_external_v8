@@ -1,4 +1,10 @@
 We use a V8 revision that has been used for a Chromium release.
 
+Cherry-picked V8 CL:
+http://codereview.chromium.org/6246045/patch/2002/3003
+to fix bug 3408144 Browser crash on loading a specific website
+http://b/issue?id=3408144
+
 http://src.chromium.org/svn/releases/9.0.597.83/DEPS
-http://v8.googlecode.com/svn/branches/2.5@6394
+http://v8.googlecode.com/svn/branches/2.5@6394 +
+http://codereview.chromium.org/6246045/patch/2002/3003
