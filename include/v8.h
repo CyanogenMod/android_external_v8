@@ -2870,6 +2870,7 @@ class V8EXPORT V8 {
    * V8 uses these notifications to attempt to free memory.
    */
   static void LowMemoryNotification();
+  static void LowIntensityGC();
 
   /**
    * Optional notification that a context has been disposed. V8 uses

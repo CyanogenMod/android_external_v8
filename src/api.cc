@@ -3316,6 +3316,11 @@ void v8::V8::LowMemoryNotification() {
   i::Heap::CollectAllGarbage(true);
 }
 
+void v8::V8::LowIntensityGC() {
+  // New API to perform a light GC attempt.
+  if (!i::V8::IsRunning()) return;
+  i::Heap::CollectGarbage(i::NEW_SPACE);
+}
 
 int v8::V8::ContextDisposedNotification() {
   if (!i::V8::IsRunning()) return 0;
