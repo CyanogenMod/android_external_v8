@@ -1371,7 +1371,7 @@ MaybeObject* MacroAssembler::TryCallApiFunctionAndReturn(
   // Check if the function scheduled an exception.
   bind(&leave_exit_frame);
   LoadRoot(r4, Heap::kTheHoleValueRootIndex);
-  mov(ip, Operand(ExternalReference(Top::k_pending_exception_address)));
+  mov(ip, Operand(ExternalReference::scheduled_exception_address()));
   ldr(r5, MemOperand(ip));
   cmp(r4, r5);
   b(ne, &promote_scheduled_exception);
