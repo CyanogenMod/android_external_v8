@@ -992,18 +992,23 @@ class String : public Primitive {
    * the contents of the string and the NULL terminator into the
    * buffer.
    *
+   * WriteUtf8 will not write partial UTF-8 sequences, preferring to stop
+   * before the end of the buffer.
+   *
    * Copies up to length characters into the output buffer.
    * Only null-terminates if there is enough space in the buffer.
    *
    * \param buffer The buffer into which the string will be copied.
    * \param start The starting position within the string at which
    * copying begins.
-   * \param length The number of bytes to copy from the string.
+   * \param length The number of characters to copy from the string.  For
+   *    WriteUtf8 the number of bytes in the buffer.
    * \param nchars_ref The number of characters written, can be NULL.
    * \param hints Various hints that might affect performance of this or
    *    subsequent operations.
-   * \return The number of bytes copied to the buffer
-   * excluding the NULL terminator.
+   * \return The number of characters copied to the buffer excluding the null
+   *    terminator.  For WriteUtf8: The number of bytes copied to the buffer
+   *    including the null terminator.
    */
   enum WriteHints {
     NO_HINTS = 0,
@@ -1350,6 +1355,21 @@ class Date : public Value {
   V8EXPORT double NumberValue() const;
 
   static inline Date* Cast(v8::Value* obj);
+
+  /**
+   * Notification that the embedder has changed the time zone,
+   * daylight savings time, or other date / time configuration
+   * parameters.  V8 keeps a cache of various values used for
+   * date / time computation.  This notification will reset
+   * those cached values for the current context so that date /
+   * time configuration changes would be reflected in the Date
+   * object.
+   *
+   * This API should not be called more than needed as it will
+   * negatively impact the performance of date operations.
+   */
+  V8EXPORT static void DateTimeConfigurationChangeNotification();
+
  private:
   V8EXPORT static void CheckCast(v8::Value* obj);
 };
@@ -3281,6 +3301,24 @@ class V8EXPORT OutputStream {  // NOLINT
 };
 
 
+/**
+ * An interface for reporting progress and controlling long-running
+ * activities.
+ */
+class V8EXPORT ActivityControl {  // NOLINT
+ public:
+  enum ControlOption {
+    kContinue = 0,
+    kAbort = 1
+  };
+  virtual ~ActivityControl() {}
+  /**
+   * Notify about current progress. The activity can be stopped by
+   * returning kAbort as the callback result.
+   */
+  virtual ControlOption ReportProgressValue(int done, int total) = 0;
+};
+
 
 // --- I m p l e m e n t a t i o n ---
 
@@ -3300,10 +3338,10 @@ const int kSmiTag = 0;
 const int kSmiTagSize = 1;
 const intptr_t kSmiTagMask = (1 << kSmiTagSize) - 1;
 
-template <size_t ptr_size> struct SmiTagging;
+template <size_t ptr_size> struct SmiConstants;
 
 // Smi constants for 32-bit systems.
-template <> struct SmiTagging<4> {
+template <> struct SmiConstants<4> {
   static const int kSmiShiftSize = 0;
   static const int kSmiValueSize = 31;
   static inline int SmiToInt(internal::Object* value) {
@@ -3311,15 +3349,10 @@ template <> struct SmiTagging<4> {
     // Throw away top 32 bits and shift down (requires >> to be sign extending).
     return static_cast<int>(reinterpret_cast<intptr_t>(value)) >> shift_bits;
   }
-
-  // For 32-bit systems any 2 bytes aligned pointer can be encoded as smi
-  // with a plain reinterpret_cast.
-  static const uintptr_t kEncodablePointerMask = 0x1;
-  static const int kPointerToSmiShift = 0;
 };
 
 // Smi constants for 64-bit systems.
-template <> struct SmiTagging<8> {
+template <> struct SmiConstants<8> {
   static const int kSmiShiftSize = 31;
   static const int kSmiValueSize = 32;
   static inline int SmiToInt(internal::Object* value) {
@@ -3327,26 +3360,10 @@ template <> struct SmiTagging<8> {
     // Shift down and throw away top 32 bits.
     return static_cast<int>(reinterpret_cast<intptr_t>(value) >> shift_bits);
   }
-
-  // To maximize the range of pointers that can be encoded
-  // in the available 32 bits, we require them to be 8 bytes aligned.
-  // This gives 2 ^ (32 + 3) = 32G address space covered.
-  // It might be not enough to cover stack allocated objects on some platforms.
-  static const int kPointerAlignment = 3;
-
-  static const uintptr_t kEncodablePointerMask =
-      ~(uintptr_t(0xffffffff) << kPointerAlignment);
-
-  static const int kPointerToSmiShift =
-      kSmiTagSize + kSmiShiftSize - kPointerAlignment;
 };
 
-typedef SmiTagging<kApiPointerSize> PlatformSmiTagging;
-const int kSmiShiftSize = PlatformSmiTagging::kSmiShiftSize;
-const int kSmiValueSize = PlatformSmiTagging::kSmiValueSize;
-const uintptr_t kEncodablePointerMask =
-    PlatformSmiTagging::kEncodablePointerMask;
-const int kPointerToSmiShift = PlatformSmiTagging::kPointerToSmiShift;
+const int kSmiShiftSize = SmiConstants<kApiPointerSize>::kSmiShiftSize;
+const int kSmiValueSize = SmiConstants<kApiPointerSize>::kSmiValueSize;
 
 template <size_t ptr_size> struct InternalConstants;
 
@@ -3394,7 +3411,7 @@ class Internals {
   }
 
   static inline int SmiValue(internal::Object* value) {
-    return PlatformSmiTagging::SmiToInt(value);
+    return SmiConstants<kApiPointerSize>::SmiToInt(value);
   }
 
   static inline int GetInstanceType(internal::Object* obj) {
@@ -3403,14 +3420,9 @@ class Internals {
     return ReadField<uint8_t>(map, kMapInstanceTypeOffset);
   }
 
-  static inline void* GetExternalPointerFromSmi(internal::Object* value) {
-    const uintptr_t address = reinterpret_cast<uintptr_t>(value);
-    return reinterpret_cast<void*>(address >> kPointerToSmiShift);
-  }
-
   static inline void* GetExternalPointer(internal::Object* obj) {
     if (HasSmiTag(obj)) {
-      return GetExternalPointerFromSmi(obj);
+      return obj;
     } else if (GetInstanceType(obj) == kProxyType) {
       return ReadField<void*>(obj, kProxyProxyOffset);
     } else {

@@ -24,6 +24,7 @@ V8_LOCAL_SRC_FILES := \
 	src/dateparser.cc \
 	src/debug.cc \
 	src/debug-agent.cc \
+	src/deoptimizer.cc \
 	src/disassembler.cc \
 	src/diy-fp.cc \
 	src/dtoa.cc \
@@ -43,11 +44,14 @@ V8_LOCAL_SRC_FILES := \
 	src/hashmap.cc \
 	src/heap.cc \
 	src/heap-profiler.cc \
+	src/hydrogen.cc \
+	src/hydrogen-instructions.cc \
 	src/ic.cc \
 	src/interpreter-irregexp.cc \
 	src/jsregexp.cc \
 	src/jump-target.cc \
 	src/jump-target-light.cc \
+	src/lithium-allocator.cc \
 	src/liveedit.cc \
 	src/log.cc \
 	src/log-utils.cc \
@@ -66,6 +70,8 @@ V8_LOCAL_SRC_FILES := \
 	src/register-allocator.cc \
 	src/rewriter.cc \
 	src/runtime.cc \
+	src/runtime-profiler.cc \
+	src/safepoint-table.cc \
 	src/scanner.cc \
 	src/scanner-base.cc \
 	src/scopeinfo.cc \
@@ -79,6 +85,7 @@ V8_LOCAL_SRC_FILES := \
 	src/stub-cache.cc \
 	src/token.cc \
 	src/top.cc \
+	src/type-info.cc \
 	src/unicode.cc \
 	src/utils.cc \
 	src/v8-counters.cc \
@@ -99,11 +106,14 @@ ifeq ($(TARGET_ARCH),arm)
 		src/arm/constants-arm.cc \
 		src/arm/cpu-arm.cc \
 		src/arm/debug-arm.cc \
+		src/arm/deoptimizer-arm.cc \
 		src/arm/disasm-arm.cc \
 		src/arm/frames-arm.cc \
 		src/arm/full-codegen-arm.cc \
 		src/arm/ic-arm.cc \
 		src/arm/jump-target-arm.cc \
+		src/arm/lithium-arm.cc \
+		src/arm/lithium-codegen-arm.cc \
 		src/arm/macro-assembler-arm.cc \
 		src/arm/regexp-macro-assembler-arm.cc \
 		src/arm/register-allocator-arm.cc \

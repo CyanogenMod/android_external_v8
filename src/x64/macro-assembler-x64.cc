@@ -74,12 +74,6 @@ void MacroAssembler::CompareRoot(Operand with, Heap::RootListIndex index) {
 }
 
 
-void MacroAssembler::StackLimitCheck(Label* on_stack_overflow) {
-  CompareRoot(rsp, Heap::kStackLimitRootIndex);
-  j(below, on_stack_overflow);
-}
-
-
 void MacroAssembler::RecordWriteHelper(Register object,
                                        Register addr,
                                        Register scratch) {
@@ -1504,17 +1498,6 @@ void MacroAssembler::AbortIfNotSmi(Register object) {
 }
 
 
-void MacroAssembler::AbortIfNotString(Register object) {
-  testb(object, Immediate(kSmiTagMask));
-  Assert(not_equal, "Operand is not a string");
-  push(object);
-  movq(object, FieldOperand(object, HeapObject::kMapOffset));
-  CmpInstanceType(object, FIRST_NONSTRING_TYPE);
-  pop(object);
-  Assert(below, "Operand is not a string");
-}
-
-
 void MacroAssembler::AbortIfNotRootValue(Register src,
                                          Heap::RootListIndex root_value_index,
                                          const char* message) {
@@ -2263,6 +2246,31 @@ void MacroAssembler::LoadContext(Register dst, int context_chain_length) {
   } else {  // context is the current function context.
     // The context may be an intermediate context, not a function context.
     movq(dst, Operand(rsi, Context::SlotOffset(Context::FCONTEXT_INDEX)));
+  }
+}
+
+
+void MacroAssembler::LoadGlobalFunction(int index, Register function) {
+  // Load the global or builtins object from the current context.
+  movq(function, Operand(rsi, Context::SlotOffset(Context::GLOBAL_INDEX)));
+  // Load the global context from the global or builtins object.
+  movq(function, FieldOperand(function, GlobalObject::kGlobalContextOffset));
+  // Load the function from the global context.
+  movq(function, Operand(function, Context::SlotOffset(index)));
+}
+
+
+void MacroAssembler::LoadGlobalFunctionInitialMap(Register function,
+                                                  Register map) {
+  // Load the initial map.  The global functions all have initial maps.
+  movq(map, FieldOperand(function, JSFunction::kPrototypeOrInitialMapOffset));
+  if (FLAG_debug_code) {
+    Label ok, fail;
+    CheckMap(map, Factory::meta_map(), &fail, false);
+    jmp(&ok);
+    bind(&fail);
+    Abort("Global functions must have initial map");
+    bind(&ok);
   }
 }
 

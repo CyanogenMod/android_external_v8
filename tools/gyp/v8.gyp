@@ -70,11 +70,12 @@
           'DEBUG',
           '_DEBUG',
           'ENABLE_DISASSEMBLER',
-          'V8_ENABLE_CHECKS'
+          'V8_ENABLE_CHECKS',
+          'OBJECT_PRINT',
         ],
         'msvs_settings': {
           'VCCLCompilerTool': {
-            'Optimizations': '0',
+            'Optimization': '0',
             
             'conditions': [
               ['OS=="win" and component=="shared_library"', {
@@ -134,7 +135,7 @@
             },
             'msvs_settings': {
               'VCCLCompilerTool': {
-                'Optimizations': '2',
+                'Optimization': '2',
                 'InlineFunctionExpansion': '2',
                 'EnableIntrinsicFunctions': 'true',
                 'FavorSizeOrSpeed': '0',
@@ -191,9 +192,41 @@
       ],
       'direct_dependent_settings': {
         'include_dirs': [
-          '../../include',
+           '../../include',
         ],
       },
+    },
+    {
+      'target_name': 'v8_preparser',
+      'include_dirs': [
+        '../../include',
+        '../../src',
+      ],
+      'sources': [
+        '../../src/allocation.cc',
+        '../../src/hashmap.cc',
+        '../../src/preparse-data.cc',
+        '../../src/preparser.cc',
+        '../../src/preparser-api.cc',
+        '../../src/scanner-base.cc',
+        '../../src/token.cc',
+        '../../src/unicode.cc',
+      ],
+      'conditions': [
+        ['OS=="win" and component=="shared_library"', {
+          'sources': [ '../../src/v8preparserdll-main.cc' ],
+          'defines': [ 'BUILDING_V8_SHARED' ],
+          'direct_dependent_settings': {
+            'defines': [ 'USING_V8_SHARED' ]
+          },
+          'type': '<(component)',
+        } , {
+          'type': 'none'
+        }],
+        ['OS!="win"', {
+          'type': '<(library)'
+        }],
+      ]
     },
     {
       'target_name': 'v8_snapshot',
@@ -280,6 +313,7 @@
         '../../src/ast.cc',
         '../../src/ast-inl.h',
         '../../src/ast.h',
+        '../../src/atomicops_internals_x86_gcc.cc',
         '../../src/bignum.cc',
         '../../src/bignum.h',
         '../../src/bignum-dtoa.cc',
@@ -328,6 +362,8 @@
         '../../src/debug.h',
         '../../src/debug-agent.cc',
         '../../src/debug-agent.h',
+        '../../src/deoptimizer.cc',
+        '../../src/deoptimizer.h',	
         '../../src/disasm.h',
         '../../src/disassembler.cc',
         '../../src/disassembler.h',
@@ -369,6 +405,10 @@
         '../../src/heap.h',
         '../../src/heap-profiler.cc',
         '../../src/heap-profiler.h',
+        '../../src/hydrogen.cc',
+        '../../src/hydrogen.h',
+        '../../src/hydrogen-instructions.cc',
+        '../../src/hydrogen-instructions.h',
         '../../src/ic-inl.h',
         '../../src/ic.cc',
         '../../src/ic.h',
@@ -381,6 +421,8 @@
         '../../src/jsregexp.h',
         '../../src/list-inl.h',
         '../../src/list.h',
+        '../../src/lithium-allocator.cc',
+        '../../src/lithium-allocator.h',
         '../../src/liveedit.cc',
         '../../src/liveedit.h',
         '../../src/log-inl.h',
@@ -433,6 +475,10 @@
         '../../src/rewriter.h',
         '../../src/runtime.cc',
         '../../src/runtime.h',
+        '../../src/runtime-profiler.cc',
+        '../../src/runtime-profiler.h',
+        '../../src/safepoint-table.cc',
+        '../../src/safepoint-table.h',
         '../../src/scanner-base.cc',
         '../../src/scanner-base.h',
         '../../src/scanner.cc',
@@ -492,10 +538,10 @@
         '../../src/zone-inl.h',
         '../../src/zone.cc',
         '../../src/zone.h',
-	'../../src/extensions/externalize-string-extension.cc',
-	'../../src/extensions/externalize-string-extension.h',
-	'../../src/extensions/gc-extension.cc',
-	'../../src/extensions/gc-extension.h',
+        '../../src/extensions/externalize-string-extension.cc',
+        '../../src/extensions/externalize-string-extension.h',
+        '../../src/extensions/gc-extension.cc',
+        '../../src/extensions/gc-extension.h',
       ],
       'conditions': [
         ['v8_target_arch=="arm"', {
@@ -520,12 +566,17 @@
             '../../src/arm/constants-arm.cc',
             '../../src/arm/cpu-arm.cc',
             '../../src/arm/debug-arm.cc',
+            '../../src/arm/deoptimizer-arm.cc',
             '../../src/arm/disasm-arm.cc',
             '../../src/arm/frames-arm.cc',
             '../../src/arm/frames-arm.h',
             '../../src/arm/full-codegen-arm.cc',
             '../../src/arm/ic-arm.cc',
             '../../src/arm/jump-target-arm.cc',
+            '../../src/arm/lithium-codegen-arm.cc',
+            '../../src/arm/lithium-codegen-arm.h',
+            '../../src/arm/lithium-arm.cc',
+            '../../src/arm/lithium-arm.h',
             '../../src/arm/macro-assembler-arm.cc',
             '../../src/arm/macro-assembler-arm.h',
             '../../src/arm/regexp-macro-assembler-arm.cc',
@@ -566,12 +617,17 @@
             '../../src/ia32/codegen-ia32.h',
             '../../src/ia32/cpu-ia32.cc',
             '../../src/ia32/debug-ia32.cc',
+            '../../src/ia32/deoptimizer-ia32.cc',
             '../../src/ia32/disasm-ia32.cc',
             '../../src/ia32/frames-ia32.cc',
             '../../src/ia32/frames-ia32.h',
             '../../src/ia32/full-codegen-ia32.cc',
             '../../src/ia32/ic-ia32.cc',
             '../../src/ia32/jump-target-ia32.cc',
+            '../../src/ia32/lithium-codegen-ia32.cc',
+            '../../src/ia32/lithium-codegen-ia32.h',
+            '../../src/ia32/lithium-ia32.cc',
+            '../../src/ia32/lithium-ia32.h',
             '../../src/ia32/macro-assembler-ia32.cc',
             '../../src/ia32/macro-assembler-ia32.h',
             '../../src/ia32/regexp-macro-assembler-ia32.cc',
@@ -602,6 +658,7 @@
             '../../src/x64/codegen-x64.h',
             '../../src/x64/cpu-x64.cc',
             '../../src/x64/debug-x64.cc',
+            '../../src/x64/deoptimizer-x64.cc',
             '../../src/x64/disasm-x64.cc',
             '../../src/x64/frames-x64.cc',
             '../../src/x64/frames-x64.h',

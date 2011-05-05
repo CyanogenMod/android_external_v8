@@ -1,4 +1,4 @@
-// Copyright 2011 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,13 +25,19 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Test incorrect code generation for alternations on ARM.
+var a = 42;
 
+var obj = {x: 0,
+           f: function() { this.x = 7; },
+           g: function() { this.x = a | 1; },
+           h: function() { this.x = a; }};
 
-// Flags: --nofull-compiler
+var i;
+for (i = 0; i < 10000; i++) { obj.f(); }
+assertEquals(7, obj.x);
 
-function foo() {
-  return (0 > ("10"||10) - 1);
-}
+for (i = 0; i < 10000; i++) { obj.g(); }
+assertEquals(43, obj.x);
 
-assertFalse(foo());
+for (i = 0; i < 10000; i++) { obj.h(); }
+assertEquals(42, obj.x);

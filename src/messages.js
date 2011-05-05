@@ -190,7 +190,6 @@ function FormatMessage(message) {
       illegal_return:               "Illegal return statement",
       error_loading_debugger:       "Error loading debugger",
       no_input_to_regexp:           "No input to %0",
-      result_not_primitive:         "Result of %0 must be a primitive, was %1",
       invalid_json:                 "String '%0' is not valid JSON",
       circular_structure:           "Converting circular structure to JSON",
       obj_ctor_property_non_object: "Object.%0 called on non-object",
@@ -904,11 +903,12 @@ function FormatStackTrace(error, frames) {
 
 function FormatRawStackTrace(error, raw_stack) {
   var frames = [ ];
-  for (var i = 0; i < raw_stack.length; i += 3) {
+  for (var i = 0; i < raw_stack.length; i += 4) {
     var recv = raw_stack[i];
-    var fun = raw_stack[i+1];
-    var pc = raw_stack[i+2];
-    var pos = %FunctionGetPositionForOffset(fun, pc);
+    var fun = raw_stack[i + 1];
+    var code = raw_stack[i + 2];
+    var pc = raw_stack[i + 3];
+    var pos = %FunctionGetPositionForOffset(code, pc);
     frames.push(new CallSite(recv, fun, pos));
   }
   if (IS_FUNCTION($Error.prepareStackTrace)) {

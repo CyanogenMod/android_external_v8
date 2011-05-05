@@ -1,4 +1,4 @@
-// Copyright 2011 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,24 +25,16 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Test keyed calls with different key types.
-function F() {}
-var a = new F();
-function f(i) { return a[i](); }
+// Test deoptimization after a loop.
+function f(p) {
+  var y=0;
+  for (var x=0; x<10; x++) {
+    if (x > 5) { y=y+p; break;}
+  }
+  return y+x;
+}
 
-a.first = function() { return 11; }
-a[0] = function() { return 22; }
-var obj = {};
-a[obj] = function() { return 33; }
+for (var i=0; i<10000000; i++) f(42);
 
-// Make object slow-case.
-a.foo = 0;
-delete a.foo;
-// Do multiple calls for IC transitions.
-var b = "first";
-f(b);
-f(b);
-
-assertEquals(11, f(b));
-assertEquals(22, f(0));
-assertEquals(33, f(obj));
+var result = f("foo");
+assertEquals("0foo6", result);

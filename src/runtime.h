@@ -79,6 +79,11 @@ namespace internal {
   F(GetConstructorDelegate, 1, 1) \
   F(NewArgumentsFast, 3, 1) \
   F(LazyCompile, 1, 1) \
+  F(LazyRecompile, 1, 1) \
+  F(NotifyDeoptimized, 1, 1) \
+  F(NotifyOSR, 0, 1) \
+  F(DeoptimizeFunction, 1, 1)             \
+  F(CompileForOnStackReplacement, 1, 1) \
   F(SetNewFunctionAttributes, 1, 1) \
   F(AllocateInNewSpace, 1, 1) \
   \
@@ -100,6 +105,7 @@ namespace internal {
   F(CharFromCode, 1, 1) \
   F(URIEscape, 1, 1) \
   F(URIUnescape, 1, 1) \
+  F(QuoteJSONString, 1, 1) \
   \
   F(NumberToString, 1, 1) \
   F(NumberToStringSkipCache, 1, 1) \
@@ -108,6 +114,7 @@ namespace internal {
   F(NumberToJSUint32, 1, 1) \
   F(NumberToJSInt32, 1, 1) \
   F(NumberToSmi, 1, 1) \
+  F(AllocateHeapNumber, 0, 1) \
   \
   /* Arithmetic operations */ \
   F(NumberAdd, 2, 1) \
@@ -335,8 +342,8 @@ namespace internal {
   F(IsBreakOnException, 1, 1) \
   F(PrepareStep, 3, 1) \
   F(ClearStepping, 0, 1) \
-  F(DebugEvaluate, 4, 1) \
-  F(DebugEvaluateGlobal, 3, 1) \
+  F(DebugEvaluate, 5, 1) \
+  F(DebugEvaluateGlobal, 4, 1) \
   F(DebugGetLoadedScripts, 0, 1) \
   F(DebugReferencedBy, 3, 1) \
   F(DebugConstructedBy, 2, 1) \
@@ -349,6 +356,7 @@ namespace internal {
   F(LiveEditGatherCompileInfo, 2, 1) \
   F(LiveEditReplaceScript, 3, 1) \
   F(LiveEditReplaceFunctionCode, 2, 1) \
+  F(LiveEditFunctionSourceUpdated, 1, 1) \
   F(LiveEditFunctionSetScript, 2, 1) \
   F(LiveEditReplaceRefToNestedFunction, 3, 1) \
   F(LiveEditPatchFunctionPositions, 2, 1) \
@@ -416,6 +424,7 @@ namespace internal {
   F(MathSin, 1, 1)                                                           \
   F(MathCos, 1, 1)                                                           \
   F(MathSqrt, 1, 1)                                                          \
+  F(MathLog, 1, 1)                                                           \
   F(IsRegExpEquivalent, 2, 1)                                                \
   F(HasCachedArrayIndex, 1, 1)                                               \
   F(GetCachedArrayIndex, 1, 1)                                               \

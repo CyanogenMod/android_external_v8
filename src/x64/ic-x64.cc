@@ -108,9 +108,6 @@ static void GenerateStringDictionaryProbes(MacroAssembler* masm,
                                            Register name,
                                            Register r0,
                                            Register r1) {
-  // Assert that name contains a string.
-  if (FLAG_debug_code) __ AbortIfNotString(name);
-
   // Compute the capacity mask.
   const int kCapacityOffset =
       StringDictionary::kHeaderSize +
@@ -386,6 +383,8 @@ static const byte kTestEaxByte = 0xA9;
 
 
 static bool PatchInlinedMapCheck(Address address, Object* map) {
+  if (V8::UseCrankshaft()) return false;
+
   // Arguments are address of start of call sequence that called
   // the IC,
   Address test_instruction_address =
@@ -751,7 +750,7 @@ void KeyedLoadIC::GenerateString(MacroAssembler* masm) {
   char_at_generator.GenerateFast(masm);
   __ ret(0);
 
-  ICRuntimeCallHelper call_helper;
+  StubRuntimeCallHelper call_helper;
   char_at_generator.GenerateSlow(masm, call_helper);
 
   __ bind(&miss);
@@ -1590,13 +1589,7 @@ void KeyedCallIC::GenerateNormal(MacroAssembler* masm, int argc) {
   // rsp[(argc + 1) * 8]      : argument 0 = receiver
   // -----------------------------------
 
-  // Check if the name is a string.
-  Label miss;
-  __ JumpIfSmi(rcx, &miss);
-  Condition cond = masm->IsObjectStringType(rcx, rax, rax);
-  __ j(NegateCondition(cond), &miss);
   GenerateCallNormal(masm, argc);
-  __ bind(&miss);
   GenerateMiss(masm, argc);
 }
 
@@ -1708,6 +1701,8 @@ void LoadIC::GenerateStringLength(MacroAssembler* masm) {
 
 
 bool LoadIC::PatchInlinedLoad(Address address, Object* map, int offset) {
+  if (V8::UseCrankshaft()) return false;
+
   // The address of the instruction following the call.
   Address test_instruction_address =
       address + Assembler::kCallTargetAddressOffset;
@@ -1750,6 +1745,8 @@ const int StoreIC::kOffsetToStoreInstruction = 20;
 
 
 bool StoreIC::PatchInlinedStore(Address address, Object* map, int offset) {
+  if (V8::UseCrankshaft()) return false;
+
   // The address of the instruction following the call.
   Address test_instruction_address =
       address + Assembler::kCallTargetAddressOffset;
@@ -1908,8 +1905,76 @@ void StoreIC::GenerateNormal(MacroAssembler* masm) {
 }
 
 
+void StoreIC::GenerateGlobalProxy(MacroAssembler* masm) {
+  // ----------- S t a t e -------------
+  //  -- rax    : value
+  //  -- rcx    : name
+  //  -- rdx    : receiver
+  //  -- rsp[0] : return address
+  // -----------------------------------
+  __ pop(rbx);
+  __ push(rdx);
+  __ push(rcx);
+  __ push(rax);
+  __ push(rbx);
+
+  // Do tail-call to runtime routine.
+  __ TailCallRuntime(Runtime::kSetProperty, 3, 1);
+}
+
+
 #undef __
 
+
+Condition CompareIC::ComputeCondition(Token::Value op) {
+  switch (op) {
+    case Token::EQ_STRICT:
+    case Token::EQ:
+      return equal;
+    case Token::LT:
+      return less;
+    case Token::GT:
+      // Reverse left and right operands to obtain ECMA-262 conversion order.
+      return less;
+    case Token::LTE:
+      // Reverse left and right operands to obtain ECMA-262 conversion order.
+      return greater_equal;
+    case Token::GTE:
+      return greater_equal;
+    default:
+      UNREACHABLE();
+      return no_condition;
+  }
+}
+
+
+void CompareIC::UpdateCaches(Handle<Object> x, Handle<Object> y) {
+  HandleScope scope;
+  Handle<Code> rewritten;
+  State previous_state = GetState();
+  State state = TargetState(previous_state, false, x, y);
+  if (state == GENERIC) {
+    CompareStub stub(GetCondition(), strict(), NO_COMPARE_FLAGS);
+    rewritten = stub.GetCode();
+  } else {
+    ICCompareStub stub(op_, state);
+    rewritten = stub.GetCode();
+  }
+  set_target(*rewritten);
+
+#ifdef DEBUG
+  if (FLAG_trace_ic) {
+    PrintF("[CompareIC (%s->%s)#%s]\n",
+           GetStateName(previous_state),
+           GetStateName(state),
+           Token::Name(op_));
+  }
+#endif
+}
+
+void PatchInlinedSmiCode(Address address) {
+  UNIMPLEMENTED();
+}
 
 } }  // namespace v8::internal
 

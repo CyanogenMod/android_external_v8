@@ -1,1 +1,5 @@
-http://v8.googlecode.com/svn/branches/2.5@7184
+We use a V8 revision that has been used for a Chromium release.
+
+http://src.chromium.org/svn/releases/10.0.621.0/DEPS
+http://v8.googlecode.com/svn/trunk@6101 (+ 1 cherry pick from r6346 in src/v8utils.h to fix compile on Android)
+

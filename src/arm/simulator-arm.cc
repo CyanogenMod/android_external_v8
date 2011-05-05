@@ -74,6 +74,7 @@ class Debugger {
   Simulator* sim_;
 
   int32_t GetRegisterValue(int regnum);
+  double GetVFPDoubleRegisterValue(int regnum);
   bool GetValue(const char* desc, int32_t* value);
   bool GetVFPSingleValue(const char* desc, float* value);
   bool GetVFPDoubleValue(const char* desc, double* value);
@@ -165,6 +166,11 @@ int32_t Debugger::GetRegisterValue(int regnum) {
   } else {
     return sim_->get_register(regnum);
   }
+}
+
+
+double Debugger::GetVFPDoubleRegisterValue(int regnum) {
+  return sim_->get_double_from_d_register(regnum);
 }
 
 
@@ -308,6 +314,11 @@ void Debugger::Debug() {
             for (int i = 0; i < kNumRegisters; i++) {
               value = GetRegisterValue(i);
               PrintF("%3s: 0x%08x %10d\n", Registers::Name(i), value, value);
+            }
+            for (int i = 0; i < kNumVFPDoubleRegisters; i++) {
+              dvalue = GetVFPDoubleRegisterValue(i);
+              PrintF("%3s: %f\n",
+                  VFPRegisters::Name(i, true), dvalue);
             }
           } else {
             if (GetValue(arg1, &value)) {
@@ -837,6 +848,11 @@ void Simulator::set_pc(int32_t value) {
 }
 
 
+bool Simulator::has_bad_pc() const {
+  return ((registers_[pc] == bad_lr) || (registers_[pc] == end_sim_pc));
+}
+
+
 // Raw access to the PC register without the special adjustment when reading.
 int32_t Simulator::get_pc() const {
   return registers_[pc];
@@ -989,9 +1005,7 @@ int Simulator::ReadW(int32_t addr, Instr* instr) {
     intptr_t* ptr = reinterpret_cast<intptr_t*>(addr);
     return *ptr;
   }
-  PrintF("Unaligned read at 0x%08x, pc=0x%08" V8PRIxPTR "\n",
-         addr,
-         reinterpret_cast<intptr_t>(instr));
+  PrintF("Unaligned read at 0x%08x, pc=%p\n", addr, instr);
   UNIMPLEMENTED();
   return 0;
 #endif
@@ -1009,9 +1023,7 @@ void Simulator::WriteW(int32_t addr, int value, Instr* instr) {
     *ptr = value;
     return;
   }
-  PrintF("Unaligned write at 0x%08x, pc=0x%08" V8PRIxPTR "\n",
-         addr,
-         reinterpret_cast<intptr_t>(instr));
+  PrintF("Unaligned write at 0x%08x, pc=%p\n", addr, instr);
   UNIMPLEMENTED();
 #endif
 }
@@ -1026,9 +1038,7 @@ uint16_t Simulator::ReadHU(int32_t addr, Instr* instr) {
     uint16_t* ptr = reinterpret_cast<uint16_t*>(addr);
     return *ptr;
   }
-  PrintF("Unaligned unsigned halfword read at 0x%08x, pc=0x%08" V8PRIxPTR "\n",
-         addr,
-         reinterpret_cast<intptr_t>(instr));
+  PrintF("Unaligned unsigned halfword read at 0x%08x, pc=%p\n", addr, instr);
   UNIMPLEMENTED();
   return 0;
 #endif
@@ -1062,9 +1072,7 @@ void Simulator::WriteH(int32_t addr, uint16_t value, Instr* instr) {
     *ptr = value;
     return;
   }
-  PrintF("Unaligned unsigned halfword write at 0x%08x, pc=0x%08" V8PRIxPTR "\n",
-         addr,
-         reinterpret_cast<intptr_t>(instr));
+  PrintF("Unaligned unsigned halfword write at 0x%08x, pc=%p\n", addr, instr);
   UNIMPLEMENTED();
 #endif
 }
@@ -1081,9 +1089,7 @@ void Simulator::WriteH(int32_t addr, int16_t value, Instr* instr) {
     *ptr = value;
     return;
   }
-  PrintF("Unaligned halfword write at 0x%08x, pc=0x%08" V8PRIxPTR "\n",
-         addr,
-         reinterpret_cast<intptr_t>(instr));
+  PrintF("Unaligned halfword write at 0x%08x, pc=%p\n", addr, instr);
   UNIMPLEMENTED();
 #endif
 }
@@ -1520,7 +1526,8 @@ void Simulator::HandleRList(Instr* instr, bool load) {
 typedef int64_t (*SimulatorRuntimeCall)(int32_t arg0,
                                         int32_t arg1,
                                         int32_t arg2,
-                                        int32_t arg3);
+                                        int32_t arg3,
+                                        int32_t arg4);
 typedef double (*SimulatorRuntimeFPCall)(int32_t arg0,
                                          int32_t arg1,
                                          int32_t arg2,
@@ -1543,6 +1550,8 @@ void Simulator::SoftwareInterrupt(Instr* instr) {
       int32_t arg1 = get_register(r1);
       int32_t arg2 = get_register(r2);
       int32_t arg3 = get_register(r3);
+      int32_t* stack_pointer = reinterpret_cast<int32_t*>(get_register(sp));
+      int32_t arg4 = *stack_pointer;
       // This is dodgy but it works because the C entry stubs are never moved.
       // See comment in codegen-arm.cc and bug 1242173.
       int32_t saved_lr = get_register(lr);
@@ -1571,19 +1580,20 @@ void Simulator::SoftwareInterrupt(Instr* instr) {
             reinterpret_cast<SimulatorRuntimeCall>(external);
         if (::v8::internal::FLAG_trace_sim || !stack_aligned) {
           PrintF(
-              "Call to host function at %p with args %08x, %08x, %08x, %08x",
+              "Call to host function at %p args %08x, %08x, %08x, %08x, %0xc",
               FUNCTION_ADDR(target),
               arg0,
               arg1,
               arg2,
-              arg3);
+              arg3,
+              arg4);
           if (!stack_aligned) {
             PrintF(" with unaligned stack %08x\n", get_register(sp));
           }
           PrintF("\n");
         }
         CHECK(stack_aligned);
-        int64_t result = target(arg0, arg1, arg2, arg3);
+        int64_t result = target(arg0, arg1, arg2, arg3, arg4);
         int32_t lo_res = static_cast<int32_t>(result);
         int32_t hi_res = static_cast<int32_t>(result >> 32);
         if (::v8::internal::FLAG_trace_sim) {
@@ -1918,9 +1928,12 @@ void Simulator::DecodeType01(Instr* instr) {
           set_register(lr, old_pc + Instr::kInstrSize);
           break;
         }
-        case BKPT:
-          v8::internal::OS::DebugBreak();
+        case BKPT: {
+          Debugger dbg(this);
+          PrintF("Simulator hit BKPT.\n");
+          dbg.Debug();
           break;
+        }
         default:
           UNIMPLEMENTED();
       }

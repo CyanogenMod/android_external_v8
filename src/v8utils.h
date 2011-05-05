@@ -29,6 +29,10 @@
 #define V8_V8UTILS_H_
 
 #include "utils.h"
+#ifdef ANDROID
+// Cherry pick from r6346 to build on Android.
+#include "platform.h"
+#endif
 
 namespace v8 {
 namespace internal {
@@ -42,18 +46,26 @@ namespace internal {
 // so it works on MacOSX.
 #if defined(__MACH__) && defined(__APPLE__)
 #define PRINTF_CHECKING
+#define FPRINTF_CHECKING
 #else  // MacOsX.
 #define PRINTF_CHECKING __attribute__ ((format (printf, 1, 2)))
+#define FPRINTF_CHECKING __attribute__ ((format (printf, 2, 3)))
 #endif
 #else
 #define PRINTF_CHECKING
+#define FPRINTF_CHECKING
 #endif
 
 // Our version of printf().
 void PRINTF_CHECKING PrintF(const char* format, ...);
+void FPRINTF_CHECKING PrintF(FILE* out, const char* format, ...);
 
 // Our version of fflush.
-void Flush();
+void Flush(FILE* out);
+
+inline void Flush() {
+  Flush(stdout);
+}
 
 
 // Read a line of characters after printing the prompt to stdout. The resulting
@@ -65,6 +77,14 @@ char* ReadLine(const char* prompt);
 // in size.
 // The returned buffer must be freed by the caller.
 byte* ReadBytes(const char* filename, int* size, bool verbose = true);
+
+
+// Append size chars from str to the file given by filename.
+// The file is overwritten. Returns the number of chars written.
+int AppendChars(const char* filename,
+                const char* str,
+                int size,
+                bool verbose = true);
 
 
 // Write size chars from str to the file given by filename.
@@ -216,6 +236,9 @@ class StringBuilder {
 
   // Add formatted contents to the builder just like printf().
   void AddFormatted(const char* format, ...);
+
+  // Add formatted contents like printf based on a va_list.
+  void AddFormattedList(const char* format, va_list list);
 
   // Add character padding to the builder. If count is non-positive,
   // nothing is added to the builder.

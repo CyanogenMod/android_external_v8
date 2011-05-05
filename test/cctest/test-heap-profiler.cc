@@ -1193,4 +1193,69 @@ TEST(AggregatedHeapSnapshotJSONSerialization) {
   CHECK_EQ(1, stream.eos_signaled());
 }
 
+
+TEST(HeapSnapshotGetNodeById) {
+  v8::HandleScope scope;
+  LocalContext env;
+
+  const v8::HeapSnapshot* snapshot =
+      v8::HeapProfiler::TakeSnapshot(v8::String::New("id"));
+  const v8::HeapGraphNode* root = snapshot->GetRoot();
+  CHECK_EQ(root, snapshot->GetNodeById(root->GetId()));
+  for (int i = 0, count = root->GetChildrenCount(); i < count; ++i) {
+    const v8::HeapGraphEdge* prop = root->GetChild(i);
+    CHECK_EQ(
+        prop->GetToNode(), snapshot->GetNodeById(prop->GetToNode()->GetId()));
+  }
+  // Check a big id, which should not exist yet.
+  CHECK_EQ(NULL, snapshot->GetNodeById(0x1000000UL));
+}
+
+
+namespace {
+
+class TestActivityControl : public v8::ActivityControl {
+ public:
+  explicit TestActivityControl(int abort_count)
+      : done_(0), total_(0), abort_count_(abort_count) {}
+  ControlOption ReportProgressValue(int done, int total) {
+    done_ = done;
+    total_ = total;
+    return --abort_count_ != 0 ? kContinue : kAbort;
+  }
+  int done() { return done_; }
+  int total() { return total_; }
+
+ private:
+  int done_;
+  int total_;
+  int abort_count_;
+};
+}
+
+TEST(TakeHeapSnapshotAborting) {
+  v8::HandleScope scope;
+  LocalContext env;
+
+  const int snapshots_count = v8::HeapProfiler::GetSnapshotsCount();
+  TestActivityControl aborting_control(3);
+  const v8::HeapSnapshot* no_snapshot =
+      v8::HeapProfiler::TakeSnapshot(v8::String::New("abort"),
+                                     v8::HeapSnapshot::kFull,
+                                     &aborting_control);
+  CHECK_EQ(NULL, no_snapshot);
+  CHECK_EQ(snapshots_count, v8::HeapProfiler::GetSnapshotsCount());
+  CHECK_GT(aborting_control.total(), aborting_control.done());
+
+  TestActivityControl control(-1);  // Don't abort.
+  const v8::HeapSnapshot* snapshot =
+      v8::HeapProfiler::TakeSnapshot(v8::String::New("full"),
+                                     v8::HeapSnapshot::kFull,
+                                     &control);
+  CHECK_NE(NULL, snapshot);
+  CHECK_EQ(snapshots_count + 1, v8::HeapProfiler::GetSnapshotsCount());
+  CHECK_EQ(control.total(), control.done());
+  CHECK_GT(control.total(), 0);
+}
+
 #endif  // ENABLE_LOGGING_AND_PROFILING

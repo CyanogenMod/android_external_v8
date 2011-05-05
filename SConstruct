@@ -108,10 +108,13 @@ LIBRARY_FLAGS = {
       'CPPDEFINES': ['V8_INTERPRETED_REGEXP']
     },
     'mode:debug': {
-      'CPPDEFINES': ['V8_ENABLE_CHECKS']
+      'CPPDEFINES': ['V8_ENABLE_CHECKS', 'OBJECT_PRINT']
     },
     'vmstate:on': {
       'CPPDEFINES':   ['ENABLE_VMSTATE_TRACKING'],
+    },
+    'objectprint:on': {
+      'CPPDEFINES':   ['OBJECT_PRINT'],
     },
     'protectheap:on': {
       'CPPDEFINES':   ['ENABLE_VMSTATE_TRACKING', 'ENABLE_HEAP_PROTECTION'],
@@ -523,7 +526,8 @@ SAMPLE_FLAGS = {
       'CCFLAGS':      ['-O2']
     },
     'mode:debug': {
-      'CCFLAGS':      ['-g', '-O0']
+      'CCFLAGS':      ['-g', '-O0'],
+      'CPPDEFINES':   ['DEBUG']
     },
     'prof:oprofile': {
       'LIBPATH': ['/usr/lib32', '/usr/lib32/oprofile'],
@@ -578,13 +582,14 @@ SAMPLE_FLAGS = {
       'LINKFLAGS': ['/MACHINE:X64', '/STACK:2091752']
     },
     'mode:debug': {
-      'CCFLAGS':   ['/Od'],
-      'LINKFLAGS': ['/DEBUG'],
+      'CCFLAGS':    ['/Od'],
+      'LINKFLAGS':  ['/DEBUG'],
+      'CPPDEFINES': ['DEBUG'],
       'msvcrt:static': {
-        'CCFLAGS': ['/MTd']
+        'CCFLAGS':  ['/MTd']
       },
       'msvcrt:shared': {
-        'CCFLAGS': ['/MDd']
+        'CCFLAGS':  ['/MDd']
       }
     }
   }
@@ -654,9 +659,18 @@ def GuessToolchain(os):
     return None
 
 
+def GuessVisibility(os, toolchain):
+  if os == 'win32' and toolchain == 'gcc':
+    # MinGW can't do it.
+    return 'default'
+  else:
+    return 'hidden'
+
+
 OS_GUESS = utils.GuessOS()
 TOOLCHAIN_GUESS = GuessToolchain(OS_GUESS)
 ARCH_GUESS = utils.GuessArchitecture()
+VISIBILITY_GUESS = GuessVisibility(OS_GUESS, TOOLCHAIN_GUESS)
 
 
 SIMPLE_OPTIONS = {
@@ -699,6 +713,11 @@ SIMPLE_OPTIONS = {
     'values': ['on', 'off'],
     'default': 'off',
     'help': 'enable VM state tracking'
+  },
+  'objectprint': {
+    'values': ['on', 'off'],
+    'default': 'off',
+    'help': 'enable object printing'
   },
   'protectheap': {
     'values': ['on', 'off'],
@@ -762,8 +781,8 @@ SIMPLE_OPTIONS = {
   },
   'visibility': {
     'values': ['default', 'hidden'],
-    'default': 'hidden',
-    'help': 'shared library symbol visibility'
+    'default': VISIBILITY_GUESS,
+    'help': 'shared library symbol visibility (%s)' % VISIBILITY_GUESS
   },
   'pgo': {
     'values': ['off', 'instrument', 'optimize'],

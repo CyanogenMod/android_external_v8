@@ -1,4 +1,4 @@
-// Copyright 2009 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -137,12 +137,6 @@ class MacroAssembler: public Assembler {
 #endif
 
   // ---------------------------------------------------------------------------
-  // Stack limit support
-
-  // Do simple test for stack overflow. This doesn't handle an overflow.
-  void StackLimitCheck(Label* on_stack_limit_hit);
-
-  // ---------------------------------------------------------------------------
   // Activation frames
 
   void EnterInternalFrame() { EnterFrame(StackFrame::INTERNAL); }
@@ -172,6 +166,14 @@ class MacroAssembler: public Assembler {
   // Leave the current exit frame. Expects/provides the return value in
   // register rax (untouched).
   void LeaveApiExitFrame();
+
+  // Push and pop the registers that can hold pointers.
+  void PushSafepointRegisters() { UNIMPLEMENTED(); }
+  void PopSafepointRegisters() { UNIMPLEMENTED(); }
+  static int SafepointRegisterStackIndex(int reg_code) {
+    UNIMPLEMENTED();
+    return 0;
+  }
 
   // ---------------------------------------------------------------------------
   // JavaScript invokes
@@ -629,9 +631,6 @@ class MacroAssembler: public Assembler {
   // Abort execution if argument is not a smi. Used in debug code.
   void AbortIfNotSmi(Register object);
 
-  // Abort execution if argument is a string. Used in debug code.
-  void AbortIfNotString(Register object);
-
   // Abort execution if argument is not the root value with the given index.
   void AbortIfNotRootValue(Register src,
                            Heap::RootListIndex root_value_index,
@@ -772,6 +771,13 @@ class MacroAssembler: public Assembler {
 
   // Find the function context up the context chain.
   void LoadContext(Register dst, int context_chain_length);
+
+  // Load the global function with the given index.
+  void LoadGlobalFunction(int index, Register function);
+
+  // Load the initial map from the global function. The registers
+  // function and map can be the same.
+  void LoadGlobalFunctionInitialMap(Register function, Register map);
 
   // ---------------------------------------------------------------------------
   // Runtime calls

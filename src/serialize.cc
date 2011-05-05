@@ -470,6 +470,34 @@ void ExternalReferenceTable::PopulateTable() {
       UNCLASSIFIED,
       32,
       "HandleScope::level");
+  Add(ExternalReference::new_deoptimizer_function().address(),
+      UNCLASSIFIED,
+      33,
+      "Deoptimizer::New()");
+  Add(ExternalReference::compute_output_frames_function().address(),
+      UNCLASSIFIED,
+      34,
+      "Deoptimizer::ComputeOutputFrames()");
+  Add(ExternalReference::address_of_min_int().address(),
+      UNCLASSIFIED,
+      35,
+      "LDoubleConstant::min_int");
+  Add(ExternalReference::address_of_one_half().address(),
+      UNCLASSIFIED,
+      36,
+      "LDoubleConstant::one_half");
+  Add(ExternalReference::address_of_negative_infinity().address(),
+      UNCLASSIFIED,
+      37,
+      "LDoubleConstant::negative_infinity");
+  Add(ExternalReference::power_double_double_function().address(),
+      UNCLASSIFIED,
+      38,
+      "power_double_double_function");
+  Add(ExternalReference::power_double_int_function().address(),
+      UNCLASSIFIED,
+      39,
+      "power_double_int_function");
 }
 
 
@@ -1367,6 +1395,13 @@ void Serializer::ObjectSerializer::VisitCodeEntry(Address entry_address) {
   OutputRawData(entry_address);
   serializer_->SerializeObject(target, kPlain, kFirstInstruction);
   bytes_processed_so_far_ += kPointerSize;
+}
+
+
+void Serializer::ObjectSerializer::VisitGlobalPropertyCell(RelocInfo* rinfo) {
+  // We shouldn't have any global property cell references in code
+  // objects in the snapshot.
+  UNREACHABLE();
 }
 
 

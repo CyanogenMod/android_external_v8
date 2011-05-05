@@ -62,6 +62,7 @@ namespace internal {
   V(Object, termination_exception, TerminationException)                       \
   V(Map, hash_table_map, HashTableMap)                                         \
   V(FixedArray, empty_fixed_array, EmptyFixedArray)                            \
+  V(ByteArray, empty_byte_array, EmptyByteArray)                               \
   V(Map, string_map, StringMap)                                                \
   V(Map, ascii_string_map, AsciiStringMap)                                     \
   V(Map, symbol_map, SymbolMap)                                                \
@@ -173,6 +174,8 @@ namespace internal {
   V(value_of_symbol, "valueOf")                                          \
   V(InitializeVarGlobal_symbol, "InitializeVarGlobal")                   \
   V(InitializeConstGlobal_symbol, "InitializeConstGlobal")               \
+  V(KeyedLoadSpecialized_symbol, "KeyedLoadSpecialized")                 \
+  V(KeyedStoreSpecialized_symbol, "KeyedStoreSpecialized")               \
   V(stack_overflow_symbol, "kStackOverflowBoilerplate")                  \
   V(illegal_access_symbol, "illegal access")                             \
   V(out_of_memory_symbol, "out-of-memory")                               \
@@ -1116,9 +1119,9 @@ class Heap : public AllStatic {
   static int contexts_disposed_;
 
 #if defined(V8_TARGET_ARCH_X64)
-  static const int kMaxObjectSizeInNewSpace = 512*KB;
+  static const int kMaxObjectSizeInNewSpace = 1024*KB;
 #else
-  static const int kMaxObjectSizeInNewSpace = 256*KB;
+  static const int kMaxObjectSizeInNewSpace = 512*KB;
 #endif
 
   static NewSpace new_space_;
@@ -1582,17 +1585,18 @@ class SpaceIterator : public Malloced {
 // nodes filtering uses GC marks, it can't be used during MS/MC GC
 // phases. Also, it is forbidden to interrupt iteration in this mode,
 // as this will leave heap objects marked (and thus, unusable).
-class FreeListNodesFilter;
+class HeapObjectsFilter;
 
 class HeapIterator BASE_EMBEDDED {
  public:
-  enum FreeListNodesFiltering {
+  enum HeapObjectsFiltering {
     kNoFiltering,
-    kPreciseFiltering
+    kFilterFreeListNodes,
+    kFilterUnreachable
   };
 
   HeapIterator();
-  explicit HeapIterator(FreeListNodesFiltering filtering);
+  explicit HeapIterator(HeapObjectsFiltering filtering);
   ~HeapIterator();
 
   HeapObject* next();
@@ -1605,8 +1609,8 @@ class HeapIterator BASE_EMBEDDED {
   void Shutdown();
   HeapObject* NextObject();
 
-  FreeListNodesFiltering filtering_;
-  FreeListNodesFilter* filter_;
+  HeapObjectsFiltering filtering_;
+  HeapObjectsFilter* filter_;
   // Space iterator for iterating all the spaces.
   SpaceIterator* space_iterator_;
   // Object iterator for the space currently being iterated.
@@ -1965,6 +1969,8 @@ class GCTracer BASE_EMBEDDED {
 class TranscendentalCache {
  public:
   enum Type {ACOS, ASIN, ATAN, COS, EXP, LOG, SIN, TAN, kNumberOfCaches};
+  static const int kTranscendentalTypeBits = 3;
+  STATIC_ASSERT((1 << kTranscendentalTypeBits) >= kNumberOfCaches);
 
   explicit TranscendentalCache(Type t);
 
@@ -2051,7 +2057,7 @@ class TranscendentalCache {
 
   // Allow access to the caches_ array as an ExternalReference.
   friend class ExternalReference;
-  // Inline implementation of the caching.
+  // Inline implementation of the cache.
   friend class TranscendentalCacheStub;
 
   static TranscendentalCache* caches_[kNumberOfCaches];

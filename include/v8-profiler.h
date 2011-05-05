@@ -245,7 +245,6 @@ class V8EXPORT HeapGraphPath {
 class V8EXPORT HeapGraphNode {
  public:
   enum Type {
-    kInternal = 0,   // For compatibility, will be removed.
     kHidden = 0,     // Hidden node, may be filtered when shown to user.
     kArray = 1,      // An array of elements.
     kString = 2,     // A string.
@@ -358,6 +357,9 @@ class V8EXPORT HeapSnapshot {
   /** Returns the root node of the heap graph. */
   const HeapGraphNode* GetRoot() const;
 
+  /** Returns a node by its id. */
+  const HeapGraphNode* GetNodeById(uint64_t id) const;
+
   /**
    * Returns a diff between this snapshot and another one. Only snapshots
    * of the same type can be compared.
@@ -410,7 +412,8 @@ class V8EXPORT HeapProfiler {
    */
   static const HeapSnapshot* TakeSnapshot(
       Handle<String> title,
-      HeapSnapshot::Type type = HeapSnapshot::kFull);
+      HeapSnapshot::Type type = HeapSnapshot::kFull,
+      ActivityControl* control = NULL);
 };
 
 

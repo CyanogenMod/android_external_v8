@@ -33,6 +33,7 @@
 #include "bootstrapper.h"
 #include "compiler.h"
 #include "debug.h"
+#include "deoptimizer.h"
 #include "execution.h"
 #include "global-handles.h"
 #include "heap-profiler.h"
@@ -40,18 +41,21 @@
 #include "parser.h"
 #include "platform.h"
 #include "profile-generator-inl.h"
+#include "runtime-profiler.h"
 #include "serialize.h"
 #include "snapshot.h"
 #include "top.h"
 #include "v8threads.h"
 #include "version.h"
+#include "vm-state-inl.h"
 
 #include "../include/v8-profiler.h"
+#include "../include/v8-testing.h"
 
 #define LOG_API(expr) LOG(ApiEntryCall(expr))
 
 #ifdef ENABLE_VMSTATE_TRACKING
-#define ENTER_V8 i::VMState __state__(i::OTHER)
+#define ENTER_V8 ASSERT(i::V8::IsRunning()); i::VMState __state__(i::OTHER)
 #define LEAVE_V8 i::VMState __state__(i::EXTERNAL)
 #else
 #define ENTER_V8 ((void) 0)
@@ -96,6 +100,7 @@ namespace v8 {
                "Entering the V8 API without proper locking in place");         \
     }                                                                          \
   } while (false)
+
 
 // --- D a t a   t h a t   i s   s p e c i f i c   t o   a   t h r e a d ---
 
@@ -1160,14 +1165,22 @@ void ObjectTemplate::SetInternalFieldCount(int value) {
 
 
 ScriptData* ScriptData::PreCompile(const char* input, int length) {
-  unibrow::Utf8InputBuffer<> buf(input, length);
-  return i::ParserApi::PreParse(i::Handle<i::String>(), &buf, NULL);
+  i::Utf8ToUC16CharacterStream stream(
+      reinterpret_cast<const unsigned char*>(input), length);
+  return i::ParserApi::PreParse(&stream, NULL);
 }
 
 
 ScriptData* ScriptData::PreCompile(v8::Handle<String> source) {
   i::Handle<i::String> str = Utils::OpenHandle(*source);
-  return i::ParserApi::PreParse(str, NULL, NULL);
+  if (str->IsExternalTwoByteString()) {
+    i::ExternalTwoByteStringUC16CharacterStream stream(
+      i::Handle<i::ExternalTwoByteString>::cast(str), 0, str->length());
+    return i::ParserApi::PreParse(&stream, NULL);
+  } else {
+    i::GenericStringUC16CharacterStream stream(str, 0, str->length());
+    return i::ParserApi::PreParse(&stream, NULL);
+  }
 }
 
 
@@ -2312,6 +2325,11 @@ bool v8::Object::ForceDelete(v8::Handle<Value> key) {
   HandleScope scope;
   i::Handle<i::JSObject> self = Utils::OpenHandle(this);
   i::Handle<i::Object> key_obj = Utils::OpenHandle(*key);
+
+  // When turning on access checks for a global object deoptimize all functions
+  // as optimized code does not always handle access checks.
+  i::Deoptimizer::DeoptimizeGlobalObject(*self);
+
   EXCEPTION_PREAMBLE();
   i::Handle<i::Object> obj = i::ForceDeleteProperty(self, key_obj);
   has_pending_exception = obj.is_null();
@@ -2597,6 +2615,10 @@ void v8::Object::TurnOnAccessCheck() {
   ENTER_V8;
   HandleScope scope;
   i::Handle<i::JSObject> obj = Utils::OpenHandle(this);
+
+  // When turning on access checks for a global object deoptimize all functions
+  // as optimized code does not always handle access checks.
+  i::Deoptimizer::DeoptimizeGlobalObject(*obj);
 
   i::Handle<i::Map> new_map =
     i::Factory::CopyMapDropTransitions(i::Handle<i::Map>(obj->map()));
@@ -3105,14 +3127,15 @@ int String::Write(uint16_t* buffer,
     // using StringInputBuffer or Get(i) to access the characters.
     str->TryFlatten();
   }
-  int end = length;
-  if ( (length == -1) || (length > str->length() - start) )
-    end = str->length() - start;
+  int end = start + length;
+  if ((length == -1) || (length > str->length() - start) )
+    end = str->length();
   if (end < 0) return 0;
   i::String::WriteToFlat(*str, buffer, start, end);
-  if (length == -1 || end < length)
-    buffer[end] = '\0';
-  return end;
+  if (length == -1 || end - start < length) {
+    buffer[end - start] = '\0';
+  }
+  return end - start;
 }
 
 
@@ -3243,35 +3266,18 @@ void v8::Object::SetInternalField(int index, v8::Handle<Value> value) {
 }
 
 
-static bool CanBeEncodedAsSmi(void* ptr) {
-  const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
-  return ((address & i::kEncodablePointerMask) == 0);
-}
-
-
-static i::Smi* EncodeAsSmi(void* ptr) {
-  ASSERT(CanBeEncodedAsSmi(ptr));
-  const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
-  i::Smi* result = reinterpret_cast<i::Smi*>(address << i::kPointerToSmiShift);
-  ASSERT(i::Internals::HasSmiTag(result));
-  ASSERT_EQ(result, i::Smi::FromInt(result->value()));
-  ASSERT_EQ(ptr, i::Internals::GetExternalPointerFromSmi(result));
-  return result;
-}
-
-
 void v8::Object::SetPointerInInternalField(int index, void* value) {
   ENTER_V8;
-  if (CanBeEncodedAsSmi(value)) {
-    Utils::OpenHandle(this)->SetInternalField(index, EncodeAsSmi(value));
-  } else {
-    HandleScope scope;
-    i::Handle<i::Proxy> proxy =
-        i::Factory::NewProxy(reinterpret_cast<i::Address>(value), i::TENURED);
-    if (!proxy.is_null())
-        Utils::OpenHandle(this)->SetInternalField(index, *proxy);
+  i::Object* as_object = reinterpret_cast<i::Object*>(value);
+  if (as_object->IsSmi()) {
+    Utils::OpenHandle(this)->SetInternalField(index, as_object);
+    return;
   }
-  ASSERT_EQ(value, GetPointerFromInternalField(index));
+  HandleScope scope;
+  i::Handle<i::Proxy> proxy =
+      i::Factory::NewProxy(reinterpret_cast<i::Address>(value), i::TENURED);
+  if (!proxy.is_null())
+      Utils::OpenHandle(this)->SetInternalField(index, *proxy);
 }
 
 
@@ -3279,7 +3285,6 @@ void v8::Object::SetPointerInInternalField(int index, void* value) {
 
 bool v8::V8::Initialize() {
   if (i::V8::IsRunning()) return true;
-  ENTER_V8;
   HandleScope scope;
   if (i::Snapshot::Initialize()) return true;
   return i::V8::Initialize(NULL);
@@ -3403,6 +3408,7 @@ Persistent<Context> v8::Context::New(
       global_constructor->set_needs_access_check(
           proxy_constructor->needs_access_check());
     }
+    i::RuntimeProfiler::Reset();
   }
   // Leave V8.
 
@@ -3554,13 +3560,11 @@ Local<Value> v8::External::Wrap(void* data) {
   LOG_API("External::Wrap");
   EnsureInitialized("v8::External::Wrap()");
   ENTER_V8;
-
-  v8::Local<v8::Value> result = CanBeEncodedAsSmi(data)
-      ? Utils::ToLocal(i::Handle<i::Object>(EncodeAsSmi(data)))
-      : v8::Local<v8::Value>(ExternalNewImpl(data));
-
-  ASSERT_EQ(data, Unwrap(result));
-  return result;
+  i::Object* as_object = reinterpret_cast<i::Object*>(data);
+  if (as_object->IsSmi()) {
+    return Utils::ToLocal(i::Handle<i::Object>(as_object));
+  }
+  return ExternalNewImpl(data);
 }
 
 
@@ -3568,7 +3572,7 @@ void* v8::Object::SlowGetPointerFromInternalField(int index) {
   i::Handle<i::JSObject> obj = Utils::OpenHandle(this);
   i::Object* value = obj->GetInternalField(index);
   if (value->IsSmi()) {
-    return i::Internals::GetExternalPointerFromSmi(value);
+    return value;
   } else if (value->IsProxy()) {
     return reinterpret_cast<void*>(i::Proxy::cast(value)->proxy());
   } else {
@@ -3582,7 +3586,8 @@ void* v8::External::FullUnwrap(v8::Handle<v8::Value> wrapper) {
   i::Handle<i::Object> obj = Utils::OpenHandle(*wrapper);
   void* result;
   if (obj->IsSmi()) {
-    result = i::Internals::GetExternalPointerFromSmi(*obj);
+    // The external value was an aligned pointer.
+    result = *obj;
   } else if (obj->IsProxy()) {
     result = ExternalValueImpl(obj);
   } else {
@@ -3794,6 +3799,35 @@ double v8::Date::NumberValue() const {
   i::Handle<i::Object> obj = Utils::OpenHandle(this);
   i::Handle<i::JSValue> jsvalue = i::Handle<i::JSValue>::cast(obj);
   return jsvalue->value()->Number();
+}
+
+
+void v8::Date::DateTimeConfigurationChangeNotification() {
+  ON_BAILOUT("v8::Date::DateTimeConfigurationChangeNotification()", return);
+  LOG_API("Date::DateTimeConfigurationChangeNotification");
+  ENTER_V8;
+
+  HandleScope scope;
+
+  // Get the function ResetDateCache (defined in date-delay.js).
+  i::Handle<i::String> func_name_str =
+      i::Factory::LookupAsciiSymbol("ResetDateCache");
+  i::MaybeObject* result = i::Top::builtins()->GetProperty(*func_name_str);
+  i::Object* object_func;
+  if (!result->ToObject(&object_func)) {
+    return;
+  }
+
+  if (object_func->IsJSFunction()) {
+    i::Handle<i::JSFunction> func =
+        i::Handle<i::JSFunction>(i::JSFunction::cast(object_func));
+
+    // Call ResetDateCache(0 but expect no exceptions:
+    bool caught_exception = false;
+    i::Handle<i::Object> result =
+        i::Execution::TryCall(func, i::Top::builtins(), 0, NULL,
+        &caught_exception);
+  }
 }
 
 
@@ -4890,6 +4924,13 @@ const HeapGraphNode* HeapSnapshot::GetRoot() const {
 }
 
 
+const HeapGraphNode* HeapSnapshot::GetNodeById(uint64_t id) const {
+  IsDeadCheck("v8::HeapSnapshot::GetNodeById");
+  return reinterpret_cast<const HeapGraphNode*>(
+      ToInternal(this)->GetEntryById(id));
+}
+
+
 const HeapSnapshotsDiff* HeapSnapshot::CompareWith(
     const HeapSnapshot* snapshot) const {
   IsDeadCheck("v8::HeapSnapshot::CompareWith");
@@ -4936,7 +4977,8 @@ const HeapSnapshot* HeapProfiler::FindSnapshot(unsigned uid) {
 
 
 const HeapSnapshot* HeapProfiler::TakeSnapshot(Handle<String> title,
-                                               HeapSnapshot::Type type) {
+                                               HeapSnapshot::Type type,
+                                               ActivityControl* control) {
   IsDeadCheck("v8::HeapProfiler::TakeSnapshot");
   i::HeapSnapshot::Type internal_type = i::HeapSnapshot::kFull;
   switch (type) {
@@ -4950,10 +4992,72 @@ const HeapSnapshot* HeapProfiler::TakeSnapshot(Handle<String> title,
       UNREACHABLE();
   }
   return reinterpret_cast<const HeapSnapshot*>(
-      i::HeapProfiler::TakeSnapshot(*Utils::OpenHandle(*title), internal_type));
+      i::HeapProfiler::TakeSnapshot(
+          *Utils::OpenHandle(*title), internal_type, control));
 }
 
 #endif  // ENABLE_LOGGING_AND_PROFILING
+
+
+v8::Testing::StressType internal::Testing::stress_type_ =
+    v8::Testing::kStressTypeOpt;
+
+
+void Testing::SetStressRunType(Testing::StressType type) {
+  internal::Testing::set_stress_type(type);
+}
+
+int Testing::GetStressRuns() {
+  if (internal::FLAG_stress_runs != 0) return internal::FLAG_stress_runs;
+#ifdef DEBUG
+  // In debug mode the code runs much slower so stressing will only make two
+  // runs.
+  return 2;
+#else
+  return 5;
+#endif
+}
+
+
+static void SetFlagsFromString(const char* flags) {
+  V8::SetFlagsFromString(flags, i::StrLength(flags));
+}
+
+
+void Testing::PrepareStressRun(int run) {
+  static const char* kLazyOptimizations =
+      "--prepare-always-opt --nolimit-inlining "
+      "--noalways-opt --noopt-eagerly";
+  static const char* kEagerOptimizations = "--opt-eagerly";
+  static const char* kForcedOptimizations = "--always-opt";
+
+  // If deoptimization stressed turn on frequent deoptimization. If no value
+  // is spefified through --deopt-every-n-times use a default default value.
+  static const char* kDeoptEvery13Times = "--deopt-every-n-times=13";
+  if (internal::Testing::stress_type() == Testing::kStressTypeDeopt &&
+      internal::FLAG_deopt_every_n_times == 0) {
+    SetFlagsFromString(kDeoptEvery13Times);
+  }
+
+#ifdef DEBUG
+  // As stressing in debug mode only make two runs skip the deopt stressing
+  // here.
+  if (run == GetStressRuns() - 1) {
+    SetFlagsFromString(kForcedOptimizations);
+  } else {
+    SetFlagsFromString(kEagerOptimizations);
+    SetFlagsFromString(kLazyOptimizations);
+  }
+#else
+  if (run == GetStressRuns() - 1) {
+    SetFlagsFromString(kForcedOptimizations);
+  } else if (run == GetStressRuns() - 2) {
+    SetFlagsFromString(kEagerOptimizations);
+  } else {
+    SetFlagsFromString(kLazyOptimizations);
+  }
+#endif
+}
 
 
 namespace internal {
