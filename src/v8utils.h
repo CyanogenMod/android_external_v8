@@ -29,10 +29,7 @@
 #define V8_V8UTILS_H_
 
 #include "utils.h"
-#ifdef ANDROID
-// Cherry pick from r6346 to build on Android.
-#include "platform.h"
-#endif
+#include "platform.h"  // For va_list on Solaris.
 
 namespace v8 {
 namespace internal {
