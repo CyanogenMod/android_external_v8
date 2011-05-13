@@ -51,6 +51,7 @@ V8_LOCAL_SRC_FILES := \
 	src/jsregexp.cc \
 	src/jump-target.cc \
 	src/jump-target-light.cc \
+	src/lithium.cc \
 	src/lithium-allocator.cc \
 	src/liveedit.cc \
 	src/log.cc \
