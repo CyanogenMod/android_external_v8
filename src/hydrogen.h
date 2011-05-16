@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -296,6 +296,9 @@ class HGraph: public HSubgraph {
   explicit HGraph(CompilationInfo* info);
 
   CompilationInfo* info() const { return info_; }
+
+  bool AllowAggressiveOptimizations() const;
+
   const ZoneList<HBasicBlock*>* blocks() const { return &blocks_; }
   const ZoneList<HPhi*>* phi_list() const { return phi_list_; }
   Handle<String> debug_name() const { return info_->function()->debug_name(); }
@@ -906,7 +909,7 @@ class HValueMap: public ZoneObject {
 class HStatistics: public Malloced {
  public:
   void Print();
-  void SaveTiming(const char* name, int64_t ticks);
+  void SaveTiming(const char* name, int64_t ticks, unsigned size);
   static HStatistics* Instance() {
     static SetOncePointer<HStatistics> instance;
     if (!instance.is_set()) {
@@ -917,11 +920,19 @@ class HStatistics: public Malloced {
 
  private:
 
-  HStatistics() : timing_(5), names_(5), total_(0), full_code_gen_(0) { }
+  HStatistics()
+      : timing_(5),
+        names_(5),
+        sizes_(5),
+        total_(0),
+        total_size_(0),
+        full_code_gen_(0) { }
 
   List<int64_t> timing_;
   List<const char*> names_;
+  List<unsigned> sizes_;
   int64_t total_;
+  unsigned total_size_;
   int64_t full_code_gen_;
 };
 
@@ -958,6 +969,7 @@ class HPhase BASE_EMBEDDED {
   HGraph* graph_;
   LChunk* chunk_;
   LAllocator* allocator_;
+  unsigned start_allocation_size_;
 };
 
 

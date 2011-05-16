@@ -542,8 +542,12 @@ static void GenerateMonomorphicCacheProbe(MacroAssembler* masm,
   Label number, non_number, non_string, boolean, probe, miss;
 
   // Probe the stub cache.
-  Code::Flags flags =
-      Code::ComputeFlags(kind, NOT_IN_LOOP, MONOMORPHIC, NORMAL, argc);
+  Code::Flags flags = Code::ComputeFlags(kind,
+                                         NOT_IN_LOOP,
+                                         MONOMORPHIC,
+                                         Code::kNoExtraICState,
+                                         NORMAL,
+                                         argc);
   StubCache::GenerateProbe(masm, flags, r1, r2, r3, r4, r5);
 
   // If the stub cache probing failed, the receiver might be a value.
@@ -1591,7 +1595,7 @@ void KeyedLoadIC::GenerateExternalArray(MacroAssembler* masm,
       __ and_(r1, r1, Operand(kBinary32ExponentMask >> kBinary32MantissaBits));
 
       Label exponent_rebiased;
-      __ teq(r1, Operand(0x00));
+      __ teq(r1, Operand(0x00, RelocInfo::NONE));
       __ b(eq, &exponent_rebiased);
 
       __ teq(r1, Operand(0xff));

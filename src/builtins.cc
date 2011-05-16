@@ -31,6 +31,7 @@
 #include "arguments.h"
 #include "bootstrapper.h"
 #include "builtins.h"
+#include "gdb-jit.h"
 #include "ic-inl.h"
 #include "vm-state-inl.h"
 
@@ -636,15 +637,20 @@ BUILTIN(ArraySlice) {
       return CallJsBuiltin("ArraySlice", args);
     }
     elms = FixedArray::cast(JSObject::cast(receiver)->elements());
-    len = elms->length();
-#ifdef DEBUG
-    // Arguments object by construction should have no holes, check it.
-    if (FLAG_enable_slow_asserts) {
-      for (int i = 0; i < len; i++) {
-        ASSERT(elms->get(i) != Heap::the_hole_value());
+    Object* len_obj = JSObject::cast(receiver)
+        ->InObjectPropertyAt(Heap::arguments_length_index);
+    if (!len_obj->IsSmi()) {
+      return CallJsBuiltin("ArraySlice", args);
+    }
+    len = Smi::cast(len_obj)->value();
+    if (len > elms->length()) {
+      return CallJsBuiltin("ArraySlice", args);
+    }
+    for (int i = 0; i < len; i++) {
+      if (elms->get(i) == Heap::the_hole_value()) {
+        return CallJsBuiltin("ArraySlice", args);
       }
     }
-#endif
   }
   ASSERT(len >= 0);
   int n_arguments = args.length() - 1;
@@ -1545,7 +1551,7 @@ void Builtins::Setup(bool create_heap_objects) {
       CodeDesc desc;
       masm.GetCode(&desc);
       Code::Flags flags =  functions[i].flags;
-      Object* code = 0;
+      Object* code = NULL;
       {
         // During startup it's OK to always allocate and defer GC to later.
         // This simplifies things because we don't need to retry.
@@ -1559,7 +1565,11 @@ void Builtins::Setup(bool create_heap_objects) {
       }
       // Log the event and add the code to the builtins array.
       PROFILE(CodeCreateEvent(Logger::BUILTIN_TAG,
-                              Code::cast(code), functions[i].s_name));
+                              Code::cast(code),
+                              functions[i].s_name));
+      GDBJIT(AddCode(GDBJITInterface::BUILTIN,
+                     functions[i].s_name,
+                     Code::cast(code)));
       builtins_[i] = code;
 #ifdef ENABLE_DISASSEMBLER
       if (FLAG_print_builtin_code) {

@@ -167,6 +167,9 @@ struct SwVfpRegister {
 struct DwVfpRegister {
   // d0 has been excluded from allocation. This is following ia32
   // where xmm0 is excluded. This should be revisited.
+  // Currently d0 is used as a scratch register.
+  // d1 has also been excluded from allocation to be used as a scratch
+  // register as well.
   static const int kNumRegisters = 16;
   static const int kNumAllocatableRegisters = 15;
 
@@ -298,12 +301,17 @@ const DwVfpRegister d14 = { 14 };
 const DwVfpRegister d15 = { 15 };
 
 // VFP FPSCR constants.
-static const uint32_t kVFPExceptionMask = 0xf;
-static const uint32_t kVFPRoundingModeMask = 3 << 22;
-static const uint32_t kVFPFlushToZeroMask = 1 << 24;
-static const uint32_t kVFPRoundToMinusInfinityBits = 2 << 22;
+static const uint32_t kVFPNConditionFlagBit = 1 << 31;
 static const uint32_t kVFPZConditionFlagBit = 1 << 30;
-static const uint32_t kVFPInvalidExceptionBit = 1;
+static const uint32_t kVFPCConditionFlagBit = 1 << 29;
+static const uint32_t kVFPVConditionFlagBit = 1 << 28;
+
+static const uint32_t kVFPFlushToZeroMask = 1 << 24;
+
+static const uint32_t kVFPRoundingModeMask = 3 << 22;
+static const uint32_t kVFPRoundToMinusInfinityBits = 2 << 22;
+
+static const uint32_t kVFPExceptionMask = 0xf;
 
 // Coprocessor register
 struct CRegister {
@@ -1147,11 +1155,9 @@ class Assembler : public Malloced {
             const Condition cond = al);
   void vcmp(const DwVfpRegister src1,
             const DwVfpRegister src2,
-            const SBit s = LeaveCC,
             const Condition cond = al);
   void vcmp(const DwVfpRegister src1,
             const double src2,
-            const SBit s = LeaveCC,
             const Condition cond = al);
   void vmrs(const Register dst,
             const Condition cond = al);
@@ -1234,8 +1240,10 @@ class Assembler : public Malloced {
   // Use --code-comments to enable.
   void RecordComment(const char* msg);
 
-  // Writes a single byte or word of data in the code stream.  Used for
-  // inline tables, e.g., jump-tables.
+  // Writes a single byte or word of data in the code stream.  Used
+  // for inline tables, e.g., jump-tables. The constant pool should be
+  // emitted before any use of db and dd to ensure that constant pools
+  // are not emitted as part of the tables generated.
   void db(uint8_t data);
   void dd(uint32_t data);
 
