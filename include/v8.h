@@ -462,7 +462,6 @@ class V8EXPORT HandleScope {
 
   void Leave();
 
-
   internal::Object** prev_next_;
   internal::Object** prev_limit_;
 
@@ -3053,7 +3052,22 @@ class V8EXPORT ExtensionConfiguration {
  */
 class V8EXPORT Context {
  public:
-  /** Returns the global object of the context. */
+  /**
+   * Returns the global proxy object or global object itself for
+   * detached contexts.
+   *
+   * Global proxy object is a thin wrapper whose prototype points to
+   * actual context's global object with the properties like Object, etc.
+   * This is done that way for security reasons (for more details see
+   * https://wiki.mozilla.org/Gecko:SplitWindow).
+   *
+   * Please note that changes to global proxy object prototype most probably
+   * would break VM---v8 expects only global object as a prototype of
+   * global proxy object.
+   *
+   * If DetachGlobal() has been invoked, Global() would return actual global
+   * object until global is reattached with ReattachGlobal().
+   */
   Local<Object> Global();
 
   /**
@@ -3367,7 +3381,7 @@ template <> struct SmiTagging<4> {
 
   // For 32-bit systems any 2 bytes aligned pointer can be encoded as smi
   // with a plain reinterpret_cast.
-  static const intptr_t kEncodablePointerMask = 0x1;
+  static const uintptr_t kEncodablePointerMask = 0x1;
   static const int kPointerToSmiShift = 0;
 };
 
@@ -3387,8 +3401,8 @@ template <> struct SmiTagging<8> {
   // It might be not enough to cover stack allocated objects on some platforms.
   static const int kPointerAlignment = 3;
 
-  static const intptr_t kEncodablePointerMask =
-      ~(intptr_t(0xffffffff) << kPointerAlignment);
+  static const uintptr_t kEncodablePointerMask =
+      ~(uintptr_t(0xffffffff) << kPointerAlignment);
 
   static const int kPointerToSmiShift =
       kSmiTagSize + kSmiShiftSize - kPointerAlignment;
@@ -3397,7 +3411,7 @@ template <> struct SmiTagging<8> {
 typedef SmiTagging<kApiPointerSize> PlatformSmiTagging;
 const int kSmiShiftSize = PlatformSmiTagging::kSmiShiftSize;
 const int kSmiValueSize = PlatformSmiTagging::kSmiValueSize;
-const intptr_t kEncodablePointerMask =
+const uintptr_t kEncodablePointerMask =
     PlatformSmiTagging::kEncodablePointerMask;
 const int kPointerToSmiShift = PlatformSmiTagging::kPointerToSmiShift;
 
@@ -3433,7 +3447,7 @@ class Internals {
   static const int kFullStringRepresentationMask = 0x07;
   static const int kExternalTwoByteRepresentationTag = 0x02;
 
-  static const int kJSObjectType = 0x9f;
+  static const int kJSObjectType = 0xa0;
   static const int kFirstNonstringType = 0x80;
   static const int kProxyType = 0x85;
 
@@ -3457,7 +3471,7 @@ class Internals {
   }
 
   static inline void* GetExternalPointerFromSmi(internal::Object* value) {
-    const intptr_t address = reinterpret_cast<intptr_t>(value);
+    const uintptr_t address = reinterpret_cast<uintptr_t>(value);
     return reinterpret_cast<void*>(address >> kPointerToSmiShift);
   }
 

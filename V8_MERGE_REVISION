@@ -1,6 +1,6 @@
 We use a V8 revision that has been used for a Chromium release.
 
-http://src.chromium.org/svn/releases/10.0.648.0/DEPS
-http://v8.googlecode.com/svn/trunk@6387 plus a partial cherry-pick to fix Android build ...
+http://src.chromium.org/svn/releases/11.0.672.0/DEPS
+http://v8.googlecode.com/svn/trunk@6768 plus a partial cherry-pick to fix Android build ...
 - r7077 - CreateThread() in src/platform-linux.cc
 

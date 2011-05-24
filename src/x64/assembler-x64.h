@@ -153,6 +153,7 @@ struct Register {
   // Unfortunately we can't make this private in a struct when initializing
   // by assignment.
   int code_;
+
  private:
   static const int registerCodeByAllocationIndex[kNumAllocatableRegisters];
   static const int allocationIndexByRegisterCode[kNumRegisters];
@@ -390,11 +391,15 @@ class Operand BASE_EMBEDDED {
   // this must not overflow.
   Operand(const Operand& base, int32_t offset);
 
+  // Checks whether either base or index register is the given register.
+  // Does not check the "reg" part of the Operand.
+  bool AddressUsesRegister(Register reg) const;
+
  private:
   byte rex_;
   byte buf_[6];
-  // The number of bytes in buf_.
-  unsigned int len_;
+  // The number of bytes of buf_ in use.
+  byte len_;
 
   // Set the ModR/M byte without an encoded 'reg' register. The
   // register is encoded later as part of the emit_operand operation.
@@ -548,16 +553,29 @@ class Assembler : public Malloced {
   // TODO(X64): Rename this, removing the "Real", after changing the above.
   static const int kRealPatchReturnSequenceAddressOffset = 2;
 
-  // The x64 JS return sequence is padded with int3 to make it large
-  // enough to hold a call instruction when the debugger patches it.
+  // Some x64 JS code is padded with int3 to make it large
+  // enough to hold an instruction when the debugger patches it.
+  static const int kJumpInstructionLength = 13;
   static const int kCallInstructionLength = 13;
   static const int kJSReturnSequenceLength = 13;
+  static const int kShortCallInstructionLength = 5;
 
   // The debug break slot must be able to contain a call instruction.
   static const int kDebugBreakSlotLength = kCallInstructionLength;
 
   // One byte opcode for test eax,0xXXXXXXXX.
   static const byte kTestEaxByte = 0xA9;
+  // One byte opcode for test al, 0xXX.
+  static const byte kTestAlByte = 0xA8;
+  // One byte opcode for nop.
+  static const byte kNopByte = 0x90;
+
+  // One byte prefix for a short conditional jump.
+  static const byte kJccShortPrefix = 0x70;
+  static const byte kJncShortOpcode = kJccShortPrefix | not_carry;
+  static const byte kJcShortOpcode = kJccShortPrefix | carry;
+
+
 
   // ---------------------------------------------------------------------------
   // Code generation
@@ -580,7 +598,7 @@ class Assembler : public Malloced {
 
   // Insert the smallest number of nop instructions
   // possible to align the pc offset to a multiple
-  // of m. m must be a power of 2.
+  // of m, where m must be a power of 2.
   void Align(int m);
   // Aligns code to something that's optimal for a jump target for the platform.
   void CodeTargetAlign();
@@ -590,6 +608,9 @@ class Assembler : public Malloced {
   void popfq();
 
   void push(Immediate value);
+  // Push a 32 bit integer, and guarantee that it is actually pushed as a
+  // 32 bit value, the normal push will optimize the 8 bit case.
+  void push_imm32(int32_t imm32);
   void push(Register src);
   void push(const Operand& src);
 
@@ -707,6 +728,10 @@ class Assembler : public Malloced {
     arithmetic_op_32(0x1b, dst, src);
   }
 
+  void sbbq(Register dst, Register src) {
+    arithmetic_op(0x1b, dst, src);
+  }
+
   void cmpb(Register dst, Immediate src) {
     immediate_arithmetic_op_8(0x7, dst, src);
   }
@@ -817,6 +842,10 @@ class Assembler : public Malloced {
     arithmetic_op_32(0x23, dst, src);
   }
 
+  void andl(Register dst, const Operand& src) {
+    arithmetic_op_32(0x23, dst, src);
+  }
+
   void andb(Register dst, Immediate src) {
     immediate_arithmetic_op_8(0x4, dst, src);
   }
@@ -845,6 +874,7 @@ class Assembler : public Malloced {
   void imul(Register dst, Register src, Immediate imm);  // dst = src * imm.
   // Signed 32-bit multiply instructions.
   void imull(Register dst, Register src);                 // dst = dst * src.
+  void imull(Register dst, const Operand& src);           // dst = dst * src.
   void imull(Register dst, Register src, Immediate imm);  // dst = src * imm.
 
   void incq(Register dst);
@@ -876,6 +906,10 @@ class Assembler : public Malloced {
 
   void or_(Register dst, const Operand& src) {
     arithmetic_op(0x0B, dst, src);
+  }
+
+  void orl(Register dst, const Operand& src) {
+    arithmetic_op_32(0x0B, dst, src);
   }
 
   void or_(const Operand& dst, Register src) {
@@ -1041,6 +1075,18 @@ class Assembler : public Malloced {
     arithmetic_op_32(0x33, dst, src);
   }
 
+  void xorl(Register dst, const Operand& src) {
+    arithmetic_op_32(0x33, dst, src);
+  }
+
+  void xorl(Register dst, Immediate src) {
+    immediate_arithmetic_op_32(0x6, dst, src);
+  }
+
+  void xorl(const Operand& dst, Immediate src) {
+    immediate_arithmetic_op_32(0x6, dst, src);
+  }
+
   void xor_(Register dst, const Operand& src) {
     arithmetic_op(0x33, dst, src);
   }
@@ -1094,6 +1140,12 @@ class Assembler : public Malloced {
   // Call near relative 32-bit displacement, relative to next instruction.
   void call(Label* L);
   void call(Handle<Code> target, RelocInfo::Mode rmode);
+
+  // Calls directly to the given address using a relative offset.
+  // Should only ever be used in Code objects for calls within the
+  // same Code object. Should not be used when generating new code (use labels),
+  // but only when patching existing code.
+  void call(Address target);
 
   // Call near absolute indirect, address in register
   void call(Register adr);
@@ -1201,11 +1253,16 @@ class Assembler : public Malloced {
   void movsd(XMMRegister dst, XMMRegister src);
   void movsd(XMMRegister dst, const Operand& src);
 
+  void movdqa(const Operand& dst, XMMRegister src);
+  void movdqa(XMMRegister dst, const Operand& src);
+
   void movss(XMMRegister dst, const Operand& src);
   void movss(const Operand& dst, XMMRegister src);
 
   void cvttss2si(Register dst, const Operand& src);
+  void cvttss2si(Register dst, XMMRegister src);
   void cvttsd2si(Register dst, const Operand& src);
+  void cvttsd2si(Register dst, XMMRegister src);
   void cvttsd2siq(Register dst, XMMRegister src);
 
   void cvtlsi2sd(XMMRegister dst, const Operand& src);
@@ -1233,15 +1290,13 @@ class Assembler : public Malloced {
   void ucomisd(XMMRegister dst, XMMRegister src);
   void ucomisd(XMMRegister dst, const Operand& src);
 
+  void movmskpd(Register dst, XMMRegister src);
+
   // The first argument is the reg field, the second argument is the r/m field.
   void emit_sse_operand(XMMRegister dst, XMMRegister src);
   void emit_sse_operand(XMMRegister reg, const Operand& adr);
   void emit_sse_operand(XMMRegister dst, Register src);
   void emit_sse_operand(Register dst, XMMRegister src);
-
-  // Use either movsd or movlpd.
-  // void movdbl(XMMRegister dst, const Operand& src);
-  // void movdbl(const Operand& dst, XMMRegister src);
 
   // Debugging
   void Print();

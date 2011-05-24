@@ -57,8 +57,7 @@ Smi* PropertyDetails::AsSmi() {
 
 
 PropertyDetails PropertyDetails::AsDeleted() {
-  PropertyDetails d(DONT_ENUM, NORMAL);
-  Smi* smi = Smi::FromInt(AsSmi()->value() | DeletedField::encode(1));
+  Smi* smi = Smi::FromInt(value_ | DeletedField::encode(1));
   return PropertyDetails(smi);
 }
 
@@ -409,7 +408,7 @@ bool MaybeObject::IsRetryAfterGC() {
 
 bool MaybeObject::IsOutOfMemory() {
   return HAS_FAILURE_TAG(this)
-    && Failure::cast(this)->IsOutOfMemoryException();
+      && Failure::cast(this)->IsOutOfMemoryException();
 }
 
 
@@ -431,26 +430,26 @@ Failure* Failure::cast(MaybeObject* obj) {
 
 bool Object::IsJSObject() {
   return IsHeapObject()
-    && HeapObject::cast(this)->map()->instance_type() >= FIRST_JS_OBJECT_TYPE;
+      && HeapObject::cast(this)->map()->instance_type() >= FIRST_JS_OBJECT_TYPE;
 }
 
 
 bool Object::IsJSContextExtensionObject() {
   return IsHeapObject()
-    && (HeapObject::cast(this)->map()->instance_type() ==
-        JS_CONTEXT_EXTENSION_OBJECT_TYPE);
+      && (HeapObject::cast(this)->map()->instance_type() ==
+          JS_CONTEXT_EXTENSION_OBJECT_TYPE);
 }
 
 
 bool Object::IsMap() {
   return Object::IsHeapObject()
-    && HeapObject::cast(this)->map()->instance_type() == MAP_TYPE;
+      && HeapObject::cast(this)->map()->instance_type() == MAP_TYPE;
 }
 
 
 bool Object::IsFixedArray() {
   return Object::IsHeapObject()
-    && HeapObject::cast(this)->map()->instance_type() == FIXED_ARRAY_TYPE;
+      && HeapObject::cast(this)->map()->instance_type() == FIXED_ARRAY_TYPE;
 }
 
 
@@ -496,19 +495,19 @@ bool Object::IsContext() {
 
 bool Object::IsCatchContext() {
   return Object::IsHeapObject()
-    && HeapObject::cast(this)->map() == Heap::catch_context_map();
+      && HeapObject::cast(this)->map() == Heap::catch_context_map();
 }
 
 
 bool Object::IsGlobalContext() {
   return Object::IsHeapObject()
-    && HeapObject::cast(this)->map() == Heap::global_context_map();
+      && HeapObject::cast(this)->map() == Heap::global_context_map();
 }
 
 
 bool Object::IsJSFunction() {
   return Object::IsHeapObject()
-    && HeapObject::cast(this)->map()->instance_type() == JS_FUNCTION_TYPE;
+      && HeapObject::cast(this)->map()->instance_type() == JS_FUNCTION_TYPE;
 }
 
 
@@ -519,7 +518,7 @@ template <> inline bool Is<JSFunction>(Object* obj) {
 
 bool Object::IsCode() {
   return Object::IsHeapObject()
-    && HeapObject::cast(this)->map()->instance_type() == CODE_TYPE;
+      && HeapObject::cast(this)->map()->instance_type() == CODE_TYPE;
 }
 
 
@@ -545,7 +544,14 @@ bool Object::IsSharedFunctionInfo() {
 
 bool Object::IsJSValue() {
   return Object::IsHeapObject()
-    && HeapObject::cast(this)->map()->instance_type() == JS_VALUE_TYPE;
+      && HeapObject::cast(this)->map()->instance_type() == JS_VALUE_TYPE;
+}
+
+
+bool Object::IsJSMessageObject() {
+  return Object::IsHeapObject()
+      && (HeapObject::cast(this)->map()->instance_type() ==
+          JS_MESSAGE_OBJECT_TYPE);
 }
 
 
@@ -556,7 +562,7 @@ bool Object::IsStringWrapper() {
 
 bool Object::IsProxy() {
   return Object::IsHeapObject()
-    && HeapObject::cast(this)->map()->instance_type() == PROXY_TYPE;
+      && HeapObject::cast(this)->map()->instance_type() == PROXY_TYPE;
 }
 
 
@@ -567,13 +573,13 @@ bool Object::IsBoolean() {
 
 bool Object::IsJSArray() {
   return Object::IsHeapObject()
-    && HeapObject::cast(this)->map()->instance_type() == JS_ARRAY_TYPE;
+      && HeapObject::cast(this)->map()->instance_type() == JS_ARRAY_TYPE;
 }
 
 
 bool Object::IsJSRegExp() {
   return Object::IsHeapObject()
-    && HeapObject::cast(this)->map()->instance_type() == JS_REGEXP_TYPE;
+      && HeapObject::cast(this)->map()->instance_type() == JS_REGEXP_TYPE;
 }
 
 
@@ -584,7 +590,7 @@ template <> inline bool Is<JSArray>(Object* obj) {
 
 bool Object::IsHashTable() {
   return Object::IsHeapObject()
-    && HeapObject::cast(this)->map() == Heap::hash_table_map();
+      && HeapObject::cast(this)->map() == Heap::hash_table_map();
 }
 
 
@@ -1286,6 +1292,8 @@ int JSObject::GetHeaderSize() {
       return JSValue::kSize;
     case JS_CONTEXT_EXTENSION_OBJECT_TYPE:
       return JSObject::kHeaderSize;
+    case JS_MESSAGE_OBJECT_TYPE:
+      return JSMessageObject::kSize;
     default:
       UNREACHABLE();
       return 0;
@@ -2502,29 +2510,29 @@ void Code::set_stack_slots(unsigned slots) {
 }
 
 
-unsigned Code::safepoint_table_start() {
+unsigned Code::safepoint_table_offset() {
   ASSERT(kind() == OPTIMIZED_FUNCTION);
-  return READ_UINT32_FIELD(this, kSafepointTableStartOffset);
+  return READ_UINT32_FIELD(this, kSafepointTableOffsetOffset);
 }
 
 
-void Code::set_safepoint_table_start(unsigned offset) {
+void Code::set_safepoint_table_offset(unsigned offset) {
   ASSERT(kind() == OPTIMIZED_FUNCTION);
   ASSERT(IsAligned(offset, static_cast<unsigned>(kIntSize)));
-  WRITE_UINT32_FIELD(this, kSafepointTableStartOffset, offset);
+  WRITE_UINT32_FIELD(this, kSafepointTableOffsetOffset, offset);
 }
 
 
-unsigned Code::stack_check_table_start() {
+unsigned Code::stack_check_table_offset() {
   ASSERT(kind() == FUNCTION);
-  return READ_UINT32_FIELD(this, kStackCheckTableStartOffset);
+  return READ_UINT32_FIELD(this, kStackCheckTableOffsetOffset);
 }
 
 
-void Code::set_stack_check_table_start(unsigned offset) {
+void Code::set_stack_check_table_offset(unsigned offset) {
   ASSERT(kind() == FUNCTION);
   ASSERT(IsAligned(offset, static_cast<unsigned>(kIntSize)));
-  WRITE_UINT32_FIELD(this, kStackCheckTableStartOffset, offset);
+  WRITE_UINT32_FIELD(this, kStackCheckTableOffsetOffset, offset);
 }
 
 
@@ -2602,10 +2610,12 @@ Code::Flags Code::ComputeFlags(Kind kind,
                                PropertyType type,
                                int argc,
                                InlineCacheHolderFlag holder) {
-  // Extra IC state is only allowed for monomorphic call IC stubs.
+  // Extra IC state is only allowed for monomorphic call IC stubs
+  // or for store IC stubs.
   ASSERT(extra_ic_state == kNoExtraICState ||
          (kind == CALL_IC && (ic_state == MONOMORPHIC ||
-                              ic_state == MONOMORPHIC_PROTOTYPE_FAILURE)));
+                              ic_state == MONOMORPHIC_PROTOTYPE_FAILURE)) ||
+         (kind == STORE_IC));
   // Compute the bit mask.
   int bits = kind << kFlagsKindShift;
   if (in_loop) bits |= kFlagsICInLoopMask;
@@ -2735,6 +2745,22 @@ MaybeObject* Map::GetSlowElementsMap() {
   Map* new_map = Map::cast(obj);
   new_map->set_has_fast_elements(false);
   Counters::map_fast_to_slow_elements.Increment();
+  return new_map;
+}
+
+
+MaybeObject* Map::GetPixelArrayElementsMap() {
+  if (has_pixel_array_elements()) return this;
+  // TODO(danno): Special case empty object map (or most common case)
+  // to return a pre-canned pixel array map.
+  Object* obj;
+  { MaybeObject* maybe_obj = CopyDropTransitions();
+    if (!maybe_obj->ToObject(&obj)) return maybe_obj;
+  }
+  Map* new_map = Map::cast(obj);
+  new_map->set_has_fast_elements(false);
+  new_map->set_has_pixel_array_elements(true);
+  Counters::map_to_pixel_array_elements.Increment();
   return new_map;
 }
 
@@ -2985,6 +3011,18 @@ void SharedFunctionInfo::set_optimization_disabled(bool disable) {
 }
 
 
+bool SharedFunctionInfo::strict_mode() {
+  return BooleanBit::get(compiler_hints(), kStrictModeFunction);
+}
+
+
+void SharedFunctionInfo::set_strict_mode(bool value) {
+  set_compiler_hints(BooleanBit::set(compiler_hints(),
+                                     kStrictModeFunction,
+                                     value));
+}
+
+
 ACCESSORS(CodeCache, default_cache, FixedArray, kDefaultCacheOffset)
 ACCESSORS(CodeCache, normal_type_cache, Object, kNormalTypeCacheOffset)
 
@@ -3076,12 +3114,6 @@ FunctionTemplateInfo* SharedFunctionInfo::get_api_func_data() {
 
 bool SharedFunctionInfo::HasBuiltinFunctionId() {
   return function_data()->IsSmi();
-}
-
-
-bool SharedFunctionInfo::IsBuiltinMathFunction() {
-  return HasBuiltinFunctionId() &&
-      builtin_function_id() >= kFirstMathFunctionId;
 }
 
 
@@ -3293,6 +3325,22 @@ JSValue* JSValue::cast(Object* obj) {
   ASSERT(obj->IsJSValue());
   ASSERT(HeapObject::cast(obj)->Size() == JSValue::kSize);
   return reinterpret_cast<JSValue*>(obj);
+}
+
+
+ACCESSORS(JSMessageObject, type, String, kTypeOffset)
+ACCESSORS(JSMessageObject, arguments, JSArray, kArgumentsOffset)
+ACCESSORS(JSMessageObject, script, Object, kScriptOffset)
+ACCESSORS(JSMessageObject, stack_trace, Object, kStackTraceOffset)
+ACCESSORS(JSMessageObject, stack_frames, Object, kStackFramesOffset)
+SMI_ACCESSORS(JSMessageObject, start_position, kStartPositionOffset)
+SMI_ACCESSORS(JSMessageObject, end_position, kEndPositionOffset)
+
+
+JSMessageObject* JSMessageObject::cast(Object* obj) {
+  ASSERT(obj->IsJSMessageObject());
+  ASSERT(HeapObject::cast(obj)->Size() == JSMessageObject::kSize);
+  return reinterpret_cast<JSMessageObject*>(obj);
 }
 
 

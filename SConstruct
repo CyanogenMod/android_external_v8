@@ -32,7 +32,7 @@ import os
 from os.path import join, dirname, abspath
 from types import DictType, StringTypes
 root_dir = dirname(File('SConstruct').rfile().abspath)
-sys.path.append(join(root_dir, 'tools'))
+sys.path.insert(0, join(root_dir, 'tools'))
 import js2c, utils
 
 # ANDROID_TOP is the top of the Android checkout, fetched from the environment
@@ -127,6 +127,10 @@ LIBRARY_FLAGS = {
     },
     'inspector:on': {
       'CPPDEFINES':   ['INSPECTOR'],
+    },
+    'liveobjectlist:on': {
+      'CPPDEFINES':   ['ENABLE_DEBUGGER_SUPPORT', 'INSPECTOR',
+                       'LIVE_OBJECT_LIST', 'OBJECT_PRINT'],
     }
   },
   'gcc': {
@@ -230,9 +234,6 @@ LIBRARY_FLAGS = {
       'CCFLAGS':      ['-m64'],
       'LINKFLAGS':    ['-m64'],
     },
-    'prof:oprofile': {
-      'CPPDEFINES':   ['ENABLE_OPROFILE_AGENT']
-    },
     'gdbjit:on': {
       'CPPDEFINES':   ['ENABLE_GDB_JIT_INTERFACE']
     }
@@ -326,7 +327,7 @@ V8_EXTRA_FLAGS = {
   },
   'msvc': {
     'all': {
-      'WARNINGFLAGS': ['/W3', '/WX', '/wd4355', '/wd4800']
+      'WARNINGFLAGS': ['/W3', '/WX', '/wd4351', '/wd4355', '/wd4800']
     },
     'library:shared': {
       'CPPDEFINES': ['BUILDING_V8_SHARED'],
@@ -535,10 +536,6 @@ SAMPLE_FLAGS = {
       'CCFLAGS':      ['-g', '-O0'],
       'CPPDEFINES':   ['DEBUG']
     },
-    'prof:oprofile': {
-      'LIBPATH': ['/usr/lib32', '/usr/lib32/oprofile'],
-      'LIBS': ['opagent']
-    }
   },
   'msvc': {
     'all': {
@@ -708,7 +705,7 @@ SIMPLE_OPTIONS = {
     'help': 'build using snapshots for faster start-up'
   },
   'prof': {
-    'values': ['on', 'off', 'oprofile'],
+    'values': ['on', 'off'],
     'default': 'off',
     'help': 'enable profiling of build target'
   },
@@ -751,6 +748,11 @@ SIMPLE_OPTIONS = {
     'values': ['on', 'off'],
     'default': 'off',
     'help': 'enable inspector features'
+  },
+  'liveobjectlist': {
+    'values': ['on', 'off'],
+    'default': 'off',
+    'help': 'enable live object list features in the debugger'
   },
   'soname': {
     'values': ['on', 'off'],
@@ -890,8 +892,6 @@ def VerifyOptions(env):
     Abort("Profiling on windows only supported for static library.")
   if env['gdbjit'] == 'on' and (env['os'] != 'linux' or (env['arch'] != 'ia32' and env['arch'] != 'x64')):
     Abort("GDBJIT interface is supported only for Intel-compatible (ia32 or x64) Linux target.")
-  if env['prof'] == 'oprofile' and env['os'] != 'linux':
-    Abort("OProfile is only supported on Linux.")
   if env['os'] == 'win32' and env['soname'] == 'on':
     Abort("Shared Object soname not applicable for Windows.")
   if env['soname'] == 'on' and env['library'] == 'static':
@@ -1009,6 +1009,13 @@ def PostprocessOptions(options, os):
       # Print a warning if native regexp is specified for mips
       print "Warning: forcing regexp to interpreted for mips"
     options['regexp'] = 'interpreted'
+  if options['liveobjectlist'] == 'on':
+    if (options['debuggersupport'] != 'on') or (options['mode'] == 'release'):
+      # Print a warning that liveobjectlist will implicitly enable the debugger
+      print "Warning: forcing debuggersupport on for liveobjectlist"
+    options['debuggersupport'] = 'on'
+    options['inspector'] = 'on'
+    options['objectprint'] = 'on'
 
 
 def ParseEnvOverrides(arg, imports):

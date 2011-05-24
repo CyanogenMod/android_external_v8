@@ -1205,9 +1205,10 @@ class Property: public Expression {
         key_(key),
         pos_(pos),
         type_(type),
-        is_monomorphic_(false),
         receiver_types_(NULL),
+        is_monomorphic_(false),
         is_array_length_(false),
+        is_string_length_(false),
         is_function_prototype_(false),
         is_arguments_access_(false) { }
 
@@ -1221,6 +1222,7 @@ class Property: public Expression {
   int position() const { return pos_; }
   bool is_synthetic() const { return type_ == SYNTHETIC; }
 
+  bool IsStringLength() const { return is_string_length_; }
   bool IsFunctionPrototype() const { return is_function_prototype_; }
 
   // Marks that this is actually an argument rewritten to a keyed property
@@ -1249,11 +1251,12 @@ class Property: public Expression {
   int pos_;
   Type type_;
 
-  bool is_monomorphic_;
   ZoneMapList* receiver_types_;
-  bool is_array_length_;
-  bool is_function_prototype_;
-  bool is_arguments_access_;
+  bool is_monomorphic_ : 1;
+  bool is_array_length_ : 1;
+  bool is_string_length_ : 1;
+  bool is_function_prototype_ : 1;
+  bool is_arguments_access_ : 1;
   Handle<Map> monomorphic_receiver_type_;
 
   // Dummy property used during preparsing.
@@ -1395,7 +1398,7 @@ class BinaryOperation: public Expression {
                   Expression* left,
                   Expression* right,
                   int pos)
-      : op_(op), left_(left), right_(right), pos_(pos), is_smi_only_(false) {
+      : op_(op), left_(left), right_(right), pos_(pos) {
     ASSERT(Token::IsBinaryOp(op));
     right_id_ = (op == Token::AND || op == Token::OR)
         ? static_cast<int>(GetNextId())
@@ -1416,10 +1419,6 @@ class BinaryOperation: public Expression {
   Expression* right() const { return right_; }
   int position() const { return pos_; }
 
-  // Type feedback information.
-  void RecordTypeFeedback(TypeFeedbackOracle* oracle);
-  bool IsSmiOnly() const { return is_smi_only_; }
-
   // Bailout support.
   int RightId() const { return right_id_; }
 
@@ -1428,7 +1427,6 @@ class BinaryOperation: public Expression {
   Expression* left_;
   Expression* right_;
   int pos_;
-  bool is_smi_only_;
   // The short-circuit logical operations have an AST ID for their
   // right-hand subexpression.
   int right_id_;
@@ -1675,7 +1673,8 @@ class FunctionLiteral: public Expression {
                   int start_position,
                   int end_position,
                   bool is_expression,
-                  bool contains_loops)
+                  bool contains_loops,
+                  bool strict_mode)
       : name_(name),
         scope_(scope),
         body_(body),
@@ -1689,6 +1688,7 @@ class FunctionLiteral: public Expression {
         end_position_(end_position),
         is_expression_(is_expression),
         contains_loops_(contains_loops),
+        strict_mode_(strict_mode),
         function_token_position_(RelocInfo::kNoPosition),
         inferred_name_(Heap::empty_string()),
         try_full_codegen_(false),
@@ -1705,6 +1705,7 @@ class FunctionLiteral: public Expression {
   int end_position() const { return end_position_; }
   bool is_expression() const { return is_expression_; }
   bool contains_loops() const { return contains_loops_; }
+  bool strict_mode() const { return strict_mode_; }
 
   int materialized_literal_count() { return materialized_literal_count_; }
   int expected_property_count() { return expected_property_count_; }
@@ -1747,6 +1748,7 @@ class FunctionLiteral: public Expression {
   int end_position_;
   bool is_expression_;
   bool contains_loops_;
+  bool strict_mode_;
   int function_token_position_;
   Handle<String> inferred_name_;
   bool try_full_codegen_;

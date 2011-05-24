@@ -74,7 +74,7 @@ class MacroAssembler: public Assembler {
 
   void LoadRoot(Register destination, Heap::RootListIndex index);
   void CompareRoot(Register with, Heap::RootListIndex index);
-  void CompareRoot(Operand with, Heap::RootListIndex index);
+  void CompareRoot(const Operand& with, Heap::RootListIndex index);
   void PushRoot(Heap::RootListIndex index);
   void StoreRoot(Register source, Heap::RootListIndex index);
 
@@ -152,7 +152,7 @@ class MacroAssembler: public Assembler {
   //
   // Allocates arg_stack_space * kPointerSize memory (not GCed) on the stack
   // accessible via StackSpaceOperand.
-  void EnterExitFrame(int arg_stack_space = 0);
+  void EnterExitFrame(int arg_stack_space = 0, bool save_doubles = false);
 
   // Enter specific kind of exit frame. Allocates arg_stack_space * kPointerSize
   // memory (not GCed) on the stack accessible via StackSpaceOperand.
@@ -161,19 +161,19 @@ class MacroAssembler: public Assembler {
   // Leave the current exit frame. Expects/provides the return value in
   // register rax:rdx (untouched) and the pointer to the first
   // argument in register rsi.
-  void LeaveExitFrame();
+  void LeaveExitFrame(bool save_doubles = false);
 
   // Leave the current exit frame. Expects/provides the return value in
   // register rax (untouched).
   void LeaveApiExitFrame();
 
   // Push and pop the registers that can hold pointers.
-  void PushSafepointRegisters() { UNIMPLEMENTED(); }
-  void PopSafepointRegisters() { UNIMPLEMENTED(); }
+  void PushSafepointRegisters() { Pushad(); }
+  void PopSafepointRegisters() { Popad(); }
   static int SafepointRegisterStackIndex(int reg_code) {
-    UNIMPLEMENTED();
-    return 0;
+    return kSafepointPushRegisterIndices[reg_code];
   }
+
 
   // ---------------------------------------------------------------------------
   // JavaScript invokes
@@ -272,6 +272,7 @@ class MacroAssembler: public Assembler {
 
   // Is the value a tagged smi.
   Condition CheckSmi(Register src);
+  Condition CheckSmi(const Operand& src);
 
   // Is the value a non-negative tagged smi.
   Condition CheckNonNegativeSmi(Register src);
@@ -299,6 +300,11 @@ class MacroAssembler: public Assembler {
   // Checks whether an 32-bit unsigned integer value is a valid for
   // conversion to a smi.
   Condition CheckUInteger32ValidSmiValue(Register src);
+
+  // Check whether src is a Smi, and set dst to zero if it is a smi,
+  // and to one if it isn't.
+  void CheckSmiToIndicator(Register dst, Register src);
+  void CheckSmiToIndicator(Register dst, const Operand& src);
 
   // Test-and-jump functions. Typically combines a check function
   // above with a conditional jump.
@@ -534,6 +540,14 @@ class MacroAssembler: public Assembler {
 
   // ---------------------------------------------------------------------------
   // String macros.
+
+  // If object is a string, its map is loaded into object_map.
+  template <typename LabelType>
+  void JumpIfNotString(Register object,
+                       Register object_map,
+                       LabelType* not_string);
+
+
   template <typename LabelType>
   void JumpIfNotBothSequentialAsciiStrings(Register first_object,
                                            Register second_object,
@@ -589,6 +603,22 @@ class MacroAssembler: public Assembler {
   void Call(Address destination, RelocInfo::Mode rmode);
   void Call(ExternalReference ext);
   void Call(Handle<Code> code_object, RelocInfo::Mode rmode);
+
+  // Emit call to the code we are currently generating.
+  void CallSelf() {
+    Handle<Code> self(reinterpret_cast<Code**>(CodeObject().location()));
+    Call(self, RelocInfo::CODE_TARGET);
+  }
+
+  // Non-x64 instructions.
+  // Push/pop all general purpose registers.
+  // Does not push rsp/rbp nor any of the assembler's special purpose registers
+  // (kScratchRegister, kSmiConstantRegister, kRootRegister).
+  void Pushad();
+  void Popad();
+  // Sets the stack as after performing Popad, without actually loading the
+  // registers.
+  void Dropad();
 
   // Compare object type for heap object.
   // Always use unsigned comparisons: above and below, not less and greater.
@@ -804,6 +834,9 @@ class MacroAssembler: public Assembler {
   // Call a runtime routine.
   void CallRuntime(Runtime::Function* f, int num_arguments);
 
+  // Call a runtime function and save the value of XMM registers.
+  void CallRuntimeSaveDoubles(Runtime::FunctionId id);
+
   // Call a runtime function, returning the CodeStub object called.
   // Try to generate the stub code if necessary.  Do not perform a GC
   // but instead return a retry after GC failure.
@@ -887,6 +920,10 @@ class MacroAssembler: public Assembler {
 
   void Ret();
 
+  // Return and drop arguments from stack, where the number of arguments
+  // may be bigger than 2^16 - 1.  Requires a scratch register.
+  void Ret(int bytes_dropped, Register scratch);
+
   Handle<Object> CodeObject() { return code_object_; }
 
 
@@ -923,6 +960,9 @@ class MacroAssembler: public Assembler {
   bool allow_stub_calls() { return allow_stub_calls_; }
 
  private:
+  // Order general registers are pushed by Pushad.
+  // rax, rcx, rdx, rbx, rsi, rdi, r8, r9, r11, r12, r14.
+  static int kSafepointPushRegisterIndices[Register::kNumRegisters];
   bool generating_stub_;
   bool allow_stub_calls_;
 
@@ -953,7 +993,7 @@ class MacroAssembler: public Assembler {
 
   // Allocates arg_stack_space * kPointerSize memory (not GCed) on the stack
   // accessible via StackSpaceOperand.
-  void EnterExitFrameEpilogue(int arg_stack_space);
+  void EnterExitFrameEpilogue(int arg_stack_space, bool save_doubles);
 
   void LeaveExitFrameEpilogue();
 
@@ -1436,6 +1476,8 @@ void MacroAssembler::SmiShiftLogicalRight(Register dst,
   ASSERT(!src1.is(kScratchRegister));
   ASSERT(!src2.is(kScratchRegister));
   ASSERT(!dst.is(rcx));
+  // dst and src1 can be the same, because the one case that bails out
+  // is a shift by 0, which leaves dst, and therefore src1, unchanged.
   NearLabel result_ok;
   if (src1.is(rcx) || src2.is(rcx)) {
     movq(kScratchRegister, rcx);
@@ -1566,6 +1608,17 @@ void MacroAssembler::JumpUnlessBothNonNegativeSmi(Register src1,
                                                   LabelType* on_not_both_smi) {
   Condition both_smi = CheckBothNonNegativeSmi(src1, src2);
   j(NegateCondition(both_smi), on_not_both_smi);
+}
+
+
+template <typename LabelType>
+void MacroAssembler::JumpIfNotString(Register object,
+                                     Register object_map,
+                                     LabelType* not_string) {
+  Condition is_smi = CheckSmi(object);
+  j(is_smi, not_string);
+  CmpObjectType(object, FIRST_NONSTRING_TYPE, object_map);
+  j(above_equal, not_string);
 }
 
 

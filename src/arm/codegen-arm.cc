@@ -1110,7 +1110,7 @@ void DeferredInlineSmiOperation::GenerateNonSmiInput() {
 
   Register int32 = r2;
   // Not a 32bits signed int, fall back to the GenericBinaryOpStub.
-  __ ConvertToInt32(tos_register_, int32, r4, r5, entry_label());
+  __ ConvertToInt32(tos_register_, int32, r4, r5, d0, entry_label());
 
   // tos_register_ (r0 or r1): Original heap number.
   // int32: signed 32bits int.
@@ -1589,7 +1589,7 @@ void CodeGenerator::SmiOperation(Token::Value op,
 }
 
 
-void CodeGenerator::Comparison(Condition cc,
+void CodeGenerator::Comparison(Condition cond,
                                Expression* left,
                                Expression* right,
                                bool strict) {
@@ -1603,7 +1603,7 @@ void CodeGenerator::Comparison(Condition cc,
   // result : cc register
 
   // Strict only makes sense for equality comparisons.
-  ASSERT(!strict || cc == eq);
+  ASSERT(!strict || cond == eq);
 
   Register lhs;
   Register rhs;
@@ -1614,8 +1614,8 @@ void CodeGenerator::Comparison(Condition cc,
   // We load the top two stack positions into registers chosen by the virtual
   // frame.  This should keep the register shuffling to a minimum.
   // Implement '>' and '<=' by reversal to obtain ECMA-262 conversion order.
-  if (cc == gt || cc == le) {
-    cc = ReverseCondition(cc);
+  if (cond == gt || cond == le) {
+    cond = ReverseCondition(cond);
     lhs_is_smi = frame_->KnownSmiAt(0);
     rhs_is_smi = frame_->KnownSmiAt(1);
     lhs = frame_->PopToRegister();
@@ -1655,7 +1655,7 @@ void CodeGenerator::Comparison(Condition cc,
     // Perform non-smi comparison by stub.
     // CompareStub takes arguments in r0 and r1, returns <0, >0 or 0 in r0.
     // We call with 0 args because there are 0 on the stack.
-    CompareStub stub(cc, strict, NO_SMI_COMPARE_IN_STUB, lhs, rhs);
+    CompareStub stub(cond, strict, NO_SMI_COMPARE_IN_STUB, lhs, rhs);
     frame_->CallStub(&stub, 0);
     __ cmp(r0, Operand(0, RelocInfo::NONE));
     exit.Jump();
@@ -1667,7 +1667,7 @@ void CodeGenerator::Comparison(Condition cc,
   __ cmp(lhs, Operand(rhs));
 
   exit.Bind();
-  cc_reg_ = cc;
+  cc_reg_ = cond;
 }
 
 
@@ -1762,7 +1762,7 @@ void CodeGenerator::CallApplyLazy(Expression* applicand,
   //   sp[2]: applicand.
 
   // Check that the receiver really is a JavaScript object.
-  __ BranchOnSmi(receiver_reg, &build_args);
+  __ JumpIfSmi(receiver_reg, &build_args);
   // We allow all JSObjects including JSFunctions.  As long as
   // JS_FUNCTION_TYPE is the last instance type and it is right
   // after LAST_JS_OBJECT_TYPE, we do not have to check the upper
@@ -1774,7 +1774,7 @@ void CodeGenerator::CallApplyLazy(Expression* applicand,
 
   // Check that applicand.apply is Function.prototype.apply.
   __ ldr(r0, MemOperand(sp, kPointerSize));
-  __ BranchOnSmi(r0, &build_args);
+  __ JumpIfSmi(r0, &build_args);
   __ CompareObjectType(r0, r1, r2, JS_FUNCTION_TYPE);
   __ b(ne, &build_args);
   Handle<Code> apply_code(Builtins::builtin(Builtins::FunctionApply));
@@ -1785,7 +1785,7 @@ void CodeGenerator::CallApplyLazy(Expression* applicand,
 
   // Check that applicand is a function.
   __ ldr(r1, MemOperand(sp, 2 * kPointerSize));
-  __ BranchOnSmi(r1, &build_args);
+  __ JumpIfSmi(r1, &build_args);
   __ CompareObjectType(r1, r2, r3, JS_FUNCTION_TYPE);
   __ b(ne, &build_args);
 
@@ -1885,8 +1885,8 @@ void CodeGenerator::CallApplyLazy(Expression* applicand,
 
 void CodeGenerator::Branch(bool if_true, JumpTarget* target) {
   ASSERT(has_cc());
-  Condition cc = if_true ? cc_reg_ : NegateCondition(cc_reg_);
-  target->Branch(cc);
+  Condition cond = if_true ? cc_reg_ : NegateCondition(cc_reg_);
+  target->Branch(cond);
   cc_reg_ = al;
 }
 
@@ -2192,15 +2192,10 @@ void CodeGenerator::GenerateReturnSequence() {
     DeleteFrame();
 
 #ifdef DEBUG
-    // Check that the size of the code used for returning matches what is
-    // expected by the debugger. If the sp_delts above cannot be encoded in
-    // the add instruction the add will generate two instructions.
-    int return_sequence_length =
-        masm_->InstructionsGeneratedSince(&check_exit_codesize);
-    CHECK(return_sequence_length ==
-          Assembler::kJSReturnSequenceInstructions ||
-          return_sequence_length ==
-          Assembler::kJSReturnSequenceInstructions + 1);
+    // Check that the size of the code used for returning is large enough
+    // for the debugger's requirements.
+    ASSERT(Assembler::kJSReturnSequenceInstructions <=
+           masm_->InstructionsGeneratedSince(&check_exit_codesize));
 #endif
   }
 }
@@ -4177,7 +4172,10 @@ void CodeGenerator::VisitCall(Call* node) {
       __ ldr(r1, frame_->Receiver());
       frame_->EmitPush(r1);
 
-      frame_->CallRuntime(Runtime::kResolvePossiblyDirectEvalNoLookup, 3);
+      // Push the strict mode flag.
+      frame_->EmitPush(Operand(Smi::FromInt(strict_mode_flag())));
+
+      frame_->CallRuntime(Runtime::kResolvePossiblyDirectEvalNoLookup, 4);
 
       done.Jump();
       slow.Bind();
@@ -4197,8 +4195,11 @@ void CodeGenerator::VisitCall(Call* node) {
     __ ldr(r1, frame_->Receiver());
     frame_->EmitPush(r1);
 
+    // Push the strict mode flag.
+    frame_->EmitPush(Operand(Smi::FromInt(strict_mode_flag())));
+
     // Resolve the call.
-    frame_->CallRuntime(Runtime::kResolvePossiblyDirectEval, 3);
+    frame_->CallRuntime(Runtime::kResolvePossiblyDirectEval, 4);
 
     // If we generated fast-case code bind the jump-target where fast
     // and slow case merge.
@@ -4618,8 +4619,8 @@ void CodeGenerator::GenerateMathPow(ZoneList<Expression*>* args) {
     ASSERT(runtime.entry_frame() == NULL);
     runtime.set_entry_frame(frame_);
 
-    __ BranchOnNotSmi(exponent, &exponent_nonsmi);
-    __ BranchOnNotSmi(base, &base_nonsmi);
+    __ JumpIfNotSmi(exponent, &exponent_nonsmi);
+    __ JumpIfNotSmi(base, &base_nonsmi);
 
     heap_number_map = r6;
     __ LoadRoot(heap_number_map, Heap::kHeapNumberMapRootIndex);
@@ -4698,12 +4699,15 @@ void CodeGenerator::GenerateMathPow(ZoneList<Expression*>* args) {
                                  runtime.entry_label(),
                                  AVOID_NANS_AND_INFINITIES);
 
+    // Convert -0 into +0 by adding +0.
+    __ vmov(d2, 0.0);
+    __ vadd(d0, d2, d0);
     // Load 1.0 into d2.
     __ vmov(d2, 1.0);
 
-    // Calculate the reciprocal of the square root. 1/sqrt(x) = sqrt(1/x).
-    __ vdiv(d0, d2, d0);
+    // Calculate the reciprocal of the square root.
     __ vsqrt(d0, d0);
+    __ vdiv(d0, d2, d0);
 
     __ b(&allocate_return);
 
@@ -4717,6 +4721,9 @@ void CodeGenerator::GenerateMathPow(ZoneList<Expression*>* args) {
                                  scratch1, scratch2, heap_number_map, s0,
                                  runtime.entry_label(),
                                  AVOID_NANS_AND_INFINITIES);
+    // Convert -0 into +0 by adding +0.
+    __ vmov(d2, 0.0);
+    __ vadd(d0, d2, d0);
     __ vsqrt(d0, d0);
 
     __ bind(&allocate_return);
@@ -5572,7 +5579,7 @@ void CodeGenerator::GenerateSwapElements(ZoneList<Expression*>* args) {
   deferred->Branch(lt);
   __ ldrb(tmp2, FieldMemOperand(tmp1, Map::kBitFieldOffset));
   __ tst(tmp2, Operand(KeyedLoadIC::kSlowCaseBitFieldMask));
-  deferred->Branch(nz);
+  deferred->Branch(ne);
 
   // Check the object's elements are in fast case and writable.
   __ ldr(tmp1, FieldMemOperand(object, JSObject::kElementsOffset));
@@ -5589,7 +5596,7 @@ void CodeGenerator::GenerateSwapElements(ZoneList<Expression*>* args) {
   __ mov(tmp2, index1);
   __ orr(tmp2, tmp2, index2);
   __ tst(tmp2, Operand(kSmiTagMask));
-  deferred->Branch(nz);
+  deferred->Branch(ne);
 
   // Check that both indices are valid.
   __ ldr(tmp2, FieldMemOperand(object, JSArray::kLengthOffset));
@@ -5849,14 +5856,10 @@ void CodeGenerator::VisitUnaryOperation(UnaryOperation* node) {
         frame_->EmitPush(r0);
 
       } else if (slot != NULL && slot->type() == Slot::LOOKUP) {
-        // lookup the context holding the named variable
+        // Delete from the context holding the named variable.
         frame_->EmitPush(cp);
         frame_->EmitPush(Operand(variable->name()));
-        frame_->CallRuntime(Runtime::kLookupContext, 2);
-        // r0: context
-        frame_->EmitPush(r0);
-        frame_->EmitPush(Operand(variable->name()));
-        frame_->InvokeBuiltin(Builtins::DELETE, CALL_JS, 2);
+        frame_->CallRuntime(Runtime::kDeleteContextSlot, 2);
         frame_->EmitPush(r0);
 
       } else {
@@ -6923,7 +6926,7 @@ void CodeGenerator::EmitNamedStore(Handle<String> name, bool is_contextual) {
 
   Result result;
   if (is_contextual || scope()->is_global_scope() || loop_nesting() == 0) {
-    frame()->CallStoreIC(name, is_contextual);
+    frame()->CallStoreIC(name, is_contextual, strict_mode_flag());
   } else {
     // Inline the in-object property case.
     JumpTarget slow, done;

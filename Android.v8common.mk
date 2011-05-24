@@ -60,7 +60,6 @@ V8_LOCAL_SRC_FILES := \
 	src/messages.cc \
 	src/objects.cc \
 	src/objects-visiting.cc \
-	src/oprofile-agent.cc \
 	src/parser.cc \
 	src/preparse-data.cc \
 	src/preparser.cc \

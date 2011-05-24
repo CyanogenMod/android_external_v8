@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -78,11 +78,6 @@ void MacroAssembler::RecordWrite(Register object,
                                  int offset,
                                  Register value,
                                  Register scratch) {
-  // The compiled code assumes that record write doesn't change the
-  // context register, so we check that none of the clobbered
-  // registers are esi.
-  ASSERT(!object.is(esi) && !value.is(esi) && !scratch.is(esi));
-
   // First, check if a write barrier is even needed. The tests below
   // catch stores of Smis and stores into young gen.
   NearLabel done;
@@ -129,11 +124,6 @@ void MacroAssembler::RecordWrite(Register object,
 void MacroAssembler::RecordWrite(Register object,
                                  Register address,
                                  Register value) {
-  // The compiled code assumes that record write doesn't change the
-  // context register, so we check that none of the clobbered
-  // registers are esi.
-  ASSERT(!object.is(esi) && !value.is(esi) && !address.is(esi));
-
   // First, check if a write barrier is even needed. The tests below
   // catch stores of Smis and stores into young gen.
   Label done;
@@ -339,7 +329,7 @@ void MacroAssembler::EnterExitFrameEpilogue(int argc, bool save_doubles) {
     CpuFeatures::Scope scope(SSE2);
     int space = XMMRegister::kNumRegisters * kDoubleSize + argc * kPointerSize;
     sub(Operand(esp), Immediate(space));
-    int offset = -2 * kPointerSize;
+    const int offset = -2 * kPointerSize;
     for (int i = 0; i < XMMRegister::kNumRegisters; i++) {
       XMMRegister reg = XMMRegister::from_code(i);
       movdbl(Operand(ebp, offset - ((i + 1) * kDoubleSize)), reg);
@@ -382,7 +372,7 @@ void MacroAssembler::LeaveExitFrame(bool save_doubles) {
   // Optionally restore all XMM registers.
   if (save_doubles) {
     CpuFeatures::Scope scope(SSE2);
-    int offset = -2 * kPointerSize;
+    const int offset = -2 * kPointerSize;
     for (int i = 0; i < XMMRegister::kNumRegisters; i++) {
       XMMRegister reg = XMMRegister::from_code(i);
       movdbl(reg, Operand(ebp, offset - ((i + 1) * kDoubleSize)));
@@ -604,11 +594,11 @@ void MacroAssembler::AllocateInNewSpace(int object_size,
   ExternalReference new_space_allocation_limit =
       ExternalReference::new_space_allocation_limit_address();
 
-  if (top_reg.is(result)) {
-    add(Operand(top_reg), Immediate(object_size));
-  } else {
-    lea(top_reg, Operand(result, object_size));
+  if (!top_reg.is(result)) {
+    mov(top_reg, result);
   }
+  add(Operand(top_reg), Immediate(object_size));
+  j(carry, gc_required, not_taken);
   cmp(top_reg, Operand::StaticVariable(new_space_allocation_limit));
   j(above, gc_required, not_taken);
 
@@ -657,7 +647,12 @@ void MacroAssembler::AllocateInNewSpace(int header_size,
   // Calculate new top and bail out if new space is exhausted.
   ExternalReference new_space_allocation_limit =
       ExternalReference::new_space_allocation_limit_address();
-  lea(result_end, Operand(result, element_count, element_size, header_size));
+
+  // We assume that element_count*element_size + header_size does not
+  // overflow.
+  lea(result_end, Operand(element_count, element_size, header_size));
+  add(result_end, Operand(result));
+  j(carry, gc_required);
   cmp(result_end, Operand::StaticVariable(new_space_allocation_limit));
   j(above, gc_required);
 
@@ -702,6 +697,7 @@ void MacroAssembler::AllocateInNewSpace(Register object_size,
     mov(result_end, object_size);
   }
   add(result_end, Operand(result));
+  j(carry, gc_required, not_taken);
   cmp(result_end, Operand::StaticVariable(new_space_allocation_limit));
   j(above, gc_required, not_taken);
 
@@ -1288,7 +1284,7 @@ MaybeObject* MacroAssembler::TryCallApiFunctionAndReturn(ApiFunction* function,
   ExternalReference scheduled_exception_address =
       ExternalReference::scheduled_exception_address();
   cmp(Operand::StaticVariable(scheduled_exception_address),
-         Immediate(Factory::the_hole_value()));
+      Immediate(Factory::the_hole_value()));
   j(not_equal, &promote_scheduled_exception, not_taken);
   LeaveApiExitFrame();
   ret(stack_space * kPointerSize);
@@ -1523,11 +1519,21 @@ void MacroAssembler::LoadContext(Register dst, int context_chain_length) {
       mov(dst, Operand(dst, Context::SlotOffset(Context::CLOSURE_INDEX)));
       mov(dst, FieldOperand(dst, JSFunction::kContextOffset));
     }
-    // The context may be an intermediate context, not a function context.
-    mov(dst, Operand(dst, Context::SlotOffset(Context::FCONTEXT_INDEX)));
-  } else {  // Slot is in the current function context.
-    // The context may be an intermediate context, not a function context.
-    mov(dst, Operand(esi, Context::SlotOffset(Context::FCONTEXT_INDEX)));
+  } else {
+    // Slot is in the current function context.  Move it into the
+    // destination register in case we store into it (the write barrier
+    // cannot be allowed to destroy the context in esi).
+    mov(dst, esi);
+  }
+
+  // We should not have found a 'with' context by walking the context chain
+  // (i.e., the static scope chain and runtime context chain do not agree).
+  // A variable occurring in such a scope should have slot type LOOKUP and
+  // not CONTEXT.
+  if (FLAG_debug_code) {
+    cmp(dst, Operand(dst, Context::SlotOffset(Context::FCONTEXT_INDEX)));
+    Check(equal, "Yo dawg, I heard you liked function contexts "
+                 "so I put function contexts in all your contexts");
   }
 }
 
@@ -1569,6 +1575,20 @@ int MacroAssembler::SafepointRegisterStackIndex(int reg_code) {
 void MacroAssembler::Ret() {
   ret(0);
 }
+
+
+void MacroAssembler::Ret(int bytes_dropped, Register scratch) {
+  if (is_uint16(bytes_dropped)) {
+    ret(bytes_dropped);
+  } else {
+    pop(scratch);
+    add(Operand(esp), Immediate(bytes_dropped));
+    push(scratch);
+    ret(0);
+  }
+}
+
+
 
 
 void MacroAssembler::Drop(int stack_elements) {

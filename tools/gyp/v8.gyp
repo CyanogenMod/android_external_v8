@@ -32,6 +32,7 @@
     'gcc_version%': 'unknown',
     'v8_target_arch%': '<(target_arch)',
     'v8_use_snapshot%': 'true',
+    'v8_use_liveobjectlist%': 'false',
   },
   'conditions': [
     ['use_system_v8==0', {
@@ -64,6 +65,14 @@
                   'V8_TARGET_ARCH_X64',
                 ],
               }],
+            ],
+          }],
+          ['v8_use_liveobjectlist=="true"', {
+            'defines': [
+              'ENABLE_DEBUGGER_SUPPORT',
+              'INSPECTOR',
+              'OBJECT_PRINT',
+              'LIVEOBJECTLIST',
             ],
           }],
         ],
@@ -417,6 +426,8 @@
             '../../src/ic-inl.h',
             '../../src/ic.cc',
             '../../src/ic.h',
+            '../../src/inspector.cc',
+            '../../src/inspector.h',
             '../../src/interpreter-irregexp.cc',
             '../../src/interpreter-irregexp.h',
             '../../src/jump-target-inl.h',
@@ -430,8 +441,12 @@
             '../../src/lithium.h',
             '../../src/lithium-allocator.cc',
             '../../src/lithium-allocator.h',
+            '../../src/lithium-allocator-inl.h',
             '../../src/liveedit.cc',
             '../../src/liveedit.h',
+            '../../src/liveobjectlist-inl.h',
+            '../../src/liveobjectlist.cc',
+            '../../src/liveobjectlist.h',
             '../../src/log-inl.h',
             '../../src/log-utils.cc',
             '../../src/log-utils.h',
@@ -451,8 +466,6 @@
             '../../src/objects-visiting.h',
             '../../src/objects.cc',
             '../../src/objects.h',
-            '../../src/oprofile-agent.h',
-            '../../src/oprofile-agent.cc',
             '../../src/parser.cc',
             '../../src/parser.h',
             '../../src/platform.h',
@@ -677,6 +690,8 @@
                 '../../src/x64/jump-target-x64.cc',
                 '../../src/x64/lithium-codegen-x64.cc',
                 '../../src/x64/lithium-codegen-x64.h',
+                '../../src/x64/lithium-gap-resolver-x64.cc',
+                '../../src/x64/lithium-gap-resolver-x64.h',
                 '../../src/x64/lithium-x64.cc',
                 '../../src/x64/lithium-x64.h',
                 '../../src/x64/macro-assembler-x64.cc',
@@ -733,8 +748,7 @@
               'sources': [
                 '../../src/platform-win32.cc',
               ],
-              # 4355, 4800 came from common.vsprops
-              'msvs_disabled_warnings': [4355, 4800],
+              'msvs_disabled_warnings': [4351, 4355, 4800],
               'link_settings':  {
                 'libraries': [ '-lwinmm.lib' ],
               },

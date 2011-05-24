@@ -247,6 +247,9 @@ class LiteralBuffer {
 // Generic functionality used by both JSON and JavaScript scanners.
 class Scanner {
  public:
+  // -1 is outside of the range of any real source code.
+  static const int kNoOctalLocation = -1;
+
   typedef unibrow::Utf8InputBuffer<1024> Utf8Decoder;
 
   class LiteralScope {
@@ -271,14 +274,27 @@ class Scanner {
   struct Location {
     Location(int b, int e) : beg_pos(b), end_pos(e) { }
     Location() : beg_pos(0), end_pos(0) { }
+
+    bool IsValid() const {
+      return beg_pos >= 0 && end_pos >= beg_pos;
+    }
+
     int beg_pos;
     int end_pos;
   };
+
+  static Location NoLocation() {
+    return Location(-1, -1);
+  }
 
   // Returns the location information for the current token
   // (the token returned by Next()).
   Location location() const { return current_.location; }
   Location peek_location() const { return next_.location; }
+
+  // Returns the location of the last seen octal literal
+  int octal_position() const { return octal_pos_; }
+  void clear_octal_position() { octal_pos_ = -1; }
 
   // Returns the literal string, if any, for the current token (the
   // token returned by Next()). The string is 0-terminated and in
@@ -393,6 +409,8 @@ class Scanner {
   }
 
   uc32 ScanHexEscape(uc32 c, int length);
+
+  // Scans octal escape sequence. Also accepts "\0" decimal escape sequence.
   uc32 ScanOctalEscape(uc32 c, int length);
 
   // Return the current source position.
@@ -410,6 +428,8 @@ class Scanner {
   // Input stream. Must be initialized to an UC16CharacterStream.
   UC16CharacterStream* source_;
 
+  // Start position of the octal literal last scanned.
+  int octal_pos_;
 
   // One Unicode character look-ahead; c0_ < 0 at the end of the input.
   uc32 c0_;
@@ -544,10 +564,17 @@ class KeywordMatcher {
     CON,
     D,
     DE,
+    E,
+    EX,
     F,
     I,
+    IM,
+    IMP,
     IN,
     N,
+    P,
+    PR,
+    S,
     T,
     TH,
     TR,
@@ -563,7 +590,7 @@ class KeywordMatcher {
 
   // Range of possible first characters of a keyword.
   static const unsigned int kFirstCharRangeMin = 'b';
-  static const unsigned int kFirstCharRangeMax = 'w';
+  static const unsigned int kFirstCharRangeMax = 'y';
   static const unsigned int kFirstCharRangeLength =
       kFirstCharRangeMax - kFirstCharRangeMin + 1;
   // State map for first keyword character range.

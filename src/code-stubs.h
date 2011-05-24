@@ -59,6 +59,7 @@ namespace internal {
   V(GenericUnaryOp)                      \
   V(RevertToNumber)                      \
   V(ToBoolean)                           \
+  V(ToNumber)                            \
   V(CounterOp)                           \
   V(ArgumentsAccess)                     \
   V(RegExpExec)                          \
@@ -74,7 +75,8 @@ namespace internal {
   V(GetProperty)               \
   V(SetProperty)               \
   V(InvokeBuiltin)             \
-  V(RegExpCEntry)
+  V(RegExpCEntry)              \
+  V(DirectCEntry)
 #else
 #define CODE_STUB_LIST_ARM(V)
 #endif
@@ -257,6 +259,19 @@ class StackCheckStub : public CodeStub {
 
   Major MajorKey() { return StackCheck; }
   int MinorKey() { return 0; }
+};
+
+
+class ToNumberStub: public CodeStub {
+ public:
+  ToNumberStub() { }
+
+  void Generate(MacroAssembler* masm);
+
+ private:
+  Major MajorKey() { return ToNumber; }
+  int MinorKey() { return 0; }
+  const char* GetName() { return "ToNumberStub"; }
 };
 
 
@@ -599,8 +614,7 @@ class CEntryStub : public CodeStub {
                     Label* throw_termination_exception,
                     Label* throw_out_of_memory_exception,
                     bool do_gc,
-                    bool always_allocate_scope,
-                    int alignment_skew = 0);
+                    bool always_allocate_scope);
   void GenerateThrowTOS(MacroAssembler* masm);
   void GenerateThrowUncatchable(MacroAssembler* masm,
                                 UncatchableExceptionType type);

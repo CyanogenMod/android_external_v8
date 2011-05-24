@@ -45,6 +45,12 @@ static inline MemOperand FieldMemOperand(Register object, int offset) {
 }
 
 
+static inline Operand SmiUntagOperand(Register object) {
+  return Operand(object, ASR, kSmiTagSize);
+}
+
+
+
 // Give alias names to registers
 const Register cp = { 8 };  // JavaScript context pointer
 const Register roots = { 10 };  // Roots array pointer.
@@ -139,7 +145,7 @@ class MacroAssembler: public Assembler {
   // scratch can be object itself, but it will be clobbered.
   void InNewSpace(Register object,
                   Register scratch,
-                  Condition cc,  // eq for new space, ne otherwise
+                  Condition cond,  // eq for new space, ne otherwise
                   Label* branch);
 
 
@@ -234,8 +240,12 @@ class MacroAssembler: public Assembler {
   void PopSafepointRegisters();
   void PushSafepointRegistersAndDoubles();
   void PopSafepointRegistersAndDoubles();
-
+  void StoreToSafepointRegisterSlot(Register reg);
+  void StoreToSafepointRegistersAndDoublesSlot(Register reg);
+  void LoadFromSafepointRegisterSlot(Register reg);
   static int SafepointRegisterStackIndex(int reg_code);
+  static MemOperand SafepointRegisterSlot(Register reg);
+  static MemOperand SafepointRegistersAndDoublesSlot(Register reg);
 
   // Load two consecutive registers with two consecutive memory locations.
   void Ldrd(Register dst1,
@@ -283,10 +293,8 @@ class MacroAssembler: public Assembler {
   void LeaveConstructFrame() { LeaveFrame(StackFrame::CONSTRUCT); }
 
   // Enter exit frame.
-  // Expects the number of arguments in register r0 and
-  // the builtin function to call in register r1. Exits with argc in
-  // r4, argv in r6, and and the builtin function to call in r5.
-  void EnterExitFrame(bool save_doubles);
+  // stack_space - extra stack space, used for alignment before call to C.
+  void EnterExitFrame(bool save_doubles, int stack_space = 0);
 
   // Leave the current exit frame. Expects the return value in r0.
   void LeaveExitFrame(bool save_doubles);
@@ -544,16 +552,6 @@ class MacroAssembler: public Assembler {
   }
 
 
-  inline void BranchOnSmi(Register value, Label* smi_label) {
-    tst(value, Operand(kSmiTagMask));
-    b(eq, smi_label);
-  }
-
-  inline void BranchOnNotSmi(Register value, Label* not_smi_label) {
-    tst(value, Operand(kSmiTagMask));
-    b(ne, not_smi_label);
-  }
-
   // Generates code for reporting that an illegal operation has
   // occurred.
   void IllegalOperation(int num_arguments);
@@ -566,6 +564,7 @@ class MacroAssembler: public Assembler {
 
   // Get the number of least significant bits from a register
   void GetLeastBitsFromSmi(Register dst, Register src, int num_least_bits);
+  void GetLeastBitsFromInt32(Register dst, Register src, int mun_least_bits);
 
   // Uses VFP instructions to Convert a Smi to a double.
   void IntegerToDoubleConversionWithVFP3(Register inReg,
@@ -595,11 +594,13 @@ class MacroAssembler: public Assembler {
 
   // Convert the HeapNumber pointed to by source to a 32bits signed integer
   // dest. If the HeapNumber does not fit into a 32bits signed integer branch
-  // to not_int32 label.
+  // to not_int32 label. If VFP3 is available double_scratch is used but not
+  // scratch2.
   void ConvertToInt32(Register source,
                       Register dest,
                       Register scratch,
                       Register scratch2,
+                      DwVfpRegister double_scratch,
                       Label *not_int32);
 
   // Count leading zeros in a 32 bit word.  On ARM5 and later it uses the clz
@@ -620,6 +621,12 @@ class MacroAssembler: public Assembler {
   // Call a code stub.
   void TailCallStub(CodeStub* stub, Condition cond = al);
 
+  // Tail call a code stub (jump) and return the code object called.  Try to
+  // generate the code if necessary.  Do not perform a GC but instead return
+  // a retry after GC failure.
+  MUST_USE_RESULT MaybeObject* TryTailCallStub(CodeStub* stub,
+                                               Condition cond = al);
+
   // Call a runtime routine.
   void CallRuntime(Runtime::Function* f, int num_arguments);
   void CallRuntimeSaveDoubles(Runtime::FunctionId id);
@@ -637,6 +644,12 @@ class MacroAssembler: public Assembler {
   void TailCallExternalReference(const ExternalReference& ext,
                                  int num_arguments,
                                  int result_size);
+
+  // Tail call of a runtime routine (jump). Try to generate the code if
+  // necessary. Do not perform a GC but instead return a retry after GC
+  // failure.
+  MUST_USE_RESULT MaybeObject* TryTailCallExternalReference(
+      const ExternalReference& ext, int num_arguments, int result_size);
 
   // Convenience function: tail call a runtime routine (jump).
   void TailCallRuntime(Runtime::FunctionId fid,
@@ -661,8 +674,17 @@ class MacroAssembler: public Assembler {
   void CallCFunction(ExternalReference function, int num_arguments);
   void CallCFunction(Register function, int num_arguments);
 
+  // Calls an API function. Allocates HandleScope, extracts returned value
+  // from handle and propagates exceptions. Restores context.
+  // stack_space - space to be unwound on exit (includes the call js
+  // arguments space and the additional space allocated for the fast call).
+  MaybeObject* TryCallApiFunctionAndReturn(ApiFunction* function,
+                                           int stack_space);
+
   // Jump to a runtime routine.
   void JumpToExternalReference(const ExternalReference& builtin);
+
+  MaybeObject* TryJumpToExternalReference(const ExternalReference& ext);
 
   // Invoke specified builtin JavaScript function. Adds an entry to
   // the unresolved list if the name does not resolve.
@@ -694,14 +716,14 @@ class MacroAssembler: public Assembler {
   // ---------------------------------------------------------------------------
   // Debugging
 
-  // Calls Abort(msg) if the condition cc is not satisfied.
+  // Calls Abort(msg) if the condition cond is not satisfied.
   // Use --debug_code to enable.
-  void Assert(Condition cc, const char* msg);
+  void Assert(Condition cond, const char* msg);
   void AssertRegisterIsRoot(Register reg, Heap::RootListIndex index);
   void AssertFastElements(Register elements);
 
   // Like Assert(), but always enabled.
-  void Check(Condition cc, const char* msg);
+  void Check(Condition cond, const char* msg);
 
   // Print a message to stdout and abort execution.
   void Abort(const char* msg);
@@ -713,10 +735,24 @@ class MacroAssembler: public Assembler {
   bool allow_stub_calls() { return allow_stub_calls_; }
 
   // ---------------------------------------------------------------------------
+  // Number utilities
+
+  // Check whether the value of reg is a power of two and not zero. If not
+  // control continues at the label not_power_of_two. If reg is a power of two
+  // the register scratch contains the value of (reg - 1) when control falls
+  // through.
+  void JumpIfNotPowerOfTwoOrZero(Register reg,
+                                 Register scratch,
+                                 Label* not_power_of_two_or_zero);
+
+  // ---------------------------------------------------------------------------
   // Smi utilities
 
   void SmiTag(Register reg, SBit s = LeaveCC) {
     add(reg, reg, Operand(reg), s);
+  }
+  void SmiTag(Register dst, Register src, SBit s = LeaveCC) {
+    add(dst, src, Operand(src), s);
   }
 
   // Try to convert int32 to smi. If the value is to large, preserve
@@ -732,7 +768,20 @@ class MacroAssembler: public Assembler {
   void SmiUntag(Register reg) {
     mov(reg, Operand(reg, ASR, kSmiTagSize));
   }
+  void SmiUntag(Register dst, Register src) {
+    mov(dst, Operand(src, ASR, kSmiTagSize));
+  }
 
+  // Jump the register contains a smi.
+  inline void JumpIfSmi(Register value, Label* smi_label) {
+    tst(value, Operand(kSmiTagMask));
+    b(eq, smi_label);
+  }
+  // Jump if either of the registers contain a non-smi.
+  inline void JumpIfNotSmi(Register value, Label* not_smi_label) {
+    tst(value, Operand(kSmiTagMask));
+    b(ne, not_smi_label);
+  }
   // Jump if either of the registers contain a non-smi.
   void JumpIfNotBothSmi(Register reg1, Register reg2, Label* on_not_both_smi);
   // Jump if either of the registers contain a smi.
@@ -740,6 +789,20 @@ class MacroAssembler: public Assembler {
 
   // Abort execution if argument is a smi. Used in debug code.
   void AbortIfSmi(Register object);
+  void AbortIfNotSmi(Register object);
+
+  // Abort execution if argument is not the root value with the given index.
+  void AbortIfNotRootValue(Register src,
+                           Heap::RootListIndex root_value_index,
+                           const char* message);
+
+  // ---------------------------------------------------------------------------
+  // HeapNumber utilities
+
+  void JumpIfNotHeapNumber(Register object,
+                           Register heap_number_map,
+                           Register scratch,
+                           Label* on_not_heap_number);
 
   // ---------------------------------------------------------------------------
   // String utilities
@@ -774,6 +837,15 @@ class MacroAssembler: public Assembler {
   void JumpIfInstanceTypeIsNotSequentialAscii(Register type,
                                               Register scratch,
                                               Label* failure);
+
+
+  // ---------------------------------------------------------------------------
+  // Patching helpers.
+
+  // Get the location of a relocated constant (its address in the constant pool)
+  // from its load site.
+  void GetRelocatedValueLocation(Register ldr_location,
+                                 Register result);
 
 
  private:
@@ -821,10 +893,14 @@ class CodePatcher {
   MacroAssembler* masm() { return &masm_; }
 
   // Emit an instruction directly.
-  void Emit(Instr x);
+  void Emit(Instr instr);
 
   // Emit an address directly.
   void Emit(Address addr);
+
+  // Emit the condition part of an instruction leaving the rest of the current
+  // instruction unchanged.
+  void EmitCondition(Condition cond);
 
  private:
   byte* address_;  // The address of the code being patched.

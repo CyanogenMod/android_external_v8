@@ -283,6 +283,11 @@ class TemporaryScope BASE_EMBEDDED {
   void AddLoop() { loop_count_++; }
   bool ContainsLoops() const { return loop_count_ > 0; }
 
+  bool StrictMode() { return strict_mode_; }
+  void EnableStrictMode() {
+    strict_mode_ = FLAG_strict_mode;
+  }
+
  private:
   // Captures the number of literals that need materialization in the
   // function.  Includes regexp literals, and boilerplate for object
@@ -300,6 +305,9 @@ class TemporaryScope BASE_EMBEDDED {
   // Captures the number of loops inside the scope.
   int loop_count_;
 
+  // Parsing strict mode code.
+  bool strict_mode_;
+
   // Bookkeeping
   TemporaryScope** variable_;
   TemporaryScope* parent_;
@@ -314,6 +322,8 @@ TemporaryScope::TemporaryScope(TemporaryScope** variable)
     loop_count_(0),
     variable_(variable),
     parent_(*variable) {
+  // Inherit the strict mode from the parent scope.
+  strict_mode_ = (parent_ != NULL) && parent_->strict_mode_;
   *variable = this;
 }
 
@@ -561,7 +571,6 @@ class LexicalScope BASE_EMBEDDED {
   int prev_level_;
 };
 
-
 // ----------------------------------------------------------------------------
 // The CHECK_OK macro is a convenient macro to enforce error
 // handling for functions that may fail (by returning !*ok).
@@ -607,7 +616,8 @@ Parser::Parser(Handle<Script> script,
 
 
 FunctionLiteral* Parser::ParseProgram(Handle<String> source,
-                                      bool in_global_context) {
+                                      bool in_global_context,
+                                      StrictModeFlag strict_mode) {
   CompilationZoneScope zone_scope(DONT_DELETE_ON_EXIT);
 
   HistogramTimerScope timer(&Counters::parse);
@@ -623,17 +633,18 @@ FunctionLiteral* Parser::ParseProgram(Handle<String> source,
     ExternalTwoByteStringUC16CharacterStream stream(
         Handle<ExternalTwoByteString>::cast(source), 0, source->length());
     scanner_.Initialize(&stream);
-    return DoParseProgram(source, in_global_context, &zone_scope);
+    return DoParseProgram(source, in_global_context, strict_mode, &zone_scope);
   } else {
     GenericStringUC16CharacterStream stream(source, 0, source->length());
     scanner_.Initialize(&stream);
-    return DoParseProgram(source, in_global_context, &zone_scope);
+    return DoParseProgram(source, in_global_context, strict_mode, &zone_scope);
   }
 }
 
 
 FunctionLiteral* Parser::DoParseProgram(Handle<String> source,
                                         bool in_global_context,
+                                        StrictModeFlag strict_mode,
                                         ZoneScope* zone_scope) {
   ASSERT(target_stack_ == NULL);
   if (pre_data_ != NULL) pre_data_->Initialize();
@@ -653,9 +664,16 @@ FunctionLiteral* Parser::DoParseProgram(Handle<String> source,
     LexicalScope lexical_scope(&this->top_scope_, &this->with_nesting_level_,
                                scope);
     TemporaryScope temp_scope(&this->temp_scope_);
+    if (strict_mode == kStrictMode) {
+      temp_scope.EnableStrictMode();
+    }
     ZoneList<Statement*>* body = new ZoneList<Statement*>(16);
     bool ok = true;
+    int beg_loc = scanner().location().beg_pos;
     ParseSourceElements(body, Token::EOS, &ok);
+    if (ok && temp_scope_->StrictMode()) {
+      CheckOctalLiteral(beg_loc, scanner().location().end_pos, &ok);
+    }
     if (ok) {
       result = new FunctionLiteral(
           no_name,
@@ -669,7 +687,8 @@ FunctionLiteral* Parser::DoParseProgram(Handle<String> source,
           0,
           source->length(),
           false,
-          temp_scope.ContainsLoops());
+          temp_scope.ContainsLoops(),
+          temp_scope.StrictMode());
     } else if (stack_overflow_) {
       Top::StackOverflow();
     }
@@ -733,14 +752,18 @@ FunctionLiteral* Parser::ParseLazy(Handle<SharedFunctionInfo> info,
                                scope);
     TemporaryScope temp_scope(&this->temp_scope_);
 
+    if (info->strict_mode()) {
+      temp_scope.EnableStrictMode();
+    }
+
     FunctionLiteralType type =
         info->is_expression() ? EXPRESSION : DECLARATION;
     bool ok = true;
-    result = ParseFunctionLiteral(name, RelocInfo::kNoPosition, type, &ok);
+    result = ParseFunctionLiteral(name,
+                                  false,    // Strict mode name already checked.
+                                  RelocInfo::kNoPosition, type, &ok);
     // Make sure the results agree.
     ASSERT(ok == (result != NULL));
-    // The only errors should be stack overflows.
-    ASSERT(ok || stack_overflow_);
   }
 
   // Make sure the target stack is empty.
@@ -749,8 +772,8 @@ FunctionLiteral* Parser::ParseLazy(Handle<SharedFunctionInfo> info,
   // If there was a stack overflow we have to get rid of AST and it is
   // not safe to do before scope has been deleted.
   if (result == NULL) {
-    Top::StackOverflow();
     zone_scope->DeleteOnExit();
+    if (stack_overflow_) Top::StackOverflow();
   } else {
     Handle<String> inferred_name(info->inferred_name());
     result->set_inferred_name(inferred_name);
@@ -1075,9 +1098,46 @@ void* Parser::ParseSourceElements(ZoneList<Statement*>* processor,
   ASSERT(processor != NULL);
   InitializationBlockFinder block_finder;
   ThisNamedPropertyAssigmentFinder this_property_assignment_finder;
+  bool directive_prologue = true;     // Parsing directive prologue.
+
   while (peek() != end_token) {
+    if (directive_prologue && peek() != Token::STRING) {
+      directive_prologue = false;
+    }
+
+    Scanner::Location token_loc = scanner().peek_location();
     Statement* stat = ParseStatement(NULL, CHECK_OK);
-    if (stat == NULL || stat->IsEmpty()) continue;
+
+    if (stat == NULL || stat->IsEmpty()) {
+      directive_prologue = false;   // End of directive prologue.
+      continue;
+    }
+
+    if (directive_prologue) {
+      // A shot at a directive.
+      ExpressionStatement *e_stat;
+      Literal *literal;
+      // Still processing directive prologue?
+      if ((e_stat = stat->AsExpressionStatement()) != NULL &&
+          (literal = e_stat->expression()->AsLiteral()) != NULL &&
+          literal->handle()->IsString()) {
+        Handle<String> directive = Handle<String>::cast(literal->handle());
+
+        // Check "use strict" directive (ES5 14.1).
+        if (!temp_scope_->StrictMode() &&
+            directive->Equals(Heap::use_strict()) &&
+            token_loc.end_pos - token_loc.beg_pos ==
+              Heap::use_strict()->length() + 2) {
+          temp_scope_->EnableStrictMode();
+          // "use strict" is the only directive for now.
+          directive_prologue = false;
+        }
+      } else {
+        // End of the directive prologue.
+        directive_prologue = false;
+      }
+    }
+
     // We find and mark the initialization blocks on top level code only.
     // This is because the optimization prevents reuse of the map transitions,
     // so it should be used only for code that will only be run once.
@@ -1388,8 +1448,10 @@ Statement* Parser::ParseFunctionDeclaration(bool* ok) {
   //   'function' Identifier '(' FormalParameterListopt ')' '{' FunctionBody '}'
   Expect(Token::FUNCTION, CHECK_OK);
   int function_token_position = scanner().location().beg_pos;
-  Handle<String> name = ParseIdentifier(CHECK_OK);
+  bool is_reserved = false;
+  Handle<String> name = ParseIdentifierOrReservedWord(&is_reserved, CHECK_OK);
   FunctionLiteral* fun = ParseFunctionLiteral(name,
+                                              is_reserved,
                                               function_token_position,
                                               DECLARATION,
                                               CHECK_OK);
@@ -1431,6 +1493,10 @@ Block* Parser::ParseVariableStatement(bool* ok) {
   return result;
 }
 
+static bool IsEvalOrArguments(Handle<String> string) {
+  return string.is_identical_to(Factory::eval_symbol()) ||
+         string.is_identical_to(Factory::arguments_symbol());
+}
 
 // If the variable declaration declares exactly one non-const
 // variable, then *var is set to that variable. In all other cases,
@@ -1478,6 +1544,13 @@ Block* Parser::ParseVariableDeclarations(bool accept_IN,
     if (nvars > 0) Consume(Token::COMMA);
     Handle<String> name = ParseIdentifier(CHECK_OK);
     if (fni_ != NULL) fni_->PushVariableName(name);
+
+    // Strict mode variables may not be named eval or arguments
+    if (temp_scope_->StrictMode() && IsEvalOrArguments(name)) {
+      ReportMessage("strict_var_name", Vector<const char*>::empty());
+      *ok = false;
+      return NULL;
+    }
 
     // Declare variable.
     // Note that we *always* must treat the initial value via a separate init
@@ -1637,7 +1710,7 @@ Statement* Parser::ParseExpressionOrLabelledStatement(ZoneStringList* labels,
   // ExpressionStatement | LabelledStatement ::
   //   Expression ';'
   //   Identifier ':' Statement
-  bool starts_with_idenfifier = (peek() == Token::IDENTIFIER);
+  bool starts_with_idenfifier = peek_any_identifier();
   Expression* expr = ParseExpression(true, CHECK_OK);
   if (peek() == Token::COLON && starts_with_idenfifier && expr &&
       expr->AsVariableProxy() != NULL &&
@@ -1839,6 +1912,13 @@ Statement* Parser::ParseWithStatement(ZoneStringList* labels, bool* ok) {
   //   'with' '(' Expression ')' Statement
 
   Expect(Token::WITH, CHECK_OK);
+
+  if (temp_scope_->StrictMode()) {
+    ReportMessage("strict_mode_with", Vector<const char*>::empty());
+    *ok = false;
+    return NULL;
+  }
+
   Expect(Token::LPAREN, CHECK_OK);
   Expression* expr = ParseExpression(true, CHECK_OK);
   Expect(Token::RPAREN, CHECK_OK);
@@ -1971,6 +2051,13 @@ TryStatement* Parser::ParseTryStatement(bool* ok) {
 
     Expect(Token::LPAREN, CHECK_OK);
     Handle<String> name = ParseIdentifier(CHECK_OK);
+
+    if (temp_scope_->StrictMode() && IsEvalOrArguments(name)) {
+      ReportMessage("strict_catch_variable", Vector<const char*>::empty());
+      *ok = false;
+      return NULL;
+    }
+
     Expect(Token::RPAREN, CHECK_OK);
 
     if (peek() == Token::LBRACE) {
@@ -2216,6 +2303,11 @@ Expression* Parser::ParseAssignmentExpression(bool accept_IN, bool* ok) {
     expression = NewThrowReferenceError(type);
   }
 
+  if (temp_scope_->StrictMode()) {
+    // Assignment to eval or arguments is disallowed in strict mode.
+    CheckStrictModeLValue(expression, "strict_lhs_assignment", CHECK_OK);
+  }
+
   Token::Value op = Next();  // Get assignment operator.
   int pos = scanner().location().beg_pos;
   Expression* right = ParseAssignmentExpression(accept_IN, CHECK_OK);
@@ -2442,6 +2534,12 @@ Expression* Parser::ParseUnaryExpression(bool* ok) {
       Handle<String> type = Factory::invalid_lhs_in_prefix_op_symbol();
       expression = NewThrowReferenceError(type);
     }
+
+    if (temp_scope_->StrictMode()) {
+      // Prefix expression operand in strict mode may not be eval or arguments.
+      CheckStrictModeLValue(expression, "strict_lhs_prefix", CHECK_OK);
+    }
+
     int position = scanner().location().beg_pos;
     IncrementOperation* increment = new IncrementOperation(op, expression);
     return new CountOperation(true /* prefix */, increment, position);
@@ -2467,6 +2565,12 @@ Expression* Parser::ParsePostfixExpression(bool* ok) {
       Handle<String> type = Factory::invalid_lhs_in_postfix_op_symbol();
       expression = NewThrowReferenceError(type);
     }
+
+    if (temp_scope_->StrictMode()) {
+      // Postfix expression operand in strict mode may not be eval or arguments.
+      CheckStrictModeLValue(expression, "strict_lhs_prefix", CHECK_OK);
+    }
+
     Token::Value next = Next();
     int position = scanner().location().beg_pos;
     IncrementOperation* increment = new IncrementOperation(next, expression);
@@ -2595,9 +2699,12 @@ Expression* Parser::ParseMemberWithNewPrefixesExpression(PositionStack* stack,
     Expect(Token::FUNCTION, CHECK_OK);
     int function_token_position = scanner().location().beg_pos;
     Handle<String> name;
-    if (peek() == Token::IDENTIFIER) name = ParseIdentifier(CHECK_OK);
-    result = ParseFunctionLiteral(name, function_token_position,
-                                  NESTED, CHECK_OK);
+    bool is_reserved_name = false;
+    if (peek_any_identifier()) {
+        name = ParseIdentifierOrReservedWord(&is_reserved_name, CHECK_OK);
+    }
+    result = ParseFunctionLiteral(name, is_reserved_name,
+                                  function_token_position, NESTED, CHECK_OK);
   } else {
     result = ParsePrimaryExpression(CHECK_OK);
   }
@@ -2666,6 +2773,11 @@ void Parser::ReportUnexpectedToken(Token::Value token) {
     case Token::IDENTIFIER:
       return ReportMessage("unexpected_token_identifier",
                            Vector<const char*>::empty());
+    case Token::FUTURE_RESERVED_WORD:
+      return ReportMessage(temp_scope_->StrictMode() ?
+                               "unexpected_strict_reserved" :
+                               "unexpected_token_identifier",
+                           Vector<const char*>::empty());
     default:
       const char* name = Token::String(token);
       ASSERT(name != NULL);
@@ -2721,7 +2833,8 @@ Expression* Parser::ParsePrimaryExpression(bool* ok) {
       result = new Literal(Factory::false_value());
       break;
 
-    case Token::IDENTIFIER: {
+    case Token::IDENTIFIER:
+    case Token::FUTURE_RESERVED_WORD: {
       Handle<String> name = ParseIdentifier(CHECK_OK);
       if (fni_ != NULL) fni_->PushVariableName(name);
       result = top_scope_->NewUnresolved(name, inside_with());
@@ -2940,6 +3053,125 @@ Handle<Object> Parser::GetBoilerplateValue(Expression* expression) {
   return Factory::undefined_value();
 }
 
+// Defined in ast.cc
+bool IsEqualString(void* first, void* second);
+bool IsEqualNumber(void* first, void* second);
+
+
+// Validation per 11.1.5 Object Initialiser
+class ObjectLiteralPropertyChecker {
+ public:
+  ObjectLiteralPropertyChecker(Parser* parser, bool strict) :
+    props(&IsEqualString),
+    elems(&IsEqualNumber),
+    parser_(parser),
+    strict_(strict) {
+  }
+
+  void CheckProperty(
+    ObjectLiteral::Property* property,
+    Scanner::Location loc,
+    bool* ok);
+
+ private:
+  enum PropertyKind {
+    kGetAccessor = 0x01,
+    kSetAccessor = 0x02,
+    kAccessor = kGetAccessor | kSetAccessor,
+    kData = 0x04
+  };
+
+  static intptr_t GetPropertyKind(ObjectLiteral::Property* property) {
+    switch (property->kind()) {
+      case ObjectLiteral::Property::GETTER:
+        return kGetAccessor;
+      case ObjectLiteral::Property::SETTER:
+        return kSetAccessor;
+      default:
+        return kData;
+    }
+  }
+
+  HashMap props;
+  HashMap elems;
+  Parser* parser_;
+  bool strict_;
+};
+
+
+void ObjectLiteralPropertyChecker::CheckProperty(
+    ObjectLiteral::Property* property,
+    Scanner::Location loc,
+    bool* ok) {
+
+  ASSERT(property != NULL);
+
+  Literal *lit = property->key();
+  Handle<Object> handle = lit->handle();
+
+  uint32_t hash;
+  HashMap* map;
+  void* key;
+
+  if (handle->IsSymbol()) {
+    Handle<String> name(String::cast(*handle));
+    if (name->AsArrayIndex(&hash)) {
+      Handle<Object> key_handle = Factory::NewNumberFromUint(hash);
+      key = key_handle.location();
+      map = &elems;
+    } else {
+      key = handle.location();
+      hash = name->Hash();
+      map = &props;
+    }
+  } else if (handle->ToArrayIndex(&hash)) {
+    key = handle.location();
+    map = &elems;
+  } else {
+    ASSERT(handle->IsNumber());
+    double num = handle->Number();
+    char arr[100];
+    Vector<char> buffer(arr, ARRAY_SIZE(arr));
+    const char* str = DoubleToCString(num, buffer);
+    Handle<String> name = Factory::NewStringFromAscii(CStrVector(str));
+    key = name.location();
+    hash = name->Hash();
+    map = &props;
+  }
+
+  // Lookup property previously defined, if any.
+  HashMap::Entry* entry = map->Lookup(key, hash, true);
+  intptr_t prev = reinterpret_cast<intptr_t> (entry->value);
+  intptr_t curr = GetPropertyKind(property);
+
+  // Duplicate data properties are illegal in strict mode.
+  if (strict_ && (curr & prev & kData) != 0) {
+    parser_->ReportMessageAt(loc, "strict_duplicate_property",
+                             Vector<const char*>::empty());
+    *ok = false;
+    return;
+  }
+  // Data property conflicting with an accessor.
+  if (((curr & kData) && (prev & kAccessor)) ||
+      ((prev & kData) && (curr & kAccessor))) {
+    parser_->ReportMessageAt(loc, "accessor_data_property",
+                             Vector<const char*>::empty());
+    *ok = false;
+    return;
+  }
+  // Two accessors of the same type conflicting
+  if ((curr & prev & kAccessor) != 0) {
+    parser_->ReportMessageAt(loc, "accessor_get_set",
+                             Vector<const char*>::empty());
+    *ok = false;
+    return;
+  }
+
+  // Update map
+  entry->value = reinterpret_cast<void*> (prev | curr);
+  *ok = true;
+}
+
 
 void Parser::BuildObjectLiteralConstantProperties(
     ZoneList<ObjectLiteral::Property*>* properties,
@@ -3009,6 +3241,7 @@ ObjectLiteral::Property* Parser::ParseObjectLiteralGetSet(bool is_getter,
   Token::Value next = Next();
   bool is_keyword = Token::IsKeyword(next);
   if (next == Token::IDENTIFIER || next == Token::NUMBER ||
+      next == Token::FUTURE_RESERVED_WORD ||
       next == Token::STRING || is_keyword) {
     Handle<String> name;
     if (is_keyword) {
@@ -3018,6 +3251,7 @@ ObjectLiteral::Property* Parser::ParseObjectLiteralGetSet(bool is_getter,
     }
     FunctionLiteral* value =
         ParseFunctionLiteral(name,
+                             false,   // reserved words are allowed here
                              RelocInfo::kNoPosition,
                              DECLARATION,
                              CHECK_OK);
@@ -3045,13 +3279,22 @@ Expression* Parser::ParseObjectLiteral(bool* ok) {
       new ZoneList<ObjectLiteral::Property*>(4);
   int number_of_boilerplate_properties = 0;
 
+  ObjectLiteralPropertyChecker checker(this, temp_scope_->StrictMode());
+
   Expect(Token::LBRACE, CHECK_OK);
+  Scanner::Location loc = scanner().location();
+
   while (peek() != Token::RBRACE) {
     if (fni_ != NULL) fni_->Enter();
 
     Literal* key = NULL;
     Token::Value next = peek();
+
+    // Location of the property name token
+    Scanner::Location loc = scanner().peek_location();
+
     switch (next) {
+      case Token::FUTURE_RESERVED_WORD:
       case Token::IDENTIFIER: {
         bool is_getter = false;
         bool is_setter = false;
@@ -3060,11 +3303,15 @@ Expression* Parser::ParseObjectLiteral(bool* ok) {
         if (fni_ != NULL) fni_->PushLiteralName(id);
 
         if ((is_getter || is_setter) && peek() != Token::COLON) {
+            // Update loc to point to the identifier
+            loc = scanner().peek_location();
             ObjectLiteral::Property* property =
                 ParseObjectLiteralGetSet(is_getter, CHECK_OK);
             if (IsBoilerplateProperty(property)) {
               number_of_boilerplate_properties++;
             }
+            // Validate the property.
+            checker.CheckProperty(property, loc, CHECK_OK);
             properties->Add(property);
             if (peek() != Token::RBRACE) Expect(Token::COMMA, CHECK_OK);
 
@@ -3121,6 +3368,8 @@ Expression* Parser::ParseObjectLiteral(bool* ok) {
 
     // Count CONSTANT or COMPUTED properties to maintain the enumeration order.
     if (IsBoilerplateProperty(property)) number_of_boilerplate_properties++;
+    // Validate the property
+    checker.CheckProperty(property, loc, CHECK_OK);
     properties->Add(property);
 
     // TODO(1240767): Consider allowing trailing comma.
@@ -3132,6 +3381,7 @@ Expression* Parser::ParseObjectLiteral(bool* ok) {
     }
   }
   Expect(Token::RBRACE, CHECK_OK);
+
   // Computation of literal_index must happen before pre parse bailout.
   int literal_index = temp_scope_->NextMaterializedLiteralIndex();
 
@@ -3193,6 +3443,7 @@ ZoneList<Expression*>* Parser::ParseArguments(bool* ok) {
 
 
 FunctionLiteral* Parser::ParseFunctionLiteral(Handle<String> var_name,
+                                              bool name_is_reserved,
                                               int function_token_position,
                                               FunctionLiteralType type,
                                               bool* ok) {
@@ -3224,12 +3475,36 @@ FunctionLiteral* Parser::ParseFunctionLiteral(Handle<String> var_name,
     //    '(' (Identifier)*[','] ')'
     Expect(Token::LPAREN, CHECK_OK);
     int start_pos = scanner().location().beg_pos;
+    Scanner::Location name_loc = Scanner::NoLocation();
+    Scanner::Location dupe_loc = Scanner::NoLocation();
+    Scanner::Location reserved_loc = Scanner::NoLocation();
+
     bool done = (peek() == Token::RPAREN);
     while (!done) {
-      Handle<String> param_name = ParseIdentifier(CHECK_OK);
-      top_scope_->AddParameter(top_scope_->DeclareLocal(param_name,
-                                                        Variable::VAR));
+      bool is_reserved = false;
+      Handle<String> param_name =
+          ParseIdentifierOrReservedWord(&is_reserved, CHECK_OK);
+
+      // Store locations for possible future error reports.
+      if (!name_loc.IsValid() && IsEvalOrArguments(param_name)) {
+        name_loc = scanner().location();
+      }
+      if (!dupe_loc.IsValid() && top_scope_->IsDeclared(param_name)) {
+        dupe_loc = scanner().location();
+      }
+      if (!reserved_loc.IsValid() && is_reserved) {
+        reserved_loc = scanner().location();
+      }
+
+      Variable* parameter = top_scope_->DeclareLocal(param_name, Variable::VAR);
+      top_scope_->AddParameter(parameter);
       num_parameters++;
+      if (num_parameters > kMaxNumFunctionParameters) {
+        ReportMessageAt(scanner().location(), "too_many_parameters",
+                        Vector<const char*>::empty());
+        *ok = false;
+        return NULL;
+      }
       done = (peek() == Token::RPAREN);
       if (!done) Expect(Token::COMMA, CHECK_OK);
     }
@@ -3300,6 +3575,49 @@ FunctionLiteral* Parser::ParseFunctionLiteral(Handle<String> var_name,
       end_pos = scanner().location().end_pos;
     }
 
+    // Validate strict mode.
+    if (temp_scope_->StrictMode()) {
+      if (IsEvalOrArguments(name)) {
+        int position = function_token_position != RelocInfo::kNoPosition
+            ? function_token_position
+            : (start_pos > 0 ? start_pos - 1 : start_pos);
+        Scanner::Location location = Scanner::Location(position, start_pos);
+        ReportMessageAt(location,
+                        "strict_function_name", Vector<const char*>::empty());
+        *ok = false;
+        return NULL;
+      }
+      if (name_loc.IsValid()) {
+        ReportMessageAt(name_loc, "strict_param_name",
+                        Vector<const char*>::empty());
+        *ok = false;
+        return NULL;
+      }
+      if (dupe_loc.IsValid()) {
+        ReportMessageAt(dupe_loc, "strict_param_dupe",
+                        Vector<const char*>::empty());
+        *ok = false;
+        return NULL;
+      }
+      if (name_is_reserved) {
+        int position = function_token_position != RelocInfo::kNoPosition
+            ? function_token_position
+            : (start_pos > 0 ? start_pos - 1 : start_pos);
+        Scanner::Location location = Scanner::Location(position, start_pos);
+        ReportMessageAt(location, "strict_reserved_word",
+                        Vector<const char*>::empty());
+        *ok = false;
+        return NULL;
+      }
+      if (reserved_loc.IsValid()) {
+        ReportMessageAt(reserved_loc, "strict_reserved_word",
+                        Vector<const char*>::empty());
+        *ok = false;
+        return NULL;
+      }
+      CheckOctalLiteral(start_pos, end_pos, CHECK_OK);
+    }
+
     FunctionLiteral* function_literal =
         new FunctionLiteral(name,
                             top_scope_,
@@ -3312,7 +3630,8 @@ FunctionLiteral* Parser::ParseFunctionLiteral(Handle<String> var_name,
                             start_pos,
                             end_pos,
                             function_name->length() > 0,
-                            temp_scope.ContainsLoops());
+                            temp_scope.ContainsLoops(),
+                            temp_scope.StrictMode());
     function_literal->set_function_token_position(function_token_position);
 
     if (fni_ != NULL && !is_named) fni_->AddFunction(function_literal);
@@ -3364,6 +3683,13 @@ Expression* Parser::ParseV8Intrinsic(bool* ok) {
 
   // We have a valid intrinsics call or a call to a builtin.
   return new CallRuntime(name, function, args);
+}
+
+
+bool Parser::peek_any_identifier() {
+  Token::Value next = peek();
+  return next == Token::IDENTIFIER ||
+         next == Token::FUTURE_RESERVED_WORD;
 }
 
 
@@ -3426,7 +3752,22 @@ Literal* Parser::GetLiteralNumber(double value) {
 
 
 Handle<String> Parser::ParseIdentifier(bool* ok) {
-  Expect(Token::IDENTIFIER, ok);
+  bool is_reserved;
+  return ParseIdentifierOrReservedWord(&is_reserved, ok);
+}
+
+
+Handle<String> Parser::ParseIdentifierOrReservedWord(bool* is_reserved,
+                                                     bool* ok) {
+  *is_reserved = false;
+  if (temp_scope_->StrictMode()) {
+    Expect(Token::IDENTIFIER, ok);
+  } else {
+    if (!Check(Token::IDENTIFIER)) {
+      Expect(Token::FUTURE_RESERVED_WORD, ok);
+      *is_reserved = true;
+    }
+  }
   if (!*ok) return Handle<String>();
   return GetSymbol(ok);
 }
@@ -3434,7 +3775,9 @@ Handle<String> Parser::ParseIdentifier(bool* ok) {
 
 Handle<String> Parser::ParseIdentifierName(bool* ok) {
   Token::Value next = Next();
-  if (next != Token::IDENTIFIER && !Token::IsKeyword(next)) {
+  if (next != Token::IDENTIFIER &&
+          next != Token::FUTURE_RESERVED_WORD &&
+          !Token::IsKeyword(next)) {
     ReportUnexpectedToken(next);
     *ok = false;
     return Handle<String>();
@@ -3443,21 +3786,49 @@ Handle<String> Parser::ParseIdentifierName(bool* ok) {
 }
 
 
+// Checks LHS expression for assignment and prefix/postfix increment/decrement
+// in strict mode.
+void Parser::CheckStrictModeLValue(Expression* expression,
+                                   const char* error,
+                                   bool* ok) {
+  ASSERT(temp_scope_->StrictMode());
+  VariableProxy* lhs = expression != NULL
+      ? expression->AsVariableProxy()
+      : NULL;
+
+  if (lhs != NULL && !lhs->is_this() && IsEvalOrArguments(lhs->name())) {
+    ReportMessage(error, Vector<const char*>::empty());
+    *ok = false;
+  }
+}
+
+
+// Checks whether octal literal last seen is between beg_pos and end_pos.
+// If so, reports an error.
+void Parser::CheckOctalLiteral(int beg_pos, int end_pos, bool* ok) {
+  int octal = scanner().octal_position();
+  if (beg_pos <= octal && octal <= end_pos) {
+    ReportMessageAt(Scanner::Location(octal, octal + 1), "strict_octal_literal",
+                    Vector<const char*>::empty());
+    scanner().clear_octal_position();
+    *ok = false;
+  }
+}
+
+
 // This function reads an identifier and determines whether or not it
-// is 'get' or 'set'.  The reason for not using ParseIdentifier and
-// checking on the output is that this involves heap allocation which
-// we can't do during preparsing.
+// is 'get' or 'set'.
 Handle<String> Parser::ParseIdentifierOrGetOrSet(bool* is_get,
                                                  bool* is_set,
                                                  bool* ok) {
-  Expect(Token::IDENTIFIER, ok);
+  Handle<String> result = ParseIdentifier(ok);
   if (!*ok) return Handle<String>();
   if (scanner().is_literal_ascii() && scanner().literal_length() == 3) {
     const char* token = scanner().literal_ascii_string().start();
     *is_get = strncmp(token, "get", 3) == 0;
     *is_set = !*is_get && strncmp(token, "set", 3) == 0;
   }
-  return GetSymbol(ok);
+  return result;
 }
 
 
@@ -3552,16 +3923,15 @@ Expression* Parser::NewThrowError(Handle<String> constructor,
                                   Handle<String> type,
                                   Vector< Handle<Object> > arguments) {
   int argc = arguments.length();
-  Handle<JSArray> array = Factory::NewJSArray(argc, TENURED);
-  ASSERT(array->IsJSArray() && array->HasFastElements());
+  Handle<FixedArray> elements = Factory::NewFixedArray(argc, TENURED);
   for (int i = 0; i < argc; i++) {
     Handle<Object> element = arguments[i];
     if (!element.is_null()) {
-      // We know this doesn't cause a GC here because we allocated the JSArray
-      // large enough.
-      array->SetFastElement(i, *element)->ToObjectUnchecked();
+      elements->set(i, *element);
     }
   }
+  Handle<JSArray> array = Factory::NewJSArrayWithElements(elements, TENURED);
+
   ZoneList<Expression*>* args = new ZoneList<Expression*>(2);
   args->Add(new Literal(type));
   args->Add(new Literal(array));
@@ -3599,6 +3969,7 @@ Handle<Object> JsonParser::ParseJson(Handle<String> script,
           message = "unexpected_token_string";
           break;
         case Token::IDENTIFIER:
+        case Token::FUTURE_RESERVED_WORD:
           message = "unexpected_token_identifier";
           break;
         default:
@@ -3645,16 +4016,10 @@ Handle<String> JsonParser::GetString() {
 Handle<Object> JsonParser::ParseJsonValue() {
   Token::Value token = scanner_.Next();
   switch (token) {
-    case Token::STRING: {
+    case Token::STRING:
       return GetString();
-    }
-    case Token::NUMBER: {
-      ASSERT(scanner_.is_literal_ascii());
-      double value = StringToDouble(scanner_.literal_ascii_string(),
-                                    NO_FLAGS,  // Hex, octal or trailing junk.
-                                    OS::nan_value());
-      return Factory::NewNumber(value);
-    }
+    case Token::NUMBER:
+      return Factory::NewNumber(scanner_.number());
     case Token::FALSE_LITERAL:
       return Factory::false_value();
     case Token::TRUE_LITERAL:
@@ -3696,6 +4061,11 @@ Handle<Object> JsonParser::ParseJsonObject() {
       uint32_t index;
       if (key->AsArrayIndex(&index)) {
         SetOwnElement(json_object, index, value);
+      } else if (key->Equals(Heap::Proto_symbol())) {
+        // We can't remove the __proto__ accessor since it's hardcoded
+        // in several places. Instead go along and add the value as
+        // the prototype of the created object if possible.
+        SetPrototype(json_object, value);
       } else {
         SetLocalPropertyIgnoreAttributes(json_object, key, value, NONE);
       }
@@ -4728,7 +5098,9 @@ bool ParserApi::Parse(CompilationInfo* info) {
       ASSERT(Top::has_pending_exception());
     } else {
       Handle<String> source = Handle<String>(String::cast(script->source()));
-      result = parser.ParseProgram(source, info->is_global());
+      result = parser.ParseProgram(source,
+                                   info->is_global(),
+                                   info->StrictMode());
     }
   }
 
