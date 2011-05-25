@@ -114,6 +114,7 @@ ifeq ($(TARGET_ARCH),arm)
 		src/arm/jump-target-arm.cc \
 		src/arm/lithium-arm.cc \
 		src/arm/lithium-codegen-arm.cc \
+		src/arm/lithium-gap-resolver-arm.cc \
 		src/arm/macro-assembler-arm.cc \
 		src/arm/regexp-macro-assembler-arm.cc \
 		src/arm/register-allocator-arm.cc \

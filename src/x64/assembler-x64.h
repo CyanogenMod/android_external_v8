@@ -30,7 +30,7 @@
 
 // The original source code covered by the above license above has been
 // modified significantly by Google Inc.
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 
 // A lightweight X64 Assembler.
 
@@ -99,12 +99,12 @@ struct Register {
   static const int kNumAllocatableRegisters = 10;
 
   static int ToAllocationIndex(Register reg) {
-    return allocationIndexByRegisterCode[reg.code()];
+    return kAllocationIndexByRegisterCode[reg.code()];
   }
 
   static Register FromAllocationIndex(int index) {
     ASSERT(index >= 0 && index < kNumAllocatableRegisters);
-    Register result = { registerCodeByAllocationIndex[index] };
+    Register result = { kRegisterCodeByAllocationIndex[index] };
     return result;
   }
 
@@ -155,8 +155,8 @@ struct Register {
   int code_;
 
  private:
-  static const int registerCodeByAllocationIndex[kNumAllocatableRegisters];
-  static const int allocationIndexByRegisterCode[kNumRegisters];
+  static const int kRegisterCodeByAllocationIndex[kNumAllocatableRegisters];
+  static const int kAllocationIndexByRegisterCode[kNumRegisters];
 };
 
 const Register rax = { 0 };
@@ -1284,6 +1284,8 @@ class Assembler : public Malloced {
   void mulsd(XMMRegister dst, XMMRegister src);
   void divsd(XMMRegister dst, XMMRegister src);
 
+  void andpd(XMMRegister dst, XMMRegister src);
+  void orpd(XMMRegister dst, XMMRegister src);
   void xorpd(XMMRegister dst, XMMRegister src);
   void sqrtsd(XMMRegister dst, XMMRegister src);
 
@@ -1312,7 +1314,7 @@ class Assembler : public Malloced {
 
   // Record a comment relocation entry that can be used by a disassembler.
   // Use --code-comments to enable.
-  void RecordComment(const char* msg);
+  void RecordComment(const char* msg, bool force = false);
 
   // Writes a single word of data in the code stream.
   // Used for inline tables, e.g., jump-tables.

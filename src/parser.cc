@@ -803,10 +803,12 @@ void Parser::ReportMessageAt(Scanner::Location source_location,
   MessageLocation location(script_,
                            source_location.beg_pos,
                            source_location.end_pos);
-  Handle<JSArray> array = Factory::NewJSArray(args.length());
+  Handle<FixedArray> elements = Factory::NewFixedArray(args.length());
   for (int i = 0; i < args.length(); i++) {
-    SetElement(array, i, Factory::NewStringFromUtf8(CStrVector(args[i])));
+    Handle<String> arg_string = Factory::NewStringFromUtf8(CStrVector(args[i]));
+    elements->set(i, *arg_string);
   }
+  Handle<JSArray> array = Factory::NewJSArrayWithElements(elements);
   Handle<Object> result = Factory::NewSyntaxError(type, array);
   Top::Throw(*result, &location);
 }
@@ -818,10 +820,11 @@ void Parser::ReportMessageAt(Scanner::Location source_location,
   MessageLocation location(script_,
                            source_location.beg_pos,
                            source_location.end_pos);
-  Handle<JSArray> array = Factory::NewJSArray(args.length());
+  Handle<FixedArray> elements = Factory::NewFixedArray(args.length());
   for (int i = 0; i < args.length(); i++) {
-    SetElement(array, i, args[i]);
+    elements->set(i, *args[i]);
   }
+  Handle<JSArray> array = Factory::NewJSArrayWithElements(elements);
   Handle<Object> result = Factory::NewSyntaxError(type, array);
   Top::Throw(*result, &location);
 }
@@ -1106,7 +1109,20 @@ void* Parser::ParseSourceElements(ZoneList<Statement*>* processor,
     }
 
     Scanner::Location token_loc = scanner().peek_location();
-    Statement* stat = ParseStatement(NULL, CHECK_OK);
+
+    Statement* stat;
+    if (peek() == Token::FUNCTION) {
+      // FunctionDeclaration is only allowed in the context of SourceElements
+      // (Ecma 262 5th Edition, clause 14):
+      // SourceElement:
+      //    Statement
+      //    FunctionDeclaration
+      // Common language extension is to allow function declaration in place
+      // of any statement. This language extension is disabled in strict mode.
+      stat = ParseFunctionDeclaration(CHECK_OK);
+    } else {
+      stat = ParseStatement(NULL, CHECK_OK);
+    }
 
     if (stat == NULL || stat->IsEmpty()) {
       directive_prologue = false;   // End of directive prologue.
@@ -1263,8 +1279,17 @@ Statement* Parser::ParseStatement(ZoneStringList* labels, bool* ok) {
       return result;
     }
 
-    case Token::FUNCTION:
+    case Token::FUNCTION: {
+      // In strict mode, FunctionDeclaration is only allowed in the context
+      // of SourceElements.
+      if (temp_scope_->StrictMode()) {
+        ReportMessageAt(scanner().peek_location(), "strict_function",
+                        Vector<const char*>::empty());
+        *ok = false;
+        return NULL;
+      }
       return ParseFunctionDeclaration(ok);
+    }
 
     case Token::NATIVE:
       return ParseNativeDeclaration(ok);
@@ -1515,6 +1540,11 @@ Block* Parser::ParseVariableDeclarations(bool accept_IN,
     Consume(Token::VAR);
   } else if (peek() == Token::CONST) {
     Consume(Token::CONST);
+    if (temp_scope_->StrictMode()) {
+      ReportMessage("strict_const", Vector<const char*>::empty());
+      *ok = false;
+      return NULL;
+    }
     mode = Variable::CONST;
     is_const = true;
   } else {
@@ -1634,34 +1664,49 @@ Block* Parser::ParseVariableDeclarations(bool accept_IN,
 
     if (top_scope_->is_global_scope()) {
       // Compute the arguments for the runtime call.
-      ZoneList<Expression*>* arguments = new ZoneList<Expression*>(2);
-      // Be careful not to assign a value to the global variable if
-      // we're in a with. The initialization value should not
-      // necessarily be stored in the global object in that case,
-      // which is why we need to generate a separate assignment node.
+      ZoneList<Expression*>* arguments = new ZoneList<Expression*>(3);
       arguments->Add(new Literal(name));  // we have at least 1 parameter
-      if (is_const || (value != NULL && !inside_with())) {
+      CallRuntime* initialize;
+
+      if (is_const) {
         arguments->Add(value);
         value = NULL;  // zap the value to avoid the unnecessary assignment
-      }
-      // Construct the call to Runtime::DeclareGlobal{Variable,Const}Locally
-      // and add it to the initialization statement block. Note that
-      // this function does different things depending on if we have
-      // 1 or 2 parameters.
-      CallRuntime* initialize;
-      if (is_const) {
+
+        // Construct the call to Runtime_InitializeConstGlobal
+        // and add it to the initialization statement block.
+        // Note that the function does different things depending on
+        // the number of arguments (1 or 2).
         initialize =
-          new CallRuntime(
-            Factory::InitializeConstGlobal_symbol(),
-            Runtime::FunctionForId(Runtime::kInitializeConstGlobal),
-            arguments);
+            new CallRuntime(
+              Factory::InitializeConstGlobal_symbol(),
+              Runtime::FunctionForId(Runtime::kInitializeConstGlobal),
+              arguments);
       } else {
+        // Add strict mode.
+        // We may want to pass singleton to avoid Literal allocations.
+        arguments->Add(NewNumberLiteral(
+            temp_scope_->StrictMode() ? kStrictMode : kNonStrictMode));
+
+        // Be careful not to assign a value to the global variable if
+        // we're in a with. The initialization value should not
+        // necessarily be stored in the global object in that case,
+        // which is why we need to generate a separate assignment node.
+        if (value != NULL && !inside_with()) {
+          arguments->Add(value);
+          value = NULL;  // zap the value to avoid the unnecessary assignment
+        }
+
+        // Construct the call to Runtime_InitializeVarGlobal
+        // and add it to the initialization statement block.
+        // Note that the function does different things depending on
+        // the number of arguments (2 or 3).
         initialize =
-          new CallRuntime(
-            Factory::InitializeVarGlobal_symbol(),
-            Runtime::FunctionForId(Runtime::kInitializeVarGlobal),
-            arguments);
+            new CallRuntime(
+              Factory::InitializeVarGlobal_symbol(),
+              Runtime::FunctionForId(Runtime::kInitializeVarGlobal),
+              arguments);
       }
+
       block->AddStatement(new ExpressionStatement(initialize));
     }
 
@@ -2518,6 +2563,16 @@ Expression* Parser::ParseUnaryExpression(bool* ok) {
         case Token::BIT_NOT:
           return NewNumberLiteral(~DoubleToInt32(value));
         default: break;
+      }
+    }
+
+    // "delete identifier" is a syntax error in strict mode.
+    if (op == Token::DELETE && temp_scope_->StrictMode()) {
+      VariableProxy* operand = expression->AsVariableProxy();
+      if (operand != NULL && !operand->is_this()) {
+        ReportMessage("strict_delete", Vector<const char*>::empty());
+        *ok = false;
+        return NULL;
       }
     }
 
@@ -3983,12 +4038,14 @@ Handle<Object> JsonParser::ParseJson(Handle<String> script,
       MessageLocation location(Factory::NewScript(script),
                                source_location.beg_pos,
                                source_location.end_pos);
-      int argc = (name_opt == NULL) ? 0 : 1;
-      Handle<JSArray> array = Factory::NewJSArray(argc);
-      if (name_opt != NULL) {
-        SetElement(array,
-                   0,
-                   Factory::NewStringFromUtf8(CStrVector(name_opt)));
+      Handle<JSArray> array;
+      if (name_opt == NULL) {
+        array = Factory::NewJSArray(0);
+      } else {
+        Handle<String> name = Factory::NewStringFromUtf8(CStrVector(name_opt));
+        Handle<FixedArray> element = Factory::NewFixedArray(1);
+        element->set(0, *name);
+        array = Factory::NewJSArrayWithElements(element);
       }
       Handle<Object> result = Factory::NewSyntaxError(message, array);
       Top::Throw(*result, &location);
@@ -4060,7 +4117,7 @@ Handle<Object> JsonParser::ParseJsonObject() {
       if (value.is_null()) return Handle<Object>::null();
       uint32_t index;
       if (key->AsArrayIndex(&index)) {
-        SetOwnElement(json_object, index, value);
+        SetOwnElement(json_object, index, value, kNonStrictMode);
       } else if (key->Equals(Heap::Proto_symbol())) {
         // We can't remove the __proto__ accessor since it's hardcoded
         // in several places. Instead go along and add the value as
@@ -4263,6 +4320,8 @@ RegExpTree* RegExpParser::ParseDisjunction() {
                                    capture_index);
       }
       builder->AddAtom(body);
+      // For compatability with JSC and ES3, we allow quantifiers after
+      // lookaheads, and break in all cases.
       break;
     }
     case '|': {
@@ -4336,7 +4395,7 @@ RegExpTree* RegExpParser::ParseDisjunction() {
                                            type,
                                            captures_started());
       builder = stored_state->builder();
-      break;
+      continue;
     }
     case '[': {
       RegExpTree* atom = ParseCharacterClass(CHECK_FAILED);
@@ -4359,11 +4418,11 @@ RegExpTree* RegExpParser::ParseDisjunction() {
         builder->AddAssertion(
             new RegExpAssertion(RegExpAssertion::NON_BOUNDARY));
         continue;
-        // AtomEscape ::
-        //   CharacterClassEscape
-        //
-        // CharacterClassEscape :: one of
-        //   d D s S w W
+      // AtomEscape ::
+      //   CharacterClassEscape
+      //
+      // CharacterClassEscape :: one of
+      //   d D s S w W
       case 'd': case 'D': case 's': case 'S': case 'w': case 'W': {
         uc32 c = Next();
         Advance(2);

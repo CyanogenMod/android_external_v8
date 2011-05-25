@@ -53,9 +53,10 @@ class LCodeGen BASE_EMBEDDED {
         current_instruction_(-1),
         instructions_(chunk->instructions()),
         deoptimizations_(4),
+        jump_table_(4),
         deoptimization_literals_(8),
         inlined_function_count_(0),
-        scope_(chunk->graph()->info()->scope()),
+        scope_(info->scope()),
         status_(UNUSED),
         deferred_(8),
         osr_pc_offset_(-1),
@@ -65,6 +66,7 @@ class LCodeGen BASE_EMBEDDED {
 
   // Simple accessors.
   MacroAssembler* masm() const { return masm_; }
+  CompilationInfo* info() const { return info_; }
 
   // Support for converting LOperands to assembler types.
   Register ToRegister(LOperand* op) const;
@@ -90,8 +92,8 @@ class LCodeGen BASE_EMBEDDED {
   void DoDeferredTaggedToI(LTaggedToI* instr);
   void DoDeferredMathAbsTaggedHeapNumber(LUnaryMathOperation* instr);
   void DoDeferredStackCheck(LGoto* instr);
-  void DoDeferredLInstanceOfKnownGlobal(LInstanceOfKnownGlobal* instr,
-                                        Label* map_check);
+  void DoDeferredStringCharCodeAt(LStringCharCodeAt* instr);
+  void DoDeferredLInstanceOfKnownGlobal(LInstanceOfKnownGlobal* instr);
 
   // Parallel move support.
   void DoParallelMove(LParallelMove* move);
@@ -116,6 +118,10 @@ class LCodeGen BASE_EMBEDDED {
   bool is_generating() const { return status_ == GENERATING; }
   bool is_done() const { return status_ == DONE; }
   bool is_aborted() const { return status_ == ABORTED; }
+
+  int strict_mode_flag() const {
+    return info()->is_strict() ? kStrictMode : kNonStrictMode;
+  }
 
   LChunk* chunk() const { return chunk_; }
   Scope* scope() const { return scope_; }
@@ -143,6 +149,7 @@ class LCodeGen BASE_EMBEDDED {
   bool GeneratePrologue();
   bool GenerateBody();
   bool GenerateDeferredCode();
+  bool GenerateJumpTable();
   bool GenerateSafepointTable();
 
   void CallCode(Handle<Code> code,
@@ -182,6 +189,7 @@ class LCodeGen BASE_EMBEDDED {
   XMMRegister ToDoubleRegister(int index) const;
 
   // Specific math operations - used from DoUnaryMathOperation.
+  void EmitIntegerMathAbs(LUnaryMathOperation* instr);
   void DoMathAbs(LUnaryMathOperation* instr);
   void DoMathFloor(LUnaryMathOperation* instr);
   void DoMathRound(LUnaryMathOperation* instr);
@@ -197,6 +205,7 @@ class LCodeGen BASE_EMBEDDED {
                        int arguments,
                        int deoptimization_index);
   void RecordSafepoint(LPointerMap* pointers, int deoptimization_index);
+  void RecordSafepoint(int deoptimization_index);
   void RecordSafepointWithRegisters(LPointerMap* pointers,
                                     int arguments,
                                     int deoptimization_index);
@@ -225,6 +234,17 @@ class LCodeGen BASE_EMBEDDED {
   // Caller should branch on equal condition.
   void EmitIsConstructCall(Register temp);
 
+  // Emits code for pushing a constant operand.
+  void EmitPushConstantOperand(LOperand* operand);
+
+  struct JumpTableEntry {
+    inline JumpTableEntry(Address address)
+        : label_(),
+          address_(address) { }
+    Label label_;
+    Address address_;
+  };
+
   LChunk* const chunk_;
   MacroAssembler* const masm_;
   CompilationInfo* const info_;
@@ -233,6 +253,7 @@ class LCodeGen BASE_EMBEDDED {
   int current_instruction_;
   const ZoneList<LInstruction*>* instructions_;
   ZoneList<LEnvironment*> deoptimizations_;
+  ZoneList<JumpTableEntry*> jump_table_;
   ZoneList<Handle<Object> > deoptimization_literals_;
   int inlined_function_count_;
   Scope* const scope_;

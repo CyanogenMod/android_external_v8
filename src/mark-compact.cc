@@ -1353,6 +1353,9 @@ void MarkCompactCollector::MarkLiveObjects() {
 
   // Flush code from collected candidates.
   FlushCode::ProcessCandidates();
+
+  // Clean up dead objects from the runtime profiler.
+  RuntimeProfiler::RemoveDeadSamples();
 }
 
 
@@ -1937,6 +1940,9 @@ static void SweepNewSpace(NewSpace* space) {
   // All pointers were updated. Update auxiliary allocation info.
   Heap::IncrementYoungSurvivorsCounter(survivors_size);
   space->set_age_mark(space->top());
+
+  // Update JSFunction pointers from the runtime profiler.
+  RuntimeProfiler::UpdateSamplesAfterScavenge();
 }
 
 
@@ -2535,6 +2541,7 @@ void MarkCompactCollector::UpdatePointers() {
   state_ = UPDATE_POINTERS;
 #endif
   UpdatingVisitor updating_visitor;
+  RuntimeProfiler::UpdateSamplesAfterCompact(&updating_visitor);
   Heap::IterateRoots(&updating_visitor, VISIT_ONLY_STRONG);
   GlobalHandles::IterateWeakRoots(&updating_visitor);
 
@@ -2819,9 +2826,8 @@ int MarkCompactCollector::RelocateOldNonCodeObject(HeapObject* obj,
   ASSERT(!HeapObject::FromAddress(new_addr)->IsCode());
 
   HeapObject* copied_to = HeapObject::FromAddress(new_addr);
-  if (copied_to->IsJSFunction()) {
-    PROFILE(FunctionMoveEvent(old_addr, new_addr));
-    PROFILE(FunctionCreateEventFromMove(JSFunction::cast(copied_to)));
+  if (copied_to->IsSharedFunctionInfo()) {
+    PROFILE(SFIMoveEvent(old_addr, new_addr));
   }
   HEAP_PROFILE(ObjectMoveEvent(old_addr, new_addr));
 
@@ -2912,9 +2918,8 @@ int MarkCompactCollector::RelocateNewObject(HeapObject* obj) {
 #endif
 
   HeapObject* copied_to = HeapObject::FromAddress(new_addr);
-  if (copied_to->IsJSFunction()) {
-    PROFILE(FunctionMoveEvent(old_addr, new_addr));
-    PROFILE(FunctionCreateEventFromMove(JSFunction::cast(copied_to)));
+  if (copied_to->IsSharedFunctionInfo()) {
+    PROFILE(SFIMoveEvent(old_addr, new_addr));
   }
   HEAP_PROFILE(ObjectMoveEvent(old_addr, new_addr));
 
@@ -2931,8 +2936,6 @@ void MarkCompactCollector::ReportDeleteIfNeeded(HeapObject* obj) {
 #ifdef ENABLE_LOGGING_AND_PROFILING
   if (obj->IsCode()) {
     PROFILE(CodeDeleteEvent(obj->address()));
-  } else if (obj->IsJSFunction()) {
-    PROFILE(FunctionDeleteEvent(obj->address()));
   }
 #endif
 }

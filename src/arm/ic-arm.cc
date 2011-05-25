@@ -115,6 +115,9 @@ static void GenerateStringDictionaryProbes(MacroAssembler* masm,
                                            Register name,
                                            Register scratch1,
                                            Register scratch2) {
+  // Assert that name contains a string.
+  if (FLAG_debug_code) __ AbortIfNotString(name);
+
   // Compute the capacity mask.
   const int kCapacityOffset = StringDictionary::kHeaderSize +
       StringDictionary::kCapacityIndex * kPointerSize;
@@ -843,7 +846,14 @@ void KeyedCallIC::GenerateNormal(MacroAssembler* masm, int argc) {
   //  -- lr    : return address
   // -----------------------------------
 
+  // Check if the name is a string.
+  Label miss;
+  __ tst(r2, Operand(kSmiTagMask));
+  __ b(eq, &miss);
+  __ IsObjectJSStringType(r2, r0, &miss);
+
   GenerateCallNormal(masm, argc);
+  __ bind(&miss);
   GenerateMiss(masm, argc);
 }
 
@@ -1390,7 +1400,8 @@ void KeyedStoreIC::GenerateMiss(MacroAssembler* masm) {
 }
 
 
-void KeyedStoreIC::GenerateRuntimeSetProperty(MacroAssembler* masm) {
+void KeyedStoreIC::GenerateRuntimeSetProperty(MacroAssembler* masm,
+                                              StrictModeFlag strict_mode) {
   // ---------- S t a t e --------------
   //  -- r0     : value
   //  -- r1     : key
@@ -1401,11 +1412,16 @@ void KeyedStoreIC::GenerateRuntimeSetProperty(MacroAssembler* masm) {
   // Push receiver, key and value for runtime call.
   __ Push(r2, r1, r0);
 
-  __ TailCallRuntime(Runtime::kSetProperty, 3, 1);
+  __ mov(r1, Operand(Smi::FromInt(NONE)));          // PropertyAttributes
+  __ mov(r0, Operand(Smi::FromInt(strict_mode)));   // Strict mode.
+  __ Push(r1, r0);
+
+  __ TailCallRuntime(Runtime::kSetProperty, 5, 1);
 }
 
 
-void KeyedStoreIC::GenerateGeneric(MacroAssembler* masm) {
+void KeyedStoreIC::GenerateGeneric(MacroAssembler* masm,
+                                   StrictModeFlag strict_mode) {
   // ---------- S t a t e --------------
   //  -- r0     : value
   //  -- r1     : key
@@ -1460,29 +1476,25 @@ void KeyedStoreIC::GenerateGeneric(MacroAssembler* masm) {
   // r0: value.
   // r1: key.
   // r2: receiver.
-  GenerateRuntimeSetProperty(masm);
+  GenerateRuntimeSetProperty(masm, strict_mode);
 
   // Check whether the elements is a pixel array.
   // r4: elements map.
   __ bind(&check_pixel_array);
-  __ LoadRoot(ip, Heap::kPixelArrayMapRootIndex);
-  __ cmp(r4, ip);
-  __ b(ne, &slow);
-  // Check that the value is a smi. If a conversion is needed call into the
-  // runtime to convert and clamp.
-  __ JumpIfNotSmi(value, &slow);
-  __ mov(r4, Operand(key, ASR, kSmiTagSize));  // Untag the key.
-  __ ldr(ip, FieldMemOperand(elements, PixelArray::kLengthOffset));
-  __ cmp(r4, Operand(ip));
-  __ b(hs, &slow);
-  __ mov(r5, Operand(value, ASR, kSmiTagSize));  // Untag the value.
-  __ Usat(r5, 8, Operand(r5));  // Clamp the value to [0..255].
-
-  // Get the pointer to the external array. This clobbers elements.
-  __ ldr(elements,
-         FieldMemOperand(elements, PixelArray::kExternalPointerOffset));
-  __ strb(r5, MemOperand(elements, r4));  // Elements is now external array.
-  __ Ret();
+  GenerateFastPixelArrayStore(masm,
+                              r2,
+                              r1,
+                              r0,
+                              elements,
+                              r4,
+                              r5,
+                              r6,
+                              false,
+                              false,
+                              NULL,
+                              &slow,
+                              &slow,
+                              &slow);
 
   // Extra capacity case: Check if there is extra capacity to
   // perform the store and update the length. Used for adding one
@@ -1534,7 +1546,7 @@ void KeyedStoreIC::GenerateGeneric(MacroAssembler* masm) {
 
 
 void StoreIC::GenerateMegamorphic(MacroAssembler* masm,
-                                  Code::ExtraICState extra_ic_state) {
+                                  StrictModeFlag strict_mode) {
   // ----------- S t a t e -------------
   //  -- r0    : value
   //  -- r1    : receiver
@@ -1546,7 +1558,7 @@ void StoreIC::GenerateMegamorphic(MacroAssembler* masm,
   Code::Flags flags = Code::ComputeFlags(Code::STORE_IC,
                                          NOT_IN_LOOP,
                                          MONOMORPHIC,
-                                         extra_ic_state);
+                                         strict_mode);
   StubCache::GenerateProbe(masm, flags, r1, r2, r3, r4, r5);
 
   // Cache miss: Jump to runtime.
@@ -1640,7 +1652,8 @@ void StoreIC::GenerateNormal(MacroAssembler* masm) {
 }
 
 
-void StoreIC::GenerateGlobalProxy(MacroAssembler* masm) {
+void StoreIC::GenerateGlobalProxy(MacroAssembler* masm,
+                                  StrictModeFlag strict_mode) {
   // ----------- S t a t e -------------
   //  -- r0    : value
   //  -- r1    : receiver
@@ -1650,8 +1663,12 @@ void StoreIC::GenerateGlobalProxy(MacroAssembler* masm) {
 
   __ Push(r1, r2, r0);
 
+  __ mov(r1, Operand(Smi::FromInt(NONE)));  // PropertyAttributes
+  __ mov(r0, Operand(Smi::FromInt(strict_mode)));
+  __ Push(r1, r0);
+
   // Do tail-call to runtime routine.
-  __ TailCallRuntime(Runtime::kSetProperty, 3, 1);
+  __ TailCallRuntime(Runtime::kSetProperty, 5, 1);
 }
 
 

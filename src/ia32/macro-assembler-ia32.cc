@@ -448,6 +448,97 @@ void MacroAssembler::PopTryHandler() {
 }
 
 
+void MacroAssembler::Throw(Register value) {
+  // Adjust this code if not the case.
+  STATIC_ASSERT(StackHandlerConstants::kSize == 4 * kPointerSize);
+
+  // eax must hold the exception.
+  if (!value.is(eax)) {
+    mov(eax, value);
+  }
+
+  // Drop the sp to the top of the handler.
+  ExternalReference handler_address(Top::k_handler_address);
+  mov(esp, Operand::StaticVariable(handler_address));
+
+  // Restore next handler and frame pointer, discard handler state.
+  STATIC_ASSERT(StackHandlerConstants::kNextOffset == 0);
+  pop(Operand::StaticVariable(handler_address));
+  STATIC_ASSERT(StackHandlerConstants::kFPOffset == 1 * kPointerSize);
+  pop(ebp);
+  pop(edx);  // Remove state.
+
+  // Before returning we restore the context from the frame pointer if
+  // not NULL.  The frame pointer is NULL in the exception handler of
+  // a JS entry frame.
+  Set(esi, Immediate(0));  // Tentatively set context pointer to NULL.
+  NearLabel skip;
+  cmp(ebp, 0);
+  j(equal, &skip, not_taken);
+  mov(esi, Operand(ebp, StandardFrameConstants::kContextOffset));
+  bind(&skip);
+
+  STATIC_ASSERT(StackHandlerConstants::kPCOffset == 3 * kPointerSize);
+  ret(0);
+}
+
+
+void MacroAssembler::ThrowUncatchable(UncatchableExceptionType type,
+                                      Register value) {
+  // Adjust this code if not the case.
+  STATIC_ASSERT(StackHandlerConstants::kSize == 4 * kPointerSize);
+
+  // eax must hold the exception.
+  if (!value.is(eax)) {
+    mov(eax, value);
+  }
+
+  // Drop sp to the top stack handler.
+  ExternalReference handler_address(Top::k_handler_address);
+  mov(esp, Operand::StaticVariable(handler_address));
+
+  // Unwind the handlers until the ENTRY handler is found.
+  NearLabel loop, done;
+  bind(&loop);
+  // Load the type of the current stack handler.
+  const int kStateOffset = StackHandlerConstants::kStateOffset;
+  cmp(Operand(esp, kStateOffset), Immediate(StackHandler::ENTRY));
+  j(equal, &done);
+  // Fetch the next handler in the list.
+  const int kNextOffset = StackHandlerConstants::kNextOffset;
+  mov(esp, Operand(esp, kNextOffset));
+  jmp(&loop);
+  bind(&done);
+
+  // Set the top handler address to next handler past the current ENTRY handler.
+  STATIC_ASSERT(StackHandlerConstants::kNextOffset == 0);
+  pop(Operand::StaticVariable(handler_address));
+
+  if (type == OUT_OF_MEMORY) {
+    // Set external caught exception to false.
+    ExternalReference external_caught(Top::k_external_caught_exception_address);
+    mov(eax, false);
+    mov(Operand::StaticVariable(external_caught), eax);
+
+    // Set pending exception and eax to out of memory exception.
+    ExternalReference pending_exception(Top::k_pending_exception_address);
+    mov(eax, reinterpret_cast<int32_t>(Failure::OutOfMemoryException()));
+    mov(Operand::StaticVariable(pending_exception), eax);
+  }
+
+  // Clear the context pointer.
+  Set(esi, Immediate(0));
+
+  // Restore fp from handler and discard handler state.
+  STATIC_ASSERT(StackHandlerConstants::kFPOffset == 1 * kPointerSize);
+  pop(ebp);
+  pop(edx);  // State.
+
+  STATIC_ASSERT(StackHandlerConstants::kPCOffset == 3 * kPointerSize);
+  ret(0);
+}
+
+
 void MacroAssembler::CheckAccessGlobalProxy(Register holder_reg,
                                             Register scratch,
                                             Label* miss) {
@@ -1192,7 +1283,7 @@ MaybeObject* MacroAssembler::TryTailCallRuntime(Runtime::FunctionId fid,
 // If false, it is returned as a pointer to a preallocated by caller memory
 // region. Pointer to this region should be passed to a function as an
 // implicit first argument.
-#if defined(USING_BSD_ABI) || defined(__MINGW32__)
+#if defined(USING_BSD_ABI) || defined(__MINGW32__) || defined(__CYGWIN__)
 static const bool kReturnHandlesDirectly = true;
 #else
 static const bool kReturnHandlesDirectly = false;
@@ -1560,6 +1651,28 @@ void MacroAssembler::LoadGlobalFunctionInitialMap(Register function,
     Abort("Global functions must have initial map");
     bind(&ok);
   }
+}
+
+
+// Store the value in register src in the safepoint register stack
+// slot for register dst.
+void MacroAssembler::StoreToSafepointRegisterSlot(Register dst, Register src) {
+  mov(SafepointRegisterSlot(dst), src);
+}
+
+
+void MacroAssembler::StoreToSafepointRegisterSlot(Register dst, Immediate src) {
+  mov(SafepointRegisterSlot(dst), src);
+}
+
+
+void MacroAssembler::LoadFromSafepointRegisterSlot(Register dst, Register src) {
+  mov(dst, SafepointRegisterSlot(src));
+}
+
+
+Operand MacroAssembler::SafepointRegisterSlot(Register reg) {
+  return Operand(esp, SafepointRegisterStackIndex(reg.code()) * kPointerSize);
 }
 
 

@@ -124,14 +124,62 @@ void Deoptimizer::DeoptimizeFunction(JSFunction* function) {
 void Deoptimizer::PatchStackCheckCodeAt(Address pc_after,
                                         Code* check_code,
                                         Code* replacement_code) {
-  UNIMPLEMENTED();
+  const int kInstrSize = Assembler::kInstrSize;
+  // The call of the stack guard check has the following form:
+  //  e1 5d 00 0c       cmp sp, <limit>
+  //  2a 00 00 01       bcs ok
+  //  e5 9f c? ??       ldr ip, [pc, <stack guard address>]
+  //  e1 2f ff 3c       blx ip
+  ASSERT(Memory::int32_at(pc_after - kInstrSize) ==
+      (al | B24 | B21 | 15*B16 | 15*B12 | 15*B8 | BLX | ip.code()));
+  ASSERT(Assembler::IsLdrPcImmediateOffset(
+      Assembler::instr_at(pc_after - 2 * kInstrSize)));
+
+  // We patch the code to the following form:
+  //  e1 5d 00 0c       cmp sp, <limit>
+  //  e1 a0 00 00       mov r0, r0 (NOP)
+  //  e5 9f c? ??       ldr ip, [pc, <on-stack replacement address>]
+  //  e1 2f ff 3c       blx ip
+  // and overwrite the constant containing the
+  // address of the stack check stub.
+
+  // Replace conditional jump with NOP.
+  CodePatcher patcher(pc_after - 3 * kInstrSize, 1);
+  patcher.masm()->nop();
+
+  // Replace the stack check address in the constant pool
+  // with the entry address of the replacement code.
+  uint32_t stack_check_address_offset = Memory::uint16_at(pc_after -
+      2 * kInstrSize) & 0xfff;
+  Address stack_check_address_pointer = pc_after + stack_check_address_offset;
+  ASSERT(Memory::uint32_at(stack_check_address_pointer) ==
+         reinterpret_cast<uint32_t>(check_code->entry()));
+  Memory::uint32_at(stack_check_address_pointer) =
+      reinterpret_cast<uint32_t>(replacement_code->entry());
 }
 
 
 void Deoptimizer::RevertStackCheckCodeAt(Address pc_after,
                                          Code* check_code,
                                          Code* replacement_code) {
-  UNIMPLEMENTED();
+  const int kInstrSize = Assembler::kInstrSize;
+  ASSERT(Memory::uint32_at(pc_after - kInstrSize) == 0xe12fff3c);
+  ASSERT(Memory::uint8_at(pc_after - kInstrSize - 1) == 0xe5);
+  ASSERT(Memory::uint8_at(pc_after - kInstrSize - 2) == 0x9f);
+
+  // Replace NOP with conditional jump.
+  CodePatcher patcher(pc_after - 3 * kInstrSize, 1);
+  patcher.masm()->b(+4, cs);
+
+  // Replace the stack check address in the constant pool
+  // with the entry address of the replacement code.
+  uint32_t stack_check_address_offset = Memory::uint16_at(pc_after -
+      2 * kInstrSize) & 0xfff;
+  Address stack_check_address_pointer = pc_after + stack_check_address_offset;
+  ASSERT(Memory::uint32_at(stack_check_address_pointer) ==
+         reinterpret_cast<uint32_t>(replacement_code->entry()));
+  Memory::uint32_at(stack_check_address_pointer) =
+      reinterpret_cast<uint32_t>(check_code->entry());
 }
 
 
@@ -381,14 +429,16 @@ void Deoptimizer::DoComputeFrame(TranslationIterator* iterator,
            fp_value, output_offset, value);
   }
 
-  // The context can be gotten from the function so long as we don't
-  // optimize functions that need local contexts.
+  // For the bottommost output frame the context can be gotten from the input
+  // frame. For all subsequent output frames it can be gotten from the function
+  // so long as we don't inline functions that need local contexts.
   output_offset -= kPointerSize;
   input_offset -= kPointerSize;
-  value = reinterpret_cast<intptr_t>(function->context());
-  // The context for the bottommost output frame should also agree with the
-  // input frame.
-  ASSERT(!is_bottommost || input_->GetFrameSlot(input_offset) == value);
+  if (is_bottommost) {
+    value = input_->GetFrameSlot(input_offset);
+  } else {
+    value = reinterpret_cast<intptr_t>(function->context());
+  }
   output_frame->SetFrameSlot(output_offset, value);
   if (is_topmost) {
     output_frame->SetRegister(cp.code(), value);

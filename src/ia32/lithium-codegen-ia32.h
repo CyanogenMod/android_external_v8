@@ -56,16 +56,18 @@ class LCodeGen BASE_EMBEDDED {
         deoptimizations_(4),
         deoptimization_literals_(8),
         inlined_function_count_(0),
-        scope_(chunk->graph()->info()->scope()),
+        scope_(info->scope()),
         status_(UNUSED),
         deferred_(8),
         osr_pc_offset_(-1),
+        deoptimization_reloc_size(),
         resolver_(this) {
     PopulateDeoptimizationLiteralsWithInlinedFunctions();
   }
 
   // Simple accessors.
   MacroAssembler* masm() const { return masm_; }
+  CompilationInfo* info() const { return info_; }
 
   // Support for converting LOperands to assembler types.
   Operand ToOperand(LOperand* op) const;
@@ -102,6 +104,8 @@ class LCodeGen BASE_EMBEDDED {
   // Emit frame translation commands for an environment.
   void WriteTranslation(LEnvironment* environment, Translation* translation);
 
+  void EnsureRelocSpaceForDeoptimization();
+
   // Declare methods that deal with the individual node types.
 #define DECLARE_DO(type) void Do##type(L##type* node);
   LITHIUM_CONCRETE_INSTRUCTION_LIST(DECLARE_DO)
@@ -119,6 +123,10 @@ class LCodeGen BASE_EMBEDDED {
   bool is_generating() const { return status_ == GENERATING; }
   bool is_done() const { return status_ == DONE; }
   bool is_aborted() const { return status_ == ABORTED; }
+
+  int strict_mode_flag() const {
+    return info()->is_strict() ? kStrictMode : kNonStrictMode;
+  }
 
   LChunk* chunk() const { return chunk_; }
   Scope* scope() const { return scope_; }
@@ -147,6 +155,9 @@ class LCodeGen BASE_EMBEDDED {
   bool GeneratePrologue();
   bool GenerateBody();
   bool GenerateDeferredCode();
+  // Pad the reloc info to ensure that we have enough space to patch during
+  // deoptimization.
+  bool GenerateRelocPadding();
   bool GenerateSafepointTable();
 
   void CallCode(Handle<Code> code, RelocInfo::Mode mode, LInstruction* instr,
@@ -200,6 +211,7 @@ class LCodeGen BASE_EMBEDDED {
                        int arguments,
                        int deoptimization_index);
   void RecordSafepoint(LPointerMap* pointers, int deoptimization_index);
+  void RecordSafepoint(int deoptimization_index);
   void RecordSafepointWithRegisters(LPointerMap* pointers,
                                     int arguments,
                                     int deoptimization_index);
@@ -246,6 +258,13 @@ class LCodeGen BASE_EMBEDDED {
   TranslationBuffer translations_;
   ZoneList<LDeferredCode*> deferred_;
   int osr_pc_offset_;
+
+  struct DeoptimizationRelocSize {
+    int min_size;
+    int last_pc_offset;
+  };
+
+  DeoptimizationRelocSize deoptimization_reloc_size;
 
   // Builder that keeps track of safepoints in the code. The table
   // itself is emitted at the end of the generated code.

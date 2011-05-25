@@ -42,8 +42,6 @@ class LCodeGen;
 #define LITHIUM_ALL_INSTRUCTION_LIST(V)         \
   V(ControlInstruction)                         \
   V(Call)                                       \
-  V(StoreKeyed)                                 \
-  V(StoreNamed)                                 \
   LITHIUM_CONCRETE_INSTRUCTION_LIST(V)
 
 
@@ -94,6 +92,7 @@ class LCodeGen;
   V(FixedArrayLength)                           \
   V(FunctionLiteral)                            \
   V(Gap)                                        \
+  V(GetCachedArrayIndex)                        \
   V(GlobalObject)                               \
   V(GlobalReceiver)                             \
   V(Goto)                                       \
@@ -134,6 +133,7 @@ class LCodeGen;
   V(OuterContext)                               \
   V(Parameter)                                  \
   V(PixelArrayLength)                           \
+  V(Power)                                      \
   V(PushArgument)                               \
   V(RegExpLiteral)                              \
   V(Return)                                     \
@@ -728,6 +728,17 @@ class LHasInstanceTypeAndBranch: public LControlInstruction<1, 0> {
 };
 
 
+class LGetCachedArrayIndex: public LTemplateInstruction<1, 1, 0> {
+ public:
+  explicit LGetCachedArrayIndex(LOperand* value) {
+    inputs_[0] = value;
+  }
+
+  DECLARE_CONCRETE_INSTRUCTION(GetCachedArrayIndex, "get-cached-array-index")
+  DECLARE_HYDROGEN_ACCESSOR(GetCachedArrayIndex)
+};
+
+
 class LHasCachedArrayIndex: public LTemplateInstruction<1, 1, 0> {
  public:
   explicit LHasCachedArrayIndex(LOperand* value) {
@@ -1043,6 +1054,18 @@ class LAddI: public LTemplateInstruction<1, 2, 0> {
 
   DECLARE_CONCRETE_INSTRUCTION(AddI, "add-i")
   DECLARE_HYDROGEN_ACCESSOR(Add)
+};
+
+
+class LPower: public LTemplateInstruction<1, 2, 0> {
+ public:
+  LPower(LOperand* left, LOperand* right) {
+    inputs_[0] = left;
+    inputs_[1] = right;
+  }
+
+  DECLARE_CONCRETE_INSTRUCTION(Power, "power")
+  DECLARE_HYDROGEN_ACCESSOR(Power)
 };
 
 
@@ -1498,15 +1521,38 @@ class LSmiUntag: public LTemplateInstruction<1, 1, 0> {
 };
 
 
-class LStoreNamed: public LTemplateInstruction<0, 2, 0> {
+class LStoreNamedField: public LTemplateInstruction<0, 2, 0> {
  public:
-  LStoreNamed(LOperand* obj, LOperand* val) {
+  LStoreNamedField(LOperand* obj, LOperand* val) {
     inputs_[0] = obj;
     inputs_[1] = val;
   }
 
-  DECLARE_INSTRUCTION(StoreNamed)
-  DECLARE_HYDROGEN_ACCESSOR(StoreNamed)
+  DECLARE_CONCRETE_INSTRUCTION(StoreNamedField, "store-named-field")
+  DECLARE_HYDROGEN_ACCESSOR(StoreNamedField)
+
+  virtual void PrintDataTo(StringStream* stream);
+
+  LOperand* object() { return inputs_[0]; }
+  LOperand* value() { return inputs_[1]; }
+
+  Handle<Object> name() const { return hydrogen()->name(); }
+  bool is_in_object() { return hydrogen()->is_in_object(); }
+  int offset() { return hydrogen()->offset(); }
+  bool needs_write_barrier() { return hydrogen()->NeedsWriteBarrier(); }
+  Handle<Map> transition() const { return hydrogen()->transition(); }
+};
+
+
+class LStoreNamedGeneric: public LTemplateInstruction<0, 2, 0> {
+ public:
+  LStoreNamedGeneric(LOperand* obj, LOperand* val) {
+    inputs_[0] = obj;
+    inputs_[1] = val;
+  }
+
+  DECLARE_CONCRETE_INSTRUCTION(StoreNamedGeneric, "store-named-generic")
+  DECLARE_HYDROGEN_ACCESSOR(StoreNamedGeneric)
 
   virtual void PrintDataTo(StringStream* stream);
 
@@ -1516,40 +1562,17 @@ class LStoreNamed: public LTemplateInstruction<0, 2, 0> {
 };
 
 
-class LStoreNamedField: public LStoreNamed {
+class LStoreKeyedFastElement: public LTemplateInstruction<0, 3, 0> {
  public:
-  LStoreNamedField(LOperand* obj, LOperand* val)
-      : LStoreNamed(obj, val) { }
-
-  DECLARE_CONCRETE_INSTRUCTION(StoreNamedField, "store-named-field")
-  DECLARE_HYDROGEN_ACCESSOR(StoreNamedField)
-
-  bool is_in_object() { return hydrogen()->is_in_object(); }
-  int offset() { return hydrogen()->offset(); }
-  bool needs_write_barrier() { return hydrogen()->NeedsWriteBarrier(); }
-  Handle<Map> transition() const { return hydrogen()->transition(); }
-};
-
-
-class LStoreNamedGeneric: public LStoreNamed {
- public:
-  LStoreNamedGeneric(LOperand* obj, LOperand* val)
-      : LStoreNamed(obj, val) { }
-
-  DECLARE_CONCRETE_INSTRUCTION(StoreNamedGeneric, "store-named-generic")
-  DECLARE_HYDROGEN_ACCESSOR(StoreNamedGeneric)
-};
-
-
-class LStoreKeyed: public LTemplateInstruction<0, 3, 0> {
- public:
-  LStoreKeyed(LOperand* obj, LOperand* key, LOperand* val) {
+  LStoreKeyedFastElement(LOperand* obj, LOperand* key, LOperand* val) {
     inputs_[0] = obj;
     inputs_[1] = key;
     inputs_[2] = val;
   }
 
-  DECLARE_INSTRUCTION(StoreKeyed)
+  DECLARE_CONCRETE_INSTRUCTION(StoreKeyedFastElement,
+                               "store-keyed-fast-element")
+  DECLARE_HYDROGEN_ACCESSOR(StoreKeyedFastElement)
 
   virtual void PrintDataTo(StringStream* stream);
 
@@ -1559,23 +1582,21 @@ class LStoreKeyed: public LTemplateInstruction<0, 3, 0> {
 };
 
 
-class LStoreKeyedFastElement: public LStoreKeyed {
+class LStoreKeyedGeneric: public LTemplateInstruction<0, 3, 0> {
  public:
-  LStoreKeyedFastElement(LOperand* obj, LOperand* key, LOperand* val)
-      : LStoreKeyed(obj, key, val) {}
-
-  DECLARE_CONCRETE_INSTRUCTION(StoreKeyedFastElement,
-                               "store-keyed-fast-element")
-  DECLARE_HYDROGEN_ACCESSOR(StoreKeyedFastElement)
-};
-
-
-class LStoreKeyedGeneric: public LStoreKeyed {
- public:
-  LStoreKeyedGeneric(LOperand* obj, LOperand* key, LOperand* val)
-      : LStoreKeyed(obj, key, val) { }
+  LStoreKeyedGeneric(LOperand* obj, LOperand* key, LOperand* val) {
+    inputs_[0] = obj;
+    inputs_[1] = key;
+    inputs_[2] = val;
+  }
 
   DECLARE_CONCRETE_INSTRUCTION(StoreKeyedGeneric, "store-keyed-generic")
+
+  virtual void PrintDataTo(StringStream* stream);
+
+  LOperand* object() { return inputs_[0]; }
+  LOperand* key() { return inputs_[1]; }
+  LOperand* value() { return inputs_[2]; }
 };
 
 
@@ -1808,7 +1829,7 @@ class LStackCheck: public LTemplateInstruction<0, 0, 0> {
 class LChunkBuilder;
 class LChunk: public ZoneObject {
  public:
-  explicit LChunk(HGraph* graph);
+  explicit LChunk(CompilationInfo* info, HGraph* graph);
 
   void AddInstruction(LInstruction* instruction, HBasicBlock* block);
   LConstantOperand* DefineConstantOperand(HConstant* constant);
@@ -1821,6 +1842,7 @@ class LChunk: public ZoneObject {
   int ParameterAt(int index);
   int GetParameterStackSlot(int index) const;
   int spill_slot_count() const { return spill_slot_count_; }
+  CompilationInfo* info() const { return info_; }
   HGraph* graph() const { return graph_; }
   const ZoneList<LInstruction*>* instructions() const { return &instructions_; }
   void AddGapMove(int index, LOperand* from, LOperand* to);
@@ -1857,6 +1879,7 @@ class LChunk: public ZoneObject {
 
  private:
   int spill_slot_count_;
+  CompilationInfo* info_;
   HGraph* const graph_;
   ZoneList<LInstruction*> instructions_;
   ZoneList<LPointerMap*> pointer_maps_;
@@ -1866,8 +1889,9 @@ class LChunk: public ZoneObject {
 
 class LChunkBuilder BASE_EMBEDDED {
  public:
-  LChunkBuilder(HGraph* graph, LAllocator* allocator)
+  LChunkBuilder(CompilationInfo* info, HGraph* graph, LAllocator* allocator)
       : chunk_(NULL),
+        info_(info),
         graph_(graph),
         status_(UNUSED),
         current_instruction_(NULL),
@@ -1896,6 +1920,7 @@ class LChunkBuilder BASE_EMBEDDED {
   };
 
   LChunk* chunk() const { return chunk_; }
+  CompilationInfo* info() const { return info_; }
   HGraph* graph() const { return graph_; }
 
   bool is_unused() const { return status_ == UNUSED; }
@@ -2002,6 +2027,7 @@ class LChunkBuilder BASE_EMBEDDED {
                               HArithmeticBinaryOperation* instr);
 
   LChunk* chunk_;
+  CompilationInfo* info_;
   HGraph* const graph_;
   Status status_;
   HInstruction* current_instruction_;

@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -2747,7 +2747,8 @@ void CodeGenerator::DeclareGlobals(Handle<FixedArray> pairs) {
   frame_->EmitPush(rsi);  // The context is the first argument.
   frame_->EmitPush(kScratchRegister);
   frame_->EmitPush(Smi::FromInt(is_eval() ? 1 : 0));
-  Result ignored = frame_->CallRuntime(Runtime::kDeclareGlobals, 3);
+  frame_->EmitPush(Smi::FromInt(strict_mode_flag()));
+  Result ignored = frame_->CallRuntime(Runtime::kDeclareGlobals, 4);
   // Return value is ignored.
 }
 
@@ -4605,7 +4606,8 @@ void CodeGenerator::StoreToSlot(Slot* slot, InitState init_state) {
       // by initialization.
       value = frame_->CallRuntime(Runtime::kInitializeConstContextSlot, 3);
     } else {
-      value = frame_->CallRuntime(Runtime::kStoreContextSlot, 3);
+      frame_->Push(Smi::FromInt(strict_mode_flag()));
+      value = frame_->CallRuntime(Runtime::kStoreContextSlot, 4);
     }
     // Storing a variable must keep the (new) value on the expression
     // stack. This is necessary for compiling chained assignment
@@ -4914,8 +4916,9 @@ void CodeGenerator::VisitObjectLiteral(ObjectLiteral* node) {
         Load(property->key());
         Load(property->value());
         if (property->emit_store()) {
+          frame_->Push(Smi::FromInt(NONE));   // PropertyAttributes
           // Ignore the result.
-          Result ignored = frame_->CallRuntime(Runtime::kSetProperty, 3);
+          Result ignored = frame_->CallRuntime(Runtime::kSetProperty, 4);
         } else {
           frame_->Drop(3);
         }
@@ -7030,7 +7033,8 @@ void CodeGenerator::GenerateMathPow(ZoneList<Expression*>* args) {
 void CodeGenerator::GenerateMathSin(ZoneList<Expression*>* args) {
   ASSERT_EQ(args->length(), 1);
   Load(args->at(0));
-  TranscendentalCacheStub stub(TranscendentalCache::SIN);
+  TranscendentalCacheStub stub(TranscendentalCache::SIN,
+                               TranscendentalCacheStub::TAGGED);
   Result result = frame_->CallStub(&stub, 1);
   frame_->Push(&result);
 }
@@ -7039,7 +7043,8 @@ void CodeGenerator::GenerateMathSin(ZoneList<Expression*>* args) {
 void CodeGenerator::GenerateMathCos(ZoneList<Expression*>* args) {
   ASSERT_EQ(args->length(), 1);
   Load(args->at(0));
-  TranscendentalCacheStub stub(TranscendentalCache::COS);
+  TranscendentalCacheStub stub(TranscendentalCache::COS,
+                               TranscendentalCacheStub::TAGGED);
   Result result = frame_->CallStub(&stub, 1);
   frame_->Push(&result);
 }
@@ -7048,7 +7053,8 @@ void CodeGenerator::GenerateMathCos(ZoneList<Expression*>* args) {
 void CodeGenerator::GenerateMathLog(ZoneList<Expression*>* args) {
   ASSERT_EQ(args->length(), 1);
   Load(args->at(0));
-  TranscendentalCacheStub stub(TranscendentalCache::LOG);
+  TranscendentalCacheStub stub(TranscendentalCache::LOG,
+                               TranscendentalCacheStub::TAGGED);
   Result result = frame_->CallStub(&stub, 1);
   frame_->Push(&result);
 }
@@ -7230,21 +7236,25 @@ void CodeGenerator::VisitUnaryOperation(UnaryOperation* node) {
     if (property != NULL) {
       Load(property->obj());
       Load(property->key());
-      Result answer = frame_->InvokeBuiltin(Builtins::DELETE, CALL_FUNCTION, 2);
+      frame_->Push(Smi::FromInt(strict_mode_flag()));
+      Result answer = frame_->InvokeBuiltin(Builtins::DELETE, CALL_FUNCTION, 3);
       frame_->Push(&answer);
       return;
     }
 
     Variable* variable = node->expression()->AsVariableProxy()->AsVariable();
     if (variable != NULL) {
+      // Delete of an unqualified identifier is disallowed in strict mode
+      // but "delete this" is.
+      ASSERT(strict_mode_flag() == kNonStrictMode || variable->is_this());
       Slot* slot = variable->AsSlot();
       if (variable->is_global()) {
         LoadGlobal();
         frame_->Push(variable->name());
+        frame_->Push(Smi::FromInt(kNonStrictMode));
         Result answer = frame_->InvokeBuiltin(Builtins::DELETE,
-                                              CALL_FUNCTION, 2);
+                                              CALL_FUNCTION, 3);
         frame_->Push(&answer);
-        return;
 
       } else if (slot != NULL && slot->type() == Slot::LOOKUP) {
         // Call the runtime to delete from the context holding the named
@@ -7255,13 +7265,11 @@ void CodeGenerator::VisitUnaryOperation(UnaryOperation* node) {
         frame_->EmitPush(variable->name());
         Result answer = frame_->CallRuntime(Runtime::kDeleteContextSlot, 2);
         frame_->Push(&answer);
-        return;
+      } else {
+        // Default: Result of deleting non-global, not dynamically
+        // introduced variables is false.
+        frame_->Push(Factory::false_value());
       }
-
-      // Default: Result of deleting non-global, not dynamically
-      // introduced variables is false.
-      frame_->Push(Factory::false_value());
-
     } else {
       // Default: Result of deleting expressions is true.
       Load(node->expression());  // may have side-effects
@@ -8070,8 +8078,12 @@ class DeferredReferenceSetKeyedValue: public DeferredCode {
  public:
   DeferredReferenceSetKeyedValue(Register value,
                                  Register key,
-                                 Register receiver)
-      : value_(value), key_(key), receiver_(receiver) {
+                                 Register receiver,
+                                 StrictModeFlag strict_mode)
+      : value_(value),
+        key_(key),
+        receiver_(receiver),
+        strict_mode_(strict_mode) {
     set_comment("[ DeferredReferenceSetKeyedValue");
   }
 
@@ -8084,6 +8096,7 @@ class DeferredReferenceSetKeyedValue: public DeferredCode {
   Register key_;
   Register receiver_;
   Label patch_site_;
+  StrictModeFlag strict_mode_;
 };
 
 
@@ -8135,7 +8148,9 @@ void DeferredReferenceSetKeyedValue::Generate() {
   }
 
   // Call the IC stub.
-  Handle<Code> ic(Builtins::builtin(Builtins::KeyedStoreIC_Initialize));
+  Handle<Code> ic(Builtins::builtin(
+      (strict_mode_ == kStrictMode) ? Builtins::KeyedStoreIC_Initialize_Strict
+                                    : Builtins::KeyedStoreIC_Initialize));
   __ Call(ic, RelocInfo::CODE_TARGET);
   // The delta from the start of the map-compare instructions (initial movq)
   // to the test instruction.  We use masm_-> directly here instead of the
@@ -8202,7 +8217,8 @@ Result CodeGenerator::EmitNamedLoad(Handle<String> name, bool is_contextual) {
     // This is the map check instruction that will be patched (so we can't
     // use the double underscore macro that may insert instructions).
     // Initially use an invalid map to force a failure.
-    masm()->Move(kScratchRegister, Factory::null_value());
+    masm()->movq(kScratchRegister, Factory::null_value(),
+                 RelocInfo::EMBEDDED_OBJECT);
     masm()->cmpq(FieldOperand(receiver.reg(), HeapObject::kMapOffset),
                  kScratchRegister);
     // This branch is always a forwards branch so it's always a fixed
@@ -8278,7 +8294,8 @@ Result CodeGenerator::EmitNamedStore(Handle<String> name, bool is_contextual) {
     // the __ macro for the following two instructions because it
     // might introduce extra instructions.
     __ bind(&patch_site);
-    masm()->Move(kScratchRegister, Factory::null_value());
+    masm()->movq(kScratchRegister, Factory::null_value(),
+                 RelocInfo::EMBEDDED_OBJECT);
     masm()->cmpq(FieldOperand(receiver.reg(), HeapObject::kMapOffset),
                  kScratchRegister);
     // This branch is always a forwards branch so it's always a fixed size
@@ -8476,7 +8493,8 @@ Result CodeGenerator::EmitKeyedStore(StaticType* key_type) {
     DeferredReferenceSetKeyedValue* deferred =
         new DeferredReferenceSetKeyedValue(result.reg(),
                                            key.reg(),
-                                           receiver.reg());
+                                           receiver.reg(),
+                                           strict_mode_flag());
 
     // Check that the receiver is not a smi.
     __ JumpIfSmi(receiver.reg(), deferred->entry_label());
@@ -8538,7 +8556,7 @@ Result CodeGenerator::EmitKeyedStore(StaticType* key_type) {
 
     deferred->BindExit();
   } else {
-    result = frame()->CallKeyedStoreIC();
+    result = frame()->CallKeyedStoreIC(strict_mode_flag());
     // Make sure that we do not have a test instruction after the
     // call.  A test instruction after the call is used to
     // indicate that we have generated an inline version of the

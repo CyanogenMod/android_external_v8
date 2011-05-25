@@ -1,1 +1,0 @@
-cp -r AUTHORS ChangeLog LICENSE SConstruct benchmarks include samples src test tools ../android/master/external/v8/ 

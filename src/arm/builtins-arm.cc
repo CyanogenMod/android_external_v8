@@ -428,7 +428,7 @@ void Builtins::Generate_ArrayCode(MacroAssembler* masm) {
   GenerateLoadArrayFunction(masm, r1);
 
   if (FLAG_debug_code) {
-    // Initial map for the builtin Array function shoud be a map.
+    // Initial map for the builtin Array functions should be maps.
     __ ldr(r2, FieldMemOperand(r1, JSFunction::kPrototypeOrInitialMapOffset));
     __ tst(r2, Operand(kSmiTagMask));
     __ Assert(ne, "Unexpected initial map for Array function");
@@ -458,11 +458,8 @@ void Builtins::Generate_ArrayConstructCode(MacroAssembler* masm) {
   Label generic_constructor;
 
   if (FLAG_debug_code) {
-    // The array construct code is only set for the builtin Array function which
-    // always have a map.
-    GenerateLoadArrayFunction(masm, r2);
-    __ cmp(r1, r2);
-    __ Assert(eq, "Unexpected Array function");
+    // The array construct code is only set for the builtin and internal
+    // Array functions which always have a map.
     // Initial map for the builtin Array function should be a map.
     __ ldr(r2, FieldMemOperand(r1, JSFunction::kPrototypeOrInitialMapOffset));
     __ tst(r2, Operand(kSmiTagMask));
@@ -1231,6 +1228,14 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
     // Change context eagerly in case we need the global receiver.
     __ ldr(cp, FieldMemOperand(r1, JSFunction::kContextOffset));
 
+    // Do not transform the receiver for strict mode functions.
+    __ ldr(r2, FieldMemOperand(r1, JSFunction::kSharedFunctionInfoOffset));
+    __ ldr(r2, FieldMemOperand(r2, SharedFunctionInfo::kCompilerHintsOffset));
+    __ tst(r2, Operand(1 << (SharedFunctionInfo::kStrictModeFunction +
+                             kSmiTagSize)));
+    __ b(ne, &shift_arguments);
+
+    // Compute the receiver in non-strict mode.
     __ add(r2, sp, Operand(r0, LSL, kPointerSizeLog2));
     __ ldr(r2, MemOperand(r2, -kPointerSize));
     // r0: actual number of arguments
@@ -1394,10 +1399,20 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
   // Change context eagerly to get the right global object if necessary.
   __ ldr(r0, MemOperand(fp, kFunctionOffset));
   __ ldr(cp, FieldMemOperand(r0, JSFunction::kContextOffset));
+  // Load the shared function info while the function is still in r0.
+  __ ldr(r1, FieldMemOperand(r0, JSFunction::kSharedFunctionInfoOffset));
 
   // Compute the receiver.
   Label call_to_object, use_global_receiver, push_receiver;
   __ ldr(r0, MemOperand(fp, kRecvOffset));
+
+  // Do not transform the receiver for strict mode functions.
+  __ ldr(r1, FieldMemOperand(r1, SharedFunctionInfo::kCompilerHintsOffset));
+  __ tst(r1, Operand(1 << (SharedFunctionInfo::kStrictModeFunction +
+                           kSmiTagSize)));
+  __ b(ne, &push_receiver);
+
+  // Compute the receiver in non-strict mode.
   __ tst(r0, Operand(kSmiTagMask));
   __ b(eq, &call_to_object);
   __ LoadRoot(r1, Heap::kNullValueRootIndex);

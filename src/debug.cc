@@ -836,7 +836,8 @@ bool Debug::Load() {
   Handle<String> key = Factory::LookupAsciiSymbol("builtins");
   Handle<GlobalObject> global = Handle<GlobalObject>(context->global());
   RETURN_IF_EMPTY_HANDLE_VALUE(
-      SetProperty(global, key, Handle<Object>(global->builtins()), NONE),
+      SetProperty(global, key, Handle<Object>(global->builtins()),
+                  NONE, kNonStrictMode),
       false);
 
   // Compile the JavaScript for the debugger in the debugger context.
@@ -1012,14 +1013,18 @@ Handle<Object> Debug::CheckBreakPoints(Handle<Object> break_point_objects) {
     for (int i = 0; i < array->length(); i++) {
       Handle<Object> o(array->get(i));
       if (CheckBreakPoint(o)) {
-        SetElement(break_points_hit, break_points_hit_count++, o);
+        SetElement(break_points_hit,
+                   break_points_hit_count++,
+                   o,
+                   kNonStrictMode);
       }
     }
   } else {
     if (CheckBreakPoint(break_point_objects)) {
       SetElement(break_points_hit,
                  break_points_hit_count++,
-                 break_point_objects);
+                 break_point_objects,
+                 kNonStrictMode);
     }
   }
 

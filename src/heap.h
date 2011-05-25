@@ -30,6 +30,8 @@
 
 #include <math.h>
 
+#include "globals.h"
+#include "list.h"
 #include "spaces.h"
 #include "splay-tree-inl.h"
 #include "v8-counters.h"
@@ -47,7 +49,6 @@ namespace internal {
   V(Map, one_pointer_filler_map, OnePointerFillerMap)                          \
   V(Map, two_pointer_filler_map, TwoPointerFillerMap)                          \
   /* Cluster the most popular ones in a few cache lines here at the top.    */ \
-  V(Smi, stack_limit, StackLimit)                                              \
   V(Object, undefined_value, UndefinedValue)                                   \
   V(Object, the_hole_value, TheHoleValue)                                      \
   V(Object, null_value, NullValue)                                             \
@@ -60,21 +61,29 @@ namespace internal {
   V(Map, fixed_cow_array_map, FixedCOWArrayMap)                                \
   V(Object, no_interceptor_result_sentinel, NoInterceptorResultSentinel)       \
   V(Map, meta_map, MetaMap)                                                    \
-  V(Object, termination_exception, TerminationException)                       \
   V(Map, hash_table_map, HashTableMap)                                         \
+  V(Smi, stack_limit, StackLimit)                                              \
+  V(FixedArray, number_string_cache, NumberStringCache)                        \
+  V(Object, instanceof_cache_function, InstanceofCacheFunction)                \
+  V(Object, instanceof_cache_map, InstanceofCacheMap)                          \
+  V(Object, instanceof_cache_answer, InstanceofCacheAnswer)                    \
+  V(FixedArray, single_character_string_cache, SingleCharacterStringCache)     \
+  V(Object, termination_exception, TerminationException)                       \
   V(FixedArray, empty_fixed_array, EmptyFixedArray)                            \
   V(ByteArray, empty_byte_array, EmptyByteArray)                               \
+  V(String, empty_string, EmptyString)                                         \
+  V(DescriptorArray, empty_descriptor_array, EmptyDescriptorArray)             \
   V(Map, string_map, StringMap)                                                \
   V(Map, ascii_string_map, AsciiStringMap)                                     \
   V(Map, symbol_map, SymbolMap)                                                \
+  V(Map, cons_string_map, ConsStringMap)                                       \
+  V(Map, cons_ascii_string_map, ConsAsciiStringMap)                            \
   V(Map, ascii_symbol_map, AsciiSymbolMap)                                     \
   V(Map, cons_symbol_map, ConsSymbolMap)                                       \
   V(Map, cons_ascii_symbol_map, ConsAsciiSymbolMap)                            \
   V(Map, external_symbol_map, ExternalSymbolMap)                               \
   V(Map, external_symbol_with_ascii_data_map, ExternalSymbolWithAsciiDataMap)  \
   V(Map, external_ascii_symbol_map, ExternalAsciiSymbolMap)                    \
-  V(Map, cons_string_map, ConsStringMap)                                       \
-  V(Map, cons_ascii_string_map, ConsAsciiStringMap)                            \
   V(Map, external_string_map, ExternalStringMap)                               \
   V(Map, external_string_with_ascii_data_map, ExternalStringWithAsciiDataMap)  \
   V(Map, external_ascii_string_map, ExternalAsciiStringMap)                    \
@@ -98,11 +107,6 @@ namespace internal {
   V(Map, proxy_map, ProxyMap)                                                  \
   V(Object, nan_value, NanValue)                                               \
   V(Object, minus_zero_value, MinusZeroValue)                                  \
-  V(Object, instanceof_cache_function, InstanceofCacheFunction)                \
-  V(Object, instanceof_cache_map, InstanceofCacheMap)                          \
-  V(Object, instanceof_cache_answer, InstanceofCacheAnswer)                    \
-  V(String, empty_string, EmptyString)                                         \
-  V(DescriptorArray, empty_descriptor_array, EmptyDescriptorArray)             \
   V(Map, neander_map, NeanderMap)                                              \
   V(JSObject, message_listeners, MessageListeners)                             \
   V(Proxy, prototype_accessors, PrototypeAccessors)                            \
@@ -111,8 +115,6 @@ namespace internal {
   V(Code, js_entry_code, JsEntryCode)                                          \
   V(Code, js_construct_entry_code, JsConstructEntryCode)                       \
   V(Code, c_entry_code, CEntryCode)                                            \
-  V(FixedArray, number_string_cache, NumberStringCache)                        \
-  V(FixedArray, single_character_string_cache, SingleCharacterStringCache)     \
   V(FixedArray, natives_source_cache, NativesSourceCache)                      \
   V(Object, last_script_id, LastScriptId)                                      \
   V(Script, empty_script, EmptyScript)                                         \
@@ -184,6 +186,7 @@ namespace internal {
   V(KeyedLoadSpecialized_symbol, "KeyedLoadSpecialized")                 \
   V(KeyedStoreSpecialized_symbol, "KeyedStoreSpecialized")               \
   V(KeyedLoadPixelArray_symbol, "KeyedLoadPixelArray")                   \
+  V(KeyedStorePixelArray_symbol, "KeyedStorePixelArray")                 \
   V(stack_overflow_symbol, "kStackOverflowBoilerplate")                  \
   V(illegal_access_symbol, "illegal access")                             \
   V(out_of_memory_symbol, "out-of-memory")                               \
@@ -214,7 +217,6 @@ namespace internal {
   V(use_strict, "use strict")                                            \
   V(KeyedLoadExternalArray_symbol, "KeyedLoadExternalArray")             \
   V(KeyedStoreExternalArray_symbol, "KeyedStoreExternalArray")
-
 
 // Forward declarations.
 class GCTracer;
@@ -1179,7 +1181,7 @@ class Heap : public AllStatic {
 
   static int mc_count_;  // how many mark-compact collections happened
   static int ms_count_;  // how many mark-sweep collections happened
-  static int gc_count_;  // how many gc happened
+  static unsigned int gc_count_;  // how many gc happened
 
   // Total length of the strings we failed to flatten since the last GC.
   static int unflattened_strings_length_;
@@ -1906,7 +1908,7 @@ class GCTracer BASE_EMBEDDED {
   void set_collector(GarbageCollector collector) { collector_ = collector; }
 
   // Sets the GC count.
-  void set_gc_count(int count) { gc_count_ = count; }
+  void set_gc_count(unsigned int count) { gc_count_ = count; }
 
   // Sets the full GC count.
   void set_full_gc_count(int count) { full_gc_count_ = count; }
@@ -1949,7 +1951,7 @@ class GCTracer BASE_EMBEDDED {
 
   // A count (including this one, eg, the first collection is 1) of the
   // number of garbage collections.
-  int gc_count_;
+  unsigned int gc_count_;
 
   // A count (including this one) of the number of full garbage collections.
   int full_gc_count_;
@@ -2149,6 +2151,65 @@ class WeakObjectRetainer {
   // should be returned as in some GC situations the object has been moved.
   virtual Object* RetainAs(Object* object) = 0;
 };
+
+
+#if defined(DEBUG) || defined(LIVE_OBJECT_LIST)
+// Helper class for tracing paths to a search target Object from all roots.
+// The TracePathFrom() method can be used to trace paths from a specific
+// object to the search target object.
+class PathTracer : public ObjectVisitor {
+ public:
+  enum WhatToFind {
+    FIND_ALL,   // Will find all matches.
+    FIND_FIRST  // Will stop the search after first match.
+  };
+
+  // For the WhatToFind arg, if FIND_FIRST is specified, tracing will stop
+  // after the first match.  If FIND_ALL is specified, then tracing will be
+  // done for all matches.
+  PathTracer(Object* search_target,
+             WhatToFind what_to_find,
+             VisitMode visit_mode)
+      : search_target_(search_target),
+        found_target_(false),
+        found_target_in_trace_(false),
+        what_to_find_(what_to_find),
+        visit_mode_(visit_mode),
+        object_stack_(20),
+        no_alloc() {}
+
+  virtual void VisitPointers(Object** start, Object** end);
+
+  void Reset();
+  void TracePathFrom(Object** root);
+
+  bool found() const { return found_target_; }
+
+  static Object* const kAnyGlobalObject;
+
+ protected:
+  class MarkVisitor;
+  class UnmarkVisitor;
+
+  void MarkRecursively(Object** p, MarkVisitor* mark_visitor);
+  void UnmarkRecursively(Object** p, UnmarkVisitor* unmark_visitor);
+  virtual void ProcessResults();
+
+  // Tags 0, 1, and 3 are used. Use 2 for marking visited HeapObject.
+  static const int kMarkTag = 2;
+
+  Object* search_target_;
+  bool found_target_;
+  bool found_target_in_trace_;
+  WhatToFind what_to_find_;
+  VisitMode visit_mode_;
+  List<Object*> object_stack_;
+
+  AssertNoAllocation no_alloc;  // i.e. no gc allowed.
+
+  DISALLOW_IMPLICIT_CONSTRUCTORS(PathTracer);
+};
+#endif  // DEBUG || LIVE_OBJECT_LIST
 
 
 } }  // namespace v8::internal

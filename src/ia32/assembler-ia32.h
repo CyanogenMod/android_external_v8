@@ -183,13 +183,6 @@ const XMMRegister xmm7 = { 7 };
 typedef XMMRegister DoubleRegister;
 
 
-// Index of register used in pusha/popa.
-// Order of pushed registers: EAX, ECX, EDX, EBX, ESP, EBP, ESI, and EDI
-inline int EspIndexForPushAll(Register reg) {
-  return Register::kNumRegisters - 1 - reg.code();
-}
-
-
 enum Condition {
   // any value < 0 is considered no_condition
   no_condition  = -1,
@@ -957,8 +950,9 @@ class Assembler : public Malloced {
   void RecordDebugBreakSlot();
 
   // Record a comment relocation entry that can be used by a disassembler.
-  // Use --code-comments to enable.
-  void RecordComment(const char* msg);
+  // Use --code-comments to enable, or provide "force = true" flag to always
+  // write a comment.
+  void RecordComment(const char* msg, bool force = false);
 
   // Writes a single byte or word of data in the code stream.  Used for
   // inline tables, e.g., jump-tables.
@@ -978,6 +972,10 @@ class Assembler : public Malloced {
   static bool IsNop(Address addr) { return *addr == 0x90; }
 
   PositionsRecorder* positions_recorder() { return &positions_recorder_; }
+
+  int relocation_writer_size() {
+    return (buffer_ + buffer_size_) - reloc_info_writer.pos();
+  }
 
   // Avoid overflows for displacements etc.
   static const int kMaximalBufferSize = 512*MB;

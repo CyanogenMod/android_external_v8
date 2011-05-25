@@ -327,7 +327,7 @@ class PosixMemoryMappedFile : public OS::MemoryMappedFile {
 
 
 OS::MemoryMappedFile* OS::MemoryMappedFile::open(const char* name) {
-  FILE* file = fopen(name, "w+");
+  FILE* file = fopen(name, "r+");
   if (file == NULL) return NULL;
 
   fseek(file, 0, SEEK_END);
@@ -873,6 +873,7 @@ class Sampler::PlatformData : public Malloced {
   }
 
   void SendProfilingSignal() {
+    if (!signal_handler_installed_) return;
     // Glibc doesn't provide a wrapper for tgkill(2).
     syscall(SYS_tgkill, vm_tgid_, vm_tid_, SIGPROF);
   }
@@ -939,8 +940,8 @@ void Sampler::Start() {
   sa.sa_sigaction = ProfilerSignalHandler;
   sigemptyset(&sa.sa_mask);
   sa.sa_flags = SA_RESTART | SA_SIGINFO;
-  if (sigaction(SIGPROF, &sa, &data_->old_signal_handler_) != 0) return;
-  data_->signal_handler_installed_ = true;
+  data_->signal_handler_installed_ =
+      sigaction(SIGPROF, &sa, &data_->old_signal_handler_) == 0;
 
   // Start a thread that sends SIGPROF signal to VM thread.
   // Sending the signal ourselves instead of relying on itimer provides
