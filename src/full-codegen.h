@@ -501,9 +501,9 @@ class FullCodeGenerator: public AstVisitor {
 
   Handle<Script> script() { return info_->script(); }
   bool is_eval() { return info_->is_eval(); }
-  bool is_strict() { return function()->strict_mode(); }
+  bool is_strict_mode() { return function()->strict_mode(); }
   StrictModeFlag strict_mode_flag() {
-    return is_strict() ? kStrictMode : kNonStrictMode;
+    return is_strict_mode() ? kStrictMode : kNonStrictMode;
   }
   FunctionLiteral* function() { return info_->function(); }
   Scope* scope() { return info_->scope(); }
@@ -552,6 +552,8 @@ class FullCodeGenerator: public AstVisitor {
     virtual ~ExpressionContext() {
       codegen_->set_new_context(old_);
     }
+
+    Isolate* isolate() const { return codegen_->isolate(); }
 
     // Convert constant control flow (true or false) to the result expected for
     // this expression context.

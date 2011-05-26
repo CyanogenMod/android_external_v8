@@ -65,10 +65,10 @@ TEST(0) {
 
   CodeDesc desc;
   assm.GetCode(&desc);
-  Object* code = Heap::CreateCode(
+  Object* code = HEAP->CreateCode(
       desc,
       Code::ComputeFlags(Code::STUB),
-      Handle<Object>(Heap::undefined_value()))->ToObjectChecked();
+      Handle<Object>(HEAP->undefined_value()))->ToObjectChecked();
   CHECK(code->IsCode());
 #ifdef DEBUG
   Code::cast(code)->Print();
@@ -102,10 +102,10 @@ TEST(1) {
 
   CodeDesc desc;
   assm.GetCode(&desc);
-  Object* code = Heap::CreateCode(
+  Object* code = HEAP->CreateCode(
       desc,
       Code::ComputeFlags(Code::STUB),
-      Handle<Object>(Heap::undefined_value()))->ToObjectChecked();
+      Handle<Object>(HEAP->undefined_value()))->ToObjectChecked();
   CHECK(code->IsCode());
 #ifdef DEBUG
   Code::cast(code)->Print();
@@ -139,7 +139,7 @@ TEST(2) {
 
   // some relocated stuff here, not executed
   __ RecordComment("dead code, just testing relocations");
-  __ mov(r0, Operand(Factory::true_value()));
+  __ mov(r0, Operand(FACTORY->true_value()));
   __ RecordComment("dead code, just testing immediate operands");
   __ mov(r0, Operand(-1));
   __ mov(r0, Operand(0xFF000000));
@@ -148,10 +148,10 @@ TEST(2) {
 
   CodeDesc desc;
   assm.GetCode(&desc);
-  Object* code = Heap::CreateCode(
+  Object* code = HEAP->CreateCode(
       desc,
       Code::ComputeFlags(Code::STUB),
-      Handle<Object>(Heap::undefined_value()))->ToObjectChecked();
+      Handle<Object>(HEAP->undefined_value()))->ToObjectChecked();
   CHECK(code->IsCode());
 #ifdef DEBUG
   Code::cast(code)->Print();
@@ -196,10 +196,10 @@ TEST(3) {
 
   CodeDesc desc;
   assm.GetCode(&desc);
-  Object* code = Heap::CreateCode(
+  Object* code = HEAP->CreateCode(
       desc,
       Code::ComputeFlags(Code::STUB),
-      Handle<Object>(Heap::undefined_value()))->ToObjectChecked();
+      Handle<Object>(HEAP->undefined_value()))->ToObjectChecked();
   CHECK(code->IsCode());
 #ifdef DEBUG
   Code::cast(code)->Print();
@@ -232,6 +232,8 @@ TEST(4) {
     double g;
     double h;
     int i;
+    double m;
+    double n;
     float x;
     float y;
   } T;
@@ -243,7 +245,7 @@ TEST(4) {
   Label L, C;
 
 
-  if (CpuFeatures::IsSupported(VFP3)) {
+  if (Isolate::Current()->cpu_features()->IsSupported(VFP3)) {
     CpuFeatures::Scope scope(VFP3);
 
     __ mov(ip, Operand(sp));
@@ -297,14 +299,22 @@ TEST(4) {
     __ vabs(d0, d2);
     __ vstr(d0, r4, OFFSET_OF(T, h));
 
+    // Test vneg.
+    __ vldr(d1, r4, OFFSET_OF(T, m));
+    __ vneg(d0, d1);
+    __ vstr(d0, r4, OFFSET_OF(T, m));
+    __ vldr(d1, r4, OFFSET_OF(T, n));
+    __ vneg(d0, d1);
+    __ vstr(d0, r4, OFFSET_OF(T, n));
+
     __ ldm(ia_w, sp, r4.bit() | fp.bit() | pc.bit());
 
     CodeDesc desc;
     assm.GetCode(&desc);
-    Object* code = Heap::CreateCode(
+    Object* code = HEAP->CreateCode(
         desc,
         Code::ComputeFlags(Code::STUB),
-        Handle<Object>(Heap::undefined_value()))->ToObjectChecked();
+        Handle<Object>(HEAP->undefined_value()))->ToObjectChecked();
     CHECK(code->IsCode());
 #ifdef DEBUG
     Code::cast(code)->Print();
@@ -319,12 +329,16 @@ TEST(4) {
     t.g = -2718.2818;
     t.h = 31415926.5;
     t.i = 0;
+    t.m = -2718.2818;
+    t.n = 123.456;
     t.x = 4.5;
     t.y = 9.0;
     Object* dummy = CALL_GENERATED_CODE(f, &t, 0, 0, 0, 0);
     USE(dummy);
     CHECK_EQ(4.5, t.y);
     CHECK_EQ(9.0, t.x);
+    CHECK_EQ(-123.456, t.n);
+    CHECK_EQ(2718.2818, t.m);
     CHECK_EQ(2, t.i);
     CHECK_EQ(2718.2818, t.g);
     CHECK_EQ(31415926.5, t.h);
@@ -345,7 +359,7 @@ TEST(5) {
 
   Assembler assm(NULL, 0);
 
-  if (CpuFeatures::IsSupported(ARMv7)) {
+  if (Isolate::Current()->cpu_features()->IsSupported(ARMv7)) {
     CpuFeatures::Scope scope(ARMv7);
     // On entry, r0 = 0xAAAAAAAA = 0b10..10101010.
     __ ubfx(r0, r0, 1, 12);  // 0b00..010101010101 = 0x555
@@ -357,10 +371,10 @@ TEST(5) {
 
     CodeDesc desc;
     assm.GetCode(&desc);
-    Object* code = Heap::CreateCode(
+    Object* code = HEAP->CreateCode(
         desc,
         Code::ComputeFlags(Code::STUB),
-        Handle<Object>(Heap::undefined_value()))->ToObjectChecked();
+        Handle<Object>(HEAP->undefined_value()))->ToObjectChecked();
     CHECK(code->IsCode());
 #ifdef DEBUG
     Code::cast(code)->Print();
@@ -381,7 +395,7 @@ TEST(6) {
 
   Assembler assm(NULL, 0);
 
-  if (CpuFeatures::IsSupported(ARMv7)) {
+  if (Isolate::Current()->cpu_features()->IsSupported(ARMv7)) {
     CpuFeatures::Scope scope(ARMv7);
     __ usat(r1, 8, Operand(r0));           // Sat 0xFFFF to 0-255 = 0xFF.
     __ usat(r2, 12, Operand(r0, ASR, 9));  // Sat (0xFFFF>>9) to 0-4095 = 0x7F.
@@ -392,10 +406,10 @@ TEST(6) {
 
     CodeDesc desc;
     assm.GetCode(&desc);
-    Object* code = Heap::CreateCode(
+    Object* code = HEAP->CreateCode(
         desc,
         Code::ComputeFlags(Code::STUB),
-        Handle<Object>(Heap::undefined_value()))->ToObjectChecked();
+        Handle<Object>(HEAP->undefined_value()))->ToObjectChecked();
     CHECK(code->IsCode());
 #ifdef DEBUG
     Code::cast(code)->Print();
@@ -424,7 +438,7 @@ static void TestRoundingMode(VCVTTypes types,
 
   Assembler assm(NULL, 0);
 
-  if (CpuFeatures::IsSupported(VFP3)) {
+  if (Isolate::Current()->cpu_features()->IsSupported(VFP3)) {
     CpuFeatures::Scope scope(VFP3);
 
     Label wrong_exception;
@@ -468,10 +482,10 @@ static void TestRoundingMode(VCVTTypes types,
 
     CodeDesc desc;
     assm.GetCode(&desc);
-    Object* code = Heap::CreateCode(
+    Object* code = HEAP->CreateCode(
         desc,
         Code::ComputeFlags(Code::STUB),
-        Handle<Object>(Heap::undefined_value()))->ToObjectChecked();
+        Handle<Object>(HEAP->undefined_value()))->ToObjectChecked();
     CHECK(code->IsCode());
 #ifdef DEBUG
     Code::cast(code)->Print();

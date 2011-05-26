@@ -97,7 +97,11 @@ private:
 #define FLAG FLAG_FULL
 
 // Flags for Crankshaft.
-DEFINE_bool(crankshaft, true, "use crankshaft")
+#ifdef V8_TARGET_ARCH_MIPS
+  DEFINE_bool(crankshaft, false, "use crankshaft")
+#else
+  DEFINE_bool(crankshaft, true, "use crankshaft")
+#endif
 DEFINE_string(hydrogen_filter, "", "hydrogen use/trace filter")
 DEFINE_bool(use_hydrogen, true, "use generated hydrogen for compilation")
 DEFINE_bool(build_lithium, true, "use lithium chunk builder")
@@ -111,7 +115,7 @@ DEFINE_bool(use_inlining, true, "use function inlining")
 DEFINE_bool(limit_inlining, true, "limit code size growth from inlining")
 DEFINE_bool(eliminate_empty_blocks, true, "eliminate empty blocks")
 DEFINE_bool(loop_invariant_code_motion, true, "loop invariant code motion")
-DEFINE_bool(time_hydrogen, false, "timing for hydrogen")
+DEFINE_bool(hydrogen_stats, false, "print statistics for hydrogen")
 DEFINE_bool(trace_hydrogen, false, "trace generated hydrogen to file")
 DEFINE_bool(trace_inlining, false, "trace inlining decisions")
 DEFINE_bool(trace_alloc, false, "trace register allocator")
@@ -161,6 +165,8 @@ DEFINE_bool(enable_vfp3, true,
             "enable use of VFP3 instructions if available (ARM only)")
 DEFINE_bool(enable_armv7, true,
             "enable use of ARMv7 instructions if available (ARM only)")
+DEFINE_bool(enable_fpu, true,
+            "enable use of MIPS FPU instructions if available (MIPS only)")
 
 // bootstrapper.cc
 DEFINE_string(expose_natives_as, NULL, "expose natives in global object")
@@ -446,6 +452,8 @@ DEFINE_bool(debug_serialization, false,
 DEFINE_bool(collect_heap_spill_statistics, false,
             "report heap spill statistics along with heap_stats "
             "(requires heap_stats)")
+
+DEFINE_bool(trace_isolates, false, "trace isolate state changes")
 
 // VM state
 DEFINE_bool(log_state_changes, false, "Log state changes.")

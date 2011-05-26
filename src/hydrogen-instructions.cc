@@ -36,6 +36,8 @@
 #include "x64/lithium-x64.h"
 #elif V8_TARGET_ARCH_ARM
 #include "arm/lithium-arm.h"
+#elif V8_TARGET_ARCH_MIPS
+#include "mips/lithium-mips.h"
 #else
 #error Unsupported target architecture.
 #endif
@@ -414,10 +416,7 @@ bool HValue::UpdateInferredType() {
 void HValue::RegisterUse(int index, HValue* new_value) {
   HValue* old_value = OperandAt(index);
   if (old_value == new_value) return;
-  if (old_value != NULL) {
-    ASSERT(old_value->uses_.Contains(this));
-    old_value->uses_.RemoveElement(this);
-  }
+  if (old_value != NULL) old_value->uses_.RemoveElement(this);
   if (new_value != NULL) {
     new_value->uses_.Add(this);
   }
@@ -933,6 +932,14 @@ void HPhi::AddInput(HValue* value) {
 }
 
 
+bool HPhi::HasRealUses() {
+  for (int i = 0; i < uses()->length(); i++) {
+    if (!uses()->at(i)->IsPhi()) return true;
+  }
+  return false;
+}
+
+
 HValue* HPhi::GetRedundantReplacement() {
   HValue* candidate = NULL;
   int count = OperandCount();
@@ -1038,7 +1045,7 @@ HConstant* HConstant::CopyToRepresentation(Representation r) const {
 HConstant* HConstant::CopyToTruncatedInt32() const {
   if (!has_double_value_) return NULL;
   int32_t truncated = NumberToInt32(*handle_);
-  return new HConstant(Factory::NewNumberFromInt(truncated),
+  return new HConstant(FACTORY->NewNumberFromInt(truncated),
                        Representation::Integer32());
 }
 
@@ -1049,7 +1056,7 @@ void HConstant::PrintDataTo(StringStream* stream) {
 
 
 bool HArrayLiteral::IsCopyOnWrite() const {
-  return constant_elements()->map() == Heap::fixed_cow_array_map();
+  return constant_elements()->map() == HEAP->fixed_cow_array_map();
 }
 
 
@@ -1151,6 +1158,60 @@ void HLoadNamedField::PrintDataTo(StringStream* stream) {
 }
 
 
+HLoadNamedFieldPolymorphic::HLoadNamedFieldPolymorphic(HValue* object,
+                                                       ZoneMapList* types,
+                                                       Handle<String> name)
+    : HUnaryOperation(object),
+      types_(Min(types->length(), kMaxLoadPolymorphism)),
+      name_(name),
+      need_generic_(false) {
+  set_representation(Representation::Tagged());
+  SetFlag(kDependsOnMaps);
+  for (int i = 0;
+       i < types->length() && types_.length() < kMaxLoadPolymorphism;
+       ++i) {
+    Handle<Map> map = types->at(i);
+    LookupResult lookup;
+    map->LookupInDescriptors(NULL, *name, &lookup);
+    if (lookup.IsProperty() && lookup.type() == FIELD) {
+      types_.Add(types->at(i));
+      int index = lookup.GetLocalFieldIndexFromMap(*map);
+      if (index < 0) {
+        SetFlag(kDependsOnInobjectFields);
+      } else {
+        SetFlag(kDependsOnBackingStoreFields);
+      }
+    }
+  }
+
+  if (types_.length() == types->length() && FLAG_deoptimize_uncommon_cases) {
+    SetFlag(kUseGVN);
+  } else {
+    SetAllSideEffects();
+    need_generic_ = true;
+  }
+}
+
+
+bool HLoadNamedFieldPolymorphic::DataEquals(HValue* value) {
+  HLoadNamedFieldPolymorphic* other = HLoadNamedFieldPolymorphic::cast(value);
+  if (types_.length() != other->types()->length()) return false;
+  if (!name_.is_identical_to(other->name())) return false;
+  if (need_generic_ != other->need_generic_) return false;
+  for (int i = 0; i < types_.length(); i++) {
+    bool found = false;
+    for (int j = 0; j < types_.length(); j++) {
+      if (types_.at(j).is_identical_to(other->types()->at(i))) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) return false;
+  }
+  return true;
+}
+
+
 void HLoadKeyedFastElement::PrintDataTo(StringStream* stream) {
   object()->PrintNameTo(stream);
   stream->Add("[");
@@ -1167,8 +1228,36 @@ void HLoadKeyedGeneric::PrintDataTo(StringStream* stream) {
 }
 
 
-void HLoadPixelArrayElement::PrintDataTo(StringStream* stream) {
+void HLoadKeyedSpecializedArrayElement::PrintDataTo(
+    StringStream* stream) {
   external_pointer()->PrintNameTo(stream);
+  stream->Add(".");
+  switch (array_type()) {
+    case kExternalByteArray:
+      stream->Add("byte");
+      break;
+    case kExternalUnsignedByteArray:
+      stream->Add("u_byte");
+      break;
+    case kExternalShortArray:
+      stream->Add("short");
+      break;
+    case kExternalUnsignedShortArray:
+      stream->Add("u_short");
+      break;
+    case kExternalIntArray:
+      stream->Add("int");
+      break;
+    case kExternalUnsignedIntArray:
+      stream->Add("u_int");
+      break;
+    case kExternalFloatArray:
+      stream->Add("float");
+      break;
+    case kExternalPixelArray:
+      stream->Add("pixel");
+      break;
+  }
   stream->Add("[");
   key()->PrintNameTo(stream);
   stream->Add("]");
@@ -1216,8 +1305,36 @@ void HStoreKeyedGeneric::PrintDataTo(StringStream* stream) {
 }
 
 
-void HStorePixelArrayElement::PrintDataTo(StringStream* stream) {
+void HStoreKeyedSpecializedArrayElement::PrintDataTo(
+    StringStream* stream) {
   external_pointer()->PrintNameTo(stream);
+  stream->Add(".");
+  switch (array_type()) {
+    case kExternalByteArray:
+      stream->Add("byte");
+      break;
+    case kExternalUnsignedByteArray:
+      stream->Add("u_byte");
+      break;
+    case kExternalShortArray:
+      stream->Add("short");
+      break;
+    case kExternalUnsignedShortArray:
+      stream->Add("u_short");
+      break;
+    case kExternalIntArray:
+      stream->Add("int");
+      break;
+    case kExternalUnsignedIntArray:
+      stream->Add("u_int");
+      break;
+    case kExternalFloatArray:
+      stream->Add("float");
+      break;
+    case kExternalPixelArray:
+      stream->Add("pixel");
+      break;
+  }
   stream->Add("[");
   key()->PrintNameTo(stream);
   stream->Add("] = ");

@@ -389,8 +389,11 @@ class Operand BASE_EMBEDDED {
   INLINE(bool is_reg() const);
 
   // Return true if this operand fits in one instruction so that no
-  // 2-instruction solution with a load into the ip register is necessary.
-  bool is_single_instruction() const;
+  // 2-instruction solution with a load into the ip register is necessary. If
+  // the instruction this operand is used for is a MOV or MVN instruction the
+  // actual instruction to use is required for this calculation. For other
+  // instructions instr is ignored.
+  bool is_single_instruction(Instr instr = 0) const;
   bool must_use_constant_pool() const;
 
   inline int32_t immediate() const {
@@ -465,20 +468,20 @@ class MemOperand BASE_EMBEDDED {
 
 // CpuFeatures keeps track of which features are supported by the target CPU.
 // Supported features must be enabled by a Scope before use.
-class CpuFeatures : public AllStatic {
+class CpuFeatures {
  public:
   // Detect features of the target CPU. Set safe defaults if the serializer
   // is enabled (snapshots must be portable).
-  static void Probe(bool portable);
+  void Probe(bool portable);
 
   // Check whether a feature is supported by the target CPU.
-  static bool IsSupported(CpuFeature f) {
+  bool IsSupported(CpuFeature f) const {
     if (f == VFP3 && !FLAG_enable_vfp3) return false;
     return (supported_ & (1u << f)) != 0;
   }
 
   // Check whether a feature is currently enabled.
-  static bool IsEnabled(CpuFeature f) {
+  bool IsEnabled(CpuFeature f) const {
     return (enabled_ & (1u << f)) != 0;
   }
 
@@ -486,16 +489,23 @@ class CpuFeatures : public AllStatic {
   class Scope BASE_EMBEDDED {
 #ifdef DEBUG
    public:
-    explicit Scope(CpuFeature f) {
-      ASSERT(CpuFeatures::IsSupported(f));
+    explicit Scope(CpuFeature f)
+        : cpu_features_(Isolate::Current()->cpu_features()),
+          isolate_(Isolate::Current()) {
+      ASSERT(cpu_features_->IsSupported(f));
       ASSERT(!Serializer::enabled() ||
-             (found_by_runtime_probing_ & (1u << f)) == 0);
-      old_enabled_ = CpuFeatures::enabled_;
-      CpuFeatures::enabled_ |= 1u << f;
+             (cpu_features_->found_by_runtime_probing_ & (1u << f)) == 0);
+      old_enabled_ = cpu_features_->enabled_;
+      cpu_features_->enabled_ |= 1u << f;
     }
-    ~Scope() { CpuFeatures::enabled_ = old_enabled_; }
+    ~Scope() {
+      ASSERT_EQ(Isolate::Current(), isolate_);
+      cpu_features_->enabled_ = old_enabled_;
+    }
    private:
     unsigned old_enabled_;
+    CpuFeatures* cpu_features_;
+    Isolate* isolate_;
 #else
    public:
     explicit Scope(CpuFeature f) {}
@@ -503,9 +513,15 @@ class CpuFeatures : public AllStatic {
   };
 
  private:
-  static unsigned supported_;
-  static unsigned enabled_;
-  static unsigned found_by_runtime_probing_;
+  CpuFeatures();
+
+  unsigned supported_;
+  unsigned enabled_;
+  unsigned found_by_runtime_probing_;
+
+  friend class Isolate;
+
+  DISALLOW_COPY_AND_ASSIGN(CpuFeatures);
 };
 
 
@@ -533,7 +549,7 @@ extern const Instr kAndBicFlip;
 
 
 
-class Assembler : public Malloced {
+class Assembler : public AssemblerBase {
  public:
   // Create an assembler. Instructions and relocation information are emitted
   // into a buffer, with the instructions starting from the beginning and the
@@ -550,6 +566,9 @@ class Assembler : public Malloced {
   // upon destruction of the assembler.
   Assembler(void* buffer, int buffer_size);
   ~Assembler();
+
+  // Overrides the default provided by FLAG_debug_code.
+  void set_emit_debug_code(bool value) { emit_debug_code_ = value; }
 
   // GetCode emits any pending (non-emitted) code and fills the descriptor
   // desc. GetCode() is idempotent; it returns the same result if no other
@@ -989,6 +1008,9 @@ class Assembler : public Malloced {
                     VFPConversionMode mode = kDefaultRoundToZero,
                     const Condition cond = al);
 
+  void vneg(const DwVfpRegister dst,
+            const DwVfpRegister src,
+            const Condition cond = al);
   void vabs(const DwVfpRegister dst,
             const DwVfpRegister src,
             const Condition cond = al);
@@ -1148,6 +1170,8 @@ class Assembler : public Malloced {
   void CheckConstPool(bool force_emit, bool require_jump);
 
  protected:
+  bool emit_debug_code() const { return emit_debug_code_; }
+
   int buffer_space() const { return reloc_info_writer.pos() - pc_; }
 
   // Read/patch instructions
@@ -1276,6 +1300,7 @@ class Assembler : public Malloced {
 
   PositionsRecorder positions_recorder_;
   bool allow_peephole_optimization_;
+  bool emit_debug_code_;
   friend class PositionsRecorder;
   friend class EnsureSpace;
 };

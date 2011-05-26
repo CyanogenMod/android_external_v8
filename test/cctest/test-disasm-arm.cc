@@ -270,7 +270,7 @@ TEST(Type0) {
           "13a06000       movne r6, #0");
 
   // mov -> movw.
-  if (CpuFeatures::IsSupported(ARMv7)) {
+  if (Isolate::Current()->cpu_features()->IsSupported(ARMv7)) {
     COMPARE(mov(r5, Operand(0x01234), LeaveCC, ne),
             "13015234       movwne r5, #4660");
     // We only disassemble one instruction so the eor instruction is not here.
@@ -360,7 +360,7 @@ TEST(Type1) {
 TEST(Type3) {
   SETUP();
 
-  if (CpuFeatures::IsSupported(ARMv7)) {
+  if (Isolate::Current()->cpu_features()->IsSupported(ARMv7)) {
     COMPARE(ubfx(r0, r1, 5, 10),
             "e7e902d1       ubfx r0, r1, #5, #10");
     COMPARE(ubfx(r1, r0, 5, 10),
@@ -415,7 +415,7 @@ TEST(Type3) {
 TEST(Vfp) {
   SETUP();
 
-  if (CpuFeatures::IsSupported(VFP3)) {
+  if (Isolate::Current()->cpu_features()->IsSupported(VFP3)) {
     CpuFeatures::Scope scope(VFP3);
     COMPARE(vmov(d0, d1),
             "eeb00b41       vmov.f64 d0, d1");
@@ -439,6 +439,11 @@ TEST(Vfp) {
             "eeb00bc1       vabs d0, d1");
     COMPARE(vabs(d3, d4, mi),
             "4eb03bc4       vabsmi d3, d4");
+
+    COMPARE(vneg(d0, d1),
+            "eeb10b41       vneg d0, d1");
+    COMPARE(vneg(d3, d4, mi),
+            "4eb13b44       vnegmi d3, d4");
 
     COMPARE(vadd(d0, d1, d2),
             "ee310b02       vadd.f64 d0, d1, d2");

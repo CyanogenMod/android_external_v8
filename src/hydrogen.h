@@ -124,6 +124,10 @@ class HBasicBlock: public ZoneObject {
   void AddSimulate(int id) { AddInstruction(CreateSimulate(id)); }
   void AssignCommonDominator(HBasicBlock* other);
 
+  void FinishExitWithDeoptimization() {
+    FinishExit(CreateDeoptimize());
+  }
+
   // Add the inlined function exit sequence, adding an HLeaveInlined
   // instruction and updating the bailout environment.
   void AddLeaveInlined(HValue* return_value, HBasicBlock* target);
@@ -146,6 +150,7 @@ class HBasicBlock: public ZoneObject {
   void AddDominatedBlock(HBasicBlock* block);
 
   HSimulate* CreateSimulate(int id);
+  HDeoptimize* CreateDeoptimize();
 
   int block_id_;
   HGraph* graph_;
@@ -192,40 +197,13 @@ class HLoopInformation: public ZoneObject {
 };
 
 
-class HSubgraph: public ZoneObject {
- public:
-  explicit HSubgraph(HGraph* graph)
-      : graph_(graph),
-        entry_block_(NULL),
-        exit_block_(NULL) {
-  }
-
-  HGraph* graph() const { return graph_; }
-  HBasicBlock* entry_block() const { return entry_block_; }
-  HBasicBlock* exit_block() const { return exit_block_; }
-  void set_exit_block(HBasicBlock* block) {
-    exit_block_ = block;
-  }
-
-  void Initialize(HBasicBlock* block) {
-    ASSERT(entry_block_ == NULL);
-    entry_block_ = block;
-    exit_block_ = block;
-  }
-
- protected:
-  HGraph* graph_;  // The graph this is a subgraph of.
-  HBasicBlock* entry_block_;
-  HBasicBlock* exit_block_;
-};
-
-
-class HGraph: public HSubgraph {
+class HGraph: public ZoneObject {
  public:
   explicit HGraph(CompilationInfo* info);
 
   const ZoneList<HBasicBlock*>* blocks() const { return &blocks_; }
   const ZoneList<HPhi*>* phi_list() const { return phi_list_; }
+  HBasicBlock* entry_block() const { return entry_block_; }
   HEnvironment* start_environment() const { return start_environment_; }
 
   void InitializeInferredTypes();
@@ -234,6 +212,7 @@ class HGraph: public HSubgraph {
   void ComputeMinusZeroChecks();
   bool ProcessArgumentsObject();
   void EliminateRedundantPhis();
+  void EliminateUnreachablePhis();
   void Canonicalize();
   void OrderBlocks();
   void AssignDominators();
@@ -295,12 +274,18 @@ class HGraph: public HSubgraph {
   void InsertRepresentationChangeForUse(HValue* value,
                                         HValue* use,
                                         Representation to);
-  void InsertRepresentationChanges(HValue* current);
+  void InsertRepresentationChangesForValue(HValue* current,
+                                           ZoneList<HValue*>* value_list,
+                                           ZoneList<Representation>* rep_list);
   void InferTypes(ZoneList<HValue*>* worklist);
   void InitializeInferredTypes(int from_inclusive, int to_inclusive);
   void CheckForBackEdge(HBasicBlock* block, HBasicBlock* successor);
 
+  Isolate* isolate() { return isolate_; }
+
+  Isolate* isolate_;
   int next_block_id_;
+  HBasicBlock* entry_block_;
   HEnvironment* start_environment_;
   ZoneList<HBasicBlock*> blocks_;
   ZoneList<HValue*> values_;
@@ -311,8 +296,6 @@ class HGraph: public HSubgraph {
   SetOncePointer<HConstant> constant_true_;
   SetOncePointer<HConstant> constant_false_;
   SetOncePointer<HArgumentsObject> arguments_object_;
-
-  friend class HSubgraph;
 
   DISALLOW_COPY_AND_ASSIGN(HGraph);
 };
@@ -404,7 +387,7 @@ class HEnvironment: public ZoneObject {
   void ClearHistory() {
     pop_count_ = 0;
     push_count_ = 0;
-    assigned_variables_.Clear();
+    assigned_variables_.Rewind(0);
   }
 
   void SetValueAt(int index, HValue* value) {
@@ -640,7 +623,7 @@ class HGraphBuilder: public AstVisitor {
         ast_context_(NULL),
         break_scope_(NULL),
         graph_(NULL),
-        current_subgraph_(NULL),
+        current_block_(NULL),
         inlined_count_(0) {
     // This is not initialized in the initializer list because the
     // constructor for the initial state relies on function_state_ == NULL
@@ -652,14 +635,11 @@ class HGraphBuilder: public AstVisitor {
 
   // Simple accessors.
   HGraph* graph() const { return graph_; }
-  HSubgraph* subgraph() const { return current_subgraph_; }
   BreakAndContinueScope* break_scope() const { return break_scope_; }
   void set_break_scope(BreakAndContinueScope* head) { break_scope_ = head; }
 
-  HBasicBlock* current_block() const { return subgraph()->exit_block(); }
-  void set_current_block(HBasicBlock* block) {
-    subgraph()->set_exit_block(block);
-  }
+  HBasicBlock* current_block() const { return current_block_; }
+  void set_current_block(HBasicBlock* block) { current_block_ = block; }
   HEnvironment* environment() const {
     return current_block()->last_environment();
   }
@@ -750,10 +730,6 @@ class HGraphBuilder: public AstVisitor {
                             HBasicBlock* exit_block,
                             HBasicBlock* continue_block);
 
-  void AddToSubgraph(HSubgraph* graph, ZoneList<Statement*>* stmts);
-  void AddToSubgraph(HSubgraph* graph, Statement* stmt);
-  void AddToSubgraph(HSubgraph* graph, Expression* expr);
-
   HValue* Top() const { return environment()->Top(); }
   void Drop(int n) { environment()->Drop(n); }
   void Bind(Variable* var, HValue* value) { environment()->Bind(var, value); }
@@ -791,12 +767,7 @@ class HGraphBuilder: public AstVisitor {
 #undef DECLARE_VISIT
 
   HBasicBlock* CreateBasicBlock(HEnvironment* env);
-  HSubgraph* CreateEmptySubgraph();
-  HSubgraph* CreateBranchSubgraph(HEnvironment* env);
   HBasicBlock* CreateLoopHeaderBlock();
-  HSubgraph* CreateInlinedSubgraph(HEnvironment* outer,
-                                   Handle<JSFunction> target,
-                                   FunctionLiteral* function);
 
   // Helpers for flow graph construction.
   void LookupGlobalPropertyCell(Variable* var,
@@ -823,10 +794,6 @@ class HGraphBuilder: public AstVisitor {
 
   void HandlePropertyAssignment(Assignment* expr);
   void HandleCompoundAssignment(Assignment* expr);
-  void HandlePolymorphicLoadNamedField(Property* expr,
-                                       HValue* object,
-                                       ZoneMapList* types,
-                                       Handle<String> name);
   void HandlePolymorphicStoreNamedField(Assignment* expr,
                                         HValue* object,
                                         HValue* value,
@@ -852,9 +819,9 @@ class HGraphBuilder: public AstVisitor {
   HInstruction* BuildLoadKeyedFastElement(HValue* object,
                                           HValue* key,
                                           Property* expr);
-  HInstruction* BuildLoadKeyedPixelArrayElement(HValue* object,
-                                                HValue* key,
-                                                Property* expr);
+  HInstruction* BuildLoadKeyedSpecializedArrayElement(HValue* object,
+                                                      HValue* key,
+                                                      Property* expr);
   HInstruction* BuildLoadKeyedGeneric(HValue* object,
                                       HValue* key);
 
@@ -883,14 +850,11 @@ class HGraphBuilder: public AstVisitor {
                                            HValue* val,
                                            Expression* expr);
 
-  HInstruction* BuildStoreKeyedPixelArrayElement(HValue* object,
-                                                 HValue* key,
-                                                 HValue* val,
-                                                 Expression* expr);
-
-  HCompare* BuildSwitchCompare(HSubgraph* subgraph,
-                               HValue* switch_value,
-                               CaseClause* clause);
+  HInstruction* BuildStoreKeyedSpecializedArrayElement(
+      HValue* object,
+      HValue* key,
+      HValue* val,
+      Assignment* expr);
 
   HValue* BuildContextChainWalk(Variable* var);
 
@@ -899,12 +863,6 @@ class HGraphBuilder: public AstVisitor {
                                 Handle<Map> receiver_map,
                                 bool smi_and_map_check);
 
-
-  HBasicBlock* BuildTypeSwitch(HValue* receiver,
-                               ZoneMapList* maps,
-                               ZoneList<HSubgraph*>* body_graphs,
-                               HSubgraph* default_graph,
-                               int join_id);
 
   // The translation state of the currently-being-translated function.
   FunctionState* function_state_;
@@ -920,7 +878,7 @@ class HGraphBuilder: public AstVisitor {
   BreakAndContinueScope* break_scope_;
 
   HGraph* graph_;
-  HSubgraph* current_subgraph_;
+  HBasicBlock* current_block_;
 
   int inlined_count_;
 
@@ -986,6 +944,7 @@ class HValueMap: public ZoneObject {
 
 class HStatistics: public Malloced {
  public:
+  void Initialize(CompilationInfo* info);
   void Print();
   void SaveTiming(const char* name, int64_t ticks, unsigned size);
   static HStatistics* Instance() {
@@ -1004,7 +963,8 @@ class HStatistics: public Malloced {
         sizes_(5),
         total_(0),
         total_size_(0),
-        full_code_gen_(0) { }
+        full_code_gen_(0),
+        source_size_(0) { }
 
   List<int64_t> timing_;
   List<const char*> names_;
@@ -1012,6 +972,7 @@ class HStatistics: public Malloced {
   int64_t total_;
   unsigned total_size_;
   int64_t full_code_gen_;
+  double source_size_;
 };
 
 

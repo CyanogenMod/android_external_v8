@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,28 +25,15 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+// This regression tests that we are not allowed to overwrite an existing
+// non-configurable getter with a new getter. In addition, we should not
+// be able to change the configurable flag from false to true.
 
-#include "v8.h"
-#include "execution.h"
-
-#include "cctest.h"
-
-using ::v8::Local;
-using ::v8::String;
-using ::v8::Script;
-
-namespace i = ::v8::internal;
-
-TEST(MIPSFunctionCalls) {
-  // Disable compilation of natives.
-  i::FLAG_disable_native_files = true;
-  i::FLAG_full_compiler = false;
-
-  v8::HandleScope scope;
-  LocalContext env;  // from cctest.h
-
-  const char* c_source = "function foo() { return 0x1234; }; foo();";
-  Local<String> source = ::v8::String::New(c_source);
-  Local<Script> script = ::v8::Script::Compile(source);
-  CHECK_EQ(0x1234,  script->Run()->Int32Value());
-}
+var a = {};
+Object.defineProperty(a, 'b',
+                      { get: function () { return 42; }, configurable: false });
+// Do not allow us to redefine b on a.
+a.__defineGetter__('b', function _b(){ return 'foo'; });
+assertEquals(42, a.b);
+var desc = Object.getOwnPropertyDescriptor(a, 'b');
+assertFalse(desc.configurable);
