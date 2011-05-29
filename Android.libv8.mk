@@ -59,7 +59,6 @@ LOCAL_CFLAGS += \
 	-Wno-endif-labels \
 	-Wno-import \
 	-Wno-format \
-	-Wno-psabi \
 	-fno-exceptions \
 	-DENABLE_DEBUGGER_SUPPORT \
 	-DENABLE_VMSTATE_TRACKING \

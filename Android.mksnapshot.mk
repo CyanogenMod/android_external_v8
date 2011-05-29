@@ -54,7 +54,6 @@ LOCAL_CFLAGS := \
 	-Wno-endif-labels \
 	-Wno-import \
 	-Wno-format \
-	-Wno-psabi \
 	-ansi \
 	-fno-rtti \
 	-DENABLE_DEBUGGER_SUPPORT \
