@@ -48,6 +48,7 @@ V8_LOCAL_SRC_FILES := \
 	src/hydrogen-instructions.cc \
 	src/ic.cc \
 	src/interpreter-irregexp.cc \
+	src/isolate.cc \
 	src/jsregexp.cc \
 	src/jump-target.cc \
 	src/jump-target-light.cc \
