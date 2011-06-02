@@ -50,8 +50,6 @@ V8_LOCAL_SRC_FILES := \
 	src/interpreter-irregexp.cc \
 	src/isolate.cc \
 	src/jsregexp.cc \
-	src/jump-target.cc \
-	src/jump-target-light.cc \
 	src/lithium.cc \
 	src/lithium-allocator.cc \
 	src/liveedit.cc \
@@ -68,7 +66,6 @@ V8_LOCAL_SRC_FILES := \
 	src/regexp-macro-assembler.cc \
 	src/regexp-macro-assembler-irregexp.cc \
 	src/regexp-stack.cc \
-	src/register-allocator.cc \
 	src/rewriter.cc \
 	src/runtime.cc \
 	src/runtime-profiler.cc \
@@ -93,8 +90,6 @@ V8_LOCAL_SRC_FILES := \
 	src/v8.cc \
 	src/v8threads.cc \
 	src/variables.cc \
-	src/virtual-frame.cc \
-	src/virtual-frame-light.cc \
 	src/version.cc \
 	src/zone.cc
 
@@ -112,15 +107,12 @@ ifeq ($(TARGET_ARCH),arm)
 		src/arm/frames-arm.cc \
 		src/arm/full-codegen-arm.cc \
 		src/arm/ic-arm.cc \
-		src/arm/jump-target-arm.cc \
 		src/arm/lithium-arm.cc \
 		src/arm/lithium-codegen-arm.cc \
 		src/arm/lithium-gap-resolver-arm.cc \
 		src/arm/macro-assembler-arm.cc \
 		src/arm/regexp-macro-assembler-arm.cc \
-		src/arm/register-allocator-arm.cc \
-		src/arm/stub-cache-arm.cc \
-		src/arm/virtual-frame-arm.cc
+		src/arm/stub-cache-arm.cc
 endif
 
 # Enable DEBUG option.
