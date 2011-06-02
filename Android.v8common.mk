@@ -12,6 +12,7 @@ V8_LOCAL_SRC_FILES := \
 	src/builtins.cc \
 	src/cached-powers.cc \
 	src/checks.cc \
+	src/circular-queue.cc \
 	src/code-stubs.cc \
 	src/codegen.cc \
 	src/compilation-cache.cc \
@@ -63,6 +64,7 @@ V8_LOCAL_SRC_FILES := \
 	src/preparse-data.cc \
 	src/preparser.cc \
 	src/property.cc \
+	src/profile-generator.cc \
 	src/regexp-macro-assembler.cc \
 	src/regexp-macro-assembler-irregexp.cc \
 	src/regexp-stack.cc \

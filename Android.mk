@@ -30,6 +30,13 @@ include $(CLEAR_VARS)
 # Build libv8 and v8shell
 ifeq ($(TARGET_ARCH),arm)
     ENABLE_V8_SNAPSHOT = true
+    ENABLE_V8_CRANKSHAFT = false
+    ifeq ($(ENABLE_V8_CRANKSHAFT),true)
+        ifeq ($(ENABLE_V8_SNAPSHOT),true)
+            # Snapshotting and crankshaft do not work well together right now.
+            $(error Cannot build V8 with both crankshaft and snapshotting)
+        endif
+    endif
     include $(BASE_PATH)/Android.mksnapshot.mk
     include $(BASE_PATH)/Android.libv8.mk
     include $(BASE_PATH)/Android.v8shell.mk
