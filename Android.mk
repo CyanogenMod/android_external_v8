@@ -28,7 +28,9 @@ include $(CLEAR_VARS)
 #    specifying which JS engine to use.
 
 # Build libv8 and v8shell
-ENABLE_V8_SNAPSHOT = true
-include $(BASE_PATH)/Android.mksnapshot.mk
-include $(BASE_PATH)/Android.libv8.mk
-include $(BASE_PATH)/Android.v8shell.mk
+ifeq ($(TARGET_ARCH),arm)
+    ENABLE_V8_SNAPSHOT = true
+    include $(BASE_PATH)/Android.mksnapshot.mk
+    include $(BASE_PATH)/Android.libv8.mk
+    include $(BASE_PATH)/Android.v8shell.mk
+endif
