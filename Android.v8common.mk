@@ -122,24 +122,6 @@ ifeq ($(TARGET_ARCH),arm)
 		src/arm/virtual-frame-arm.cc
 endif
 
-ifeq ($(TARGET_ARCH),x86)
-  V8_LOCAL_SRC_FILES += \
-		src/ia32/assembler-ia32.cc \
-		src/ia32/builtins-ia32.cc \
-		src/ia32/codegen-ia32.cc \
-		src/ia32/code-stubs-arm.cc \
-		src/ia32/cpu-ia32.cc \
-		src/ia32/disasm-ia32.cc \
-		src/ia32/frames-ia32.cc \
-		src/ia32/ic-ia32.cc \
-		src/ia32/jump-target-ia32.cc \
-		src/ia32/macro-assembler-ia32.cc \
-		src/ia32/regexp-macro-assembler-ia32.cc \
-		src/ia32/register-allocator-ia32.cc \
-		src/ia32/stub-cache-ia32.cc \
-		src/ia32/virtual-frame-ia32.cc
-endif
-
 # Enable DEBUG option.
 ifeq ($(DEBUG_V8),true)
   V8_LOCAL_SRC_FILES += \

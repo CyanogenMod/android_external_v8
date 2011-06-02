@@ -70,10 +70,6 @@ ifeq ($(TARGET_CPU_ABI),armeabi-v7a)
 endif
 
 
-ifeq ($(TARGET_ARCH),x86)
-  LOCAL_CFLAGS += -DV8_TARGET_ARCH_IA32
-endif
-
 ifeq ($(DEBUG_V8),true)
 	LOCAL_CFLAGS += -DDEBUG -UNDEBUG
 endif
