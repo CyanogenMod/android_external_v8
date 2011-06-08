@@ -30,7 +30,7 @@
 #if defined(V8_TARGET_ARCH_X64)
 
 #include "code-stubs.h"
-#include "codegen-inl.h"
+#include "codegen.h"
 #include "compiler.h"
 #include "debug.h"
 #include "full-codegen.h"
@@ -232,7 +232,7 @@ void FullCodeGenerator::Generate(CompilationInfo* info) {
     }
 
     { Comment cmnt(masm_, "[ Stack check");
-      PrepareForBailout(info->function(), NO_REGISTERS);
+      PrepareForBailoutForId(AstNode::kFunctionEntryId, NO_REGISTERS);
       NearLabel ok;
       __ CompareRoot(rsp, Heap::kStackLimitRootIndex);
       __ j(above_equal, &ok);
@@ -781,7 +781,7 @@ void FullCodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
   // Compile all the tests with branches to their bodies.
   for (int i = 0; i < clauses->length(); i++) {
     CaseClause* clause = clauses->at(i);
-    clause->body_target()->entry_label()->Unuse();
+    clause->body_target()->Unuse();
 
     // The default is not a test, but remember it as final fall through.
     if (clause->is_default()) {
@@ -809,7 +809,7 @@ void FullCodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
       __ cmpq(rdx, rax);
       __ j(not_equal, &next_test);
       __ Drop(1);  // Switch value is no longer needed.
-      __ jmp(clause->body_target()->entry_label());
+      __ jmp(clause->body_target());
       __ bind(&slow_case);
     }
 
@@ -821,7 +821,7 @@ void FullCodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
     __ testq(rax, rax);
     __ j(not_equal, &next_test);
     __ Drop(1);  // Switch value is no longer needed.
-    __ jmp(clause->body_target()->entry_label());
+    __ jmp(clause->body_target());
   }
 
   // Discard the test value and jump to the default if present, otherwise to
@@ -831,14 +831,14 @@ void FullCodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
   if (default_clause == NULL) {
     __ jmp(nested_statement.break_target());
   } else {
-    __ jmp(default_clause->body_target()->entry_label());
+    __ jmp(default_clause->body_target());
   }
 
   // Compile all the case bodies.
   for (int i = 0; i < clauses->length(); i++) {
     Comment cmnt(masm_, "[ Case body");
     CaseClause* clause = clauses->at(i);
-    __ bind(clause->body_target()->entry_label());
+    __ bind(clause->body_target());
     PrepareForBailoutForId(clause->EntryId(), NO_REGISTERS);
     VisitStatements(clause->statements());
   }
@@ -1576,25 +1576,24 @@ void FullCodeGenerator::VisitAssignment(Assignment* expr) {
     }
   }
 
+  // For compound assignments we need another deoptimization point after the
+  // variable/property load.
   if (expr->is_compound()) {
     { AccumulatorValueContext context(this);
       switch (assign_type) {
         case VARIABLE:
           EmitVariableLoad(expr->target()->AsVariableProxy()->var());
+          PrepareForBailout(expr->target(), TOS_REG);
           break;
         case NAMED_PROPERTY:
           EmitNamedPropertyLoad(property);
+          PrepareForBailoutForId(expr->CompoundLoadId(), TOS_REG);
           break;
         case KEYED_PROPERTY:
           EmitKeyedPropertyLoad(property);
+          PrepareForBailoutForId(expr->CompoundLoadId(), TOS_REG);
           break;
       }
-    }
-
-    // For property compound assignments we need another deoptimization
-    // point after the property load.
-    if (property != NULL) {
-      PrepareForBailoutForId(expr->CompoundLoadId(), TOS_REG);
     }
 
     Token::Value op = expr->binary_op();
@@ -2248,15 +2247,6 @@ void FullCodeGenerator::VisitCall(Call* expr) {
       }
     }
   } else {
-    // Call to some other expression.  If the expression is an anonymous
-    // function literal not called in a loop, mark it as one that should
-    // also use the full code generator.
-    FunctionLiteral* lit = fun->AsFunctionLiteral();
-    if (lit != NULL &&
-        lit->name()->Equals(isolate()->heap()->empty_string()) &&
-        loop_depth() == 0) {
-      lit->set_try_full_codegen(true);
-    }
     { PreservePositionScope scope(masm()->positions_recorder());
       VisitForStackValue(fun);
     }
@@ -2435,11 +2425,71 @@ void FullCodeGenerator::EmitIsStringWrapperSafeForDefaultValueOf(
   context()->PrepareTest(&materialize_true, &materialize_false,
                          &if_true, &if_false, &fall_through);
 
-  // Just indicate false, as %_IsStringWrapperSafeForDefaultValueOf() is only
-  // used in a few functions in runtime.js which should not normally be hit by
-  // this compiler.
+  if (FLAG_debug_code) __ AbortIfSmi(rax);
+
+  // Check whether this map has already been checked to be safe for default
+  // valueOf.
+  __ movq(rbx, FieldOperand(rax, HeapObject::kMapOffset));
+  __ testb(FieldOperand(rbx, Map::kBitField2Offset),
+           Immediate(1 << Map::kStringWrapperSafeForDefaultValueOf));
+  __ j(not_zero, if_true);
+
+  // Check for fast case object. Generate false result for slow case object.
+  __ movq(rcx, FieldOperand(rax, JSObject::kPropertiesOffset));
+  __ movq(rcx, FieldOperand(rcx, HeapObject::kMapOffset));
+  __ CompareRoot(rcx, Heap::kHashTableMapRootIndex);
+  __ j(equal, if_false);
+
+  // Look for valueOf symbol in the descriptor array, and indicate false if
+  // found. The type is not checked, so if it is a transition it is a false
+  // negative.
+  __ movq(rbx, FieldOperand(rbx, Map::kInstanceDescriptorsOffset));
+  __ movq(rcx, FieldOperand(rbx, FixedArray::kLengthOffset));
+  // rbx: descriptor array
+  // rcx: length of descriptor array
+  // Calculate the end of the descriptor array.
+  SmiIndex index = masm_->SmiToIndex(rdx, rcx, kPointerSizeLog2);
+  __ lea(rcx,
+         Operand(
+             rbx, index.reg, index.scale, FixedArray::kHeaderSize));
+  // Calculate location of the first key name.
+  __ addq(rbx,
+          Immediate(FixedArray::kHeaderSize +
+                    DescriptorArray::kFirstIndex * kPointerSize));
+  // Loop through all the keys in the descriptor array. If one of these is the
+  // symbol valueOf the result is false.
+  Label entry, loop;
+  __ jmp(&entry);
+  __ bind(&loop);
+  __ movq(rdx, FieldOperand(rbx, 0));
+  __ Cmp(rdx, FACTORY->value_of_symbol());
+  __ j(equal, if_false);
+  __ addq(rbx, Immediate(kPointerSize));
+  __ bind(&entry);
+  __ cmpq(rbx, rcx);
+  __ j(not_equal, &loop);
+
+  // Reload map as register rbx was used as temporary above.
+  __ movq(rbx, FieldOperand(rax, HeapObject::kMapOffset));
+
+  // If a valueOf property is not found on the object check that it's
+  // prototype is the un-modified String prototype. If not result is false.
+  __ movq(rcx, FieldOperand(rbx, Map::kPrototypeOffset));
+  __ testq(rcx, Immediate(kSmiTagMask));
+  __ j(zero, if_false);
+  __ movq(rcx, FieldOperand(rcx, HeapObject::kMapOffset));
+  __ movq(rdx, Operand(rsi, Context::SlotOffset(Context::GLOBAL_INDEX)));
+  __ movq(rdx, FieldOperand(rdx, GlobalObject::kGlobalContextOffset));
+  __ cmpq(rcx,
+          ContextOperand(rdx, Context::STRING_FUNCTION_PROTOTYPE_MAP_INDEX));
+  __ j(not_equal, if_false);
+  // Set the bit in the map to indicate that it has been checked safe for
+  // default valueOf and set true result.
+  __ or_(FieldOperand(rbx, Map::kBitField2Offset),
+         Immediate(1 << Map::kStringWrapperSafeForDefaultValueOf));
+  __ jmp(if_true);
+
   PrepareForBailoutBeforeSplit(TOS_REG, true, if_true, if_false);
-  __ jmp(if_false);
   context()->Plug(if_true, if_false);
 }
 
@@ -2693,8 +2743,13 @@ void FullCodeGenerator::EmitRandomHeapNumber(ZoneList<Expression*>* args) {
 
   // Return a random uint32 number in rax.
   // The fresh HeapNumber is in rbx, which is callee-save on both x64 ABIs.
-  __ PrepareCallCFunction(0);
-  __ CallCFunction(ExternalReference::random_uint32_function(isolate()), 0);
+  __ PrepareCallCFunction(1);
+#ifdef _WIN64
+  __ LoadAddress(rcx, ExternalReference::isolate_address());
+#else
+  __ LoadAddress(rdi, ExternalReference::isolate_address());
+#endif
+  __ CallCFunction(ExternalReference::random_uint32_function(isolate()), 1);
 
   // Convert 32 random bits in rax to 0.(32 random bits) in a double
   // by computing:
@@ -2703,7 +2758,7 @@ void FullCodeGenerator::EmitRandomHeapNumber(ZoneList<Expression*>* args) {
   __ movd(xmm1, rcx);
   __ movd(xmm0, rax);
   __ cvtss2sd(xmm1, xmm1);
-  __ xorpd(xmm0, xmm1);
+  __ xorps(xmm0, xmm1);
   __ subsd(xmm0, xmm1);
   __ movsd(FieldOperand(rbx, HeapNumber::kValueOffset), xmm0);
 
@@ -2988,15 +3043,14 @@ void FullCodeGenerator::EmitMathSqrt(ZoneList<Expression*>* args) {
 void FullCodeGenerator::EmitCallFunction(ZoneList<Expression*>* args) {
   ASSERT(args->length() >= 2);
 
-  int arg_count = args->length() - 2;  // For receiver and function.
-  VisitForStackValue(args->at(0));  // Receiver.
-  for (int i = 0; i < arg_count; i++) {
-    VisitForStackValue(args->at(i + 1));
+  int arg_count = args->length() - 2;  // 2 ~ receiver and function.
+  for (int i = 0; i < arg_count + 1; i++) {
+    VisitForStackValue(args->at(i));
   }
-  VisitForAccumulatorValue(args->at(arg_count + 1));  // Function.
+  VisitForAccumulatorValue(args->last());  // Function.
 
-  // InvokeFunction requires function in rdi. Move it in there.
-  if (!result_register().is(rdi)) __ movq(rdi, result_register());
+  // InvokeFunction requires the function in rdi. Move it in there.
+  __ movq(rdi, result_register());
   ParameterCount count(arg_count);
   __ InvokeFunction(rdi, count, CALL_FUNCTION);
   __ movq(rsi, Operand(rbp, StandardFrameConstants::kContextOffset));
@@ -3753,7 +3807,11 @@ void FullCodeGenerator::VisitCountOperation(CountOperation* expr) {
 
   // We need a second deoptimization point after loading the value
   // in case evaluating the property load my have a side effect.
-  PrepareForBailout(expr->increment(), TOS_REG);
+  if (assign_type == VARIABLE) {
+    PrepareForBailout(expr->expression(), TOS_REG);
+  } else {
+    PrepareForBailoutForId(expr->CountId(), TOS_REG);
+  }
 
   // Call ToNumber only if operand is not a smi.
   NearLabel no_conversion;
@@ -4173,30 +4231,7 @@ void FullCodeGenerator::EmitCallIC(Handle<Code> ic, RelocInfo::Mode mode) {
     default:
       break;
   }
-
   __ call(ic, mode);
-
-  // Crankshaft doesn't need patching of inlined loads and stores.
-  // When compiling the snapshot we need to produce code that works
-  // with and without Crankshaft.
-  if (V8::UseCrankshaft() && !Serializer::enabled()) {
-    return;
-  }
-
-  // If we're calling a (keyed) load or store stub, we have to mark
-  // the call as containing no inlined code so we will not attempt to
-  // patch it.
-  switch (ic->kind()) {
-    case Code::LOAD_IC:
-    case Code::KEYED_LOAD_IC:
-    case Code::STORE_IC:
-    case Code::KEYED_STORE_IC:
-      __ nop();  // Signals no inlined code.
-      break;
-    default:
-      // Do nothing.
-      break;
-  }
 }
 
 
@@ -4217,7 +4252,6 @@ void FullCodeGenerator::EmitCallIC(Handle<Code> ic, JumpPatchSite* patch_site) {
     default:
       break;
   }
-
   __ call(ic, RelocInfo::CODE_TARGET);
   if (patch_site != NULL && patch_site->is_bound()) {
     patch_site->EmitPatchInfo();

@@ -176,16 +176,50 @@ double ceiling(double x) {
 
 static Mutex* limit_mutex = NULL;
 
+#if defined(V8_TARGET_ARCH_IA32)
+static OS::MemCopyFunction memcopy_function = NULL;
+static Mutex* memcopy_function_mutex = OS::CreateMutex();
+// Defined in codegen-ia32.cc.
+OS::MemCopyFunction CreateMemCopyFunction();
+
+// Copy memory area to disjoint memory area.
+void OS::MemCopy(void* dest, const void* src, size_t size) {
+  if (memcopy_function == NULL) {
+    ScopedLock lock(memcopy_function_mutex);
+    if (memcopy_function == NULL) {
+      OS::MemCopyFunction temp = CreateMemCopyFunction();
+      MemoryBarrier();
+      memcopy_function = temp;
+    }
+  }
+  // Note: here we rely on dependent reads being ordered. This is true
+  // on all architectures we currently support.
+  (*memcopy_function)(dest, src, size);
+#ifdef DEBUG
+  CHECK_EQ(0, memcmp(dest, src, size));
+#endif
+}
+#endif  // V8_TARGET_ARCH_IA32
 
 #ifdef _WIN64
 typedef double (*ModuloFunction)(double, double);
-
+static ModuloFunction modulo_function = NULL;
+static Mutex* modulo_function_mutex = OS::CreateMutex();
 // Defined in codegen-x64.cc.
 ModuloFunction CreateModuloFunction();
 
 double modulo(double x, double y) {
-  static ModuloFunction function = CreateModuloFunction();
-  return function(x, y);
+  if (modulo_function == NULL) {
+    ScopedLock lock(modulo_function_mutex);
+    if (modulo_function == NULL) {
+      ModuloFunction temp = CreateModuloFunction();
+      MemoryBarrier();
+      modulo_function = temp;
+    }
+  }
+  // Note: here we rely on dependent reads being ordered. This is true
+  // on all architectures we currently support.
+  return (*modulo_function)(x, y);
 }
 #else  // Win32
 
@@ -1434,24 +1468,6 @@ bool VirtualMemory::Uncommit(void* address, size_t size) {
 
 // Definition of invalid thread handle and id.
 static const HANDLE kNoThread = INVALID_HANDLE_VALUE;
-static const DWORD kNoThreadId = 0;
-
-
-class ThreadHandle::PlatformData : public Malloced {
- public:
-  explicit PlatformData(ThreadHandle::Kind kind) {
-    Initialize(kind);
-  }
-
-  void Initialize(ThreadHandle::Kind kind) {
-    switch (kind) {
-      case ThreadHandle::SELF: tid_ = GetCurrentThreadId(); break;
-      case ThreadHandle::INVALID: tid_ = kNoThreadId; break;
-    }
-  }
-  DWORD tid_;  // Win32 thread identifier.
-};
-
 
 // Entry point for threads. The supplied argument is a pointer to the thread
 // object. The entry function dispatches to the run method in the thread
@@ -1462,38 +1478,9 @@ static unsigned int __stdcall ThreadEntry(void* arg) {
   // This is also initialized by the last parameter to _beginthreadex() but we
   // don't know which thread will run first (the original thread or the new
   // one) so we initialize it here too.
-  thread->thread_handle_data()->tid_ = GetCurrentThreadId();
   Thread::SetThreadLocal(Isolate::isolate_key(), thread->isolate());
   thread->Run();
   return 0;
-}
-
-
-// Initialize thread handle to invalid handle.
-ThreadHandle::ThreadHandle(ThreadHandle::Kind kind) {
-  data_ = new PlatformData(kind);
-}
-
-
-ThreadHandle::~ThreadHandle() {
-  delete data_;
-}
-
-
-// The thread is running if it has the same id as the current thread.
-bool ThreadHandle::IsSelf() const {
-  return GetCurrentThreadId() == data_->tid_;
-}
-
-
-// Test for invalid thread handle.
-bool ThreadHandle::IsValid() const {
-  return data_->tid_ != kNoThreadId;
-}
-
-
-void ThreadHandle::Initialize(ThreadHandle::Kind kind) {
-  data_->Initialize(kind);
 }
 
 
@@ -1508,8 +1495,7 @@ class Thread::PlatformData : public Malloced {
 // handle until it is started.
 
 Thread::Thread(Isolate* isolate, const Options& options)
-    : ThreadHandle(ThreadHandle::INVALID),
-      isolate_(isolate),
+    : isolate_(isolate),
       stack_size_(options.stack_size) {
   data_ = new PlatformData(kNoThread);
   set_name(options.name);
@@ -1517,8 +1503,7 @@ Thread::Thread(Isolate* isolate, const Options& options)
 
 
 Thread::Thread(Isolate* isolate, const char* name)
-    : ThreadHandle(ThreadHandle::INVALID),
-      isolate_(isolate),
+    : isolate_(isolate),
       stack_size_(0) {
   data_ = new PlatformData(kNoThread);
   set_name(name);
@@ -1548,9 +1533,7 @@ void Thread::Start() {
                      ThreadEntry,
                      this,
                      0,
-                     reinterpret_cast<unsigned int*>(
-                         &thread_handle_data()->tid_)));
-  ASSERT(IsValid());
+                     NULL));
 }
 
 

@@ -434,14 +434,15 @@ class Operand BASE_EMBEDDED {
 //   } else {
 //     // Generate standard x87 or SSE2 floating point code.
 //   }
-class CpuFeatures {
+class CpuFeatures : public AllStatic {
  public:
   // Detect features of the target CPU. Set safe defaults if the serializer
   // is enabled (snapshots must be portable).
-  void Probe(bool portable);
+  static void Probe();
 
   // Check whether a feature is supported by the target CPU.
-  bool IsSupported(CpuFeature f) const {
+  static bool IsSupported(CpuFeature f) {
+    ASSERT(initialized_);
     if (f == SSE2 && !FLAG_enable_sse2) return false;
     if (f == SSE3 && !FLAG_enable_sse3) return false;
     if (f == CMOV && !FLAG_enable_cmov) return false;
@@ -449,51 +450,65 @@ class CpuFeatures {
     if (f == SAHF && !FLAG_enable_sahf) return false;
     return (supported_ & (V8_UINT64_C(1) << f)) != 0;
   }
+
+#ifdef DEBUG
   // Check whether a feature is currently enabled.
-  bool IsEnabled(CpuFeature f) const {
-    return (enabled_ & (V8_UINT64_C(1) << f)) != 0;
+  static bool IsEnabled(CpuFeature f) {
+    ASSERT(initialized_);
+    Isolate* isolate = Isolate::UncheckedCurrent();
+    if (isolate == NULL) {
+      // When no isolate is available, work as if we're running in
+      // release mode.
+      return IsSupported(f);
+    }
+    uint64_t enabled = isolate->enabled_cpu_features();
+    return (enabled & (V8_UINT64_C(1) << f)) != 0;
   }
+#endif
+
   // Enable a specified feature within a scope.
   class Scope BASE_EMBEDDED {
 #ifdef DEBUG
    public:
-    explicit Scope(CpuFeature f)
-        : cpu_features_(Isolate::Current()->cpu_features()),
-          isolate_(Isolate::Current()) {
-      uint64_t mask = (V8_UINT64_C(1) << f);
-      ASSERT(cpu_features_->IsSupported(f));
+    explicit Scope(CpuFeature f) {
+      uint64_t mask = V8_UINT64_C(1) << f;
+      ASSERT(CpuFeatures::IsSupported(f));
       ASSERT(!Serializer::enabled() ||
-          (cpu_features_->found_by_runtime_probing_ & mask) == 0);
-      old_enabled_ = cpu_features_->enabled_;
-      cpu_features_->enabled_ |= mask;
+             (CpuFeatures::found_by_runtime_probing_ & mask) == 0);
+      isolate_ = Isolate::UncheckedCurrent();
+      old_enabled_ = 0;
+      if (isolate_ != NULL) {
+        old_enabled_ = isolate_->enabled_cpu_features();
+        isolate_->set_enabled_cpu_features(old_enabled_ | mask);
+      }
     }
     ~Scope() {
-      ASSERT_EQ(Isolate::Current(), isolate_);
-      cpu_features_->enabled_ = old_enabled_;
+      ASSERT_EQ(Isolate::UncheckedCurrent(), isolate_);
+      if (isolate_ != NULL) {
+        isolate_->set_enabled_cpu_features(old_enabled_);
+      }
     }
    private:
-    uint64_t old_enabled_;
-    CpuFeatures* cpu_features_;
     Isolate* isolate_;
+    uint64_t old_enabled_;
 #else
    public:
     explicit Scope(CpuFeature f) {}
 #endif
   };
- private:
-  CpuFeatures();
 
+ private:
   // Safe defaults include SSE2 and CMOV for X64. It is always available, if
   // anyone checks, but they shouldn't need to check.
   // The required user mode extensions in X64 are (from AMD64 ABI Table A.1):
   //   fpu, tsc, cx8, cmov, mmx, sse, sse2, fxsr, syscall
   static const uint64_t kDefaultCpuFeatures = (1 << SSE2 | 1 << CMOV);
 
-  uint64_t supported_;
-  uint64_t enabled_;
-  uint64_t found_by_runtime_probing_;
-
-  friend class Isolate;
+#ifdef DEBUG
+  static bool initialized_;
+#endif
+  static uint64_t supported_;
+  static uint64_t found_by_runtime_probing_;
 
   DISALLOW_COPY_AND_ASSIGN(CpuFeatures);
 };
@@ -526,7 +541,7 @@ class Assembler : public AssemblerBase {
   // for code generation and assumes its size to be buffer_size. If the buffer
   // is too small, a fatal error occurs. No deallocation of the buffer is done
   // upon destruction of the assembler.
-  Assembler(void* buffer, int buffer_size);
+  Assembler(Isolate* isolate, void* buffer, int buffer_size);
   ~Assembler();
 
   // Overrides the default provided by FLAG_debug_code.
@@ -1276,14 +1291,23 @@ class Assembler : public AssemblerBase {
   void movd(Register dst, XMMRegister src);
   void movq(XMMRegister dst, Register src);
   void movq(Register dst, XMMRegister src);
+  void movq(XMMRegister dst, XMMRegister src);
   void extractps(Register dst, XMMRegister src, byte imm8);
 
-  void movsd(const Operand& dst, XMMRegister src);
+  // Don't use this unless it's important to keep the
+  // top half of the destination register unchanged.
+  // Used movaps when moving double values and movq for integer
+  // values in xmm registers.
   void movsd(XMMRegister dst, XMMRegister src);
+
+  void movsd(const Operand& dst, XMMRegister src);
   void movsd(XMMRegister dst, const Operand& src);
 
   void movdqa(const Operand& dst, XMMRegister src);
   void movdqa(XMMRegister dst, const Operand& src);
+
+  void movapd(XMMRegister dst, XMMRegister src);
+  void movaps(XMMRegister dst, XMMRegister src);
 
   void movss(XMMRegister dst, const Operand& src);
   void movss(const Operand& dst, XMMRegister src);
@@ -1316,10 +1340,20 @@ class Assembler : public AssemblerBase {
   void andpd(XMMRegister dst, XMMRegister src);
   void orpd(XMMRegister dst, XMMRegister src);
   void xorpd(XMMRegister dst, XMMRegister src);
+  void xorps(XMMRegister dst, XMMRegister src);
   void sqrtsd(XMMRegister dst, XMMRegister src);
 
   void ucomisd(XMMRegister dst, XMMRegister src);
   void ucomisd(XMMRegister dst, const Operand& src);
+
+  enum RoundingMode {
+    kRoundToNearest = 0x0,
+    kRoundDown      = 0x1,
+    kRoundUp        = 0x2,
+    kRoundToZero    = 0x3
+  };
+
+  void roundsd(XMMRegister dst, XMMRegister src, RoundingMode mode);
 
   void movmskpd(Register dst, XMMRegister src);
 
@@ -1574,8 +1608,6 @@ class Assembler : public AssemblerBase {
   RelocInfoWriter reloc_info_writer;
 
   List< Handle<Code> > code_targets_;
-  // push-pop elimination
-  byte* last_pc_;
 
   PositionsRecorder positions_recorder_;
 

@@ -167,7 +167,6 @@ void BreakLocationIterator::Next() {
       Address target = original_rinfo()->target_address();
       Code* code = Code::GetCodeFromTargetAddress(target);
       if ((code->is_inline_cache_stub() &&
-           !code->is_binary_op_stub() &&
            !code->is_type_recording_binary_op_stub() &&
            !code->is_compare_ic_stub()) ||
           RelocInfo::IsConstructCall(rmode())) {
@@ -478,21 +477,6 @@ void BreakLocationIterator::SetDebugBreakAtIC() {
     // calling convention used by the call site.
     Handle<Code> dbgbrk_code(Debug::FindDebugBreak(code, mode));
     rinfo()->set_target_address(dbgbrk_code->entry());
-
-    // For stubs that refer back to an inlined version clear the cached map for
-    // the inlined case to always go through the IC. As long as the break point
-    // is set the patching performed by the runtime system will take place in
-    // the code copy and will therefore have no effect on the running code
-    // keeping it from using the inlined code.
-    if (code->is_keyed_load_stub()) {
-      KeyedLoadIC::ClearInlinedVersion(pc());
-    } else if (code->is_keyed_store_stub()) {
-      KeyedStoreIC::ClearInlinedVersion(pc());
-    } else if (code->is_load_stub()) {
-      LoadIC::ClearInlinedVersion(pc());
-    } else if (code->is_store_stub()) {
-      StoreIC::ClearInlinedVersion(pc());
-    }
   }
 }
 
@@ -500,20 +484,6 @@ void BreakLocationIterator::SetDebugBreakAtIC() {
 void BreakLocationIterator::ClearDebugBreakAtIC() {
   // Patch the code to the original invoke.
   rinfo()->set_target_address(original_rinfo()->target_address());
-
-  RelocInfo::Mode mode = rmode();
-  if (RelocInfo::IsCodeTarget(mode)) {
-    AssertNoAllocation nogc;
-    Address target = original_rinfo()->target_address();
-    Code* code = Code::GetCodeFromTargetAddress(target);
-
-    // Restore the inlined version of keyed stores to get back to the
-    // fast case.  We need to patch back the keyed store because no
-    // patching happens when running normally.  For keyed loads, the
-    // map check will get patched back when running normally after ICs
-    // have been cleared at GC.
-    if (code->is_keyed_store_stub()) KeyedStoreIC::RestoreInlinedVersion(pc());
-  }
 }
 
 
@@ -810,7 +780,7 @@ bool Debug::CompileDebuggerScript(int index) {
     Handle<Object> message = MessageHandler::MakeMessageObject(
         "error_loading_debugger", NULL, Vector<Handle<Object> >::empty(),
         Handle<String>(), Handle<JSArray>());
-    MessageHandler::ReportMessage(NULL, message);
+    MessageHandler::ReportMessage(Isolate::Current(), NULL, message);
     return false;
   }
 
@@ -844,6 +814,7 @@ bool Debug::Load() {
   HandleScope scope(isolate_);
   Handle<Context> context =
       isolate_->bootstrapper()->CreateEnvironment(
+          isolate_,
           Handle<Object>::null(),
           v8::Handle<ObjectTemplate>(),
           NULL);
@@ -917,24 +888,20 @@ void Debug::Iterate(ObjectVisitor* v) {
 }
 
 
-// This remains a static method so that generated code can call it.
-Object* Debug::Break(RUNTIME_CALLING_CONVENTION) {
-  RUNTIME_GET_ISOLATE;
-
-  Debug* debug = isolate->debug();
-  Heap* heap = isolate->heap();
-  HandleScope scope(isolate);
+Object* Debug::Break(Arguments args) {
+  Heap* heap = isolate_->heap();
+  HandleScope scope(isolate_);
   ASSERT(args.length() == 0);
 
-  debug->thread_local_.frame_drop_mode_ = FRAMES_UNTOUCHED;
+  thread_local_.frame_drop_mode_ = FRAMES_UNTOUCHED;
 
   // Get the top-most JavaScript frame.
-  JavaScriptFrameIterator it;
+  JavaScriptFrameIterator it(isolate_);
   JavaScriptFrame* frame = it.frame();
 
   // Just continue if breaks are disabled or debugger cannot be loaded.
-  if (debug->disable_break() || !debug->Load()) {
-    debug->SetAfterBreakTarget(frame);
+  if (disable_break() || !Load()) {
+    SetAfterBreakTarget(frame);
     return heap->undefined_value();
   }
 
@@ -945,7 +912,7 @@ Object* Debug::Break(RUNTIME_CALLING_CONVENTION) {
   }
 
   // Postpone interrupt during breakpoint processing.
-  PostponeInterruptsScope postpone(isolate);
+  PostponeInterruptsScope postpone(isolate_);
 
   // Get the debug info (create it if it does not exist).
   Handle<SharedFunctionInfo> shared =
@@ -958,10 +925,10 @@ Object* Debug::Break(RUNTIME_CALLING_CONVENTION) {
   break_location_iterator.FindBreakLocationFromAddress(frame->pc());
 
   // Check whether step next reached a new statement.
-  if (!debug->StepNextContinue(&break_location_iterator, frame)) {
+  if (!StepNextContinue(&break_location_iterator, frame)) {
     // Decrease steps left if performing multiple steps.
-    if (debug->thread_local_.step_count_ > 0) {
-      debug->thread_local_.step_count_--;
+    if (thread_local_.step_count_ > 0) {
+      thread_local_.step_count_--;
     }
   }
 
@@ -971,56 +938,55 @@ Object* Debug::Break(RUNTIME_CALLING_CONVENTION) {
   if (break_location_iterator.HasBreakPoint()) {
     Handle<Object> break_point_objects =
         Handle<Object>(break_location_iterator.BreakPointObjects());
-    break_points_hit = debug->CheckBreakPoints(break_point_objects);
+    break_points_hit = CheckBreakPoints(break_point_objects);
   }
 
   // If step out is active skip everything until the frame where we need to step
   // out to is reached, unless real breakpoint is hit.
-  if (debug->StepOutActive() && frame->fp() != debug->step_out_fp() &&
+  if (StepOutActive() && frame->fp() != step_out_fp() &&
       break_points_hit->IsUndefined() ) {
       // Step count should always be 0 for StepOut.
-      ASSERT(debug->thread_local_.step_count_ == 0);
+      ASSERT(thread_local_.step_count_ == 0);
   } else if (!break_points_hit->IsUndefined() ||
-             (debug->thread_local_.last_step_action_ != StepNone &&
-              debug->thread_local_.step_count_ == 0)) {
+             (thread_local_.last_step_action_ != StepNone &&
+              thread_local_.step_count_ == 0)) {
     // Notify debugger if a real break point is triggered or if performing
     // single stepping with no more steps to perform. Otherwise do another step.
 
     // Clear all current stepping setup.
-    debug->ClearStepping();
+    ClearStepping();
 
     // Notify the debug event listeners.
-    isolate->debugger()->OnDebugBreak(break_points_hit, false);
-  } else if (debug->thread_local_.last_step_action_ != StepNone) {
+    isolate_->debugger()->OnDebugBreak(break_points_hit, false);
+  } else if (thread_local_.last_step_action_ != StepNone) {
     // Hold on to last step action as it is cleared by the call to
     // ClearStepping.
-    StepAction step_action = debug->thread_local_.last_step_action_;
-    int step_count = debug->thread_local_.step_count_;
+    StepAction step_action = thread_local_.last_step_action_;
+    int step_count = thread_local_.step_count_;
 
     // Clear all current stepping setup.
-    debug->ClearStepping();
+    ClearStepping();
 
     // Set up for the remaining steps.
-    debug->PrepareStep(step_action, step_count);
+    PrepareStep(step_action, step_count);
   }
 
-  if (debug->thread_local_.frame_drop_mode_ == FRAMES_UNTOUCHED) {
-    debug->SetAfterBreakTarget(frame);
-  } else if (debug->thread_local_.frame_drop_mode_ ==
+  if (thread_local_.frame_drop_mode_ == FRAMES_UNTOUCHED) {
+    SetAfterBreakTarget(frame);
+  } else if (thread_local_.frame_drop_mode_ ==
       FRAME_DROPPED_IN_IC_CALL) {
     // We must have been calling IC stub. Do not go there anymore.
-    Code* plain_return =
-        Isolate::Current()->builtins()->builtin(
-            Builtins::kPlainReturn_LiveEdit);
-    debug->thread_local_.after_break_target_ = plain_return->entry();
-  } else if (debug->thread_local_.frame_drop_mode_ ==
+    Code* plain_return = isolate_->builtins()->builtin(
+        Builtins::kPlainReturn_LiveEdit);
+    thread_local_.after_break_target_ = plain_return->entry();
+  } else if (thread_local_.frame_drop_mode_ ==
       FRAME_DROPPED_IN_DEBUG_SLOT_CALL) {
     // Debug break slot stub does not return normally, instead it manually
     // cleans the stack and jumps. We should patch the jump address.
-    Code* plain_return = Isolate::Current()->builtins()->builtin(
+    Code* plain_return = isolate_->builtins()->builtin(
         Builtins::kFrameDropper_LiveEdit);
-    debug->thread_local_.after_break_target_ = plain_return->entry();
-  } else if (debug->thread_local_.frame_drop_mode_ ==
+    thread_local_.after_break_target_ = plain_return->entry();
+  } else if (thread_local_.frame_drop_mode_ ==
       FRAME_DROPPED_IN_DIRECT_CALL) {
     // Nothing to do, after_break_target is not used here.
   } else {
@@ -1028,6 +994,11 @@ Object* Debug::Break(RUNTIME_CALLING_CONVENTION) {
   }
 
   return heap->undefined_value();
+}
+
+
+RUNTIME_FUNCTION(Object*, Debug_Break) {
+  return isolate->debug()->Break(args);
 }
 
 
@@ -1224,7 +1195,7 @@ void Debug::FloodHandlerWithOneShot() {
     // If there is no JavaScript stack don't do anything.
     return;
   }
-  for (JavaScriptFrameIterator it(id); !it.done(); it.Advance()) {
+  for (JavaScriptFrameIterator it(isolate_, id); !it.done(); it.Advance()) {
     JavaScriptFrame* frame = it.frame();
     if (frame->HasHandler()) {
       Handle<SharedFunctionInfo> shared =
@@ -1280,7 +1251,7 @@ void Debug::PrepareStep(StepAction step_action, int step_count) {
     // If there is no JavaScript stack don't do anything.
     return;
   }
-  JavaScriptFrameIterator frames_it(id);
+  JavaScriptFrameIterator frames_it(isolate_, id);
   JavaScriptFrame* frame = frames_it.frame();
 
   // First of all ensure there is one-shot break points in the top handler
@@ -1777,7 +1748,7 @@ void Debug::SetAfterBreakTarget(JavaScriptFrame* frame) {
   Handle<Code> original_code(debug_info->original_code());
 #ifdef DEBUG
   // Get the code which is actually executing.
-  Handle<Code> frame_code(frame->LookupCode(isolate_));
+  Handle<Code> frame_code(frame->LookupCode());
   ASSERT(frame_code.is_identical_to(code));
 #endif
 
@@ -1859,7 +1830,7 @@ bool Debug::IsBreakAtReturn(JavaScriptFrame* frame) {
   Handle<Code> code(debug_info->code());
 #ifdef DEBUG
   // Get the code which is actually executing.
-  Handle<Code> frame_code(frame->LookupCode(Isolate::Current()));
+  Handle<Code> frame_code(frame->LookupCode());
   ASSERT(frame_code.is_identical_to(code));
 #endif
 

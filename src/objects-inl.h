@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -1774,7 +1774,7 @@ bool DescriptorArray::IsDontEnum(int descriptor_number) {
 void DescriptorArray::Get(int descriptor_number, Descriptor* desc) {
   desc->Init(GetKey(descriptor_number),
              GetValue(descriptor_number),
-             GetDetails(descriptor_number));
+             PropertyDetails(GetDetails(descriptor_number)));
 }
 
 
@@ -2573,7 +2573,6 @@ int Code::arguments_count() {
 
 int Code::major_key() {
   ASSERT(kind() == STUB ||
-         kind() == BINARY_OP_IC ||
          kind() == TYPE_RECORDING_BINARY_OP_IC ||
          kind() == COMPARE_IC);
   return READ_BYTE_FIELD(this, kStubMajorKeyOffset);
@@ -2582,7 +2581,6 @@ int Code::major_key() {
 
 void Code::set_major_key(int major) {
   ASSERT(kind() == STUB ||
-         kind() == BINARY_OP_IC ||
          kind() == TYPE_RECORDING_BINARY_OP_IC ||
          kind() == COMPARE_IC);
   ASSERT(0 <= major && major < 256);
@@ -2688,18 +2686,6 @@ ExternalArrayType Code::external_array_type() {
 void Code::set_external_array_type(ExternalArrayType value) {
   ASSERT(is_external_array_load_stub() || is_external_array_store_stub());
   WRITE_BYTE_FIELD(this, kExternalArrayTypeOffset, value);
-}
-
-
-byte Code::binary_op_type() {
-  ASSERT(is_binary_op_stub());
-  return READ_BYTE_FIELD(this, kBinaryOpTypeOffset);
-}
-
-
-void Code::set_binary_op_type(byte value) {
-  ASSERT(is_binary_op_stub());
-  WRITE_BYTE_FIELD(this, kBinaryOpTypeOffset, value);
 }
 
 
@@ -2859,6 +2845,34 @@ Heap* Map::heap() {
   ASSERT(heap != NULL);
   ASSERT(heap->isolate() == Isolate::Current());
   return heap;
+}
+
+
+Heap* Code::heap() {
+  // NOTE: address() helper is not used to save one instruction.
+  Heap* heap = Page::FromAddress(reinterpret_cast<Address>(this))->heap_;
+  ASSERT(heap != NULL);
+  ASSERT(heap->isolate() == Isolate::Current());
+  return heap;
+}
+
+
+Isolate* Code::isolate() {
+  return heap()->isolate();
+}
+
+
+Heap* JSGlobalPropertyCell::heap() {
+  // NOTE: address() helper is not used to save one instruction.
+  Heap* heap = Page::FromAddress(reinterpret_cast<Address>(this))->heap_;
+  ASSERT(heap != NULL);
+  ASSERT(heap->isolate() == Isolate::Current());
+  return heap;
+}
+
+
+Isolate* JSGlobalPropertyCell::isolate() {
+  return heap()->isolate();
 }
 
 
@@ -3026,10 +3040,6 @@ BOOL_ACCESSORS(SharedFunctionInfo, start_position_and_type, is_toplevel,
 BOOL_GETTER(SharedFunctionInfo, compiler_hints,
             has_only_simple_this_property_assignments,
             kHasOnlySimpleThisPropertyAssignments)
-BOOL_ACCESSORS(SharedFunctionInfo,
-               compiler_hints,
-               try_full_codegen,
-               kTryFullCodegen)
 BOOL_ACCESSORS(SharedFunctionInfo,
                compiler_hints,
                allows_lazy_compilation,
@@ -3296,6 +3306,11 @@ bool JSFunction::NeedsArgumentsAdaption() {
 
 bool JSFunction::IsOptimized() {
   return code()->kind() == Code::OPTIMIZED_FUNCTION;
+}
+
+
+bool JSFunction::IsOptimizable() {
+  return code()->kind() == Code::FUNCTION && code()->optimizable();
 }
 
 
@@ -3928,6 +3943,15 @@ void AccessorInfo::set_property_attributes(PropertyAttributes attributes) {
   int rest_value = flag()->value() & ~AttributesField::mask();
   set_flag(Smi::FromInt(rest_value | AttributesField::encode(attributes)));
 }
+
+
+template<typename Shape, typename Key>
+void Dictionary<Shape, Key>::SetEntry(int entry,
+                                      Object* key,
+                                      Object* value) {
+  SetEntry(entry, key, value, PropertyDetails(Smi::FromInt(0)));
+}
+
 
 template<typename Shape, typename Key>
 void Dictionary<Shape, Key>::SetEntry(int entry,

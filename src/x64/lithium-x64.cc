@@ -71,22 +71,21 @@ void LOsrEntry::MarkSpilledDoubleRegister(int allocation_index,
 
 #ifdef DEBUG
 void LInstruction::VerifyCall() {
-  // Call instructions can use only fixed registers as
-  // temporaries and outputs because all registers
-  // are blocked by the calling convention.
-  // Inputs must use a fixed register.
+  // Call instructions can use only fixed registers as temporaries and
+  // outputs because all registers are blocked by the calling convention.
+  // Inputs operands must use a fixed register or use-at-start policy or
+  // a non-register policy.
   ASSERT(Output() == NULL ||
          LUnallocated::cast(Output())->HasFixedPolicy() ||
          !LUnallocated::cast(Output())->HasRegisterPolicy());
   for (UseIterator it(this); it.HasNext(); it.Advance()) {
-    LOperand* operand = it.Next();
-    ASSERT(LUnallocated::cast(operand)->HasFixedPolicy() ||
-           !LUnallocated::cast(operand)->HasRegisterPolicy());
+    LUnallocated* operand = LUnallocated::cast(it.Next());
+    ASSERT(operand->HasFixedPolicy() ||
+           operand->IsUsedAtStart());
   }
   for (TempIterator it(this); it.HasNext(); it.Advance()) {
-    LOperand* operand = it.Next();
-    ASSERT(LUnallocated::cast(operand)->HasFixedPolicy() ||
-           !LUnallocated::cast(operand)->HasRegisterPolicy());
+    LUnallocated* operand = LUnallocated::cast(it.Next());
+    ASSERT(operand->HasFixedPolicy() ||!operand->HasRegisterPolicy());
   }
 }
 #endif
@@ -300,6 +299,13 @@ void LStoreContextSlot::PrintDataTo(StringStream* stream) {
   InputAt(0)->PrintTo(stream);
   stream->Add("[%d] <- ", slot_index());
   InputAt(1)->PrintTo(stream);
+}
+
+
+void LInvokeFunction::PrintDataTo(StringStream* stream) {
+  stream->Add("= ");
+  InputAt(0)->PrintTo(stream);
+  stream->Add(" #%d / ", arity());
 }
 
 
@@ -1114,9 +1120,9 @@ LInstruction* LChunkBuilder::DoTest(HTest* instr) {
       return new LIsConstructCallAndBranch(TempRegister());
     } else {
       if (v->IsConstant()) {
-        if (HConstant::cast(v)->handle()->IsTrue()) {
+        if (HConstant::cast(v)->ToBoolean()) {
           return new LGoto(instr->FirstSuccessor()->block_id());
-        } else if (HConstant::cast(v)->handle()->IsFalse()) {
+        } else {
           return new LGoto(instr->SecondSuccessor()->block_id());
         }
       }
@@ -1208,6 +1214,14 @@ LInstruction* LChunkBuilder::DoCallConstantFunction(
     HCallConstantFunction* instr) {
   argument_count_ -= instr->argument_count();
   return MarkAsCall(DefineFixed(new LCallConstantFunction, rax), instr);
+}
+
+
+LInstruction* LChunkBuilder::DoInvokeFunction(HInvokeFunction* instr) {
+  LOperand* function = UseFixed(instr->function(), rdi);
+  argument_count_ -= instr->argument_count();
+  LInvokeFunction* result = new LInvokeFunction(function);
+  return MarkAsCall(DefineFixed(result, rax), instr, CANNOT_DEOPTIMIZE_EAGERLY);
 }
 
 
@@ -1613,11 +1627,8 @@ LInstruction* LChunkBuilder::DoChange(HChange* instr) {
       LOperand* value = UseRegister(instr->value());
       bool needs_check = !instr->value()->type().IsSmi();
       if (needs_check) {
-        LOperand* xmm_temp =
-            (instr->CanTruncateToInt32() &&
-             Isolate::Current()->cpu_features()->IsSupported(SSE3))
-            ? NULL
-            : FixedTemp(xmm1);
+        LOperand* xmm_temp = instr->CanTruncateToInt32() ? NULL
+                                                         : FixedTemp(xmm1);
         LTaggedToI* res = new LTaggedToI(value, xmm_temp);
         return AssignEnvironment(DefineSameAsFirst(res));
       } else {
@@ -1718,18 +1729,33 @@ LInstruction* LChunkBuilder::DoConstant(HConstant* instr) {
 }
 
 
-LInstruction* LChunkBuilder::DoLoadGlobal(HLoadGlobal* instr) {
-  LLoadGlobal* result = new LLoadGlobal;
+LInstruction* LChunkBuilder::DoLoadGlobalCell(HLoadGlobalCell* instr) {
+  LLoadGlobalCell* result = new LLoadGlobalCell;
   return instr->check_hole_value()
       ? AssignEnvironment(DefineAsRegister(result))
       : DefineAsRegister(result);
 }
 
 
-LInstruction* LChunkBuilder::DoStoreGlobal(HStoreGlobal* instr) {
-  LStoreGlobal* result = new LStoreGlobal(UseRegister(instr->value()),
-                                          TempRegister());
+LInstruction* LChunkBuilder::DoLoadGlobalGeneric(HLoadGlobalGeneric* instr) {
+  LOperand* global_object = UseFixed(instr->global_object(), rax);
+  LLoadGlobalGeneric* result = new LLoadGlobalGeneric(global_object);
+  return MarkAsCall(DefineFixed(result, rax), instr);
+}
+
+
+LInstruction* LChunkBuilder::DoStoreGlobalCell(HStoreGlobalCell* instr) {
+  LStoreGlobalCell* result =
+      new LStoreGlobalCell(UseRegister(instr->value()), TempRegister());
   return instr->check_hole_value() ? AssignEnvironment(result) : result;
+}
+
+
+LInstruction* LChunkBuilder::DoStoreGlobalGeneric(HStoreGlobalGeneric* instr) {
+  LOperand* global_object = UseFixed(instr->global_object(), rdx);
+  LOperand* value = UseFixed(instr->value(), rax);
+  LStoreGlobalGeneric* result =  new LStoreGlobalGeneric(global_object, value);
+  return MarkAsCall(result, instr);
 }
 
 
@@ -1877,7 +1903,7 @@ LInstruction* LChunkBuilder::DoStoreKeyedSpecializedArrayElement(
       array_type == kExternalFloatArray;
   LOperand* val = val_is_temp_register
       ? UseTempRegister(instr->value())
-      : UseRegister(instr->key());
+      : UseRegister(instr->value());
   LOperand* key = UseRegister(instr->key());
 
   return new LStoreKeyedSpecializedArrayElement(external_pointer,
@@ -1929,6 +1955,13 @@ LInstruction* LChunkBuilder::DoStoreNamedGeneric(HStoreNamedGeneric* instr) {
 }
 
 
+LInstruction* LChunkBuilder::DoStringAdd(HStringAdd* instr) {
+  LOperand* left = UseOrConstantAtStart(instr->left());
+  LOperand* right = UseOrConstantAtStart(instr->right());
+  return MarkAsCall(DefineFixed(new LStringAdd(left, right), rax), instr);
+}
+
+
 LInstruction* LChunkBuilder::DoStringCharCodeAt(HStringCharCodeAt* instr) {
   LOperand* string = UseRegister(instr->string());
   LOperand* index = UseRegisterOrConstant(instr->index());
@@ -1972,7 +2005,8 @@ LInstruction* LChunkBuilder::DoFunctionLiteral(HFunctionLiteral* instr) {
 
 LInstruction* LChunkBuilder::DoDeleteProperty(HDeleteProperty* instr) {
   LDeleteProperty* result =
-      new LDeleteProperty(Use(instr->object()), UseOrConstant(instr->key()));
+      new LDeleteProperty(UseAtStart(instr->object()),
+                          UseOrConstantAtStart(instr->key()));
   return MarkAsCall(DefineFixed(result, rax), instr);
 }
 
@@ -2058,7 +2092,6 @@ LInstruction* LChunkBuilder::DoSimulate(HSimulate* instr) {
       env->Push(value);
     }
   }
-  ASSERT(env->length() == instr->environment_length());
 
   // If there is an instruction pending deoptimization environment create a
   // lazy bailout instruction to capture the environment.

@@ -1,3 +1,60 @@
+2011-04-18: Version 3.3.0
+
+        Fixed bug in floating point rounding in Crankshaft on ARM
+        (issue 958)
+
+        Fixed a number of issues with running without VFPv3 support on ARM
+        (issue 1315)
+
+        Introduced v8Locale.Collator, a partial implementation of Collator
+        per last ECMAScript meeting + mailing list.
+
+        Minor performance improvements and bug fixes.
+
+
+2011-04-13: Version 3.2.10
+
+        Fixed bug in external float arrays on ARM (issue 1323).
+
+        Minor performance improvements and bug fixes.
+
+
+2011-04-11: Version 3.2.9
+
+        Removed support for ABI prior to EABI on ARM.
+
+        Fixed multiple crash bugs.
+
+        Added GCMole to the repository, a simple static analysis tool that
+        searches for GC-unsafe evaluation order dependent callsites.
+
+        Made preparser API be exported in shared libraries.
+
+        Fixed multiple issues in EcmaScript 5 strict mode implementation.
+
+        Fixed mutable __proto__ property if object is not extensible
+        (Issue 1309).
+
+        Fixed auto suspension of the sampler thread.
+
+
+2011-04-06: Version 3.2.8
+
+        Exposed WebGL typed array constructors in the shell sample.
+
+        Performance improvements on all platforms.
+
+
+2011-04-04: Version 3.2.7
+
+        Disabled the original 'classic' V8 code generator.  Crankshaft is
+        now the default on all platforms.
+
+        Changed the heap profiler to use more descriptive names.
+
+        Performance and stability improvements to isolates on all platforms.
+
+
 2011-03-30: Version 3.2.6
 
         Fixed xcode build warning in shell.cc (out of order initialization).

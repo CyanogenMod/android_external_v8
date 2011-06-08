@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -27,7 +27,7 @@
 
 #include "v8.h"
 
-#include "codegen-inl.h"
+#include "codegen.h"
 #include "compiler.h"
 #include "debug.h"
 #include "full-codegen.h"
@@ -213,12 +213,6 @@ void BreakableStatementChecker::VisitThrow(Throw* expr) {
 }
 
 
-void BreakableStatementChecker::VisitIncrementOperation(
-    IncrementOperation* expr) {
-  UNREACHABLE();
-}
-
-
 void BreakableStatementChecker::VisitProperty(Property* expr) {
   // Property load is breakable.
   is_breakable_ = true;
@@ -286,7 +280,7 @@ bool FullCodeGenerator::MakeCode(CompilationInfo* info) {
   }
   CodeGenerator::MakeCodePrologue(info);
   const int kInitialBufferSize = 4 * KB;
-  MacroAssembler masm(NULL, kInitialBufferSize);
+  MacroAssembler masm(info->isolate(), NULL, kInitialBufferSize);
 #ifdef ENABLE_GDB_JIT_INTERFACE
   masm.positions_recorder()->StartGDBJITLineInfoRecording();
 #endif
@@ -1354,11 +1348,6 @@ void FullCodeGenerator::VisitThrow(Throw* expr) {
   VisitForStackValue(expr->exception());
   __ CallRuntime(Runtime::kThrow, 1);
   // Never returns here.
-}
-
-
-void FullCodeGenerator::VisitIncrementOperation(IncrementOperation* expr) {
-  UNREACHABLE();
 }
 
 

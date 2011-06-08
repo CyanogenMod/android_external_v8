@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -29,7 +29,7 @@
 
 #if defined(V8_TARGET_ARCH_IA32)
 
-#include "codegen-inl.h"
+#include "codegen.h"
 #include "deoptimizer.h"
 #include "full-codegen.h"
 
@@ -1523,12 +1523,8 @@ void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {
 
 
 void Builtins::Generate_OnStackReplacement(MacroAssembler* masm) {
-  // We shouldn't be performing on-stack replacement in the first
-  // place if the CPU features we need for the optimized Crankshaft
-  // code aren't supported.
-  CpuFeatures* cpu_features = masm->isolate()->cpu_features();
-  cpu_features->Probe(false);
-  if (!cpu_features->IsSupported(SSE2)) {
+  CpuFeatures::TryForceFeatureScope scope(SSE2);
+  if (!CpuFeatures::IsSupported(SSE2)) {
     __ Abort("Unreachable code: Cannot optimize without SSE2 support.");
     return;
   }

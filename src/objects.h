@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -167,7 +167,7 @@ class PropertyDetails BASE_EMBEDDED {
   }
 
   // Conversion for storing details as Object*.
-  inline PropertyDetails(Smi* smi);
+  explicit inline PropertyDetails(Smi* smi);
   inline Smi* AsSmi();
 
   PropertyType type() { return TypeField::decode(value_); }
@@ -1293,14 +1293,9 @@ class HeapNumber: public HeapObject {
   // is a mixture of sign, exponent and mantissa.  Our current platforms are all
   // little endian apart from non-EABI arm which is little endian with big
   // endian floating point word ordering!
-#if !defined(V8_HOST_ARCH_ARM) || defined(USE_ARM_EABI)
   static const int kMantissaOffset = kValueOffset;
   static const int kExponentOffset = kValueOffset + 4;
-#else
-  static const int kMantissaOffset = kValueOffset + 4;
-  static const int kExponentOffset = kValueOffset;
-# define BIG_ENDIAN_FLOATING_POINT 1
-#endif
+
   static const int kSize = kValueOffset + kDoubleSize;
   static const uint32_t kSignMask = 0x80000000u;
   static const uint32_t kExponentMask = 0x7ff00000u;
@@ -2576,6 +2571,9 @@ class Dictionary: public HashTable<Shape, Key> {
   // Sets the entry to (key, value) pair.
   inline void SetEntry(int entry,
                        Object* key,
+                       Object* value);
+  inline void SetEntry(int entry,
+                       Object* key,
                        Object* value,
                        PropertyDetails details);
 
@@ -3239,7 +3237,6 @@ class Code: public HeapObject {
     STORE_IC,
     KEYED_STORE_IC,
     KEYED_EXTERNAL_ARRAY_STORE_IC,
-    BINARY_OP_IC,
     TYPE_RECORDING_BINARY_OP_IC,
     COMPARE_IC,
     // No more than 16 kinds. The value currently encoded in four bits in
@@ -3308,7 +3305,6 @@ class Code: public HeapObject {
   inline bool is_keyed_store_stub() { return kind() == KEYED_STORE_IC; }
   inline bool is_call_stub() { return kind() == CALL_IC; }
   inline bool is_keyed_call_stub() { return kind() == KEYED_CALL_IC; }
-  inline bool is_binary_op_stub() { return kind() == BINARY_OP_IC; }
   inline bool is_type_recording_binary_op_stub() {
     return kind() == TYPE_RECORDING_BINARY_OP_IC;
   }
@@ -3365,10 +3361,6 @@ class Code: public HeapObject {
   // array that the code stub is specialized for.
   inline ExternalArrayType external_array_type();
   inline void set_external_array_type(ExternalArrayType value);
-
-  // [binary op type]: For all BINARY_OP_IC.
-  inline byte binary_op_type();
-  inline void set_binary_op_type(byte value);
 
   // [type-recording binary op type]: For all TYPE_RECORDING_BINARY_OP_IC.
   inline byte type_recording_binary_op_type();
@@ -3486,6 +3478,10 @@ class Code: public HeapObject {
 #ifdef DEBUG
   void CodeVerify();
 #endif
+
+  // Returns the isolate/heap this code object belongs to.
+  inline Isolate* isolate();
+  inline Heap* heap();
 
   // Max loop nesting marker used to postpose OSR. We don't take loop
   // nesting that is deeper than 5 levels into account.
@@ -4255,9 +4251,6 @@ class SharedFunctionInfo: public HeapObject {
   // this.x = y; where y is either a constant or refers to an argument.
   inline bool has_only_simple_this_property_assignments();
 
-  inline bool try_full_codegen();
-  inline void set_try_full_codegen(bool flag);
-
   // Indicates if this function can be lazy compiled.
   // This is used to determine if we can safely flush code from a function
   // when doing GC if we expect that the function will no longer be used.
@@ -4457,13 +4450,12 @@ class SharedFunctionInfo: public HeapObject {
 
   // Bit positions in compiler_hints.
   static const int kHasOnlySimpleThisPropertyAssignments = 0;
-  static const int kTryFullCodegen = 1;
-  static const int kAllowLazyCompilation = 2;
-  static const int kLiveObjectsMayExist = 3;
-  static const int kCodeAgeShift = 4;
+  static const int kAllowLazyCompilation = 1;
+  static const int kLiveObjectsMayExist = 2;
+  static const int kCodeAgeShift = 3;
   static const int kCodeAgeMask = 0x7;
-  static const int kOptimizationDisabled = 7;
-  static const int kStrictModeFunction = 8;
+  static const int kOptimizationDisabled = 6;
+  static const int kStrictModeFunction = 7;
 
  private:
 #if V8_HOST_ARCH_32_BIT
@@ -4533,6 +4525,9 @@ class JSFunction: public JSObject {
 
   // Tells whether or not this function has been optimized.
   inline bool IsOptimized();
+
+  // Tells whether or not this function can be optimized.
+  inline bool IsOptimizable();
 
   // Mark this function for lazy recompilation. The function will be
   // recompiled the next time it is executed.
@@ -5158,7 +5153,7 @@ enum RobustnessFlag {ROBUST_STRING_TRAVERSAL, FAST_STRING_TRAVERSAL};
 
 class StringHasher {
  public:
-  inline StringHasher(int length);
+  explicit inline StringHasher(int length);
 
   // Returns true if the hash of this string can be computed without
   // looking at the contents.
@@ -5905,7 +5900,7 @@ class StringInputBuffer: public unibrow::InputBuffer<String, String*, 1024> {
  public:
   virtual void Seek(unsigned pos);
   inline StringInputBuffer(): unibrow::InputBuffer<String, String*, 1024>() {}
-  inline StringInputBuffer(String* backing):
+  explicit inline StringInputBuffer(String* backing):
       unibrow::InputBuffer<String, String*, 1024>(backing) {}
 };
 
@@ -5916,7 +5911,7 @@ class SafeStringInputBuffer
   virtual void Seek(unsigned pos);
   inline SafeStringInputBuffer()
       : unibrow::InputBuffer<String, String**, 256>() {}
-  inline SafeStringInputBuffer(String** backing)
+  explicit inline SafeStringInputBuffer(String** backing)
       : unibrow::InputBuffer<String, String**, 256>(backing) {}
 };
 
@@ -6008,6 +6003,10 @@ class JSGlobalPropertyCell: public HeapObject {
   typedef FixedBodyDescriptor<kValueOffset,
                               kValueOffset + kPointerSize,
                               kSize> BodyDescriptor;
+
+  // Returns the isolate/heap this cell object belongs to.
+  inline Isolate* isolate();
+  inline Heap* heap();
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(JSGlobalPropertyCell);

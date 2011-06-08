@@ -1570,7 +1570,6 @@ static void ReportCodeKindStatistics() {
       CASE(KEYED_EXTERNAL_ARRAY_STORE_IC);
       CASE(CALL_IC);
       CASE(KEYED_CALL_IC);
-      CASE(BINARY_OP_IC);
       CASE(TYPE_RECORDING_BINARY_OP_IC);
       CASE(COMPARE_IC);
     }
@@ -3014,7 +3013,8 @@ void LargeObjectSpace::FreeUnmarkedObjects() {
       }
 
       // Free the chunk.
-      heap()->mark_compact_collector()->ReportDeleteIfNeeded(object);
+      heap()->mark_compact_collector()->ReportDeleteIfNeeded(
+          object, heap()->isolate());
       LiveObjectList::ProcessNonLive(object);
 
       size_ -= static_cast<int>(chunk_size);

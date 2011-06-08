@@ -30,7 +30,7 @@
 #if defined(V8_TARGET_ARCH_X64)
 
 #include "bootstrapper.h"
-#include "codegen-inl.h"
+#include "codegen.h"
 #include "assembler-x64.h"
 #include "macro-assembler-x64.h"
 #include "serialize.h"
@@ -40,12 +40,15 @@
 namespace v8 {
 namespace internal {
 
-MacroAssembler::MacroAssembler(void* buffer, int size)
-    : Assembler(buffer, size),
+MacroAssembler::MacroAssembler(Isolate* arg_isolate, void* buffer, int size)
+    : Assembler(arg_isolate, buffer, size),
       generating_stub_(false),
       allow_stub_calls_(true),
-      root_array_available_(true),
-      code_object_(isolate()->heap()->undefined_value()) {
+      root_array_available_(true) {
+  if (isolate() != NULL) {
+    code_object_ = Handle<Object>(isolate()->heap()->undefined_value(),
+                                  isolate());
+  }
 }
 
 
@@ -647,6 +650,7 @@ MaybeObject* MacroAssembler::TryCallApiFunctionAndReturn(
   Label leave_exit_frame;
   Label write_back;
 
+  Factory* factory = isolate()->factory();
   ExternalReference next_address =
       ExternalReference::handle_scope_next_address();
   const int kNextOffset = 0;
@@ -694,7 +698,7 @@ MaybeObject* MacroAssembler::TryCallApiFunctionAndReturn(
 
   // Check if the function scheduled an exception.
   movq(rsi, scheduled_exception_address);
-  Cmp(Operand(rsi, 0), FACTORY->the_hole_value());
+  Cmp(Operand(rsi, 0), factory->the_hole_value());
   j(not_equal, &promote_scheduled_exception);
 
   LeaveApiExitFrame();
@@ -709,7 +713,7 @@ MaybeObject* MacroAssembler::TryCallApiFunctionAndReturn(
 
   bind(&empty_result);
   // It was zero; the result is undefined.
-  Move(rax, FACTORY->undefined_value());
+  Move(rax, factory->undefined_value());
   jmp(&prologue);
 
   // HandleScope limit has changed. Delete allocated extensions.
@@ -785,10 +789,10 @@ void MacroAssembler::GetBuiltinEntry(Register target, Builtins::JavaScript id) {
 void MacroAssembler::Set(Register dst, int64_t x) {
   if (x == 0) {
     xorl(dst, dst);
-  } else if (is_int32(x)) {
-    movq(dst, Immediate(static_cast<int32_t>(x)));
   } else if (is_uint32(x)) {
     movl(dst, Immediate(static_cast<uint32_t>(x)));
+  } else if (is_int32(x)) {
+    movq(dst, Immediate(static_cast<int32_t>(x)));
   } else {
     movq(dst, x, RelocInfo::NONE);
   }
@@ -798,7 +802,7 @@ void MacroAssembler::Set(const Operand& dst, int64_t x) {
   if (is_int32(x)) {
     movq(dst, Immediate(static_cast<int32_t>(x)));
   } else {
-    movq(kScratchRegister, x, RelocInfo::NONE);
+    Set(kScratchRegister, x);
     movq(dst, kScratchRegister);
   }
 }
@@ -1244,12 +1248,17 @@ void MacroAssembler::SmiAdd(Register dst,
                             Register src2) {
   // No overflow checking. Use only when it's known that
   // overflowing is impossible.
-  ASSERT(!dst.is(src2));
   if (!dst.is(src1)) {
-    movq(dst, src1);
+    if (emit_debug_code()) {
+      movq(kScratchRegister, src1);
+      addq(kScratchRegister, src2);
+      Check(no_overflow, "Smi addition overflow");
+    }
+    lea(dst, Operand(src1, src2, times_1, 0));
+  } else {
+    addq(dst, src2);
+    Assert(no_overflow, "Smi addition overflow");
   }
-  addq(dst, src2);
-  Assert(no_overflow, "Smi addition overflow");
 }
 
 
@@ -1317,6 +1326,7 @@ void MacroAssembler::SmiAndConstant(Register dst, Register src, Smi* constant) {
 
 void MacroAssembler::SmiOr(Register dst, Register src1, Register src2) {
   if (!dst.is(src1)) {
+    ASSERT(!src1.is(src2));
     movq(dst, src1);
   }
   or_(dst, src2);
@@ -1337,6 +1347,7 @@ void MacroAssembler::SmiOrConstant(Register dst, Register src, Smi* constant) {
 
 void MacroAssembler::SmiXor(Register dst, Register src1, Register src2) {
   if (!dst.is(src1)) {
+    ASSERT(!src1.is(src2));
     movq(dst, src1);
   }
   xor_(dst, src2);
@@ -1809,7 +1820,7 @@ void MacroAssembler::ThrowUncatchable(UncatchableExceptionType type,
     // Set external caught exception to false.
     ExternalReference external_caught(
         Isolate::k_external_caught_exception_address, isolate());
-    movq(rax, Immediate(false));
+    Set(rax, static_cast<int64_t>(false));
     Store(external_caught, rax);
 
     // Set pending exception and rax to out of memory exception.
@@ -1890,7 +1901,7 @@ void MacroAssembler::AbortIfNotNumber(Register object) {
   Condition is_smi = CheckSmi(object);
   j(is_smi, &ok);
   Cmp(FieldOperand(object, HeapObject::kMapOffset),
-      FACTORY->heap_number_map());
+      isolate()->factory()->heap_number_map());
   Assert(equal, "Operand not a number");
   bind(&ok);
 }
@@ -1997,7 +2008,7 @@ void MacroAssembler::TryGetFunctionPrototype(Register function,
 void MacroAssembler::SetCounter(StatsCounter* counter, int value) {
   if (FLAG_native_code_counters && counter->Enabled()) {
     Operand counter_operand = ExternalOperand(ExternalReference(counter));
-    movq(counter_operand, Immediate(value));
+    movl(counter_operand, Immediate(value));
   }
 }
 
@@ -2147,7 +2158,7 @@ void MacroAssembler::EnterFrame(StackFrame::Type type) {
   push(kScratchRegister);
   if (emit_debug_code()) {
     movq(kScratchRegister,
-         FACTORY->undefined_value(),
+         isolate()->factory()->undefined_value(),
          RelocInfo::EMBEDDED_OBJECT);
     cmpq(Operand(rsp, 0), kScratchRegister);
     Check(not_equal, "code object not properly patched");
@@ -2199,7 +2210,6 @@ void MacroAssembler::EnterExitFrameEpilogue(int arg_stack_space,
 #endif
   // Optionally save all XMM registers.
   if (save_doubles) {
-    CpuFeatures::Scope scope(SSE2);
     int space = XMMRegister::kNumRegisters * kDoubleSize +
         arg_stack_space * kPointerSize;
     subq(rsp, Immediate(space));
@@ -2216,8 +2226,8 @@ void MacroAssembler::EnterExitFrameEpilogue(int arg_stack_space,
   const int kFrameAlignment = OS::ActivationFrameAlignment();
   if (kFrameAlignment > 0) {
     ASSERT(IsPowerOf2(kFrameAlignment));
-    movq(kScratchRegister, Immediate(-kFrameAlignment));
-    and_(rsp, kScratchRegister);
+    ASSERT(is_int8(kFrameAlignment));
+    and_(rsp, Immediate(-kFrameAlignment));
   }
 
   // Patch the saved entry sp.
@@ -2316,7 +2326,7 @@ void MacroAssembler::CheckAccessGlobalProxy(Register holder_reg,
   // Check the context is a global context.
   if (emit_debug_code()) {
     Cmp(FieldOperand(scratch, HeapObject::kMapOffset),
-        FACTORY->global_context_map());
+        isolate()->factory()->global_context_map());
     Check(equal, "JSGlobalObject::global_context should be a global context.");
   }
 
@@ -2818,7 +2828,7 @@ void MacroAssembler::LoadGlobalFunctionInitialMap(Register function,
   movq(map, FieldOperand(function, JSFunction::kPrototypeOrInitialMapOffset));
   if (emit_debug_code()) {
     Label ok, fail;
-    CheckMap(map, FACTORY->meta_map(), &fail, false);
+    CheckMap(map, isolate()->factory()->meta_map(), &fail, false);
     jmp(&ok);
     bind(&fail);
     Abort("Global functions must have initial map");
@@ -2851,9 +2861,6 @@ void MacroAssembler::PrepareCallCFunction(int num_arguments) {
   ASSERT(frame_alignment != 0);
   ASSERT(num_arguments >= 0);
 
-  // Reserve space for Isolate address which is always passed as last parameter
-  num_arguments += 1;
-
   // Make stack end at alignment and allocate space for arguments and old rsp.
   movq(kScratchRegister, rsp);
   ASSERT(IsPowerOf2(frame_alignment));
@@ -2873,26 +2880,6 @@ void MacroAssembler::CallCFunction(ExternalReference function,
 
 
 void MacroAssembler::CallCFunction(Register function, int num_arguments) {
-  // Pass current isolate address as additional parameter.
-  if (num_arguments < kRegisterPassedArguments) {
-#ifdef _WIN64
-    // First four arguments are passed in registers on Windows.
-    Register arg_to_reg[] = {rcx, rdx, r8, r9};
-#else
-    // First six arguments are passed in registers on other platforms.
-    Register arg_to_reg[] = {rdi, rsi, rdx, rcx, r8, r9};
-#endif
-    Register reg = arg_to_reg[num_arguments];
-    LoadAddress(reg, ExternalReference::isolate_address());
-  } else {
-    // Push Isolate pointer after all parameters.
-    int argument_slots_on_stack =
-        ArgumentStackSlotsForCFunctionCall(num_arguments);
-    LoadAddress(kScratchRegister, ExternalReference::isolate_address());
-    movq(Operand(rsp, argument_slots_on_stack * kPointerSize),
-         kScratchRegister);
-  }
-
   // Check stack alignment.
   if (emit_debug_code()) {
     CheckStackAlignment();
@@ -2901,7 +2888,6 @@ void MacroAssembler::CallCFunction(Register function, int num_arguments) {
   call(function);
   ASSERT(OS::ActivationFrameAlignment() != 0);
   ASSERT(num_arguments >= 0);
-  num_arguments += 1;
   int argument_slots_on_stack =
       ArgumentStackSlotsForCFunctionCall(num_arguments);
   movq(rsp, Operand(rsp, argument_slots_on_stack * kPointerSize));
@@ -2909,7 +2895,9 @@ void MacroAssembler::CallCFunction(Register function, int num_arguments) {
 
 
 CodePatcher::CodePatcher(byte* address, int size)
-    : address_(address), size_(size), masm_(address, size + Assembler::kGap) {
+    : address_(address),
+      size_(size),
+      masm_(Isolate::Current(), address, size + Assembler::kGap) {
   // Create a new macro assembler pointing to the address of the code to patch.
   // The size is adjusted with kGap on order for the assembler to generate size
   // bytes of instructions without failing with buffer size constraints.

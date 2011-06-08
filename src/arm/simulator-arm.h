@@ -1,4 +1,4 @@
-// Copyright 2009 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -155,6 +155,7 @@ class Simulator {
   // instruction.
   void set_register(int reg, int32_t value);
   int32_t get_register(int reg) const;
+  double get_double_from_register_pair(int reg);
   void set_dw_register(int dreg, const int* dbl);
 
   // Support for VFP.
@@ -236,7 +237,13 @@ class Simulator {
   // Helper functions to decode common "addressing" modes
   int32_t GetShiftRm(Instruction* instr, bool* carry_out);
   int32_t GetImm(Instruction* instr, bool* carry_out);
+  void ProcessPUW(Instruction* instr,
+                  int num_regs,
+                  int operand_size,
+                  intptr_t* start_address,
+                  intptr_t* end_address);
   void HandleRList(Instruction* instr, bool load);
+  void HandleVList(Instruction* inst);
   void SoftwareInterrupt(Instruction* instr);
 
   // Stop helper functions.

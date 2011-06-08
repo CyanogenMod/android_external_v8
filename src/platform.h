@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -303,6 +303,21 @@ class OS {
 
   static void ReleaseStore(volatile AtomicWord* ptr, AtomicWord value);
 
+#if defined(V8_TARGET_ARCH_IA32)
+  // Copy memory area to disjoint memory area.
+  static void MemCopy(void* dest, const void* src, size_t size);
+  // Limit below which the extra overhead of the MemCopy function is likely
+  // to outweigh the benefits of faster copying.
+  static const int kMinComplexMemCopy = 64;
+  typedef void (*MemCopyFunction)(void* dest, const void* src, size_t size);
+
+#else  // V8_TARGET_ARCH_IA32
+  static void MemCopy(void* dest, const void* src, size_t size) {
+    memcpy(dest, src, size);
+  }
+  static const int kMinComplexMemCopy = 256;
+#endif  // V8_TARGET_ARCH_IA32
+
  private:
   static const int msPerSecond = 1000;
 
@@ -339,40 +354,6 @@ class VirtualMemory {
   size_t size_;  // Size of the virtual memory.
 };
 
-
-// ----------------------------------------------------------------------------
-// ThreadHandle
-//
-// A ThreadHandle represents a thread identifier for a thread. The ThreadHandle
-// does not own the underlying os handle. Thread handles can be used for
-// refering to threads and testing equality.
-
-class ThreadHandle {
- public:
-  enum Kind { SELF, INVALID };
-  explicit ThreadHandle(Kind kind);
-
-  // Destructor.
-  ~ThreadHandle();
-
-  // Test for thread running.
-  bool IsSelf() const;
-
-  // Test for valid thread handle.
-  bool IsValid() const;
-
-  // Get platform-specific data.
-  class PlatformData;
-  PlatformData* thread_handle_data() { return data_; }
-
-  // Initialize the handle to kind
-  void Initialize(Kind kind);
-
- private:
-  PlatformData* data_;  // Captures platform dependent data.
-};
-
-
 // ----------------------------------------------------------------------------
 // Thread
 //
@@ -381,7 +362,7 @@ class ThreadHandle {
 // thread. The Thread object should not be deallocated before the thread has
 // terminated.
 
-class Thread: public ThreadHandle {
+class Thread {
  public:
   // Opaque data type for thread-local storage keys.
   // LOCAL_STORAGE_KEY_MIN_VALUE and LOCAL_STORAGE_KEY_MAX_VALUE are specified
@@ -453,11 +434,15 @@ class Thread: public ThreadHandle {
   // The thread name length is limited to 16 based on Linux's implementation of
   // prctl().
   static const int kMaxThreadNameLength = 16;
+
+  class PlatformData;
+  PlatformData* data() { return data_; }
+
  private:
   void set_name(const char *name);
 
-  class PlatformData;
   PlatformData* data_;
+
   Isolate* isolate_;
   char name_[kMaxThreadNameLength];
   int stack_size_;
@@ -493,10 +478,10 @@ class Mutex {
 
 
 // ----------------------------------------------------------------------------
-// ScopedLock/ScopedUnlock
+// ScopedLock
 //
-// Stack-allocated ScopedLocks/ScopedUnlocks provide block-scoped
-// locking and unlocking of a mutex.
+// Stack-allocated ScopedLocks provide block-scoped locking and
+// unlocking of a mutex.
 class ScopedLock {
  public:
   explicit ScopedLock(Mutex* mutex): mutex_(mutex) {
@@ -596,7 +581,8 @@ class TickSample {
         sp(NULL),
         fp(NULL),
         tos(NULL),
-        frames_count(0) {}
+        frames_count(0),
+        has_external_callback(false) {}
   StateTag state;  // The state of the VM.
   Address pc;      // Instruction pointer.
   Address sp;      // Stack pointer.

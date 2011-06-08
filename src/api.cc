@@ -1303,7 +1303,7 @@ ScriptData* ScriptData::New(const char* data, int length) {
   }
   // Copy the data to align it.
   unsigned* deserialized_data = i::NewArray<unsigned>(deserialized_data_length);
-  i::MemCopy(deserialized_data, data, length);
+  i::OS::MemCopy(deserialized_data, data, length);
 
   return new i::ScriptDataImpl(
       i::Vector<unsigned>(deserialized_data, deserialized_data_length));
@@ -2581,6 +2581,9 @@ bool v8::Object::SetPrototype(Handle<Value> value) {
   ENTER_V8(isolate);
   i::Handle<i::JSObject> self = Utils::OpenHandle(this);
   i::Handle<i::Object> value_obj = Utils::OpenHandle(*value);
+  // We do not allow exceptions thrown while setting the prototype
+  // to propagate outside.
+  TryCatch try_catch;
   EXCEPTION_PREAMBLE(isolate);
   i::Handle<i::Object> result = i::SetPrototype(self, value_obj);
   has_pending_exception = result.is_null();
@@ -2793,6 +2796,26 @@ bool v8::Object::HasIndexedLookupInterceptor() {
 }
 
 
+static Local<Value> GetPropertyByLookup(i::Isolate* isolate,
+                                        i::Handle<i::JSObject> receiver,
+                                        i::Handle<i::String> name,
+                                        i::LookupResult* lookup) {
+  if (!lookup->IsProperty()) {
+    // No real property was found.
+    return Local<Value>();
+  }
+
+  // If the property being looked up is a callback, it can throw
+  // an exception.
+  EXCEPTION_PREAMBLE(isolate);
+  i::Handle<i::Object> result = i::GetProperty(receiver, name, lookup);
+  has_pending_exception = result.is_null();
+  EXCEPTION_BAILOUT_CHECK(isolate, Local<Value>());
+
+  return Utils::ToLocal(result);
+}
+
+
 Local<Value> v8::Object::GetRealNamedPropertyInPrototypeChain(
       Handle<String> key) {
   i::Isolate* isolate = Utils::OpenHandle(this)->GetIsolate();
@@ -2804,17 +2827,7 @@ Local<Value> v8::Object::GetRealNamedPropertyInPrototypeChain(
   i::Handle<i::String> key_obj = Utils::OpenHandle(*key);
   i::LookupResult lookup;
   self_obj->LookupRealNamedPropertyInPrototypes(*key_obj, &lookup);
-  if (lookup.IsProperty()) {
-    PropertyAttributes attributes;
-    i::Object* property =
-        self_obj->GetProperty(*self_obj,
-                              &lookup,
-                              *key_obj,
-                              &attributes)->ToObjectUnchecked();
-    i::Handle<i::Object> result(property);
-    return Utils::ToLocal(result);
-  }
-  return Local<Value>();  // No real property was found in prototype chain.
+  return GetPropertyByLookup(isolate, self_obj, key_obj, &lookup);
 }
 
 
@@ -2827,17 +2840,7 @@ Local<Value> v8::Object::GetRealNamedProperty(Handle<String> key) {
   i::Handle<i::String> key_obj = Utils::OpenHandle(*key);
   i::LookupResult lookup;
   self_obj->LookupRealNamedProperty(*key_obj, &lookup);
-  if (lookup.IsProperty()) {
-    PropertyAttributes attributes;
-    i::Object* property =
-        self_obj->GetProperty(*self_obj,
-                              &lookup,
-                              *key_obj,
-                              &attributes)->ToObjectUnchecked();
-    i::Handle<i::Object> result(property);
-    return Utils::ToLocal(result);
-  }
-  return Local<Value>();  // No real property was found in prototype chain.
+  return GetPropertyByLookup(isolate, self_obj, key_obj, &lookup);
 }
 
 
@@ -2877,6 +2880,33 @@ Local<v8::Object> v8::Object::Clone() {
   has_pending_exception = result.is_null();
   EXCEPTION_BAILOUT_CHECK(isolate, Local<Object>());
   return Utils::ToLocal(result);
+}
+
+
+static i::Context* GetCreationContext(i::JSObject* object) {
+  i::Object* constructor = object->map()->constructor();
+  i::JSFunction* function;
+  if (!constructor->IsJSFunction()) {
+    // API functions have null as a constructor,
+    // but any JSFunction knows its context immediately.
+    ASSERT(object->IsJSFunction() &&
+           i::JSFunction::cast(object)->shared()->IsApiFunction());
+    function = i::JSFunction::cast(object);
+  } else {
+    function = i::JSFunction::cast(constructor);
+  }
+  return function->context()->global_context();
+}
+
+
+Local<v8::Context> v8::Object::CreationContext() {
+  i::Isolate* isolate = Utils::OpenHandle(this)->GetIsolate();
+  ON_BAILOUT(isolate,
+             "v8::Object::CreationContext()", return Local<v8::Context>());
+  ENTER_V8(isolate);
+  i::Handle<i::JSObject> self = Utils::OpenHandle(this);
+  i::Context* context = GetCreationContext(*self);
+  return Utils::ToLocal(i::Handle<i::Context>(context));
 }
 
 
@@ -3679,6 +3709,7 @@ Persistent<Context> v8::Context::New(
 
     // Create the environment.
     env = isolate->bootstrapper()->CreateEnvironment(
+        isolate,
         Utils::OpenHandle(*global_object),
         proxy_template,
         extensions);
@@ -4177,9 +4208,11 @@ void v8::Date::DateTimeConfigurationChangeNotification() {
 
     // Call ResetDateCache(0 but expect no exceptions:
     bool caught_exception = false;
-    i::Handle<i::Object> result =
-        i::Execution::TryCall(func, isolate->js_builtins_object(), 0, NULL,
-        &caught_exception);
+    i::Execution::TryCall(func,
+                          isolate->js_builtins_object(),
+                          0,
+                          NULL,
+                          &caught_exception);
   }
 }
 
@@ -4248,7 +4281,9 @@ Local<v8::Array> v8::Array::New(int length) {
   ENTER_V8(isolate);
   int real_length = length > 0 ? length : 0;
   i::Handle<i::JSArray> obj = isolate->factory()->NewJSArray(real_length);
-  obj->set_length(*isolate->factory()->NewNumberFromInt(real_length));
+  i::Handle<i::Object> length_obj =
+      isolate->factory()->NewNumberFromInt(real_length);
+  obj->set_length(*length_obj);
   return Utils::ToLocal(obj);
 }
 
@@ -4444,7 +4479,7 @@ void V8::AddImplicitReferences(Persistent<Object> parent,
   if (IsDeadCheck(isolate, "v8::V8::AddImplicitReferences()")) return;
   STATIC_ASSERT(sizeof(Persistent<Value>) == sizeof(i::Object**));
   isolate->global_handles()->AddImplicitReferences(
-      *Utils::OpenHandle(*parent),
+      i::Handle<i::HeapObject>::cast(Utils::OpenHandle(*parent)).location(),
       reinterpret_cast<i::Object***>(children), length);
 }
 
@@ -4593,7 +4628,7 @@ int V8::GetLogLines(int from_pos, char* dest_buf, int max_size) {
 int V8::GetCurrentThreadId() {
   i::Isolate* isolate = i::Isolate::Current();
   EnsureInitializedForIsolate(isolate, "V8::GetCurrentThreadId()");
-  return isolate->thread_id();
+  return isolate->thread_id().ToInteger();
 }
 
 
@@ -4604,10 +4639,11 @@ void V8::TerminateExecution(int thread_id) {
   // If the thread_id identifies the current thread just terminate
   // execution right away.  Otherwise, ask the thread manager to
   // terminate the thread with the given id if any.
-  if (thread_id == isolate->thread_id()) {
+  i::ThreadId internal_tid = i::ThreadId::FromInteger(thread_id);
+  if (isolate->thread_id().Equals(internal_tid)) {
     isolate->stack_guard()->TerminateExecution();
   } else {
-    isolate->thread_manager()->TerminateExecution(thread_id);
+    isolate->thread_manager()->TerminateExecution(internal_tid);
   }
 }
 

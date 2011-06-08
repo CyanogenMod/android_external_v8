@@ -39,6 +39,7 @@ namespace internal {
 // Forward declarations.
 class LCodeGen;
 
+
 #define LITHIUM_ALL_INSTRUCTION_LIST(V)         \
   V(ControlInstruction)                         \
   V(Call)                                       \
@@ -106,6 +107,7 @@ class LCodeGen;
   V(InstanceOfAndBranch)                        \
   V(InstanceOfKnownGlobal)                      \
   V(Integer32ToDouble)                          \
+  V(InvokeFunction)                             \
   V(IsNull)                                     \
   V(IsNullAndBranch)                            \
   V(IsObject)                                   \
@@ -121,7 +123,8 @@ class LCodeGen;
   V(LoadElements)                               \
   V(LoadExternalArrayPointer)                   \
   V(LoadFunctionPrototype)                      \
-  V(LoadGlobal)                                 \
+  V(LoadGlobalCell)                             \
+  V(LoadGlobalGeneric)                          \
   V(LoadKeyedFastElement)                       \
   V(LoadKeyedGeneric)                           \
   V(LoadKeyedSpecializedArrayElement)           \
@@ -146,12 +149,14 @@ class LCodeGen;
   V(SmiUntag)                                   \
   V(StackCheck)                                 \
   V(StoreContextSlot)                           \
-  V(StoreGlobal)                                \
+  V(StoreGlobalCell)                            \
+  V(StoreGlobalGeneric)                         \
   V(StoreKeyedFastElement)                      \
   V(StoreKeyedGeneric)                          \
   V(StoreKeyedSpecializedArrayElement)          \
   V(StoreNamedField)                            \
   V(StoreNamedGeneric)                          \
+  V(StringAdd)                                  \
   V(StringCharCodeAt)                           \
   V(StringCharFromCode)                         \
   V(StringLength)                               \
@@ -1292,21 +1297,59 @@ class LLoadKeyedGeneric: public LTemplateInstruction<1, 3, 0> {
 };
 
 
-class LLoadGlobal: public LTemplateInstruction<1, 0, 0> {
+class LLoadGlobalCell: public LTemplateInstruction<1, 0, 0> {
  public:
-  DECLARE_CONCRETE_INSTRUCTION(LoadGlobal, "load-global")
-  DECLARE_HYDROGEN_ACCESSOR(LoadGlobal)
+  DECLARE_CONCRETE_INSTRUCTION(LoadGlobalCell, "load-global-cell")
+  DECLARE_HYDROGEN_ACCESSOR(LoadGlobalCell)
 };
 
 
-class LStoreGlobal: public LTemplateInstruction<0, 1, 0> {
+class LLoadGlobalGeneric: public LTemplateInstruction<1, 2, 0> {
  public:
-  explicit LStoreGlobal(LOperand* value) {
+  LLoadGlobalGeneric(LOperand* context, LOperand* global_object) {
+    inputs_[0] = context;
+    inputs_[1] = global_object;
+  }
+
+  DECLARE_CONCRETE_INSTRUCTION(LoadGlobalGeneric, "load-global-generic")
+  DECLARE_HYDROGEN_ACCESSOR(LoadGlobalGeneric)
+
+  LOperand* context() { return inputs_[0]; }
+  LOperand* global_object() { return inputs_[1]; }
+  Handle<Object> name() const { return hydrogen()->name(); }
+  bool for_typeof() const { return hydrogen()->for_typeof(); }
+};
+
+
+class LStoreGlobalCell: public LTemplateInstruction<0, 1, 0> {
+ public:
+  explicit LStoreGlobalCell(LOperand* value) {
     inputs_[0] = value;
   }
 
-  DECLARE_CONCRETE_INSTRUCTION(StoreGlobal, "store-global")
-  DECLARE_HYDROGEN_ACCESSOR(StoreGlobal)
+  DECLARE_CONCRETE_INSTRUCTION(StoreGlobalCell, "store-global-cell")
+  DECLARE_HYDROGEN_ACCESSOR(StoreGlobalCell)
+};
+
+
+class LStoreGlobalGeneric: public LTemplateInstruction<0, 3, 0> {
+ public:
+  explicit LStoreGlobalGeneric(LOperand* context,
+                               LOperand* global_object,
+                               LOperand* value) {
+    inputs_[0] = context;
+    inputs_[1] = global_object;
+    inputs_[2] = value;
+  }
+
+  DECLARE_CONCRETE_INSTRUCTION(StoreGlobalGeneric, "store-global-generic")
+  DECLARE_HYDROGEN_ACCESSOR(StoreGlobalGeneric)
+
+  LOperand* context() { return InputAt(0); }
+  LOperand* global_object() { return InputAt(1); }
+  Handle<Object> name() const { return hydrogen()->name(); }
+  LOperand* value() { return InputAt(2); }
+  bool strict_mode() { return hydrogen()->strict_mode(); }
 };
 
 
@@ -1406,6 +1449,25 @@ class LCallConstantFunction: public LTemplateInstruction<1, 0, 0> {
   virtual void PrintDataTo(StringStream* stream);
 
   Handle<JSFunction> function() { return hydrogen()->function(); }
+  int arity() const { return hydrogen()->argument_count() - 1; }
+};
+
+
+class LInvokeFunction: public LTemplateInstruction<1, 2, 0> {
+ public:
+  LInvokeFunction(LOperand* context, LOperand* function) {
+    inputs_[0] = context;
+    inputs_[1] = function;
+  }
+
+  DECLARE_CONCRETE_INSTRUCTION(InvokeFunction, "invoke-function")
+  DECLARE_HYDROGEN_ACCESSOR(InvokeFunction)
+
+  LOperand* context() { return inputs_[0]; }
+  LOperand* function() { return inputs_[1]; }
+
+  virtual void PrintDataTo(StringStream* stream);
+
   int arity() const { return hydrogen()->argument_count() - 1; }
 };
 
@@ -1655,6 +1717,7 @@ class LStoreNamedGeneric: public LTemplateInstruction<0, 3, 0> {
   LOperand* object() { return inputs_[1]; }
   LOperand* value() { return inputs_[2]; }
   Handle<Object> name() const { return hydrogen()->name(); }
+  bool strict_mode() { return hydrogen()->strict_mode(); }
 };
 
 
@@ -1716,6 +1779,7 @@ class LStoreKeyedGeneric: public LTemplateInstruction<0, 4, 0> {
   }
 
   DECLARE_CONCRETE_INSTRUCTION(StoreKeyedGeneric, "store-keyed-generic")
+  DECLARE_HYDROGEN_ACCESSOR(StoreKeyedGeneric)
 
   virtual void PrintDataTo(StringStream* stream);
 
@@ -1723,6 +1787,22 @@ class LStoreKeyedGeneric: public LTemplateInstruction<0, 4, 0> {
   LOperand* object() { return inputs_[1]; }
   LOperand* key() { return inputs_[2]; }
   LOperand* value() { return inputs_[3]; }
+  bool strict_mode() { return hydrogen()->strict_mode(); }
+};
+
+
+class LStringAdd: public LTemplateInstruction<1, 2, 0> {
+ public:
+  LStringAdd(LOperand* left, LOperand* right) {
+    inputs_[0] = left;
+    inputs_[1] = right;
+  }
+
+  DECLARE_CONCRETE_INSTRUCTION(StringAdd, "string-add")
+  DECLARE_HYDROGEN_ACCESSOR(StringAdd)
+
+  LOperand* left() { return inputs_[0]; }
+  LOperand* right() { return inputs_[1]; }
 };
 
 

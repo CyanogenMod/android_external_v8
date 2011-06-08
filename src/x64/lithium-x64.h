@@ -98,14 +98,15 @@ class LCodeGen;
   V(GlobalObject)                               \
   V(GlobalReceiver)                             \
   V(Goto)                                       \
-  V(HasInstanceType)                            \
-  V(HasInstanceTypeAndBranch)                   \
   V(HasCachedArrayIndex)                        \
   V(HasCachedArrayIndexAndBranch)               \
+  V(HasInstanceType)                            \
+  V(HasInstanceTypeAndBranch)                   \
   V(InstanceOf)                                 \
   V(InstanceOfAndBranch)                        \
   V(InstanceOfKnownGlobal)                      \
   V(Integer32ToDouble)                          \
+  V(InvokeFunction)                             \
   V(IsNull)                                     \
   V(IsNullAndBranch)                            \
   V(IsObject)                                   \
@@ -118,7 +119,8 @@ class LCodeGen;
   V(LoadContextSlot)                            \
   V(LoadElements)                               \
   V(LoadExternalArrayPointer)                   \
-  V(LoadGlobal)                                 \
+  V(LoadGlobalCell)                             \
+  V(LoadGlobalGeneric)                          \
   V(LoadKeyedFastElement)                       \
   V(LoadKeyedGeneric)                           \
   V(LoadKeyedSpecializedArrayElement)           \
@@ -144,12 +146,14 @@ class LCodeGen;
   V(SmiUntag)                                   \
   V(StackCheck)                                 \
   V(StoreContextSlot)                           \
-  V(StoreGlobal)                                \
+  V(StoreGlobalCell)                            \
+  V(StoreGlobalGeneric)                         \
   V(StoreKeyedFastElement)                      \
   V(StoreKeyedGeneric)                          \
   V(StoreKeyedSpecializedArrayElement)          \
   V(StoreNamedField)                            \
   V(StoreNamedGeneric)                          \
+  V(StringAdd)                                  \
   V(StringCharCodeAt)                           \
   V(StringCharFromCode)                         \
   V(StringLength)                               \
@@ -1245,22 +1249,55 @@ class LLoadKeyedGeneric: public LTemplateInstruction<1, 2, 0> {
 };
 
 
-class LLoadGlobal: public LTemplateInstruction<1, 0, 0> {
+class LLoadGlobalCell: public LTemplateInstruction<1, 0, 0> {
  public:
-  DECLARE_CONCRETE_INSTRUCTION(LoadGlobal, "load-global")
-  DECLARE_HYDROGEN_ACCESSOR(LoadGlobal)
+  DECLARE_CONCRETE_INSTRUCTION(LoadGlobalCell, "load-global-cell")
+  DECLARE_HYDROGEN_ACCESSOR(LoadGlobalCell)
 };
 
 
-class LStoreGlobal: public LTemplateInstruction<0, 1, 1> {
+class LLoadGlobalGeneric: public LTemplateInstruction<1, 1, 0> {
  public:
-  explicit LStoreGlobal(LOperand* value, LOperand* temp) {
+  explicit LLoadGlobalGeneric(LOperand* global_object) {
+    inputs_[0] = global_object;
+  }
+
+  DECLARE_CONCRETE_INSTRUCTION(LoadGlobalGeneric, "load-global-generic")
+  DECLARE_HYDROGEN_ACCESSOR(LoadGlobalGeneric)
+
+  LOperand* global_object() { return inputs_[0]; }
+  Handle<Object> name() const { return hydrogen()->name(); }
+  bool for_typeof() const { return hydrogen()->for_typeof(); }
+};
+
+
+class LStoreGlobalCell: public LTemplateInstruction<0, 1, 1> {
+ public:
+  explicit LStoreGlobalCell(LOperand* value, LOperand* temp) {
     inputs_[0] = value;
     temps_[0] = temp;
   }
 
-  DECLARE_CONCRETE_INSTRUCTION(StoreGlobal, "store-global")
-  DECLARE_HYDROGEN_ACCESSOR(StoreGlobal)
+  DECLARE_CONCRETE_INSTRUCTION(StoreGlobalCell, "store-global-cell")
+  DECLARE_HYDROGEN_ACCESSOR(StoreGlobalCell)
+};
+
+
+class LStoreGlobalGeneric: public LTemplateInstruction<0, 2, 0> {
+ public:
+  explicit LStoreGlobalGeneric(LOperand* global_object,
+                               LOperand* value) {
+    inputs_[0] = global_object;
+    inputs_[1] = value;
+  }
+
+  DECLARE_CONCRETE_INSTRUCTION(StoreGlobalGeneric, "store-global-generic")
+  DECLARE_HYDROGEN_ACCESSOR(StoreGlobalGeneric)
+
+  LOperand* global_object() { return InputAt(0); }
+  Handle<Object> name() const { return hydrogen()->name(); }
+  LOperand* value() { return InputAt(1); }
+  bool strict_mode() { return hydrogen()->strict_mode(); }
 };
 
 
@@ -1354,6 +1391,23 @@ class LCallConstantFunction: public LTemplateInstruction<1, 0, 0> {
   virtual void PrintDataTo(StringStream* stream);
 
   Handle<JSFunction> function() { return hydrogen()->function(); }
+  int arity() const { return hydrogen()->argument_count() - 1; }
+};
+
+
+class LInvokeFunction: public LTemplateInstruction<1, 1, 0> {
+ public:
+  explicit LInvokeFunction(LOperand* function) {
+    inputs_[0] = function;
+  }
+
+  DECLARE_CONCRETE_INSTRUCTION(InvokeFunction, "invoke-function")
+  DECLARE_HYDROGEN_ACCESSOR(InvokeFunction)
+
+  LOperand* function() { return inputs_[0]; }
+
+  virtual void PrintDataTo(StringStream* stream);
+
   int arity() const { return hydrogen()->argument_count() - 1; }
 };
 
@@ -1582,6 +1636,7 @@ class LStoreNamedGeneric: public LTemplateInstruction<0, 2, 0> {
   LOperand* object() { return inputs_[0]; }
   LOperand* value() { return inputs_[1]; }
   Handle<Object> name() const { return hydrogen()->name(); }
+  bool strict_mode() { return hydrogen()->strict_mode(); }
 };
 
 
@@ -1637,12 +1692,29 @@ class LStoreKeyedGeneric: public LTemplateInstruction<0, 3, 0> {
   }
 
   DECLARE_CONCRETE_INSTRUCTION(StoreKeyedGeneric, "store-keyed-generic")
+  DECLARE_HYDROGEN_ACCESSOR(StoreKeyedGeneric)
 
   virtual void PrintDataTo(StringStream* stream);
 
   LOperand* object() { return inputs_[0]; }
   LOperand* key() { return inputs_[1]; }
   LOperand* value() { return inputs_[2]; }
+  bool strict_mode() { return hydrogen()->strict_mode(); }
+};
+
+
+class LStringAdd: public LTemplateInstruction<1, 2, 0> {
+ public:
+  LStringAdd(LOperand* left, LOperand* right) {
+    inputs_[0] = left;
+    inputs_[1] = right;
+  }
+
+  DECLARE_CONCRETE_INSTRUCTION(StringAdd, "string-add")
+  DECLARE_HYDROGEN_ACCESSOR(StringAdd)
+
+  LOperand* left() { return inputs_[0]; }
+  LOperand* right() { return inputs_[1]; }
 };
 
 

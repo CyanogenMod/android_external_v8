@@ -1653,6 +1653,11 @@ class Object : public Value {
   V8EXPORT Local<Object> Clone();
 
   /**
+   * Returns the context in which the object was created.
+   */
+  V8EXPORT Local<Context> CreationContext();
+
+  /**
    * Set the backing store of the indexed properties to be managed by the
    * embedding layer. Access to the indexed properties will follow the rules
    * spelled out in CanvasPixelArray.
@@ -3291,7 +3296,7 @@ class V8EXPORT Context {
    */
   class Scope {
    public:
-    inline Scope(Handle<Context> context) : context_(context) {
+    explicit inline Scope(Handle<Context> context) : context_(context) {
       context_->Enter();
     }
     inline ~Scope() { context_->Exit(); }

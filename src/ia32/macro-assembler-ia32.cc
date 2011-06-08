@@ -30,7 +30,7 @@
 #if defined(V8_TARGET_ARCH_IA32)
 
 #include "bootstrapper.h"
-#include "codegen-inl.h"
+#include "codegen.h"
 #include "debug.h"
 #include "runtime.h"
 #include "serialize.h"
@@ -41,11 +41,14 @@ namespace internal {
 // -------------------------------------------------------------------------
 // MacroAssembler implementation.
 
-MacroAssembler::MacroAssembler(void* buffer, int size)
-    : Assembler(buffer, size),
+MacroAssembler::MacroAssembler(Isolate* arg_isolate, void* buffer, int size)
+    : Assembler(arg_isolate, buffer, size),
       generating_stub_(false),
-      allow_stub_calls_(true),
-      code_object_(isolate()->heap()->undefined_value()) {
+      allow_stub_calls_(true) {
+  if (isolate() != NULL) {
+    code_object_ = Handle<Object>(isolate()->heap()->undefined_value(),
+                                  isolate());
+  }
 }
 
 
@@ -231,7 +234,7 @@ void MacroAssembler::IsInstanceJSObjectType(Register map,
 
 
 void MacroAssembler::FCmp() {
-  if (Isolate::Current()->cpu_features()->IsSupported(CMOV)) {
+  if (CpuFeatures::IsSupported(CMOV)) {
     fucomip();
     ffree(0);
     fincstp();
@@ -1024,19 +1027,6 @@ void MacroAssembler::CopyBytes(Register source,
   j(not_zero, &short_loop);
 
   bind(&done);
-}
-
-
-void MacroAssembler::NegativeZeroTest(CodeGenerator* cgen,
-                                      Register result,
-                                      Register op,
-                                      JumpTarget* then_target) {
-  JumpTarget ok;
-  test(result, Operand(result));
-  ok.Branch(not_zero, taken);
-  test(op, Operand(op));
-  then_target->Branch(sign, not_taken);
-  ok.Bind();
 }
 
 
@@ -1988,17 +1978,14 @@ void MacroAssembler::JumpIfNotBothSequentialAsciiStrings(Register object1,
 
 
 void MacroAssembler::PrepareCallCFunction(int num_arguments, Register scratch) {
-  // Reserve space for Isolate address which is always passed as last parameter
-  num_arguments += 1;
-
-  int frameAlignment = OS::ActivationFrameAlignment();
-  if (frameAlignment != 0) {
+  int frame_alignment = OS::ActivationFrameAlignment();
+  if (frame_alignment != 0) {
     // Make stack end at alignment and make room for num_arguments words
     // and the original value of esp.
     mov(scratch, esp);
     sub(Operand(esp), Immediate((num_arguments + 1) * kPointerSize));
-    ASSERT(IsPowerOf2(frameAlignment));
-    and_(esp, -frameAlignment);
+    ASSERT(IsPowerOf2(frame_alignment));
+    and_(esp, -frame_alignment);
     mov(Operand(esp, num_arguments * kPointerSize), scratch);
   } else {
     sub(Operand(esp), Immediate(num_arguments * kPointerSize));
@@ -2016,11 +2003,6 @@ void MacroAssembler::CallCFunction(ExternalReference function,
 
 void MacroAssembler::CallCFunction(Register function,
                                    int num_arguments) {
-  // Pass current isolate address as additional parameter.
-  mov(Operand(esp, num_arguments * kPointerSize),
-      Immediate(ExternalReference::isolate_address()));
-  num_arguments += 1;
-
   // Check stack alignment.
   if (emit_debug_code()) {
     CheckStackAlignment();
@@ -2030,13 +2012,15 @@ void MacroAssembler::CallCFunction(Register function,
   if (OS::ActivationFrameAlignment() != 0) {
     mov(esp, Operand(esp, num_arguments * kPointerSize));
   } else {
-    add(Operand(esp), Immediate(num_arguments * sizeof(int32_t)));
+    add(Operand(esp), Immediate(num_arguments * kPointerSize));
   }
 }
 
 
 CodePatcher::CodePatcher(byte* address, int size)
-    : address_(address), size_(size), masm_(address, size + Assembler::kGap) {
+    : address_(address),
+      size_(size),
+      masm_(Isolate::Current(), address, size + Assembler::kGap) {
   // Create a new macro assembler pointing to the address of the code to patch.
   // The size is adjusted with kGap on order for the assembler to generate size
   // bytes of instructions without failing with buffer size constraints.

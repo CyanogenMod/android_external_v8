@@ -42,38 +42,17 @@ class TranslationIterator;
 class DeoptimizingCodeListNode;
 
 
-class ValueDescription BASE_EMBEDDED {
+class HeapNumberMaterializationDescriptor BASE_EMBEDDED {
  public:
-  explicit ValueDescription(int index) : stack_index_(index) { }
-  int stack_index() const { return stack_index_; }
+  HeapNumberMaterializationDescriptor(Address slot_address, double val)
+      : slot_address_(slot_address), val_(val) { }
+
+  Address slot_address() const { return slot_address_; }
+  double value() const { return val_; }
 
  private:
-  // Offset relative to the top of the stack.
-  int stack_index_;
-};
-
-
-class ValueDescriptionInteger32: public ValueDescription {
- public:
-  ValueDescriptionInteger32(int index, int32_t value)
-      : ValueDescription(index), int32_value_(value) { }
-  int32_t int32_value() const { return int32_value_; }
-
- private:
-  // Raw value.
-  int32_t int32_value_;
-};
-
-
-class ValueDescriptionDouble: public ValueDescription {
- public:
-  ValueDescriptionDouble(int index, double value)
-      : ValueDescription(index), double_value_(value) { }
-  double double_value() const { return double_value_; }
-
- private:
-  // Raw value.
-  double double_value_;
+  Address slot_address_;
+  double val_;
 };
 
 
@@ -190,9 +169,9 @@ class Deoptimizer : public Malloced {
 
   ~Deoptimizer();
 
-  void InsertHeapNumberValues(int index, JavaScriptFrame* frame);
+  void MaterializeHeapNumbers();
 
-  static void ComputeOutputFrames(Deoptimizer* deoptimizer, Isolate* isolate);
+  static void ComputeOutputFrames(Deoptimizer* deoptimizer);
 
   static Address GetDeoptimizationEntry(int id, BailoutType type);
   static int GetDeoptimizationId(Address addr, BailoutType type);
@@ -277,13 +256,7 @@ class Deoptimizer : public Malloced {
 
   Object* ComputeLiteral(int index) const;
 
-  void InsertHeapNumberValue(JavaScriptFrame* frame,
-                             int stack_index,
-                             double val,
-                             int extra_slot_count);
-
-  void AddInteger32Value(int frame_index, int slot_index, int32_t value);
-  void AddDoubleValue(int frame_index, int slot_index, double value);
+  void AddDoubleValue(intptr_t slot_address, double value);
 
   static LargeObjectChunk* CreateCode(BailoutType type);
   static void GenerateDeoptimizationEntries(
@@ -310,8 +283,7 @@ class Deoptimizer : public Malloced {
   // Array of output frame descriptions.
   FrameDescription** output_;
 
-  List<ValueDescriptionInteger32>* integer32_values_;
-  List<ValueDescriptionDouble>* double_values_;
+  List<HeapNumberMaterializationDescriptor> deferred_heap_numbers_;
 
   static int table_entry_size_;
 
@@ -549,6 +521,78 @@ class DeoptimizingCodeListNode : public Malloced {
 
   // Next pointer for linked list.
   DeoptimizingCodeListNode* next_;
+};
+
+
+class SlotRef BASE_EMBEDDED {
+ public:
+  enum SlotRepresentation {
+    UNKNOWN,
+    TAGGED,
+    INT32,
+    DOUBLE,
+    LITERAL
+  };
+
+  SlotRef()
+      : addr_(NULL), representation_(UNKNOWN) { }
+
+  SlotRef(Address addr, SlotRepresentation representation)
+      : addr_(addr), representation_(representation) { }
+
+  explicit SlotRef(Object* literal)
+      : literal_(literal), representation_(LITERAL) { }
+
+  Handle<Object> GetValue() {
+    switch (representation_) {
+      case TAGGED:
+        return Handle<Object>(Memory::Object_at(addr_));
+
+      case INT32: {
+        int value = Memory::int32_at(addr_);
+        if (Smi::IsValid(value)) {
+          return Handle<Object>(Smi::FromInt(value));
+        } else {
+          return Isolate::Current()->factory()->NewNumberFromInt(value);
+        }
+      }
+
+      case DOUBLE: {
+        double value = Memory::double_at(addr_);
+        return Isolate::Current()->factory()->NewNumber(value);
+      }
+
+      case LITERAL:
+        return literal_;
+
+      default:
+        UNREACHABLE();
+        return Handle<Object>::null();
+    }
+  }
+
+  static void ComputeSlotMappingForArguments(JavaScriptFrame* frame,
+                                             int inlined_frame_index,
+                                             Vector<SlotRef>* args_slots);
+
+ private:
+  Address addr_;
+  Handle<Object> literal_;
+  SlotRepresentation representation_;
+
+  static Address SlotAddress(JavaScriptFrame* frame, int slot_index) {
+    if (slot_index >= 0) {
+      const int offset = JavaScriptFrameConstants::kLocal0Offset;
+      return frame->fp() + offset - (slot_index * kPointerSize);
+    } else {
+      const int offset = JavaScriptFrameConstants::kLastParameterOffset;
+      return frame->fp() + offset - ((slot_index + 1) * kPointerSize);
+    }
+  }
+
+  static SlotRef ComputeSlotForNextArgument(TranslationIterator* iterator,
+                                            DeoptimizationInputData* data,
+                                            JavaScriptFrame* frame);
 };
 
 

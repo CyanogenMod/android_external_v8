@@ -53,7 +53,6 @@ namespace internal {
   ICU(LoadPropertyWithInterceptorForCall)             \
   ICU(KeyedLoadPropertyWithInterceptor)               \
   ICU(StoreInterceptorProperty)                       \
-  ICU(BinaryOp_Patch)                                 \
   ICU(TypeRecordingBinaryOp_Patch)                    \
   ICU(CompareIC_Miss)
 //
@@ -297,14 +296,6 @@ class LoadIC: public IC {
                                    bool support_wrappers);
   static void GenerateFunctionPrototype(MacroAssembler* masm);
 
-  // Clear the use of the inlined version.
-  static void ClearInlinedVersion(Address address);
-
-  // The offset from the inlined patch site to the start of the
-  // inlined load instruction.  It is architecture-dependent, and not
-  // used on ARM.
-  static const int kOffsetToLoadInstruction;
-
  private:
   // Update the inline cache and the global stub cache based on the
   // lookup result.
@@ -328,13 +319,6 @@ class LoadIC: public IC {
   }
 
   static void Clear(Address address, Code* target);
-
-  static bool PatchInlinedLoad(Address address, Object* map, int index);
-
-  static bool PatchInlinedContextualLoad(Address address,
-                                         Object* map,
-                                         Object* cell,
-                                         bool is_dont_delete);
 
   friend class IC;
 };
@@ -361,9 +345,6 @@ class KeyedLoadIC: public IC {
   static void GenerateString(MacroAssembler* masm);
 
   static void GenerateIndexedInterceptor(MacroAssembler* masm);
-
-  // Clear the use of the inlined version.
-  static void ClearInlinedVersion(Address address);
 
   // Bit mask to be tested against bit field for the cases when
   // generic stub should go into slow case.
@@ -408,10 +389,6 @@ class KeyedLoadIC: public IC {
 
   static void Clear(Address address, Code* target);
 
-  // Support for patching the map that is checked in an inlined
-  // version of keyed load.
-  static bool PatchInlinedLoad(Address address, Object* map);
-
   friend class IC;
 };
 
@@ -437,13 +414,6 @@ class StoreIC: public IC {
   static void GenerateNormal(MacroAssembler* masm);
   static void GenerateGlobalProxy(MacroAssembler* masm,
                                   StrictModeFlag strict_mode);
-
-  // Clear the use of an inlined version.
-  static void ClearInlinedVersion(Address address);
-
-  // The offset from the inlined patch site to the start of the
-  // inlined store instruction.
-  static const int kOffsetToStoreInstruction;
 
  private:
   // Update the inline cache and the global stub cache based on the
@@ -490,10 +460,6 @@ class StoreIC: public IC {
 
   static void Clear(Address address, Code* target);
 
-  // Support for patching the index and the map that is checked in an
-  // inlined version of the named store.
-  static bool PatchInlinedStore(Address address, Object* map, int index);
-
   friend class IC;
 };
 
@@ -514,12 +480,6 @@ class KeyedStoreIC: public IC {
   static void GenerateRuntimeSetProperty(MacroAssembler* masm,
                                          StrictModeFlag strict_mode);
   static void GenerateGeneric(MacroAssembler* masm, StrictModeFlag strict_mode);
-
-  // Clear the inlined version so the IC is always hit.
-  static void ClearInlinedVersion(Address address);
-
-  // Restore the inlined version so the fast case can get hit.
-  static void RestoreInlinedVersion(Address address);
 
  private:
   // Update the inline cache.
@@ -565,39 +525,7 @@ class KeyedStoreIC: public IC {
 
   static void Clear(Address address, Code* target);
 
-  // Support for patching the map that is checked in an inlined
-  // version of keyed store.
-  // The address is the patch point for the IC call
-  // (Assembler::kCallTargetAddressOffset before the end of
-  // the call/return address).
-  // The map is the new map that the inlined code should check against.
-  static bool PatchInlinedStore(Address address, Object* map);
-
   friend class IC;
-};
-
-
-class BinaryOpIC: public IC {
- public:
-
-  enum TypeInfo {
-    UNINIT_OR_SMI,
-    DEFAULT,  // Initial state. When first executed, patches to one
-              // of the following states depending on the operands types.
-    HEAP_NUMBERS,  // Both arguments are HeapNumbers.
-    STRINGS,  // At least one of the arguments is String.
-    GENERIC   // Non-specialized case (processes any type combination).
-  };
-
-  explicit BinaryOpIC(Isolate* isolate) : IC(NO_EXTRA_FRAME, isolate) { }
-
-  void patch(Code* code);
-
-  static const char* GetName(TypeInfo type_info);
-
-  static State ToState(TypeInfo type_info);
-
-  static TypeInfo GetTypeInfo(Object* left, Object* right);
 };
 
 
@@ -611,6 +539,7 @@ class TRBinaryOpIC: public IC {
     INT32,
     HEAP_NUMBER,
     ODDBALL,
+    BOTH_STRING,  // Only used for addition operation.
     STRING,  // Only used for addition operation.  At least one string operand.
     GENERIC
   };

@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -280,6 +280,9 @@ class RegExpBuilder: public ZoneObject {
   void FlushCharacters();
   void FlushText();
   void FlushTerms();
+  Zone* zone() { return zone_; }
+
+  Zone* zone_;
   bool pending_empty_;
   ZoneList<uc16>* characters_;
   BufferedZoneList<RegExpTree, 2> terms_;
@@ -389,6 +392,7 @@ class RegExpParser {
   };
 
   Isolate* isolate() { return isolate_; }
+  Zone* zone() { return isolate_->zone(); }
 
   uc32 current() { return current_; }
   bool has_more() { return has_more_; }
@@ -453,6 +457,7 @@ class Parser {
   };
 
   Isolate* isolate() { return isolate_; }
+  Zone* zone() { return isolate_->zone(); }
 
   // Called by ParseProgram after setting up the scanner.
   FunctionLiteral* DoParseProgram(Handle<String> source,
@@ -650,7 +655,7 @@ class Parser {
   BreakableStatement* LookupBreakTarget(Handle<String> label, bool* ok);
   IterationStatement* LookupContinueTarget(Handle<String> label, bool* ok);
 
-  void RegisterTargetUse(BreakTarget* target, Target* stop);
+  void RegisterTargetUse(Label* target, Target* stop);
 
   // Factory methods.
 
@@ -778,7 +783,7 @@ class JsonParser BASE_EMBEDDED {
  private:
   JsonParser()
       : isolate_(Isolate::Current()),
-        scanner_(isolate_->scanner_constants()) { }
+        scanner_(isolate_->unicode_cache()) { }
   ~JsonParser() { }
 
   Isolate* isolate() { return isolate_; }

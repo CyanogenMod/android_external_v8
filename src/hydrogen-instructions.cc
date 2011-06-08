@@ -726,7 +726,7 @@ void HTypeofIs::PrintDataTo(StringStream* stream) {
 
 void HChange::PrintDataTo(StringStream* stream) {
   HUnaryOperation::PrintDataTo(stream);
-  stream->Add(" %s to %s", from_.Mnemonic(), to_.Mnemonic());
+  stream->Add(" %s to %s", from_.Mnemonic(), to().Mnemonic());
 
   if (CanTruncateToInt32()) stream->Add(" truncating-int32");
   if (CheckFlag(kBailoutOnMinusZero)) stream->Add(" -0?");
@@ -1017,10 +1017,9 @@ void HEnterInlined::PrintDataTo(StringStream* stream) {
 
 HConstant::HConstant(Handle<Object> handle, Representation r)
     : handle_(handle),
-      constant_type_(HType::TypeFromValue(handle)),
       has_int32_value_(false),
-      int32_value_(0),
       has_double_value_(false),
+      int32_value_(0),
       double_value_(0)  {
   set_representation(r);
   SetFlag(kUseGVN);
@@ -1049,6 +1048,23 @@ HConstant* HConstant::CopyToTruncatedInt32() const {
                        Representation::Integer32());
 }
 
+
+bool HConstant::ToBoolean() const {
+  // Converts the constant's boolean value according to
+  // ECMAScript section 9.2 ToBoolean conversion.
+  if (HasInteger32Value()) return Integer32Value() != 0;
+  if (HasDoubleValue()) {
+    double v = DoubleValue();
+    return v != 0 && !isnan(v);
+  }
+  if (handle()->IsTrue()) return true;
+  if (handle()->IsFalse()) return false;
+  if (handle()->IsUndefined()) return false;
+  if (handle()->IsNull()) return false;
+  if (handle()->IsString() &&
+      String::cast(*handle())->length() == 0) return false;
+  return true;
+}
 
 void HConstant::PrintDataTo(StringStream* stream) {
   handle()->ShortPrint(stream);
@@ -1342,14 +1358,25 @@ void HStoreKeyedSpecializedArrayElement::PrintDataTo(
 }
 
 
-void HLoadGlobal::PrintDataTo(StringStream* stream) {
+void HLoadGlobalCell::PrintDataTo(StringStream* stream) {
   stream->Add("[%p]", *cell());
   if (check_hole_value()) stream->Add(" (deleteable/read-only)");
 }
 
 
-void HStoreGlobal::PrintDataTo(StringStream* stream) {
+void HLoadGlobalGeneric::PrintDataTo(StringStream* stream) {
+  stream->Add("%o ", *name());
+}
+
+
+void HStoreGlobalCell::PrintDataTo(StringStream* stream) {
   stream->Add("[%p] = ", *cell());
+  value()->PrintNameTo(stream);
+}
+
+
+void HStoreGlobalGeneric::PrintDataTo(StringStream* stream) {
+  stream->Add("%o = ", *name());
   value()->PrintNameTo(stream);
 }
 
@@ -1407,7 +1434,7 @@ HType HPhi::CalculateInferredType() {
 
 
 HType HConstant::CalculateInferredType() {
-  return constant_type_;
+  return HType::TypeFromValue(handle_);
 }
 
 

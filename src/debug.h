@@ -228,7 +228,7 @@ class Debug {
   void PreemptionWhileInDebugger();
   void Iterate(ObjectVisitor* v);
 
-  static Object* Break(RUNTIME_CALLING_CONVENTION);
+  Object* Break(Arguments args);
   void SetBreakPoint(Handle<SharedFunctionInfo> shared,
                      Handle<Object> break_point_object,
                      int* source_position);
@@ -548,6 +548,9 @@ class Debug {
 };
 
 
+DECLARE_RUNTIME_FUNCTION(Object*, Debug_Break);
+
+
 // Message delivered to the message handler callback. This is either a debugger
 // event or the response to a command.
 class MessageImpl: public v8::Debug::Message {
@@ -860,6 +863,7 @@ class EnterDebugger BASE_EMBEDDED {
   EnterDebugger()
       : isolate_(Isolate::Current()),
         prev_(isolate_->debug()->debugger_entry()),
+        it_(isolate_),
         has_js_frames_(!it_.done()),
         save_(isolate_) {
     Debug* debug = isolate_->debug();

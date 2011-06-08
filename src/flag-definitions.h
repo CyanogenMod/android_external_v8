@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -96,6 +96,9 @@ private:
 //
 #define FLAG FLAG_FULL
 
+// Flags for experimental language features.
+DEFINE_bool(harmony_proxies, false, "enable harmony proxies")
+
 // Flags for Crankshaft.
 #ifdef V8_TARGET_ARCH_MIPS
   DEFINE_bool(crankshaft, false, "use crankshaft")
@@ -162,7 +165,8 @@ DEFINE_bool(enable_rdtsc, true,
 DEFINE_bool(enable_sahf, true,
             "enable use of SAHF instruction if available (X64 only)")
 DEFINE_bool(enable_vfp3, true,
-            "enable use of VFP3 instructions if available (ARM only)")
+            "enable use of VFP3 instructions if available - this implies "
+            "enabling ARMv7 instructions (ARM only)")
 DEFINE_bool(enable_armv7, true,
             "enable use of ARMv7 instructions if available (ARM only)")
 DEFINE_bool(enable_fpu, true,

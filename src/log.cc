@@ -150,6 +150,7 @@ void StackTracer::Trace(Isolate* isolate, TickSample* sample) {
 
   sample->tos = NULL;
   sample->frames_count = 0;
+  sample->has_external_callback = false;
 
   // Avoid collecting traces while doing GC.
   if (sample->state == GC) return;
@@ -190,7 +191,7 @@ void StackTracer::Trace(Isolate* isolate, TickSample* sample) {
 //
 class Ticker: public Sampler {
  public:
-  explicit Ticker(Isolate* isolate, int interval):
+  Ticker(Isolate* isolate, int interval):
       Sampler(isolate, interval),
       window_(NULL),
       profiler_(NULL) {}
@@ -1315,7 +1316,6 @@ void Logger::LogCodeObject(Object* object) {
       case Code::FUNCTION:
       case Code::OPTIMIZED_FUNCTION:
         return;  // We log this later using LogCompiledFunctions.
-      case Code::BINARY_OP_IC:  // fall through
       case Code::TYPE_RECORDING_BINARY_OP_IC:   // fall through
       case Code::COMPARE_IC:  // fall through
       case Code::STUB:

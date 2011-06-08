@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -39,7 +39,6 @@
 #include "isolate.h"
 #include "cctest.h"
 #include "disassembler.h"
-#include "register-allocator-inl.h"
 #include "vm-state-inl.h"
 
 using v8::Function;
@@ -280,6 +279,9 @@ static void CreateTraceCallerFunction(const char* func_name,
 // StackTracer uses Isolate::c_entry_fp as a starting point for stack
 // walking.
 TEST(CFromJSStackTrace) {
+  // BUG(1303) Inlining of JSFuncDoTrace() in JSTrace below breaks this test.
+  i::FLAG_use_inlining = false;
+
   TickSample sample;
   InitTraceEnv(&sample);
 

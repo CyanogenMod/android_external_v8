@@ -1,4 +1,4 @@
-// Copyright 2007-2009 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -50,18 +50,26 @@ static bool IsNaN(double x) {
 }
 
 using ::v8::AccessorInfo;
+using ::v8::Arguments;
 using ::v8::Context;
 using ::v8::Extension;
 using ::v8::Function;
+using ::v8::FunctionTemplate;
+using ::v8::Handle;
 using ::v8::HandleScope;
 using ::v8::Local;
+using ::v8::Message;
+using ::v8::MessageCallback;
 using ::v8::Object;
 using ::v8::ObjectTemplate;
 using ::v8::Persistent;
 using ::v8::Script;
+using ::v8::StackTrace;
 using ::v8::String;
-using ::v8::Value;
+using ::v8::TryCatch;
+using ::v8::Undefined;
 using ::v8::V8;
+using ::v8::Value;
 
 namespace i = ::i;
 
@@ -2652,6 +2660,21 @@ TEST(APIThrowMessageAndVerboseTryCatch) {
   CHECK(result.IsEmpty());
   CHECK(message_received);
   v8::V8::RemoveMessageListeners(check_message);
+}
+
+
+TEST(APIStackOverflowAndVerboseTryCatch) {
+  message_received = false;
+  v8::HandleScope scope;
+  v8::V8::AddMessageListener(receive_message);
+  LocalContext context;
+  v8::TryCatch try_catch;
+  try_catch.SetVerbose(true);
+  Local<Value> result = CompileRun("function foo() { foo(); } foo();");
+  CHECK(try_catch.HasCaught());
+  CHECK(result.IsEmpty());
+  CHECK(message_received);
+  v8::V8::RemoveMessageListeners(receive_message);
 }
 
 
@@ -8574,6 +8597,132 @@ THREADED_TEST(NamedPropertyHandlerGetterAttributes) {
 }
 
 
+static Handle<Value> ThrowingGetter(Local<String> name,
+                                    const AccessorInfo& info) {
+  ApiTestFuzzer::Fuzz();
+  ThrowException(Handle<Value>());
+  return Undefined();
+}
+
+
+THREADED_TEST(VariousGetPropertiesAndThrowingCallbacks) {
+  HandleScope scope;
+  LocalContext context;
+
+  Local<FunctionTemplate> templ = FunctionTemplate::New();
+  Local<ObjectTemplate> instance_templ = templ->InstanceTemplate();
+  instance_templ->SetAccessor(v8_str("f"), ThrowingGetter);
+
+  Local<Object> instance = templ->GetFunction()->NewInstance();
+
+  Local<Object> another = Object::New();
+  another->SetPrototype(instance);
+
+  Local<Object> with_js_getter = CompileRun(
+      "o = {};\n"
+      "o.__defineGetter__('f', function() { throw undefined; });\n"
+      "o\n").As<Object>();
+  CHECK(!with_js_getter.IsEmpty());
+
+  TryCatch try_catch;
+
+  Local<Value> result = instance->GetRealNamedProperty(v8_str("f"));
+  CHECK(try_catch.HasCaught());
+  try_catch.Reset();
+  CHECK(result.IsEmpty());
+
+  result = another->GetRealNamedProperty(v8_str("f"));
+  CHECK(try_catch.HasCaught());
+  try_catch.Reset();
+  CHECK(result.IsEmpty());
+
+  result = another->GetRealNamedPropertyInPrototypeChain(v8_str("f"));
+  CHECK(try_catch.HasCaught());
+  try_catch.Reset();
+  CHECK(result.IsEmpty());
+
+  result = another->Get(v8_str("f"));
+  CHECK(try_catch.HasCaught());
+  try_catch.Reset();
+  CHECK(result.IsEmpty());
+
+  result = with_js_getter->GetRealNamedProperty(v8_str("f"));
+  CHECK(try_catch.HasCaught());
+  try_catch.Reset();
+  CHECK(result.IsEmpty());
+
+  result = with_js_getter->Get(v8_str("f"));
+  CHECK(try_catch.HasCaught());
+  try_catch.Reset();
+  CHECK(result.IsEmpty());
+}
+
+
+static Handle<Value> ThrowingCallbackWithTryCatch(const Arguments& args) {
+  TryCatch try_catch;
+  // Verboseness is important: it triggers message delivery which can call into
+  // external code.
+  try_catch.SetVerbose(true);
+  CompileRun("throw 'from JS';");
+  CHECK(try_catch.HasCaught());
+  CHECK(!i::Isolate::Current()->has_pending_exception());
+  CHECK(!i::Isolate::Current()->has_scheduled_exception());
+  return Undefined();
+}
+
+
+static int call_depth;
+
+
+static void WithTryCatch(Handle<Message> message, Handle<Value> data) {
+  TryCatch try_catch;
+}
+
+
+static void ThrowFromJS(Handle<Message> message, Handle<Value> data) {
+  if (--call_depth) CompileRun("throw 'ThrowInJS';");
+}
+
+
+static void ThrowViaApi(Handle<Message> message, Handle<Value> data) {
+  if (--call_depth) ThrowException(v8_str("ThrowViaApi"));
+}
+
+
+static void WebKitLike(Handle<Message> message, Handle<Value> data) {
+  Handle<String> errorMessageString = message->Get();
+  CHECK(!errorMessageString.IsEmpty());
+  message->GetStackTrace();
+  message->GetScriptResourceName();
+}
+
+THREADED_TEST(ExceptionsDoNotPropagatePastTryCatch) {
+  HandleScope scope;
+  LocalContext context;
+
+  Local<Function> func =
+      FunctionTemplate::New(ThrowingCallbackWithTryCatch)->GetFunction();
+  context->Global()->Set(v8_str("func"), func);
+
+  MessageCallback callbacks[] =
+      { NULL, WebKitLike, ThrowViaApi, ThrowFromJS, WithTryCatch };
+  for (unsigned i = 0; i < sizeof(callbacks)/sizeof(callbacks[0]); i++) {
+    MessageCallback callback = callbacks[i];
+    if (callback != NULL) {
+      V8::AddMessageListener(callback);
+    }
+    call_depth = 5;
+    ExpectFalse(
+        "var thrown = false;\n"
+        "try { func(); } catch(e) { thrown = true; }\n"
+        "thrown\n");
+    if (callback != NULL) {
+      V8::RemoveMessageListeners(callback);
+    }
+  }
+}
+
+
 static v8::Handle<Value> ParentGetter(Local<String> name,
                                       const AccessorInfo& info) {
   ApiTestFuzzer::Fuzz();
@@ -11495,7 +11644,7 @@ static void ExternalArrayTestHelper(v8::ExternalArrayType array_type,
     array->set(i, static_cast<ElementType>(i));
   }
   result = CompileRun("function ee_load_test_func(sum) {"
-                      " for (var i=0;i<40;++i)"
+                      " for (var i = 0; i < 40; ++i)"
                       "   sum += ext_array[i];"
                       " return sum;"
                       "}"
@@ -11508,7 +11657,7 @@ static void ExternalArrayTestHelper(v8::ExternalArrayType array_type,
 
   // Test crankshaft external array stores
   result = CompileRun("function ee_store_test_func(sum) {"
-                      " for (var i=0;i<40;++i)"
+                      " for (var i = 0; i < 40; ++i)"
                       "   sum += ext_array[i] = i;"
                       " return sum;"
                       "}"
@@ -11518,6 +11667,39 @@ static void ExternalArrayTestHelper(v8::ExternalArrayType array_type,
                       "}"
                       "sum;");
   CHECK_EQ(7800000, result->Int32Value());
+
+  for (int i = 0; i < kElementCount; i++) {
+    array->set(i, static_cast<ElementType>(i));
+  }
+  // Test complex assignments
+  result = CompileRun("function ee_op_test_complex_func(sum) {"
+                      " for (var i = 0; i < 40; ++i) {"
+                      "   sum += (ext_array[i] += 1);"
+                      "   sum += (ext_array[i] -= 1);"
+                      " } "
+                      " return sum;"
+                      "}"
+                      "sum=0;"
+                      "for (var i=0;i<10000;++i) {"
+                      "  sum=ee_op_test_complex_func(sum);"
+                      "}"
+                      "sum;");
+  CHECK_EQ(16000000, result->Int32Value());
+
+  // Test count operations
+  result = CompileRun("function ee_op_test_count_func(sum) {"
+                      " for (var i = 0; i < 40; ++i) {"
+                      "   sum += (++ext_array[i]);"
+                      "   sum += (--ext_array[i]);"
+                      " } "
+                      " return sum;"
+                      "}"
+                      "sum=0;"
+                      "for (var i=0;i<10000;++i) {"
+                      "  sum=ee_op_test_count_func(sum);"
+                      "}"
+                      "sum;");
+  CHECK_EQ(16000000, result->Int32Value());
 
   result = CompileRun("ext_array[3] = 33;"
                       "delete ext_array[3];"
@@ -12169,28 +12351,14 @@ THREADED_TEST(GetHeapStatistics) {
 
 static double DoubleFromBits(uint64_t value) {
   double target;
-#ifdef BIG_ENDIAN_FLOATING_POINT
-  const int kIntSize = 4;
-  // Somebody swapped the lower and higher half of doubles.
-  memcpy(&target, reinterpret_cast<char*>(&value) + kIntSize, kIntSize);
-  memcpy(reinterpret_cast<char*>(&target) + kIntSize, &value, kIntSize);
-#else
   memcpy(&target, &value, sizeof(target));
-#endif
   return target;
 }
 
 
 static uint64_t DoubleToBits(double value) {
   uint64_t target;
-#ifdef BIG_ENDIAN_FLOATING_POINT
-  const int kIntSize = 4;
-  // Somebody swapped the lower and higher half of doubles.
-  memcpy(&target, reinterpret_cast<char*>(&value) + kIntSize, kIntSize);
-  memcpy(reinterpret_cast<char*>(&target) + kIntSize, &value, kIntSize);
-#else
   memcpy(&target, &value, sizeof(target));
-#endif
   return target;
 }
 
@@ -13628,4 +13796,103 @@ TEST(DefinePropertyPostDetach) {
                  "})").As<Function>();
   context->DetachGlobal();
   define_property->Call(proxy, 0, NULL);
+}
+
+
+static void InstallContextId(v8::Handle<Context> context, int id) {
+  Context::Scope scope(context);
+  CompileRun("Object.prototype").As<Object>()->
+      Set(v8_str("context_id"), v8::Integer::New(id));
+}
+
+
+static void CheckContextId(v8::Handle<Object> object, int expected) {
+  CHECK_EQ(expected, object->Get(v8_str("context_id"))->Int32Value());
+}
+
+
+THREADED_TEST(CreationContext) {
+  HandleScope handle_scope;
+  Persistent<Context> context1 = Context::New();
+  InstallContextId(context1, 1);
+  Persistent<Context> context2 = Context::New();
+  InstallContextId(context2, 2);
+  Persistent<Context> context3 = Context::New();
+  InstallContextId(context3, 3);
+
+  Local<v8::FunctionTemplate> tmpl = v8::FunctionTemplate::New();
+
+  Local<Object> object1;
+  Local<Function> func1;
+  {
+    Context::Scope scope(context1);
+    object1 = Object::New();
+    func1 = tmpl->GetFunction();
+  }
+
+  Local<Object> object2;
+  Local<Function> func2;
+  {
+    Context::Scope scope(context2);
+    object2 = Object::New();
+    func2 = tmpl->GetFunction();
+  }
+
+  Local<Object> instance1;
+  Local<Object> instance2;
+
+  {
+    Context::Scope scope(context3);
+    instance1 = func1->NewInstance();
+    instance2 = func2->NewInstance();
+  }
+
+  CHECK(object1->CreationContext() == context1);
+  CheckContextId(object1, 1);
+  CHECK(func1->CreationContext() == context1);
+  CheckContextId(func1, 1);
+  CHECK(instance1->CreationContext() == context1);
+  CheckContextId(instance1, 1);
+  CHECK(object2->CreationContext() == context2);
+  CheckContextId(object2, 2);
+  CHECK(func2->CreationContext() == context2);
+  CheckContextId(func2, 2);
+  CHECK(instance2->CreationContext() == context2);
+  CheckContextId(instance2, 2);
+
+  {
+    Context::Scope scope(context1);
+    CHECK(object1->CreationContext() == context1);
+    CheckContextId(object1, 1);
+    CHECK(func1->CreationContext() == context1);
+    CheckContextId(func1, 1);
+    CHECK(instance1->CreationContext() == context1);
+    CheckContextId(instance1, 1);
+    CHECK(object2->CreationContext() == context2);
+    CheckContextId(object2, 2);
+    CHECK(func2->CreationContext() == context2);
+    CheckContextId(func2, 2);
+    CHECK(instance2->CreationContext() == context2);
+    CheckContextId(instance2, 2);
+  }
+
+  {
+    Context::Scope scope(context2);
+    CHECK(object1->CreationContext() == context1);
+    CheckContextId(object1, 1);
+    CHECK(func1->CreationContext() == context1);
+    CheckContextId(func1, 1);
+    CHECK(instance1->CreationContext() == context1);
+    CheckContextId(instance1, 1);
+    CHECK(object2->CreationContext() == context2);
+    CheckContextId(object2, 2);
+    CHECK(func2->CreationContext() == context2);
+    CheckContextId(func2, 2);
+    CHECK(instance2->CreationContext() == context2);
+    CheckContextId(instance2, 2);
+  }
+
+  context1.Dispose();
+  context2.Dispose();
+  context3.Dispose();
 }

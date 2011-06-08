@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -30,7 +30,7 @@
 #include "accessors.h"
 #include "api.h"
 #include "bootstrapper.h"
-#include "codegen-inl.h"
+#include "codegen.h"
 #include "compilation-cache.h"
 #include "debug.h"
 #include "heap-profiler.h"
@@ -941,6 +941,8 @@ void Heap::Scavenge() {
 
   gc_state_ = SCAVENGE;
 
+  SwitchScavengingVisitorsTableIfProfilingWasEnabled();
+
   Page::FlipMeaningOfInvalidatedWatermarkFlag(this);
 #ifdef DEBUG
   VerifyPageWatermarkValidity(old_pointer_space_, ALL_VALID);
@@ -1232,6 +1234,32 @@ Address Heap::DoScavenge(ObjectVisitor* scavenge_visitor,
 }
 
 
+enum LoggingAndProfiling {
+  LOGGING_AND_PROFILING_ENABLED,
+  LOGGING_AND_PROFILING_DISABLED
+};
+
+
+typedef void (*ScavengingCallback)(Map* map,
+                                   HeapObject** slot,
+                                   HeapObject* object);
+
+
+static Atomic32 scavenging_visitors_table_mode_;
+static VisitorDispatchTable<ScavengingCallback> scavenging_visitors_table_;
+
+
+INLINE(static void DoScavengeObject(Map* map,
+                                    HeapObject** slot,
+                                    HeapObject* obj));
+
+
+void DoScavengeObject(Map* map, HeapObject** slot, HeapObject* obj) {
+  scavenging_visitors_table_.GetVisitor(map)(map, slot, obj);
+}
+
+
+template<LoggingAndProfiling logging_and_profiling_mode>
 class ScavengingVisitor : public StaticVisitorBase {
  public:
   static void Initialize() {
@@ -1240,23 +1268,22 @@ class ScavengingVisitor : public StaticVisitorBase {
     table_.Register(kVisitShortcutCandidate, &EvacuateShortcutCandidate);
     table_.Register(kVisitByteArray, &EvacuateByteArray);
     table_.Register(kVisitFixedArray, &EvacuateFixedArray);
+
     table_.Register(kVisitGlobalContext,
                     &ObjectEvacuationStrategy<POINTER_OBJECT>::
-                        VisitSpecialized<Context::kSize>);
-
-    typedef ObjectEvacuationStrategy<POINTER_OBJECT> PointerObject;
+                        template VisitSpecialized<Context::kSize>);
 
     table_.Register(kVisitConsString,
                     &ObjectEvacuationStrategy<POINTER_OBJECT>::
-                        VisitSpecialized<ConsString::kSize>);
+                        template VisitSpecialized<ConsString::kSize>);
 
     table_.Register(kVisitSharedFunctionInfo,
                     &ObjectEvacuationStrategy<POINTER_OBJECT>::
-                        VisitSpecialized<SharedFunctionInfo::kSize>);
+                        template VisitSpecialized<SharedFunctionInfo::kSize>);
 
     table_.Register(kVisitJSFunction,
                     &ObjectEvacuationStrategy<POINTER_OBJECT>::
-                    VisitSpecialized<JSFunction::kSize>);
+                        template VisitSpecialized<JSFunction::kSize>);
 
     table_.RegisterSpecializations<ObjectEvacuationStrategy<DATA_OBJECT>,
                                    kVisitDataObject,
@@ -1271,11 +1298,9 @@ class ScavengingVisitor : public StaticVisitorBase {
                                    kVisitStructGeneric>();
   }
 
-
-  static inline void Scavenge(Map* map, HeapObject** slot, HeapObject* obj) {
-    table_.GetVisitor(map)(map, slot, obj);
+  static VisitorDispatchTable<ScavengingCallback>* GetTable() {
+    return &table_;
   }
-
 
  private:
   enum ObjectContents  { DATA_OBJECT, POINTER_OBJECT };
@@ -1313,21 +1338,24 @@ class ScavengingVisitor : public StaticVisitorBase {
     // Set the forwarding address.
     source->set_map_word(MapWord::FromForwardingAddress(target));
 
+    if (logging_and_profiling_mode == LOGGING_AND_PROFILING_ENABLED) {
 #if defined(DEBUG) || defined(ENABLE_LOGGING_AND_PROFILING)
-    // Update NewSpace stats if necessary.
-    RecordCopiedObject(heap, target);
+      // Update NewSpace stats if necessary.
+      RecordCopiedObject(heap, target);
 #endif
-    HEAP_PROFILE(heap, ObjectMoveEvent(source->address(), target->address()));
+      HEAP_PROFILE(heap, ObjectMoveEvent(source->address(), target->address()));
 #if defined(ENABLE_LOGGING_AND_PROFILING)
-    Isolate* isolate = heap->isolate();
-    if (isolate->logger()->is_logging() ||
-        isolate->cpu_profiler()->is_profiling()) {
-      if (target->IsSharedFunctionInfo()) {
-        PROFILE(isolate, SharedFunctionInfoMoveEvent(
-            source->address(), target->address()));
+      Isolate* isolate = heap->isolate();
+      if (isolate->logger()->is_logging() ||
+          isolate->cpu_profiler()->is_profiling()) {
+        if (target->IsSharedFunctionInfo()) {
+          PROFILE(isolate, SharedFunctionInfoMoveEvent(
+              source->address(), target->address()));
+        }
       }
-    }
 #endif
+    }
+
     return target;
   }
 
@@ -1443,7 +1471,7 @@ class ScavengingVisitor : public StaticVisitorBase {
         return;
       }
 
-      Scavenge(first->map(), slot, first);
+      DoScavengeObject(first->map(), slot, first);
       object->set_map_word(MapWord::FromForwardingAddress(*slot));
       return;
     }
@@ -1470,13 +1498,51 @@ class ScavengingVisitor : public StaticVisitorBase {
     }
   };
 
-  typedef void (*Callback)(Map* map, HeapObject** slot, HeapObject* object);
-
-  static VisitorDispatchTable<Callback> table_;
+  static VisitorDispatchTable<ScavengingCallback> table_;
 };
 
 
-VisitorDispatchTable<ScavengingVisitor::Callback> ScavengingVisitor::table_;
+template<LoggingAndProfiling logging_and_profiling_mode>
+VisitorDispatchTable<ScavengingCallback>
+    ScavengingVisitor<logging_and_profiling_mode>::table_;
+
+
+static void InitializeScavengingVisitorsTables() {
+  ScavengingVisitor<LOGGING_AND_PROFILING_DISABLED>::Initialize();
+  ScavengingVisitor<LOGGING_AND_PROFILING_ENABLED>::Initialize();
+  scavenging_visitors_table_.CopyFrom(
+      ScavengingVisitor<LOGGING_AND_PROFILING_DISABLED>::GetTable());
+  scavenging_visitors_table_mode_ = LOGGING_AND_PROFILING_DISABLED;
+}
+
+
+void Heap::SwitchScavengingVisitorsTableIfProfilingWasEnabled() {
+  if (scavenging_visitors_table_mode_ == LOGGING_AND_PROFILING_ENABLED) {
+    // Table was already updated by some isolate.
+    return;
+  }
+
+  if (isolate()->logger()->is_logging() ||
+      isolate()->cpu_profiler()->is_profiling() ||
+      (isolate()->heap_profiler() != NULL &&
+       isolate()->heap_profiler()->is_profiling())) {
+    // If one of the isolates is doing scavenge at this moment of time
+    // it might see this table in an inconsitent state when
+    // some of the callbacks point to
+    // ScavengingVisitor<LOGGING_AND_PROFILING_ENABLED> and others
+    // to ScavengingVisitor<LOGGING_AND_PROFILING_DISABLED>.
+    // However this does not lead to any bugs as such isolate does not have
+    // profiling enabled and any isolate with enabled profiling is guaranteed
+    // to see the table in the consistent state.
+    scavenging_visitors_table_.CopyFrom(
+        ScavengingVisitor<LOGGING_AND_PROFILING_ENABLED>::GetTable());
+
+    // We use Release_Store to prevent reordering of this write before writes
+    // to the table.
+    Release_Store(&scavenging_visitors_table_mode_,
+                  LOGGING_AND_PROFILING_ENABLED);
+  }
+}
 
 
 void Heap::ScavengeObjectSlow(HeapObject** p, HeapObject* object) {
@@ -1484,7 +1550,7 @@ void Heap::ScavengeObjectSlow(HeapObject** p, HeapObject* object) {
   MapWord first_word = object->map_word();
   ASSERT(!first_word.IsForwardingAddress());
   Map* map = first_word.ToMap();
-  ScavengingVisitor::Scavenge(map, p, object);
+  DoScavengeObject(map, p, object);
 }
 
 
@@ -3165,7 +3231,7 @@ MaybeObject* Heap::AllocateGlobalObject(JSFunction* constructor) {
   // Fill these accessors into the dictionary.
   DescriptorArray* descs = map->instance_descriptors();
   for (int i = 0; i < descs->number_of_descriptors(); i++) {
-    PropertyDetails details = descs->GetDetails(i);
+    PropertyDetails details(descs->GetDetails(i));
     ASSERT(details.type() == CALLBACKS);  // Only accessors are expected.
     PropertyDetails d =
         PropertyDetails(details.attributes(), CALLBACKS, details.index());
@@ -3320,8 +3386,8 @@ MaybeObject* Heap::AllocateStringFromUtf8Slow(Vector<const char> string,
   const uc32 kMaxSupportedChar = 0xFFFF;
   // Count the number of characters in the UTF-8 string and check if
   // it is an ASCII string.
-  Access<ScannerConstants::Utf8Decoder>
-      decoder(isolate_->scanner_constants()->utf8_decoder());
+  Access<UnicodeCache::Utf8Decoder>
+      decoder(isolate_->unicode_cache()->utf8_decoder());
   decoder->Reset(string.start(), string.length());
   int chars = 0;
   while (decoder->has_more()) {
@@ -4757,10 +4823,10 @@ bool Heap::Setup(bool create_heap_objects) {
   gc_initializer_mutex->Lock();
   static bool initialized_gc = false;
   if (!initialized_gc) {
-      initialized_gc = true;
-      ScavengingVisitor::Initialize();
-      NewSpaceScavenger::Initialize();
-      MarkCompactCollector::Initialize();
+    initialized_gc = true;
+    InitializeScavengingVisitorsTables();
+    NewSpaceScavenger::Initialize();
+    MarkCompactCollector::Initialize();
   }
   gc_initializer_mutex->Unlock();
 

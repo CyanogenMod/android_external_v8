@@ -77,7 +77,7 @@ bool LCodeGen::GenerateCode() {
 
 void LCodeGen::FinishCode(Handle<Code> code) {
   ASSERT(is_done());
-  code->set_stack_slots(StackSlotCount());
+  code->set_stack_slots(GetStackSlotCount());
   code->set_safepoint_table_offset(safepoints_.GetCodeOffset());
   PopulateDeoptimizationData(code);
   Deoptimizer::EnsureRelocSpaceForLazyDeoptimization(code);
@@ -132,7 +132,7 @@ bool LCodeGen::GeneratePrologue() {
   __ push(edi);  // Callee's JS function.
 
   // Reserve space for the stack slots needed by the code.
-  int slots = StackSlotCount();
+  int slots = GetStackSlotCount();
   if (slots > 0) {
     if (FLAG_debug_code) {
       __ mov(Operand(eax), Immediate(slots));
@@ -254,7 +254,7 @@ bool LCodeGen::GenerateDeferredCode() {
 
 bool LCodeGen::GenerateSafepointTable() {
   ASSERT(is_done());
-  safepoints_.Emit(masm(), StackSlotCount());
+  safepoints_.Emit(masm(), GetStackSlotCount());
   return !is_aborted();
 }
 
@@ -386,7 +386,7 @@ void LCodeGen::AddToTranslation(Translation* translation,
     translation->StoreDoubleStackSlot(op->index());
   } else if (op->IsArgument()) {
     ASSERT(is_tagged);
-    int src_index = StackSlotCount() + op->index();
+    int src_index = GetStackSlotCount() + op->index();
     translation->StoreStackSlot(src_index);
   } else if (op->IsRegister()) {
     Register reg = ToRegister(op);
@@ -408,20 +408,21 @@ void LCodeGen::AddToTranslation(Translation* translation,
 }
 
 
-void LCodeGen::CallCode(Handle<Code> code,
-                        RelocInfo::Mode mode,
-                        LInstruction* instr,
-                        bool adjusted) {
+void LCodeGen::CallCodeGeneric(Handle<Code> code,
+                               RelocInfo::Mode mode,
+                               LInstruction* instr,
+                               ContextMode context_mode,
+                               SafepointMode safepoint_mode) {
   ASSERT(instr != NULL);
   LPointerMap* pointers = instr->pointer_map();
   RecordPosition(pointers->position());
 
-  if (!adjusted) {
+  if (context_mode == RESTORE_CONTEXT) {
     __ mov(esi, Operand(ebp, StandardFrameConstants::kContextOffset));
   }
   __ call(code, mode);
 
-  RegisterLazyDeoptimization(instr);
+  RegisterLazyDeoptimization(instr, safepoint_mode);
 
   // Signal that we don't inline smi code before these stubs in the
   // optimizing code generator.
@@ -432,25 +433,44 @@ void LCodeGen::CallCode(Handle<Code> code,
 }
 
 
+void LCodeGen::CallCode(Handle<Code> code,
+                        RelocInfo::Mode mode,
+                        LInstruction* instr,
+                        ContextMode context_mode) {
+  CallCodeGeneric(code, mode, instr, context_mode, RECORD_SIMPLE_SAFEPOINT);
+}
+
+
 void LCodeGen::CallRuntime(const Runtime::Function* fun,
                            int argc,
                            LInstruction* instr,
-                           bool adjusted) {
+                           ContextMode context_mode) {
   ASSERT(instr != NULL);
   ASSERT(instr->HasPointerMap());
   LPointerMap* pointers = instr->pointer_map();
   RecordPosition(pointers->position());
 
-  if (!adjusted) {
+  if (context_mode == RESTORE_CONTEXT) {
     __ mov(esi, Operand(ebp, StandardFrameConstants::kContextOffset));
   }
   __ CallRuntime(fun, argc);
 
-  RegisterLazyDeoptimization(instr);
+  RegisterLazyDeoptimization(instr, RECORD_SIMPLE_SAFEPOINT);
 }
 
 
-void LCodeGen::RegisterLazyDeoptimization(LInstruction* instr) {
+void LCodeGen::CallRuntimeFromDeferred(Runtime::FunctionId id,
+                                       int argc,
+                                       LInstruction* instr) {
+  __ mov(esi, Operand(ebp, StandardFrameConstants::kContextOffset));
+  __ CallRuntimeSaveDoubles(id);
+  RecordSafepointWithRegisters(
+      instr->pointer_map(), argc, Safepoint::kNoDeoptimizationIndex);
+}
+
+
+void LCodeGen::RegisterLazyDeoptimization(LInstruction* instr,
+                                          SafepointMode safepoint_mode) {
   // Create the environment to bailout to. If the call has side effects
   // execution has to continue after the call otherwise execution can continue
   // from a previous bailout point repeating the call.
@@ -462,8 +482,16 @@ void LCodeGen::RegisterLazyDeoptimization(LInstruction* instr) {
   }
 
   RegisterEnvironmentForDeoptimization(deoptimization_environment);
-  RecordSafepoint(instr->pointer_map(),
-                  deoptimization_environment->deoptimization_index());
+  if (safepoint_mode == RECORD_SIMPLE_SAFEPOINT) {
+    RecordSafepoint(instr->pointer_map(),
+                    deoptimization_environment->deoptimization_index());
+  } else {
+    ASSERT(safepoint_mode == RECORD_SAFEPOINT_WITH_REGISTERS_AND_NO_ARGUMENTS);
+    RecordSafepointWithRegisters(
+        instr->pointer_map(),
+        0,
+        deoptimization_environment->deoptimization_index());
+  }
 }
 
 
@@ -612,6 +640,7 @@ void LCodeGen::RecordSafepoint(
     Safepoint::Kind kind,
     int arguments,
     int deoptimization_index) {
+  ASSERT(kind == expected_safepoint_kind_);
   const ZoneList<LOperand*>* operands = pointers->operands();
   Safepoint safepoint = safepoints_.DefineSafepoint(masm(),
       kind, arguments, deoptimization_index);
@@ -697,38 +726,38 @@ void LCodeGen::DoCallStub(LCallStub* instr) {
   switch (instr->hydrogen()->major_key()) {
     case CodeStub::RegExpConstructResult: {
       RegExpConstructResultStub stub;
-      CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
+      CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, CONTEXT_ADJUSTED);
       break;
     }
     case CodeStub::RegExpExec: {
       RegExpExecStub stub;
-      CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
+      CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, CONTEXT_ADJUSTED);
       break;
     }
     case CodeStub::SubString: {
       SubStringStub stub;
-      CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
+      CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, CONTEXT_ADJUSTED);
       break;
     }
     case CodeStub::NumberToString: {
       NumberToStringStub stub;
-      CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
+      CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, CONTEXT_ADJUSTED);
       break;
     }
     case CodeStub::StringAdd: {
       StringAddStub stub(NO_STRING_ADD_FLAGS);
-      CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
+      CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, CONTEXT_ADJUSTED);
       break;
     }
     case CodeStub::StringCompare: {
       StringCompareStub stub;
-      CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
+      CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, CONTEXT_ADJUSTED);
       break;
     }
     case CodeStub::TranscendentalCache: {
       TranscendentalCacheStub stub(instr->transcendental_type(),
                                    TranscendentalCacheStub::TAGGED);
-      CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
+      CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, CONTEXT_ADJUSTED);
       break;
     }
     default:
@@ -1062,7 +1091,7 @@ void LCodeGen::DoConstantD(LConstantD* instr) {
     uint64_t int_val = BitCast<uint64_t, double>(v);
     int32_t lower = static_cast<int32_t>(int_val);
     int32_t upper = static_cast<int32_t>(int_val >> (kBitsPerInt));
-    if (isolate()->cpu_features()->IsSupported(SSE4_1)) {
+    if (CpuFeatures::IsSupported(SSE4_1)) {
       CpuFeatures::Scope scope(SSE4_1);
       if (lower != 0) {
         __ Set(temp, Immediate(lower));
@@ -1143,7 +1172,7 @@ void LCodeGen::DoBitNotI(LBitNotI* instr) {
 
 void LCodeGen::DoThrow(LThrow* instr) {
   __ push(ToOperand(instr->InputAt(0)));
-  CallRuntime(Runtime::kThrow, 1, instr, false);
+  CallRuntime(Runtime::kThrow, 1, instr, RESTORE_CONTEXT);
 
   if (FLAG_debug_code) {
     Comment("Unreachable code.");
@@ -1218,7 +1247,7 @@ void LCodeGen::DoArithmeticT(LArithmeticT* instr) {
   ASSERT(ToRegister(instr->result()).is(eax));
 
   TypeRecordingBinaryOpStub stub(instr->op(), NO_OVERWRITE);
-  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, false);
+  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, RESTORE_CONTEXT);
 }
 
 
@@ -1330,12 +1359,8 @@ void LCodeGen::EmitGoto(int block, LDeferredCode* deferred_stack_check) {
 
 
 void LCodeGen::DoDeferredStackCheck(LGoto* instr) {
-  __ pushad();
-  __ mov(esi, Operand(ebp, StandardFrameConstants::kContextOffset));
-  __ CallRuntimeSaveDoubles(Runtime::kStackGuard);
-  RecordSafepointWithRegisters(
-      instr->pointer_map(), 0, Safepoint::kNoDeoptimizationIndex);
-  __ popad();
+  PushSafepointRegistersScope scope(this);
+  CallRuntimeFromDeferred(Runtime::kStackGuard, 0, instr);
 }
 
 void LCodeGen::DoGoto(LGoto* instr) {
@@ -1837,7 +1862,7 @@ void LCodeGen::DoInstanceOf(LInstanceOf* instr) {
   // Object and function are in fixed registers defined by the stub.
   ASSERT(ToRegister(instr->context()).is(esi));
   InstanceofStub stub(InstanceofStub::kArgsInRegisters);
-  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
+  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, CONTEXT_ADJUSTED);
 
   NearLabel true_value, done;
   __ test(eax, Operand(eax));
@@ -1856,7 +1881,7 @@ void LCodeGen::DoInstanceOfAndBranch(LInstanceOfAndBranch* instr) {
   int false_block = chunk_->LookupDestination(instr->false_block_id());
 
   InstanceofStub stub(InstanceofStub::kArgsInRegisters);
-  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
+  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, CONTEXT_ADJUSTED);
   __ test(eax, Operand(eax));
   EmitBranch(true_block, false_block, zero);
 }
@@ -1928,7 +1953,7 @@ void LCodeGen::DoInstanceOfKnownGlobal(LInstanceOfKnownGlobal* instr) {
 
 void LCodeGen::DoDeferredLInstanceOfKnownGlobal(LInstanceOfKnownGlobal* instr,
                                                 Label* map_check) {
-  __ PushSafepointRegisters();
+  PushSafepointRegistersScope scope(this);
 
   InstanceofStub::Flags flags = InstanceofStub::kNoFlags;
   flags = static_cast<InstanceofStub::Flags>(
@@ -1939,20 +1964,24 @@ void LCodeGen::DoDeferredLInstanceOfKnownGlobal(LInstanceOfKnownGlobal* instr,
       flags | InstanceofStub::kReturnTrueFalseObject);
   InstanceofStub stub(flags);
 
-  // Get the temp register reserved by the instruction. This needs to be edi as
-  // its slot of the pushing of safepoint registers is used to communicate the
-  // offset to the location of the map check.
+  // Get the temp register reserved by the instruction. This needs to be a
+  // register which is pushed last by PushSafepointRegisters as top of the
+  // stack is used to pass the offset to the location of the map check to
+  // the stub.
   Register temp = ToRegister(instr->TempAt(0));
-  ASSERT(temp.is(edi));
+  ASSERT(MacroAssembler::SafepointRegisterStackIndex(temp) == 0);
   __ mov(InstanceofStub::right(), Immediate(instr->function()));
   static const int kAdditionalDelta = 16;
   int delta = masm_->SizeOfCodeGeneratedSince(map_check) + kAdditionalDelta;
   __ mov(temp, Immediate(delta));
   __ StoreToSafepointRegisterSlot(temp, temp);
-  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, false);
+  CallCodeGeneric(stub.GetCode(),
+                  RelocInfo::CODE_TARGET,
+                  instr,
+                  RESTORE_CONTEXT,
+                  RECORD_SAFEPOINT_WITH_REGISTERS_AND_NO_ARGUMENTS);
   // Put the result value into the eax slot and restore all registers.
   __ StoreToSafepointRegisterSlot(eax, eax);
-  __ PopSafepointRegisters();
 }
 
 
@@ -1980,7 +2009,7 @@ void LCodeGen::DoCmpT(LCmpT* instr) {
   Token::Value op = instr->op();
 
   Handle<Code> ic = CompareIC::GetUninitialized(op);
-  CallCode(ic, RelocInfo::CODE_TARGET, instr, false);
+  CallCode(ic, RelocInfo::CODE_TARGET, instr, RESTORE_CONTEXT);
 
   Condition condition = ComputeCompareCondition(op);
   if (op == Token::GT || op == Token::LTE) {
@@ -2003,7 +2032,7 @@ void LCodeGen::DoCmpTAndBranch(LCmpTAndBranch* instr) {
   int false_block = chunk_->LookupDestination(instr->false_block_id());
 
   Handle<Code> ic = CompareIC::GetUninitialized(op);
-  CallCode(ic, RelocInfo::CODE_TARGET, instr, false);
+  CallCode(ic, RelocInfo::CODE_TARGET, instr, RESTORE_CONTEXT);
 
   // The compare stub expects compare condition and the input operands
   // reversed for GT and LTE.
@@ -2028,11 +2057,11 @@ void LCodeGen::DoReturn(LReturn* instr) {
   }
   __ mov(esp, ebp);
   __ pop(ebp);
-  __ Ret((ParameterCount() + 1) * kPointerSize, ecx);
+  __ Ret((GetParameterCount() + 1) * kPointerSize, ecx);
 }
 
 
-void LCodeGen::DoLoadGlobal(LLoadGlobal* instr) {
+void LCodeGen::DoLoadGlobalCell(LLoadGlobalCell* instr) {
   Register result = ToRegister(instr->result());
   __ mov(result, Operand::Cell(instr->hydrogen()->cell()));
   if (instr->hydrogen()->check_hole_value()) {
@@ -2042,7 +2071,20 @@ void LCodeGen::DoLoadGlobal(LLoadGlobal* instr) {
 }
 
 
-void LCodeGen::DoStoreGlobal(LStoreGlobal* instr) {
+void LCodeGen::DoLoadGlobalGeneric(LLoadGlobalGeneric* instr) {
+  ASSERT(ToRegister(instr->context()).is(esi));
+  ASSERT(ToRegister(instr->global_object()).is(eax));
+  ASSERT(ToRegister(instr->result()).is(eax));
+
+  __ mov(ecx, instr->name());
+  RelocInfo::Mode mode = instr->for_typeof() ? RelocInfo::CODE_TARGET :
+                                               RelocInfo::CODE_TARGET_CONTEXT;
+  Handle<Code> ic = isolate()->builtins()->LoadIC_Initialize();
+  CallCode(ic, mode, instr, CONTEXT_ADJUSTED);
+}
+
+
+void LCodeGen::DoStoreGlobalCell(LStoreGlobalCell* instr) {
   Register value = ToRegister(instr->InputAt(0));
   Operand cell_operand = Operand::Cell(instr->hydrogen()->cell());
 
@@ -2057,6 +2099,19 @@ void LCodeGen::DoStoreGlobal(LStoreGlobal* instr) {
 
   // Store the value.
   __ mov(cell_operand, value);
+}
+
+
+void LCodeGen::DoStoreGlobalGeneric(LStoreGlobalGeneric* instr) {
+  ASSERT(ToRegister(instr->context()).is(esi));
+  ASSERT(ToRegister(instr->global_object()).is(edx));
+  ASSERT(ToRegister(instr->value()).is(eax));
+
+  __ mov(ecx, instr->name());
+  Handle<Code> ic = instr->strict_mode()
+      ? isolate()->builtins()->StoreIC_Initialize_Strict()
+      : isolate()->builtins()->StoreIC_Initialize();
+  CallCode(ic, RelocInfo::CODE_TARGET_CONTEXT, instr, CONTEXT_ADJUSTED);
 }
 
 
@@ -2122,7 +2177,7 @@ void LCodeGen::DoLoadNamedFieldPolymorphic(LLoadNamedFieldPolymorphic* instr) {
     ASSERT(instr->hydrogen()->need_generic());
     __ mov(ecx, name);
     Handle<Code> ic = isolate()->builtins()->LoadIC_Initialize();
-    CallCode(ic, RelocInfo::CODE_TARGET, instr, false);
+    CallCode(ic, RelocInfo::CODE_TARGET, instr, RESTORE_CONTEXT);
   } else {
     NearLabel done;
     for (int i = 0; i < map_count - 1; ++i) {
@@ -2144,7 +2199,7 @@ void LCodeGen::DoLoadNamedFieldPolymorphic(LLoadNamedFieldPolymorphic* instr) {
       __ bind(&generic);
       __ mov(ecx, name);
       Handle<Code> ic = isolate()->builtins()->LoadIC_Initialize();
-      CallCode(ic, RelocInfo::CODE_TARGET, instr, false);
+      CallCode(ic, RelocInfo::CODE_TARGET, instr, RESTORE_CONTEXT);
     } else {
       DeoptimizeIf(not_equal, instr->environment());
       EmitLoadField(result, object, map, name);
@@ -2161,7 +2216,7 @@ void LCodeGen::DoLoadNamedGeneric(LLoadNamedGeneric* instr) {
 
   __ mov(ecx, instr->name());
   Handle<Code> ic = isolate()->builtins()->LoadIC_Initialize();
-  CallCode(ic, RelocInfo::CODE_TARGET, instr);
+  CallCode(ic, RelocInfo::CODE_TARGET, instr, CONTEXT_ADJUSTED);
 }
 
 
@@ -2304,11 +2359,11 @@ void LCodeGen::DoLoadKeyedSpecializedArrayElement(
         break;
       case kExternalUnsignedIntArray:
         __ mov(result, Operand(external_pointer, key, times_4, 0));
-        __ test(Operand(result), Immediate(0x80000000));
+        __ test(result, Operand(result));
         // TODO(danno): we could be more clever here, perhaps having a special
         // version of the stub that detects if the overflow case actually
         // happens, and generate code that returns a double rather than int.
-        DeoptimizeIf(not_zero, instr->environment());
+        DeoptimizeIf(negative, instr->environment());
         break;
       case kExternalFloatArray:
         UNREACHABLE();
@@ -2324,7 +2379,7 @@ void LCodeGen::DoLoadKeyedGeneric(LLoadKeyedGeneric* instr) {
   ASSERT(ToRegister(instr->key()).is(eax));
 
   Handle<Code> ic = isolate()->builtins()->KeyedLoadIC_Initialize();
-  CallCode(ic, RelocInfo::CODE_TARGET, instr);
+  CallCode(ic, RelocInfo::CODE_TARGET, instr, CONTEXT_ADJUSTED);
 }
 
 
@@ -2438,7 +2493,7 @@ void LCodeGen::DoApplyArguments(LApplyArguments* instr) {
   SafepointGenerator safepoint_generator(this,
                                          pointers,
                                          env->deoptimization_index());
-  v8::internal::ParameterCount actual(eax);
+  ParameterCount actual(eax);
   __ InvokeFunction(function, actual, CALL_FUNCTION, &safepoint_generator);
 }
 
@@ -2512,7 +2567,7 @@ void LCodeGen::CallKnownFunction(Handle<JSFunction> function,
   }
 
   // Setup deoptimization.
-  RegisterLazyDeoptimization(instr);
+  RegisterLazyDeoptimization(instr, RECORD_SIMPLE_SAFEPOINT);
 }
 
 
@@ -2534,7 +2589,7 @@ void LCodeGen::DoDeferredMathAbsTaggedHeapNumber(LUnaryMathOperation* instr) {
   Register tmp2 = tmp.is(ecx) ? edx : input_reg.is(ecx) ? edx : ecx;
 
   // Preserve the value of all registers.
-  __ PushSafepointRegisters();
+  PushSafepointRegistersScope scope(this);
 
   Label negative;
   __ mov(tmp, FieldOperand(input_reg, HeapNumber::kExponentOffset));
@@ -2555,10 +2610,8 @@ void LCodeGen::DoDeferredMathAbsTaggedHeapNumber(LUnaryMathOperation* instr) {
   // Slow case: Call the runtime system to do the number allocation.
   __ bind(&slow);
 
-  __ mov(esi, Operand(ebp, StandardFrameConstants::kContextOffset));
-  __ CallRuntimeSaveDoubles(Runtime::kAllocateHeapNumber);
-  RecordSafepointWithRegisters(
-      instr->pointer_map(), 0, Safepoint::kNoDeoptimizationIndex);
+  CallRuntimeFromDeferred(Runtime::kAllocateHeapNumber, 0, instr);
+
   // Set the pointer to the new heap number in tmp.
   if (!tmp.is(eax)) __ mov(tmp, eax);
 
@@ -2574,7 +2627,6 @@ void LCodeGen::DoDeferredMathAbsTaggedHeapNumber(LUnaryMathOperation* instr) {
   __ StoreToSafepointRegisterSlot(input_reg, tmp);
 
   __ bind(&done);
-  __ PopSafepointRegisters();
 }
 
 
@@ -2655,25 +2707,16 @@ void LCodeGen::DoMathRound(LUnaryMathOperation* instr) {
   Register output_reg = ToRegister(instr->result());
   XMMRegister input_reg = ToDoubleRegister(instr->InputAt(0));
 
+  Label below_half, done;
   // xmm_scratch = 0.5
   ExternalReference one_half = ExternalReference::address_of_one_half();
   __ movdbl(xmm_scratch, Operand::StaticVariable(one_half));
 
+  __ ucomisd(xmm_scratch, input_reg);
+  __ j(above, &below_half);
   // input = input + 0.5
   __ addsd(input_reg, xmm_scratch);
 
-  // We need to return -0 for the input range [-0.5, 0[, otherwise
-  // compute Math.floor(value + 0.5).
-  if (instr->hydrogen()->CheckFlag(HValue::kBailoutOnMinusZero)) {
-    __ ucomisd(input_reg, xmm_scratch);
-    DeoptimizeIf(below_equal, instr->environment());
-  } else {
-    // If we don't need to bailout on -0, we check only bailout
-    // on negative inputs.
-    __ xorpd(xmm_scratch, xmm_scratch);  // Zero the register.
-    __ ucomisd(input_reg, xmm_scratch);
-    DeoptimizeIf(below, instr->environment());
-  }
 
   // Compute Math.floor(value + 0.5).
   // Use truncating instruction (OK because input is positive).
@@ -2682,6 +2725,27 @@ void LCodeGen::DoMathRound(LUnaryMathOperation* instr) {
   // Overflow is signalled with minint.
   __ cmp(output_reg, 0x80000000u);
   DeoptimizeIf(equal, instr->environment());
+  __ jmp(&done);
+
+  __ bind(&below_half);
+
+  // We return 0 for the input range [+0, 0.5[, or [-0.5, 0.5[ if
+  // we can ignore the difference between a result of -0 and +0.
+  if (instr->hydrogen()->CheckFlag(HValue::kBailoutOnMinusZero)) {
+    // If the sign is positive, we return +0.
+    __ movmskpd(output_reg, input_reg);
+    __ test(output_reg, Immediate(1));
+    DeoptimizeIf(not_zero, instr->environment());
+  } else {
+    // If the input is >= -0.5, we return +0.
+    __ mov(output_reg, Immediate(0xBF000000));
+    __ movd(xmm_scratch, Operand(output_reg));
+    __ cvtss2sd(xmm_scratch, xmm_scratch);
+    __ ucomisd(input_reg, xmm_scratch);
+    DeoptimizeIf(below, instr->environment());
+  }
+  __ Set(output_reg, Immediate(0));
+  __ bind(&done);
 }
 
 
@@ -2763,10 +2827,32 @@ void LCodeGen::DoPower(LPower* instr) {
 
 
 void LCodeGen::DoMathLog(LUnaryMathOperation* instr) {
-  ASSERT(ToDoubleRegister(instr->result()).is(xmm1));
-  TranscendentalCacheStub stub(TranscendentalCache::LOG,
-                               TranscendentalCacheStub::UNTAGGED);
-  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, false);
+  ASSERT(instr->InputAt(0)->Equals(instr->result()));
+  XMMRegister input_reg = ToDoubleRegister(instr->InputAt(0));
+  NearLabel positive, done, zero, negative;
+  __ xorpd(xmm0, xmm0);
+  __ ucomisd(input_reg, xmm0);
+  __ j(above, &positive);
+  __ j(equal, &zero);
+  ExternalReference nan = ExternalReference::address_of_nan();
+  __ movdbl(input_reg, Operand::StaticVariable(nan));
+  __ jmp(&done);
+  __ bind(&zero);
+  __ push(Immediate(0xFFF00000));
+  __ push(Immediate(0));
+  __ movdbl(input_reg, Operand(esp, 0));
+  __ add(Operand(esp), Immediate(kDoubleSize));
+  __ jmp(&done);
+  __ bind(&positive);
+  __ fldln2();
+  __ sub(Operand(esp), Immediate(kDoubleSize));
+  __ movdbl(Operand(esp, 0), input_reg);
+  __ fld_d(Operand(esp, 0));
+  __ fyl2x();
+  __ fstp_d(Operand(esp, 0));
+  __ movdbl(input_reg, Operand(esp, 0));
+  __ add(Operand(esp), Immediate(kDoubleSize));
+  __ bind(&done);
 }
 
 
@@ -2774,7 +2860,7 @@ void LCodeGen::DoMathCos(LUnaryMathOperation* instr) {
   ASSERT(ToDoubleRegister(instr->result()).is(xmm1));
   TranscendentalCacheStub stub(TranscendentalCache::COS,
                                TranscendentalCacheStub::UNTAGGED);
-  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, false);
+  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, RESTORE_CONTEXT);
 }
 
 
@@ -2782,7 +2868,7 @@ void LCodeGen::DoMathSin(LUnaryMathOperation* instr) {
   ASSERT(ToDoubleRegister(instr->result()).is(xmm1));
   TranscendentalCacheStub stub(TranscendentalCache::SIN,
                                TranscendentalCacheStub::UNTAGGED);
-  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, false);
+  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, RESTORE_CONTEXT);
 }
 
 
@@ -2819,6 +2905,21 @@ void LCodeGen::DoUnaryMathOperation(LUnaryMathOperation* instr) {
 }
 
 
+void LCodeGen::DoInvokeFunction(LInvokeFunction* instr) {
+  ASSERT(ToRegister(instr->context()).is(esi));
+  ASSERT(ToRegister(instr->function()).is(edi));
+  ASSERT(instr->HasPointerMap());
+  ASSERT(instr->HasDeoptimizationEnvironment());
+  LPointerMap* pointers = instr->pointer_map();
+  LEnvironment* env = instr->deoptimization_environment();
+  RecordPosition(pointers->position());
+  RegisterEnvironmentForDeoptimization(env);
+  SafepointGenerator generator(this, pointers, env->deoptimization_index());
+  ParameterCount count(instr->arity());
+  __ InvokeFunction(edi, count, CALL_FUNCTION, &generator);
+}
+
+
 void LCodeGen::DoCallKeyed(LCallKeyed* instr) {
   ASSERT(ToRegister(instr->context()).is(esi));
   ASSERT(ToRegister(instr->key()).is(ecx));
@@ -2827,7 +2928,7 @@ void LCodeGen::DoCallKeyed(LCallKeyed* instr) {
   int arity = instr->arity();
   Handle<Code> ic = isolate()->stub_cache()->
       ComputeKeyedCallInitialize(arity, NOT_IN_LOOP);
-  CallCode(ic, RelocInfo::CODE_TARGET, instr);
+  CallCode(ic, RelocInfo::CODE_TARGET, instr, CONTEXT_ADJUSTED);
 }
 
 
@@ -2839,7 +2940,7 @@ void LCodeGen::DoCallNamed(LCallNamed* instr) {
   Handle<Code> ic = isolate()->stub_cache()->
       ComputeCallInitialize(arity, NOT_IN_LOOP);
   __ mov(ecx, instr->name());
-  CallCode(ic, RelocInfo::CODE_TARGET, instr);
+  CallCode(ic, RelocInfo::CODE_TARGET, instr, CONTEXT_ADJUSTED);
 }
 
 
@@ -2849,7 +2950,7 @@ void LCodeGen::DoCallFunction(LCallFunction* instr) {
 
   int arity = instr->arity();
   CallFunctionStub stub(arity, NOT_IN_LOOP, RECEIVER_MIGHT_BE_VALUE);
-  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
+  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, CONTEXT_ADJUSTED);
   __ Drop(1);
 }
 
@@ -2862,7 +2963,7 @@ void LCodeGen::DoCallGlobal(LCallGlobal* instr) {
   Handle<Code> ic = isolate()->stub_cache()->
       ComputeCallInitialize(arity, NOT_IN_LOOP);
   __ mov(ecx, instr->name());
-  CallCode(ic, RelocInfo::CODE_TARGET_CONTEXT, instr);
+  CallCode(ic, RelocInfo::CODE_TARGET_CONTEXT, instr, CONTEXT_ADJUSTED);
 }
 
 
@@ -2880,12 +2981,12 @@ void LCodeGen::DoCallNew(LCallNew* instr) {
 
   Handle<Code> builtin = isolate()->builtins()->JSConstructCall();
   __ Set(eax, Immediate(instr->arity()));
-  CallCode(builtin, RelocInfo::CONSTRUCT_CALL, instr);
+  CallCode(builtin, RelocInfo::CONSTRUCT_CALL, instr, CONTEXT_ADJUSTED);
 }
 
 
 void LCodeGen::DoCallRuntime(LCallRuntime* instr) {
-  CallRuntime(instr->function(), instr->arity(), instr, false);
+  CallRuntime(instr->function(), instr->arity(), instr, RESTORE_CONTEXT);
 }
 
 
@@ -2925,10 +3026,10 @@ void LCodeGen::DoStoreNamedGeneric(LStoreNamedGeneric* instr) {
   ASSERT(ToRegister(instr->value()).is(eax));
 
   __ mov(ecx, instr->name());
-  Handle<Code> ic = info_->is_strict()
+  Handle<Code> ic = instr->strict_mode()
       ? isolate()->builtins()->StoreIC_Initialize_Strict()
       : isolate()->builtins()->StoreIC_Initialize();
-  CallCode(ic, RelocInfo::CODE_TARGET, instr);
+  CallCode(ic, RelocInfo::CODE_TARGET, instr, CONTEXT_ADJUSTED);
 }
 
 
@@ -3025,10 +3126,10 @@ void LCodeGen::DoStoreKeyedGeneric(LStoreKeyedGeneric* instr) {
   ASSERT(ToRegister(instr->key()).is(ecx));
   ASSERT(ToRegister(instr->value()).is(eax));
 
-  Handle<Code> ic = info_->is_strict()
+  Handle<Code> ic = instr->strict_mode()
       ? isolate()->builtins()->KeyedStoreIC_Initialize_Strict()
       : isolate()->builtins()->KeyedStoreIC_Initialize();
-  CallCode(ic, RelocInfo::CODE_TARGET, instr);
+  CallCode(ic, RelocInfo::CODE_TARGET, instr, CONTEXT_ADJUSTED);
 }
 
 
@@ -3146,7 +3247,7 @@ void LCodeGen::DoDeferredStringCharCodeAt(LStringCharCodeAt* instr) {
   // contained in the register pointer map.
   __ Set(result, Immediate(0));
 
-  __ PushSafepointRegisters();
+  PushSafepointRegistersScope scope(this);
   __ push(string);
   // Push the index as a smi. This is safe because of the checks in
   // DoStringCharCodeAt above.
@@ -3159,16 +3260,12 @@ void LCodeGen::DoDeferredStringCharCodeAt(LStringCharCodeAt* instr) {
     __ SmiTag(index);
     __ push(index);
   }
-  __ mov(esi, Operand(ebp, StandardFrameConstants::kContextOffset));
-  __ CallRuntimeSaveDoubles(Runtime::kStringCharCodeAt);
-  RecordSafepointWithRegisters(
-      instr->pointer_map(), 2, Safepoint::kNoDeoptimizationIndex);
+  CallRuntimeFromDeferred(Runtime::kStringCharCodeAt, 2, instr);
   if (FLAG_debug_code) {
     __ AbortIfNotSmi(eax);
   }
   __ SmiUntag(eax);
   __ StoreToSafepointRegisterSlot(result, eax);
-  __ PopSafepointRegisters();
 }
 
 
@@ -3211,14 +3308,11 @@ void LCodeGen::DoDeferredStringCharFromCode(LStringCharFromCode* instr) {
   // contained in the register pointer map.
   __ Set(result, Immediate(0));
 
-  __ PushSafepointRegisters();
+  PushSafepointRegistersScope scope(this);
   __ SmiTag(char_code);
   __ push(char_code);
-  __ CallRuntimeSaveDoubles(Runtime::kCharFromCode);
-  RecordSafepointWithRegisters(
-      instr->pointer_map(), 1, Safepoint::kNoDeoptimizationIndex);
+  CallRuntimeFromDeferred(Runtime::kCharFromCode, 1, instr);
   __ StoreToSafepointRegisterSlot(result, eax);
-  __ PopSafepointRegisters();
 }
 
 
@@ -3226,6 +3320,22 @@ void LCodeGen::DoStringLength(LStringLength* instr) {
   Register string = ToRegister(instr->string());
   Register result = ToRegister(instr->result());
   __ mov(result, FieldOperand(string, String::kLengthOffset));
+}
+
+
+void LCodeGen::DoStringAdd(LStringAdd* instr) {
+  if (instr->left()->IsConstantOperand()) {
+    __ push(ToImmediate(instr->left()));
+  } else {
+    __ push(ToOperand(instr->left()));
+  }
+  if (instr->right()->IsConstantOperand()) {
+    __ push(ToImmediate(instr->right()));
+  } else {
+    __ push(ToOperand(instr->right()));
+  }
+  StringAddStub stub(NO_STRING_CHECK_IN_STUB);
+  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, RESTORE_CONTEXT);
 }
 
 
@@ -3265,7 +3375,7 @@ void LCodeGen::DoDeferredNumberTagI(LNumberTagI* instr) {
   Register tmp = reg.is(eax) ? ecx : eax;
 
   // Preserve the value of all registers.
-  __ PushSafepointRegisters();
+  PushSafepointRegistersScope scope(this);
 
   // There was overflow, so bits 30 and 31 of the original integer
   // disagree. Try to allocate a heap number in new space and store
@@ -3287,10 +3397,7 @@ void LCodeGen::DoDeferredNumberTagI(LNumberTagI* instr) {
   // integer value.
   __ StoreToSafepointRegisterSlot(reg, Immediate(0));
 
-  __ mov(esi, Operand(ebp, StandardFrameConstants::kContextOffset));
-  __ CallRuntimeSaveDoubles(Runtime::kAllocateHeapNumber);
-  RecordSafepointWithRegisters(
-      instr->pointer_map(), 0, Safepoint::kNoDeoptimizationIndex);
+  CallRuntimeFromDeferred(Runtime::kAllocateHeapNumber, 0, instr);
   if (!reg.is(eax)) __ mov(reg, eax);
 
   // Done. Put the value in xmm0 into the value of the allocated heap
@@ -3298,7 +3405,6 @@ void LCodeGen::DoDeferredNumberTagI(LNumberTagI* instr) {
   __ bind(&done);
   __ movdbl(FieldOperand(reg, HeapNumber::kValueOffset), xmm0);
   __ StoreToSafepointRegisterSlot(reg, reg);
-  __ PopSafepointRegisters();
 }
 
 
@@ -3334,13 +3440,9 @@ void LCodeGen::DoDeferredNumberTagD(LNumberTagD* instr) {
   Register reg = ToRegister(instr->result());
   __ Set(reg, Immediate(0));
 
-  __ PushSafepointRegisters();
-  __ mov(esi, Operand(ebp, StandardFrameConstants::kContextOffset));
-  __ CallRuntimeSaveDoubles(Runtime::kAllocateHeapNumber);
-  RecordSafepointWithRegisters(
-      instr->pointer_map(), 0, Safepoint::kNoDeoptimizationIndex);
+  PushSafepointRegistersScope scope(this);
+  CallRuntimeFromDeferred(Runtime::kAllocateHeapNumber, 0, instr);
   __ StoreToSafepointRegisterSlot(reg, eax);
-  __ PopSafepointRegisters();
 }
 
 
@@ -3427,7 +3529,7 @@ void LCodeGen::DoDeferredTaggedToI(LTaggedToI* instr) {
     __ jmp(&done);
 
     __ bind(&heap_number);
-    if (isolate()->cpu_features()->IsSupported(SSE3)) {
+    if (CpuFeatures::IsSupported(SSE3)) {
       CpuFeatures::Scope scope(SSE3);
       NearLabel convert;
       // Use more powerful conversion when sse3 is available.
@@ -3537,7 +3639,7 @@ void LCodeGen::DoDoubleToI(LDoubleToI* instr) {
     // the JS bitwise operations.
     __ cvttsd2si(result_reg, Operand(input_reg));
     __ cmp(result_reg, 0x80000000u);
-    if (isolate()->cpu_features()->IsSupported(SSE3)) {
+    if (CpuFeatures::IsSupported(SSE3)) {
       // This will deoptimize if the exponent of the input in out of range.
       CpuFeatures::Scope scope(SSE3);
       NearLabel convert, done;
@@ -3755,16 +3857,16 @@ void LCodeGen::DoArrayLiteral(LArrayLiteral* instr) {
     FastCloneShallowArrayStub::Mode mode =
         FastCloneShallowArrayStub::COPY_ON_WRITE_ELEMENTS;
     FastCloneShallowArrayStub stub(mode, length);
-    CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, false);
+    CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, RESTORE_CONTEXT);
   } else if (instr->hydrogen()->depth() > 1) {
-    CallRuntime(Runtime::kCreateArrayLiteral, 3, instr, false);
+    CallRuntime(Runtime::kCreateArrayLiteral, 3, instr, RESTORE_CONTEXT);
   } else if (length > FastCloneShallowArrayStub::kMaximumClonedLength) {
-    CallRuntime(Runtime::kCreateArrayLiteralShallow, 3, instr, false);
+    CallRuntime(Runtime::kCreateArrayLiteralShallow, 3, instr, RESTORE_CONTEXT);
   } else {
     FastCloneShallowArrayStub::Mode mode =
         FastCloneShallowArrayStub::CLONE_ELEMENTS;
     FastCloneShallowArrayStub stub(mode, length);
-    CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, false);
+    CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, RESTORE_CONTEXT);
   }
 }
 
@@ -3786,9 +3888,12 @@ void LCodeGen::DoObjectLiteral(LObjectLiteral* instr) {
 
   // Pick the right runtime function to call.
   if (instr->hydrogen()->depth() > 1) {
-    CallRuntime(Runtime::kCreateObjectLiteral, 4, instr);
+    CallRuntime(Runtime::kCreateObjectLiteral, 4, instr, CONTEXT_ADJUSTED);
   } else {
-    CallRuntime(Runtime::kCreateObjectLiteralShallow, 4, instr);
+    CallRuntime(Runtime::kCreateObjectLiteralShallow,
+                4,
+                instr,
+                CONTEXT_ADJUSTED);
   }
 }
 
@@ -3796,7 +3901,7 @@ void LCodeGen::DoObjectLiteral(LObjectLiteral* instr) {
 void LCodeGen::DoToFastProperties(LToFastProperties* instr) {
   ASSERT(ToRegister(instr->InputAt(0)).is(eax));
   __ push(eax);
-  CallRuntime(Runtime::kToFastProperties, 1, instr);
+  CallRuntime(Runtime::kToFastProperties, 1, instr, CONTEXT_ADJUSTED);
 }
 
 
@@ -3821,7 +3926,7 @@ void LCodeGen::DoRegExpLiteral(LRegExpLiteral* instr) {
   __ push(Immediate(Smi::FromInt(instr->hydrogen()->literal_index())));
   __ push(Immediate(instr->hydrogen()->pattern()));
   __ push(Immediate(instr->hydrogen()->flags()));
-  CallRuntime(Runtime::kMaterializeRegExpLiteral, 4, instr, false);
+  CallRuntime(Runtime::kMaterializeRegExpLiteral, 4, instr, RESTORE_CONTEXT);
   __ mov(ebx, eax);
 
   __ bind(&materialized);
@@ -3833,7 +3938,7 @@ void LCodeGen::DoRegExpLiteral(LRegExpLiteral* instr) {
   __ bind(&runtime_allocate);
   __ push(ebx);
   __ push(Immediate(Smi::FromInt(size)));
-  CallRuntime(Runtime::kAllocateInNewSpace, 1, instr, false);
+  CallRuntime(Runtime::kAllocateInNewSpace, 1, instr, RESTORE_CONTEXT);
   __ pop(ebx);
 
   __ bind(&allocated);
@@ -3861,14 +3966,14 @@ void LCodeGen::DoFunctionLiteral(LFunctionLiteral* instr) {
     FastNewClosureStub stub(
         shared_info->strict_mode() ? kStrictMode : kNonStrictMode);
     __ push(Immediate(shared_info));
-    CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, false);
+    CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, RESTORE_CONTEXT);
   } else {
     __ push(Operand(ebp, StandardFrameConstants::kContextOffset));
     __ push(Immediate(shared_info));
     __ push(Immediate(pretenure
                       ? factory()->true_value()
                       : factory()->false_value()));
-    CallRuntime(Runtime::kNewClosure, 3, instr, false);
+    CallRuntime(Runtime::kNewClosure, 3, instr, RESTORE_CONTEXT);
   }
 }
 
@@ -3880,7 +3985,7 @@ void LCodeGen::DoTypeof(LTypeof* instr) {
   } else {
     __ push(ToOperand(input));
   }
-  CallRuntime(Runtime::kTypeof, 1, instr, false);
+  CallRuntime(Runtime::kTypeof, 1, instr, RESTORE_CONTEXT);
 }
 
 
@@ -4083,7 +4188,7 @@ void LCodeGen::DoStackCheck(LStackCheck* instr) {
   __ j(above_equal, &done);
 
   StackCheckStub stub;
-  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, false);
+  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr, RESTORE_CONTEXT);
   __ bind(&done);
 }
 

@@ -230,7 +230,8 @@
             '../../src',
           ],
           'sources': [
-            '<(SHARED_INTERMEDIATE_DIR)/libraries-empty.cc',
+            '<(SHARED_INTERMEDIATE_DIR)/libraries.cc',
+            '<(SHARED_INTERMEDIATE_DIR)/experimental-libraries.cc',
             '<(INTERMEDIATE_DIR)/snapshot.cc',
           ],
           'actions': [
@@ -259,6 +260,7 @@
           ],
           'sources': [
             '<(SHARED_INTERMEDIATE_DIR)/libraries.cc',
+            '<(SHARED_INTERMEDIATE_DIR)/experimental-libraries.cc',
             '../../src/snapshot-empty.cc',
           ],
           'conditions': [
@@ -399,9 +401,6 @@
             '../../src/inspector.h',
             '../../src/interpreter-irregexp.cc',
             '../../src/interpreter-irregexp.h',
-            '../../src/jump-target-inl.h',
-            '../../src/jump-target.cc',
-            '../../src/jump-target.h',
             '../../src/jsregexp.cc',
             '../../src/jsregexp.h',
             '../../src/isolate.cc',
@@ -462,9 +461,6 @@
             '../../src/regexp-macro-assembler.h',
             '../../src/regexp-stack.cc',
             '../../src/regexp-stack.h',
-            '../../src/register-allocator.h',
-            '../../src/register-allocator-inl.h',
-            '../../src/register-allocator.cc',
             '../../src/rewriter.cc',
             '../../src/rewriter.h',
             '../../src/runtime.cc',
@@ -526,9 +522,6 @@
             '../../src/variables.h',
             '../../src/version.cc',
             '../../src/version.h',
-            '../../src/virtual-frame-inl.h',
-            '../../src/virtual-frame.cc',
-            '../../src/virtual-frame.h',
             '../../src/vm-state-inl.h',
             '../../src/vm-state.h',
             '../../src/zone-inl.h',
@@ -545,11 +538,6 @@
                 '../../src/arm',
               ],
               'sources': [
-                '../../src/jump-target-light.h',
-                '../../src/jump-target-light-inl.h',
-                '../../src/jump-target-light.cc',
-                '../../src/virtual-frame-light-inl.h',
-                '../../src/virtual-frame-light.cc',
                 '../../src/arm/assembler-arm-inl.h',
                 '../../src/arm/assembler-arm.cc',
                 '../../src/arm/assembler-arm.h',
@@ -568,7 +556,6 @@
                 '../../src/arm/frames-arm.h',
                 '../../src/arm/full-codegen-arm.cc',
                 '../../src/arm/ic-arm.cc',
-                '../../src/arm/jump-target-arm.cc',
                 '../../src/arm/lithium-arm.cc',
                 '../../src/arm/lithium-arm.h',
                 '../../src/arm/lithium-codegen-arm.cc',
@@ -579,12 +566,8 @@
                 '../../src/arm/macro-assembler-arm.h',
                 '../../src/arm/regexp-macro-assembler-arm.cc',
                 '../../src/arm/regexp-macro-assembler-arm.h',
-                '../../src/arm/register-allocator-arm.cc',
                 '../../src/arm/simulator-arm.cc',
                 '../../src/arm/stub-cache-arm.cc',
-                '../../src/arm/virtual-frame-arm-inl.h',
-                '../../src/arm/virtual-frame-arm.cc',
-                '../../src/arm/virtual-frame-arm.h',
               ],
               'conditions': [
                 # The ARM assembler assumes the host is 32 bits,
@@ -600,11 +583,6 @@
                 '../../src/ia32',
               ],
               'sources': [
-                '../../src/jump-target-heavy.h',
-                '../../src/jump-target-heavy-inl.h',
-                '../../src/jump-target-heavy.cc',
-                '../../src/virtual-frame-heavy-inl.h',
-                '../../src/virtual-frame-heavy.cc',
                 '../../src/ia32/assembler-ia32-inl.h',
                 '../../src/ia32/assembler-ia32.cc',
                 '../../src/ia32/assembler-ia32.h',
@@ -621,7 +599,6 @@
                 '../../src/ia32/frames-ia32.h',
                 '../../src/ia32/full-codegen-ia32.cc',
                 '../../src/ia32/ic-ia32.cc',
-                '../../src/ia32/jump-target-ia32.cc',
                 '../../src/ia32/lithium-codegen-ia32.cc',
                 '../../src/ia32/lithium-codegen-ia32.h',
                 '../../src/ia32/lithium-gap-resolver-ia32.cc',
@@ -632,10 +609,7 @@
                 '../../src/ia32/macro-assembler-ia32.h',
                 '../../src/ia32/regexp-macro-assembler-ia32.cc',
                 '../../src/ia32/regexp-macro-assembler-ia32.h',
-                '../../src/ia32/register-allocator-ia32.cc',
                 '../../src/ia32/stub-cache-ia32.cc',
-                '../../src/ia32/virtual-frame-ia32.cc',
-                '../../src/ia32/virtual-frame-ia32.h',
               ],
             }],
             ['v8_target_arch=="x64" or v8_target_arch=="mac" or OS=="mac"', {
@@ -643,11 +617,6 @@
                 '../../src/x64',
               ],
               'sources': [
-                '../../src/jump-target-heavy.h',
-                '../../src/jump-target-heavy-inl.h',
-                '../../src/jump-target-heavy.cc',
-                '../../src/virtual-frame-heavy-inl.h',
-                '../../src/virtual-frame-heavy.cc',
                 '../../src/x64/assembler-x64-inl.h',
                 '../../src/x64/assembler-x64.cc',
                 '../../src/x64/assembler-x64.h',
@@ -664,7 +633,6 @@
                 '../../src/x64/frames-x64.h',
                 '../../src/x64/full-codegen-x64.cc',
                 '../../src/x64/ic-x64.cc',
-                '../../src/x64/jump-target-x64.cc',
                 '../../src/x64/lithium-codegen-x64.cc',
                 '../../src/x64/lithium-codegen-x64.h',
                 '../../src/x64/lithium-gap-resolver-x64.cc',
@@ -675,10 +643,7 @@
                 '../../src/x64/macro-assembler-x64.h',
                 '../../src/x64/regexp-macro-assembler-x64.cc',
                 '../../src/x64/regexp-macro-assembler-x64.h',
-                '../../src/x64/register-allocator-x64.cc',
                 '../../src/x64/stub-cache-x64.cc',
-                '../../src/x64/virtual-frame-x64.cc',
-                '../../src/x64/virtual-frame-x64.h',
               ],
             }],
             ['OS=="linux"', {
@@ -759,6 +724,10 @@
               '../../src/regexp.js',
               '../../src/macros.py',
             ],
+	    'experimental_library_files': [
+	      '../../src/proxy.js',
+              '../../src/macros.py',
+	    ],
           },
           'actions': [
             {
@@ -769,7 +738,6 @@
               ],
               'outputs': [
                 '<(SHARED_INTERMEDIATE_DIR)/libraries.cc',
-                '<(SHARED_INTERMEDIATE_DIR)/libraries-empty.cc',
               ],
               'action': [
                 'python',
@@ -777,6 +745,23 @@
                 '<@(_outputs)',
                 'CORE',
                 '<@(library_files)'
+              ],
+            },
+	    {
+              'action_name': 'js2c_experimental',
+              'inputs': [
+                '../../tools/js2c.py',
+                '<@(experimental_library_files)',
+              ],
+              'outputs': [
+                '<(SHARED_INTERMEDIATE_DIR)/experimental-libraries.cc',
+              ],
+              'action': [
+                'python',
+                '../../tools/js2c.py',
+                '<@(_outputs)',
+                'EXPERIMENTAL',
+                '<@(experimental_library_files)'
               ],
             },
           ],
