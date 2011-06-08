@@ -1517,6 +1517,7 @@ static void InitializeScavengingVisitorsTables() {
 
 
 void Heap::SwitchScavengingVisitorsTableIfProfilingWasEnabled() {
+#ifdef ENABLE_LOGGING_AND_PROFILING
   if (scavenging_visitors_table_mode_ == LOGGING_AND_PROFILING_ENABLED) {
     // Table was already updated by some isolate.
     return;
@@ -1542,6 +1543,7 @@ void Heap::SwitchScavengingVisitorsTableIfProfilingWasEnabled() {
     Release_Store(&scavenging_visitors_table_mode_,
                   LOGGING_AND_PROFILING_ENABLED);
   }
+#endif
 }
 
 
