@@ -2713,7 +2713,7 @@ MUST_USE_RESULT static MaybeObject* StringReplaceRegExpWithEmptyString(
     end = RegExpImpl::GetCapture(match_info_array, 1);
   }
 
-  int length = subject->length();
+  int length = subject_handle->length();
   int new_length = length - (end - start);
   if (new_length == 0) {
     return isolate->heap()->empty_string();
@@ -6597,16 +6597,9 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_RoundNumber) {
   int exponent = number->get_exponent();
   int sign = number->get_sign();
 
-  if (exponent < -1) {
-    // Number in range ]-0.5..0.5[. These always round to +/-zero.
-    if (sign) return isolate->heap()->minus_zero_value();
-    return Smi::FromInt(0);
-  }
-
-  // We compare with kSmiValueSize - 2 because (2^30 - 0.1) has exponent 29 and
-  // should be rounded to 2^30, which is not smi (for 31-bit smis, similar
-  // agument holds for 32-bit smis).
-  if (!sign && exponent < kSmiValueSize - 2) {
+  // We compare with kSmiValueSize - 3 because (2^30 - 0.1) has exponent 29 and
+  // should be rounded to 2^30, which is not smi.
+  if (!sign && exponent <= kSmiValueSize - 3) {
     return Smi::FromInt(static_cast<int>(value + 0.5));
   }
 
@@ -10485,7 +10478,7 @@ static Handle<Context> CopyWithContextChain(Handle<Context> context_chain,
   // Recursively copy the with contexts.
   Handle<Context> previous(context_chain->previous());
   Handle<JSObject> extension(JSObject::cast(context_chain->extension()));
-  Handle<Context> context = CopyWithContextChain(previous, function_context);
+  Handle<Context> context = CopyWithContextChain(function_context, previous);
   return context->GetIsolate()->factory()->NewWithContext(
       context, extension, context_chain->IsCatchContext());
 }

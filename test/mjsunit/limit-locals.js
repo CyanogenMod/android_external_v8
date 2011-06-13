@@ -1,4 +1,4 @@
-// Copyright 2008 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,9 +25,22 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Make sure that 'this' is bound to the global object when using
-// execScript.
+// Test that there is a limit of 32767 locals.
 
-var result;
-execScript("result = this");
-assertTrue(result === this);
+function function_with_n_locals(n) {
+  test_prefix = "prefix ";
+  test_suffix = " suffix";
+  var src = "test_prefix + (function () {"
+  for (var i = 1; i <= n; i++) {
+    src += "var x" + i + ";";
+  }
+  src += "return " + n + ";})() + test_suffix";
+  return eval(src);
+}
+
+assertEquals("prefix 0 suffix", function_with_n_locals(0));
+assertEquals("prefix 16000 suffix", function_with_n_locals(16000));
+assertEquals("prefix 32767 suffix", function_with_n_locals(32767));
+
+assertThrows("function_with_n_locals(32768)");
+assertThrows("function_with_n_locals(100000)");

@@ -446,9 +446,6 @@ void TypeRecordingBinaryOpStub::Generate(MacroAssembler* masm) {
     case TRBinaryOpIC::ODDBALL:
       GenerateOddballStub(masm);
       break;
-    case TRBinaryOpIC::BOTH_STRING:
-      GenerateBothStringStub(masm);
-      break;
     case TRBinaryOpIC::STRING:
       GenerateStringStub(masm);
       break;
@@ -912,38 +909,6 @@ void TypeRecordingBinaryOpStub::GenerateStringStub(MacroAssembler* masm) {
 }
 
 
-void TypeRecordingBinaryOpStub::GenerateBothStringStub(MacroAssembler* masm) {
-  Label call_runtime;
-  ASSERT(operands_type_ == TRBinaryOpIC::BOTH_STRING);
-  ASSERT(op_ == Token::ADD);
-  // If both arguments are strings, call the string add stub.
-  // Otherwise, do a transition.
-
-  // Registers containing left and right operands respectively.
-  Register left = edx;
-  Register right = eax;
-
-  // Test if left operand is a string.
-  __ test(left, Immediate(kSmiTagMask));
-  __ j(zero, &call_runtime);
-  __ CmpObjectType(left, FIRST_NONSTRING_TYPE, ecx);
-  __ j(above_equal, &call_runtime);
-
-  // Test if right operand is a string.
-  __ test(right, Immediate(kSmiTagMask));
-  __ j(zero, &call_runtime);
-  __ CmpObjectType(right, FIRST_NONSTRING_TYPE, ecx);
-  __ j(above_equal, &call_runtime);
-
-  StringAddStub string_add_stub(NO_STRING_CHECK_IN_STUB);
-  GenerateRegisterArgsPush(masm);
-  __ TailCallStub(&string_add_stub);
-
-  __ bind(&call_runtime);
-  GenerateTypeTransition(masm);
-}
-
-
 void TypeRecordingBinaryOpStub::GenerateInt32Stub(MacroAssembler* masm) {
   Label call_runtime;
   ASSERT(operands_type_ == TRBinaryOpIC::INT32);
@@ -1155,25 +1120,23 @@ void TypeRecordingBinaryOpStub::GenerateOddballStub(MacroAssembler* masm) {
     GenerateAddStrings(masm);
   }
 
-  Factory* factory = masm->isolate()->factory();
-
   // Convert odd ball arguments to numbers.
   NearLabel check, done;
-  __ cmp(edx, factory->undefined_value());
+  __ cmp(edx, FACTORY->undefined_value());
   __ j(not_equal, &check);
   if (Token::IsBitOp(op_)) {
     __ xor_(edx, Operand(edx));
   } else {
-    __ mov(edx, Immediate(factory->nan_value()));
+    __ mov(edx, Immediate(FACTORY->nan_value()));
   }
   __ jmp(&done);
   __ bind(&check);
-  __ cmp(eax, factory->undefined_value());
+  __ cmp(eax, FACTORY->undefined_value());
   __ j(not_equal, &done);
   if (Token::IsBitOp(op_)) {
     __ xor_(eax, Operand(eax));
   } else {
-    __ mov(eax, Immediate(factory->nan_value()));
+    __ mov(eax, Immediate(FACTORY->nan_value()));
   }
   __ bind(&done);
 
@@ -4084,7 +4047,12 @@ void JSEntryStub::GenerateBody(MacroAssembler* masm, bool is_construct) {
   __ cmp(Operand::StaticVariable(js_entry_sp), Immediate(0));
   __ j(not_equal, &not_outermost_js);
   __ mov(Operand::StaticVariable(js_entry_sp), ebp);
+  __ push(Immediate(Smi::FromInt(StackFrame::OUTERMOST_JSENTRY_FRAME)));
+  Label cont;
+  __ jmp(&cont);
   __ bind(&not_outermost_js);
+  __ push(Immediate(Smi::FromInt(StackFrame::INNER_JSENTRY_FRAME)));
+  __ bind(&cont);
 #endif
 
   // Call a faked try-block that does the invoke.
@@ -4130,23 +4098,20 @@ void JSEntryStub::GenerateBody(MacroAssembler* masm, bool is_construct) {
   __ call(Operand(edx));
 
   // Unlink this frame from the handler chain.
-  __ pop(Operand::StaticVariable(ExternalReference(
-      Isolate::k_handler_address,
-      masm->isolate())));
-  // Pop next_sp.
-  __ add(Operand(esp), Immediate(StackHandlerConstants::kSize - kPointerSize));
+  __ PopTryHandler();
 
+  __ bind(&exit);
 #ifdef ENABLE_LOGGING_AND_PROFILING
-  // If current EBP value is the same as js_entry_sp value, it means that
-  // the current function is the outermost.
-  __ cmp(ebp, Operand::StaticVariable(js_entry_sp));
+  // Check if the current stack frame is marked as the outermost JS frame.
+  __ pop(ebx);
+  __ cmp(Operand(ebx),
+         Immediate(Smi::FromInt(StackFrame::OUTERMOST_JSENTRY_FRAME)));
   __ j(not_equal, &not_outermost_js_2);
   __ mov(Operand::StaticVariable(js_entry_sp), Immediate(0));
   __ bind(&not_outermost_js_2);
 #endif
 
   // Restore the top frame descriptor from the stack.
-  __ bind(&exit);
   __ pop(Operand::StaticVariable(ExternalReference(
       Isolate::k_c_entry_fp_address,
       masm->isolate())));

@@ -1817,9 +1817,6 @@ void TypeRecordingBinaryOpStub::Generate(MacroAssembler* masm) {
     case TRBinaryOpIC::ODDBALL:
       GenerateOddballStub(masm);
       break;
-    case TRBinaryOpIC::BOTH_STRING:
-      GenerateBothStringStub(masm);
-      break;
     case TRBinaryOpIC::STRING:
       GenerateStringStub(masm);
       break;
@@ -2260,36 +2257,6 @@ void TypeRecordingBinaryOpStub::GenerateStringStub(MacroAssembler* masm) {
 }
 
 
-void TypeRecordingBinaryOpStub::GenerateBothStringStub(MacroAssembler* masm) {
-  Label call_runtime;
-  ASSERT(operands_type_ == TRBinaryOpIC::BOTH_STRING);
-  ASSERT(op_ == Token::ADD);
-  // If both arguments are strings, call the string add stub.
-  // Otherwise, do a transition.
-
-  // Registers containing left and right operands respectively.
-  Register left = r1;
-  Register right = r0;
-
-  // Test if left operand is a string.
-  __ JumpIfSmi(left, &call_runtime);
-  __ CompareObjectType(left, r2, r2, FIRST_NONSTRING_TYPE);
-  __ b(ge, &call_runtime);
-
-  // Test if right operand is a string.
-  __ JumpIfSmi(right, &call_runtime);
-  __ CompareObjectType(right, r2, r2, FIRST_NONSTRING_TYPE);
-  __ b(ge, &call_runtime);
-
-  StringAddStub string_add_stub(NO_STRING_CHECK_IN_STUB);
-  GenerateRegisterArgsPush(masm);
-  __ TailCallStub(&string_add_stub);
-
-  __ bind(&call_runtime);
-  GenerateTypeTransition(masm);
-}
-
-
 void TypeRecordingBinaryOpStub::GenerateInt32Stub(MacroAssembler* masm) {
   ASSERT(operands_type_ == TRBinaryOpIC::INT32);
 
@@ -2440,6 +2407,8 @@ void TypeRecordingBinaryOpStub::GenerateInt32Stub(MacroAssembler* masm) {
         // Save the left value on the stack.
         __ Push(r5, r4);
 
+        Label pop_and_call_runtime;
+
         // Allocate a heap number to store the result.
         heap_number_result = r5;
         GenerateHeapResultAllocation(masm,
@@ -2447,7 +2416,7 @@ void TypeRecordingBinaryOpStub::GenerateInt32Stub(MacroAssembler* masm) {
                                      heap_number_map,
                                      scratch1,
                                      scratch2,
-                                     &call_runtime);
+                                     &pop_and_call_runtime);
 
         // Load the left value from the value saved on the stack.
         __ Pop(r1, r0);
@@ -2458,6 +2427,10 @@ void TypeRecordingBinaryOpStub::GenerateInt32Stub(MacroAssembler* masm) {
         if (FLAG_debug_code) {
           __ stop("Unreachable code.");
         }
+
+        __ bind(&pop_and_call_runtime);
+        __ Drop(2);
+        __ b(&call_runtime);
       }
 
       break;
@@ -3468,11 +3441,20 @@ void JSEntryStub::GenerateBody(MacroAssembler* masm, bool is_construct) {
 
 #ifdef ENABLE_LOGGING_AND_PROFILING
   // If this is the outermost JS call, set js_entry_sp value.
+  Label non_outermost_js;
   ExternalReference js_entry_sp(Isolate::k_js_entry_sp_address, isolate);
   __ mov(r5, Operand(ExternalReference(js_entry_sp)));
   __ ldr(r6, MemOperand(r5));
-  __ cmp(r6, Operand(0, RelocInfo::NONE));
-  __ str(fp, MemOperand(r5), eq);
+  __ cmp(r6, Operand(0));
+  __ b(ne, &non_outermost_js);
+  __ str(fp, MemOperand(r5));
+  __ mov(ip, Operand(Smi::FromInt(StackFrame::OUTERMOST_JSENTRY_FRAME)));
+  Label cont;
+  __ b(&cont);
+  __ bind(&non_outermost_js);
+  __ mov(ip, Operand(Smi::FromInt(StackFrame::INNER_JSENTRY_FRAME)));
+  __ bind(&cont);
+  __ push(ip);
 #endif
 
   // Call a faked try-block that does the invoke.
@@ -3530,27 +3512,22 @@ void JSEntryStub::GenerateBody(MacroAssembler* masm, bool is_construct) {
   __ mov(lr, Operand(pc));
   masm->add(pc, ip, Operand(Code::kHeaderSize - kHeapObjectTag));
 
-  // Unlink this frame from the handler chain. When reading the
-  // address of the next handler, there is no need to use the address
-  // displacement since the current stack pointer (sp) points directly
-  // to the stack handler.
-  __ ldr(r3, MemOperand(sp, StackHandlerConstants::kNextOffset));
-  __ mov(ip, Operand(ExternalReference(Isolate::k_handler_address, isolate)));
-  __ str(r3, MemOperand(ip));
-  // No need to restore registers
-  __ add(sp, sp, Operand(StackHandlerConstants::kSize));
-
-#ifdef ENABLE_LOGGING_AND_PROFILING
-  // If current FP value is the same as js_entry_sp value, it means that
-  // the current function is the outermost.
-  __ mov(r5, Operand(ExternalReference(js_entry_sp)));
-  __ ldr(r6, MemOperand(r5));
-  __ cmp(fp, Operand(r6));
-  __ mov(r6, Operand(0, RelocInfo::NONE), LeaveCC, eq);
-  __ str(r6, MemOperand(r5), eq);
-#endif
+  // Unlink this frame from the handler chain.
+  __ PopTryHandler();
 
   __ bind(&exit);  // r0 holds result
+#ifdef ENABLE_LOGGING_AND_PROFILING
+  // Check if the current stack frame is marked as the outermost JS frame.
+  Label non_outermost_js_2;
+  __ pop(r5);
+  __ cmp(r5, Operand(Smi::FromInt(StackFrame::OUTERMOST_JSENTRY_FRAME)));
+  __ b(ne, &non_outermost_js_2);
+  __ mov(r6, Operand(0));
+  __ mov(r5, Operand(ExternalReference(js_entry_sp)));
+  __ str(r6, MemOperand(r5));
+  __ bind(&non_outermost_js_2);
+#endif
+
   // Restore the top frame descriptors from the stack.
   __ pop(r3);
   __ mov(ip,
@@ -3711,7 +3688,7 @@ void InstanceofStub::Generate(MacroAssembler* masm) {
   __ b(ne, &slow);
 
   // Null is not instance of anything.
-  __ cmp(scratch, Operand(masm->isolate()->factory()->null_value()));
+  __ cmp(scratch, Operand(FACTORY->null_value()));
   __ b(ne, &object_not_null);
   __ mov(r0, Operand(Smi::FromInt(1)));
   __ Ret(HasArgsInRegisters() ? 0 : 2);
@@ -4209,7 +4186,7 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
 
   __ bind(&failure);
   // For failure and exception return null.
-  __ mov(r0, Operand(masm->isolate()->factory()->null_value()));
+  __ mov(r0, Operand(FACTORY->null_value()));
   __ add(sp, sp, Operand(4 * kPointerSize));
   __ Ret();
 
@@ -4280,8 +4257,6 @@ void RegExpConstructResultStub::Generate(MacroAssembler* masm) {
   const int kMaxInlineLength = 100;
   Label slowcase;
   Label done;
-  Factory* factory = masm->isolate()->factory();
-
   __ ldr(r1, MemOperand(sp, kPointerSize * 2));
   STATIC_ASSERT(kSmiTag == 0);
   STATIC_ASSERT(kSmiTagSize == 1);
@@ -4316,7 +4291,7 @@ void RegExpConstructResultStub::Generate(MacroAssembler* masm) {
   // Interleave operations for better latency.
   __ ldr(r2, ContextOperand(cp, Context::GLOBAL_INDEX));
   __ add(r3, r0, Operand(JSRegExpResult::kSize));
-  __ mov(r4, Operand(factory->empty_fixed_array()));
+  __ mov(r4, Operand(FACTORY->empty_fixed_array()));
   __ ldr(r2, FieldMemOperand(r2, GlobalObject::kGlobalContextOffset));
   __ str(r3, FieldMemOperand(r0, JSObject::kElementsOffset));
   __ ldr(r2, ContextOperand(r2, Context::REGEXP_RESULT_MAP_INDEX));
@@ -4337,13 +4312,13 @@ void RegExpConstructResultStub::Generate(MacroAssembler* masm) {
   // r5: Number of elements in array, untagged.
 
   // Set map.
-  __ mov(r2, Operand(factory->fixed_array_map()));
+  __ mov(r2, Operand(FACTORY->fixed_array_map()));
   __ str(r2, FieldMemOperand(r3, HeapObject::kMapOffset));
   // Set FixedArray length.
   __ mov(r6, Operand(r5, LSL, kSmiTagSize));
   __ str(r6, FieldMemOperand(r3, FixedArray::kLengthOffset));
   // Fill contents of fixed-array with the-hole.
-  __ mov(r2, Operand(factory->the_hole_value()));
+  __ mov(r2, Operand(FACTORY->the_hole_value()));
   __ add(r3, r3, Operand(FixedArray::kHeaderSize - kHeapObjectTag));
   // Fill fixed array elements with hole.
   // r0: JSArray, tagged.

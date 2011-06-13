@@ -1398,13 +1398,17 @@ void FullCodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
         // Fall through.
       case ObjectLiteral::Property::COMPUTED:
         if (key->handle()->IsSymbol()) {
-          VisitForAccumulatorValue(value);
-          __ Move(rcx, key->handle());
-          __ movq(rdx, Operand(rsp, 0));
           if (property->emit_store()) {
-            Handle<Code> ic = isolate()->builtins()->StoreIC_Initialize();
+            VisitForAccumulatorValue(value);
+            __ Move(rcx, key->handle());
+            __ movq(rdx, Operand(rsp, 0));
+            Handle<Code> ic = is_strict_mode()
+                ? isolate()->builtins()->StoreIC_Initialize_Strict()
+                : isolate()->builtins()->StoreIC_Initialize();
             EmitCallIC(ic, RelocInfo::CODE_TARGET);
             PrepareForBailoutForId(key->id(), NO_REGISTERS);
+          } else {
+            VisitForEffect(value);
           }
           break;
         }
@@ -2758,7 +2762,7 @@ void FullCodeGenerator::EmitRandomHeapNumber(ZoneList<Expression*>* args) {
   __ movd(xmm1, rcx);
   __ movd(xmm0, rax);
   __ cvtss2sd(xmm1, xmm1);
-  __ xorps(xmm0, xmm1);
+  __ xorpd(xmm0, xmm1);
   __ subsd(xmm0, xmm1);
   __ movsd(FieldOperand(rbx, HeapNumber::kValueOffset), xmm0);
 
@@ -3043,14 +3047,15 @@ void FullCodeGenerator::EmitMathSqrt(ZoneList<Expression*>* args) {
 void FullCodeGenerator::EmitCallFunction(ZoneList<Expression*>* args) {
   ASSERT(args->length() >= 2);
 
-  int arg_count = args->length() - 2;  // 2 ~ receiver and function.
-  for (int i = 0; i < arg_count + 1; i++) {
-    VisitForStackValue(args->at(i));
+  int arg_count = args->length() - 2;  // For receiver and function.
+  VisitForStackValue(args->at(0));  // Receiver.
+  for (int i = 0; i < arg_count; i++) {
+    VisitForStackValue(args->at(i + 1));
   }
-  VisitForAccumulatorValue(args->last());  // Function.
+  VisitForAccumulatorValue(args->at(arg_count + 1));  // Function.
 
-  // InvokeFunction requires the function in rdi. Move it in there.
-  __ movq(rdi, result_register());
+  // InvokeFunction requires function in rdi. Move it in there.
+  if (!result_register().is(rdi)) __ movq(rdi, result_register());
   ParameterCount count(arg_count);
   __ InvokeFunction(rdi, count, CALL_FUNCTION);
   __ movq(rsi, Operand(rbp, StandardFrameConstants::kContextOffset));
@@ -4231,7 +4236,30 @@ void FullCodeGenerator::EmitCallIC(Handle<Code> ic, RelocInfo::Mode mode) {
     default:
       break;
   }
+
   __ call(ic, mode);
+
+  // Crankshaft doesn't need patching of inlined loads and stores.
+  // When compiling the snapshot we need to produce code that works
+  // with and without Crankshaft.
+  if (V8::UseCrankshaft() && !Serializer::enabled()) {
+    return;
+  }
+
+  // If we're calling a (keyed) load or store stub, we have to mark
+  // the call as containing no inlined code so we will not attempt to
+  // patch it.
+  switch (ic->kind()) {
+    case Code::LOAD_IC:
+    case Code::KEYED_LOAD_IC:
+    case Code::STORE_IC:
+    case Code::KEYED_STORE_IC:
+      __ nop();  // Signals no inlined code.
+      break;
+    default:
+      // Do nothing.
+      break;
+  }
 }
 
 
@@ -4252,6 +4280,7 @@ void FullCodeGenerator::EmitCallIC(Handle<Code> ic, JumpPatchSite* patch_site) {
     default:
       break;
   }
+
   __ call(ic, RelocInfo::CODE_TARGET);
   if (patch_site != NULL && patch_site->is_bound()) {
     patch_site->EmitPatchInfo();

@@ -1017,9 +1017,10 @@ void HEnterInlined::PrintDataTo(StringStream* stream) {
 
 HConstant::HConstant(Handle<Object> handle, Representation r)
     : handle_(handle),
+      constant_type_(HType::TypeFromValue(handle)),
       has_int32_value_(false),
-      has_double_value_(false),
       int32_value_(0),
+      has_double_value_(false),
       double_value_(0)  {
   set_representation(r);
   SetFlag(kUseGVN);
@@ -1434,7 +1435,7 @@ HType HPhi::CalculateInferredType() {
 
 
 HType HConstant::CalculateInferredType() {
-  return HType::TypeFromValue(handle_);
+  return constant_type_;
 }
 
 

@@ -117,8 +117,6 @@ class ProgressIndicator(object):
         start = time.time()
         output = case.Run()
         case.duration = (time.time() - start)
-      except BreakNowException:
-        self.terminate = True
       except IOError, e:
         assert self.terminate
         return
@@ -320,12 +318,6 @@ PROGRESS_INDICATORS = {
 # --- F r a m e w o r k ---
 # -------------------------
 
-class BreakNowException(Exception):
-  def __init__(self, value):
-    self.value = value
-  def __str__(self):
-    return repr(self.value)
-
 
 class CommandOutput(object):
 
@@ -387,12 +379,9 @@ class TestCase(object):
 
   def Run(self):
     self.BeforeRun()
-    result = None
+    result = "exception"
     try:
       result = self.RunCommand(self.GetCommand())
-    except:
-      self.terminate = True
-      raise BreakNowException("Used pressed CTRL+C or IO went wrong")
     finally:
       self.AfterRun(result)
     return result
@@ -434,7 +423,7 @@ class TestOutput(object):
              self.output.exit_code != -signal.SIGABRT
 
   def HasTimedOut(self):
-    return self.output.timed_out
+    return self.output.timed_out;
 
   def HasFailed(self):
     execution_failed = self.test.DidFail(self.output)
@@ -462,7 +451,7 @@ def Win32SetErrorMode(mode):
   prev_error_mode = SEM_INVALID_VALUE
   try:
     import ctypes
-    prev_error_mode = ctypes.windll.kernel32.SetErrorMode(mode)
+    prev_error_mode = ctypes.windll.kernel32.SetErrorMode(mode);
   except ImportError:
     pass
   return prev_error_mode
@@ -470,16 +459,16 @@ def Win32SetErrorMode(mode):
 def RunProcess(context, timeout, args, **rest):
   if context.verbose: print "#", " ".join(args)
   popen_args = args
-  prev_error_mode = SEM_INVALID_VALUE
+  prev_error_mode = SEM_INVALID_VALUE;
   if utils.IsWindows():
     popen_args = '"' + subprocess.list2cmdline(args) + '"'
     if context.suppress_dialogs:
       # Try to change the error mode to avoid dialogs on fatal errors. Don't
       # touch any existing error mode flags by merging the existing error mode.
       # See http://blogs.msdn.com/oldnewthing/archive/2004/07/27/198410.aspx.
-      error_mode = SEM_NOGPFAULTERRORBOX
-      prev_error_mode = Win32SetErrorMode(error_mode)
-      Win32SetErrorMode(error_mode | prev_error_mode)
+      error_mode = SEM_NOGPFAULTERRORBOX;
+      prev_error_mode = Win32SetErrorMode(error_mode);
+      Win32SetErrorMode(error_mode | prev_error_mode);
   process = subprocess.Popen(
     shell = utils.IsWindows(),
     args = popen_args,
@@ -527,7 +516,7 @@ def CheckedUnlink(name):
       os.unlink(name)
       return
     except OSError, e:
-      retry_count += 1
+      retry_count += 1;
       time.sleep(retry_count * 0.1)
   PrintError("os.unlink() " + str(e))
 
@@ -713,12 +702,7 @@ class Context(object):
 
 def RunTestCases(cases_to_run, progress, tasks):
   progress = PROGRESS_INDICATORS[progress](cases_to_run)
-  result = 0
-  try:
-    result = progress.Run(tasks)
-  except Exception, e:
-    print "\n", e
-  return result
+  return progress.Run(tasks)
 
 
 def BuildRequirements(context, requirements, mode, scons_flags):
@@ -1355,11 +1339,11 @@ def ShardTests(tests, options):
     print "shard-run not a valid number, should be in [1:shard-count]"
     print "defaulting back to running all tests"
     return tests
-  count = 0
+  count = 0;
   shard = []
   for test in tests:
     if count % options.shard_count == options.shard_run - 1:
-      shard.append(test)
+      shard.append(test);
     count += 1
   return shard
 

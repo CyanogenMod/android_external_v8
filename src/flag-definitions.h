@@ -96,9 +96,6 @@ private:
 //
 #define FLAG FLAG_FULL
 
-// Flags for experimental language features.
-DEFINE_bool(harmony_proxies, false, "enable harmony proxies")
-
 // Flags for Crankshaft.
 #ifdef V8_TARGET_ARCH_MIPS
   DEFINE_bool(crankshaft, false, "use crankshaft")
@@ -222,6 +219,8 @@ DEFINE_bool(use_flow_graph, false, "perform flow-graph based optimizations")
 
 // compilation-cache.cc
 DEFINE_bool(compilation_cache, true, "enable compilation cache")
+
+DEFINE_bool(cache_prototype_transitions, true, "cache prototype transitions")
 
 // data-flow.cc
 DEFINE_bool(loop_peeling, false, "Peel off the first iteration of loops.")

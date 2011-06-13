@@ -71,21 +71,22 @@ void LOsrEntry::MarkSpilledDoubleRegister(int allocation_index,
 
 #ifdef DEBUG
 void LInstruction::VerifyCall() {
-  // Call instructions can use only fixed registers as temporaries and
-  // outputs because all registers are blocked by the calling convention.
-  // Inputs operands must use a fixed register or use-at-start policy or
-  // a non-register policy.
+  // Call instructions can use only fixed registers as
+  // temporaries and outputs because all registers
+  // are blocked by the calling convention.
+  // Inputs must use a fixed register.
   ASSERT(Output() == NULL ||
          LUnallocated::cast(Output())->HasFixedPolicy() ||
          !LUnallocated::cast(Output())->HasRegisterPolicy());
   for (UseIterator it(this); it.HasNext(); it.Advance()) {
-    LUnallocated* operand = LUnallocated::cast(it.Next());
-    ASSERT(operand->HasFixedPolicy() ||
-           operand->IsUsedAtStart());
+    LOperand* operand = it.Next();
+    ASSERT(LUnallocated::cast(operand)->HasFixedPolicy() ||
+           !LUnallocated::cast(operand)->HasRegisterPolicy());
   }
   for (TempIterator it(this); it.HasNext(); it.Advance()) {
-    LUnallocated* operand = LUnallocated::cast(it.Next());
-    ASSERT(operand->HasFixedPolicy() ||!operand->HasRegisterPolicy());
+    LOperand* operand = it.Next();
+    ASSERT(LUnallocated::cast(operand)->HasFixedPolicy() ||
+           !LUnallocated::cast(operand)->HasRegisterPolicy());
   }
 }
 #endif
@@ -299,15 +300,6 @@ void LStoreContextSlot::PrintDataTo(StringStream* stream) {
   InputAt(0)->PrintTo(stream);
   stream->Add("[%d] <- ", slot_index());
   InputAt(1)->PrintTo(stream);
-}
-
-
-void LInvokeFunction::PrintDataTo(StringStream* stream) {
-  stream->Add("= ");
-  InputAt(0)->PrintTo(stream);
-  stream->Add(" ");
-  InputAt(1)->PrintTo(stream);
-  stream->Add(" #%d / ", arity());
 }
 
 
@@ -1230,15 +1222,6 @@ LInstruction* LChunkBuilder::DoCallConstantFunction(
 }
 
 
-LInstruction* LChunkBuilder::DoInvokeFunction(HInvokeFunction* instr) {
-  LOperand* context = UseFixed(instr->context(), esi);
-  LOperand* function = UseFixed(instr->function(), edi);
-  argument_count_ -= instr->argument_count();
-  LInvokeFunction* result = new LInvokeFunction(context, function);
-  return MarkAsCall(DefineFixed(result, eax), instr, CANNOT_DEOPTIMIZE_EAGERLY);
-}
-
-
 LInstruction* LChunkBuilder::DoUnaryMathOperation(HUnaryMathOperation* instr) {
   BuiltinFunctionId op = instr->op();
   if (op == kMathLog) {
@@ -2019,13 +2002,6 @@ LInstruction* LChunkBuilder::DoStoreNamedGeneric(HStoreNamedGeneric* instr) {
 }
 
 
-LInstruction* LChunkBuilder::DoStringAdd(HStringAdd* instr) {
-  LOperand* left = UseOrConstantAtStart(instr->left());
-  LOperand* right = UseOrConstantAtStart(instr->right());
-  return MarkAsCall(DefineFixed(new LStringAdd(left, right), eax), instr);
-}
-
-
 LInstruction* LChunkBuilder::DoStringCharCodeAt(HStringCharCodeAt* instr) {
   LOperand* string = UseRegister(instr->string());
   LOperand* index = UseRegisterOrConstant(instr->index());
@@ -2070,8 +2046,7 @@ LInstruction* LChunkBuilder::DoFunctionLiteral(HFunctionLiteral* instr) {
 
 LInstruction* LChunkBuilder::DoDeleteProperty(HDeleteProperty* instr) {
   LDeleteProperty* result =
-      new LDeleteProperty(UseAtStart(instr->object()),
-                          UseOrConstantAtStart(instr->key()));
+      new LDeleteProperty(Use(instr->object()), UseOrConstant(instr->key()));
   return MarkAsCall(DefineFixed(result, eax), instr);
 }
 

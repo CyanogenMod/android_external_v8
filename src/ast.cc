@@ -413,7 +413,8 @@ bool DebuggerStatement::IsInlineable() const {
 
 
 bool Throw::IsInlineable() const {
-  return true;
+  // TODO(1143): Make functions containing throw inlineable.
+  return false;
 }
 
 

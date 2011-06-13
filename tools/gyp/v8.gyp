@@ -230,8 +230,7 @@
             '../../src',
           ],
           'sources': [
-            '<(SHARED_INTERMEDIATE_DIR)/libraries.cc',
-            '<(SHARED_INTERMEDIATE_DIR)/experimental-libraries.cc',
+            '<(SHARED_INTERMEDIATE_DIR)/libraries-empty.cc',
             '<(INTERMEDIATE_DIR)/snapshot.cc',
           ],
           'actions': [
@@ -260,7 +259,6 @@
           ],
           'sources': [
             '<(SHARED_INTERMEDIATE_DIR)/libraries.cc',
-            '<(SHARED_INTERMEDIATE_DIR)/experimental-libraries.cc',
             '../../src/snapshot-empty.cc',
           ],
           'conditions': [
@@ -724,10 +722,6 @@
               '../../src/regexp.js',
               '../../src/macros.py',
             ],
-	    'experimental_library_files': [
-	      '../../src/proxy.js',
-              '../../src/macros.py',
-	    ],
           },
           'actions': [
             {
@@ -738,6 +732,7 @@
               ],
               'outputs': [
                 '<(SHARED_INTERMEDIATE_DIR)/libraries.cc',
+                '<(SHARED_INTERMEDIATE_DIR)/libraries-empty.cc',
               ],
               'action': [
                 'python',
@@ -745,23 +740,6 @@
                 '<@(_outputs)',
                 'CORE',
                 '<@(library_files)'
-              ],
-            },
-	    {
-              'action_name': 'js2c_experimental',
-              'inputs': [
-                '../../tools/js2c.py',
-                '<@(experimental_library_files)',
-              ],
-              'outputs': [
-                '<(SHARED_INTERMEDIATE_DIR)/experimental-libraries.cc',
-              ],
-              'action': [
-                'python',
-                '../../tools/js2c.py',
-                '<@(_outputs)',
-                'EXPERIMENTAL',
-                '<@(experimental_library_files)'
               ],
             },
           ],

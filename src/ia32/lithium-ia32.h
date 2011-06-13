@@ -39,7 +39,6 @@ namespace internal {
 // Forward declarations.
 class LCodeGen;
 
-
 #define LITHIUM_ALL_INSTRUCTION_LIST(V)         \
   V(ControlInstruction)                         \
   V(Call)                                       \
@@ -107,7 +106,6 @@ class LCodeGen;
   V(InstanceOfAndBranch)                        \
   V(InstanceOfKnownGlobal)                      \
   V(Integer32ToDouble)                          \
-  V(InvokeFunction)                             \
   V(IsNull)                                     \
   V(IsNullAndBranch)                            \
   V(IsObject)                                   \
@@ -156,7 +154,6 @@ class LCodeGen;
   V(StoreKeyedSpecializedArrayElement)          \
   V(StoreNamedField)                            \
   V(StoreNamedGeneric)                          \
-  V(StringAdd)                                  \
   V(StringCharCodeAt)                           \
   V(StringCharFromCode)                         \
   V(StringLength)                               \
@@ -1453,25 +1450,6 @@ class LCallConstantFunction: public LTemplateInstruction<1, 0, 0> {
 };
 
 
-class LInvokeFunction: public LTemplateInstruction<1, 2, 0> {
- public:
-  LInvokeFunction(LOperand* context, LOperand* function) {
-    inputs_[0] = context;
-    inputs_[1] = function;
-  }
-
-  DECLARE_CONCRETE_INSTRUCTION(InvokeFunction, "invoke-function")
-  DECLARE_HYDROGEN_ACCESSOR(InvokeFunction)
-
-  LOperand* context() { return inputs_[0]; }
-  LOperand* function() { return inputs_[1]; }
-
-  virtual void PrintDataTo(StringStream* stream);
-
-  int arity() const { return hydrogen()->argument_count() - 1; }
-};
-
-
 class LCallKeyed: public LTemplateInstruction<1, 2, 0> {
  public:
   LCallKeyed(LOperand* context, LOperand* key) {
@@ -1788,21 +1766,6 @@ class LStoreKeyedGeneric: public LTemplateInstruction<0, 4, 0> {
   LOperand* key() { return inputs_[2]; }
   LOperand* value() { return inputs_[3]; }
   bool strict_mode() { return hydrogen()->strict_mode(); }
-};
-
-
-class LStringAdd: public LTemplateInstruction<1, 2, 0> {
- public:
-  LStringAdd(LOperand* left, LOperand* right) {
-    inputs_[0] = left;
-    inputs_[1] = right;
-  }
-
-  DECLARE_CONCRETE_INSTRUCTION(StringAdd, "string-add")
-  DECLARE_HYDROGEN_ACCESSOR(StringAdd)
-
-  LOperand* left() { return inputs_[0]; }
-  LOperand* right() { return inputs_[1]; }
 };
 
 

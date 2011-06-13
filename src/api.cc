@@ -3709,7 +3709,6 @@ Persistent<Context> v8::Context::New(
 
     // Create the environment.
     env = isolate->bootstrapper()->CreateEnvironment(
-        isolate,
         Utils::OpenHandle(*global_object),
         proxy_template,
         extensions);

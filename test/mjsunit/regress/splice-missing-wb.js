@@ -25,45 +25,32 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef V8_EXTENSIONS_EXPERIMENTAL_COLLATOR_H
-#define V8_EXTENSIONS_EXPERIMENTAL_COLLATOR_H_
+// Flags: --expose-gc
 
-#include <v8.h>
+// Create array large enough to span several page regions.
+var a = new Array(500);
 
-#include "unicode/uversion.h"
+// Fill it with values.
+for (var i = 0; i < a.length; i++) a[i] = {idx:i};
 
-namespace U_ICU_NAMESPACE {
-class Collator;
-class UnicodeString;
-}
+// Force it into oldspace.
+gc();
+gc();
 
-namespace v8 {
-namespace internal {
+// Array should be in old space now. Store young object into array.
+// Region will be marked.
+a[0] = {idx:0};
 
-class Collator {
- public:
-  static v8::Handle<v8::Value> JSCollator(const v8::Arguments& args);
+// Delete elements a[2] .. a[201]. Internally we will use
+// trimming of backing store. a[0] a[1] will be moved to
+// memory location previously occupied by a[200] a[201].
+a.splice(2, 200);
 
-  // Helper methods for various bindings.
+// Force gc and heap verification.
+gc();
 
-  // Unpacks collator object from corresponding JavaScript object.
-  static icu::Collator* UnpackCollator(v8::Handle<v8::Object> obj);
-
-  // Release memory we allocated for the Collator once the JS object that
-  // holds the pointer gets garbage collected.
-  static void DeleteCollator(v8::Persistent<v8::Value> object, void* param);
-
-  // Compare two strings and returns -1, 0 and 1 depending on
-  // whether string1 is smaller than, equal to or larger than string2.
-  static v8::Handle<v8::Value> CollatorCompare(const v8::Arguments& args);
-
- private:
-  Collator() {}
-
-  static v8::Persistent<v8::FunctionTemplate> collator_template_;
-};
-
-} }  // namespace v8::internal
-
-#endif  // V8_EXTENSIONS_EXPERIMENTAL_COLLATOR
-
+// Try accessing a[0].idx. It will segfault if write-barrier was accidentally
+// omitted.
+assertEquals(0, a[0].idx);
+assertEquals(1, a[1].idx);
+assertEquals(202, a[2].idx);
