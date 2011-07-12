@@ -1813,13 +1813,9 @@ void JSObject::LookupCallbackSetterInPrototypes(String* name,
        pt = pt->GetPrototype()) {
     JSObject::cast(pt)->LocalLookupRealNamedProperty(name, result);
     if (result->IsProperty()) {
-      if (result->IsReadOnly()) {
-        result->NotFound();
-        return;
-      }
-      if (result->type() == CALLBACKS) {
-        return;
-      }
+      if (result->type() == CALLBACKS && !result->IsReadOnly()) return;
+      // Found non-callback or read-only callback, stop looking.
+      break;
     }
   }
   result->NotFound();
@@ -3745,6 +3741,8 @@ void Map::TraverseTransitionTree(TraverseCallback callback, void* data) {
         }
       }
       if (!map_done) continue;
+    } else {
+      map_or_index_field = NULL;
     }
     // That was the regular transitions, now for the prototype transitions.
     FixedArray* prototype_transitions =

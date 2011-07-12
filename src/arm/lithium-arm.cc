@@ -1096,7 +1096,7 @@ LInstruction* LChunkBuilder::DoTest(HTest* instr) {
       ASSERT(compare->value()->representation().IsTagged());
 
       LOperand* temp = TempRegister();
-      return new LIsObjectAndBranch(UseRegisterAtStart(compare->value()), temp);
+      return new LIsObjectAndBranch(UseRegister(compare->value()), temp);
     } else if (v->IsCompareJSObjectEq()) {
       HCompareJSObjectEq* compare = HCompareJSObjectEq::cast(v);
       return new LCmpJSObjectEqAndBranch(UseRegisterAtStart(compare->left()),
@@ -2010,6 +2010,10 @@ LInstruction* LChunkBuilder::DoParameter(HParameter* instr) {
 
 LInstruction* LChunkBuilder::DoUnknownOSRValue(HUnknownOSRValue* instr) {
   int spill_index = chunk()->GetNextSpillIndex(false);  // Not double-width.
+  if (spill_index > LUnallocated::kMaxFixedIndex) {
+    Abort("Too many spill slots needed for OSR");
+    spill_index = 0;
+  }
   return DefineAsSpilled(new LUnknownOSRValue, spill_index);
 }
 

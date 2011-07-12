@@ -839,6 +839,8 @@ void LCodeGen::DoModI(LModI* instr) {
     if (instr->hydrogen()->CheckFlag(HValue::kBailoutOnMinusZero)) {
       __ b(ne, &done);
       DeoptimizeIf(al, instr->environment());
+    } else {
+      __ b(&done);
     }
     __ bind(&positive_dividend);
     __ and_(dividend, dividend, Operand(divisor - 1));
@@ -3560,6 +3562,7 @@ void LCodeGen::DoSmiUntag(LSmiUntag* instr) {
 
 void LCodeGen::EmitNumberUntagD(Register input_reg,
                                 DoubleRegister result_reg,
+                                bool deoptimize_on_undefined,
                                 LEnvironment* env) {
   Register scratch = scratch0();
   SwVfpRegister flt_scratch = s0;
@@ -3575,20 +3578,25 @@ void LCodeGen::EmitNumberUntagD(Register input_reg,
   __ ldr(scratch, FieldMemOperand(input_reg, HeapObject::kMapOffset));
   __ LoadRoot(ip, Heap::kHeapNumberMapRootIndex);
   __ cmp(scratch, Operand(ip));
-  __ b(eq, &heap_number);
+  if (deoptimize_on_undefined) {
+    DeoptimizeIf(ne, env);
+  } else {
+    Label heap_number;
+    __ b(eq, &heap_number);
 
-  __ LoadRoot(ip, Heap::kUndefinedValueRootIndex);
-  __ cmp(input_reg, Operand(ip));
-  DeoptimizeIf(ne, env);
+    __ LoadRoot(ip, Heap::kUndefinedValueRootIndex);
+    __ cmp(input_reg, Operand(ip));
+    DeoptimizeIf(ne, env);
 
-  // Convert undefined to NaN.
-  __ LoadRoot(ip, Heap::kNanValueRootIndex);
-  __ sub(ip, ip, Operand(kHeapObjectTag));
-  __ vldr(result_reg, ip, HeapNumber::kValueOffset);
-  __ jmp(&done);
+    // Convert undefined to NaN.
+    __ LoadRoot(ip, Heap::kNanValueRootIndex);
+    __ sub(ip, ip, Operand(kHeapObjectTag));
+    __ vldr(result_reg, ip, HeapNumber::kValueOffset);
+    __ jmp(&done);
 
+    __ bind(&heap_number);
+  }
   // Heap number to double register conversion.
-  __ bind(&heap_number);
   __ sub(ip, input_reg, Operand(kHeapObjectTag));
   __ vldr(result_reg, ip, HeapNumber::kValueOffset);
   __ jmp(&done);
@@ -3717,7 +3725,9 @@ void LCodeGen::DoNumberUntagD(LNumberUntagD* instr) {
   Register input_reg = ToRegister(input);
   DoubleRegister result_reg = ToDoubleRegister(result);
 
-  EmitNumberUntagD(input_reg, result_reg, instr->environment());
+  EmitNumberUntagD(input_reg, result_reg,
+                   instr->hydrogen()->deoptimize_on_undefined(),
+                   instr->environment());
 }
 
 
