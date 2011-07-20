@@ -67,6 +67,8 @@ LOCAL_CFLAGS += \
 	-fno-exceptions \
 	-fvisibility=hidden \
 	-DENABLE_DEBUGGER_SUPPORT \
+	-DENABLE_LOGGING_AND_PROFILING \
+	-DENABLE_VMSTATE_TRACKING \
 	-DV8_NATIVE_REGEXP
 
 ifeq ($(TARGET_ARCH),arm)
