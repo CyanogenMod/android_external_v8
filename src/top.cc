@@ -47,6 +47,10 @@ namespace internal {
 
 ThreadLocalTop::ThreadLocalTop() {
   InitializeInternal();
+  // This flag may be set using v8::V8::IgnoreOutOfMemoryException()
+  // before an isolate is initialized. The initialize methods below do
+  // not touch it to preserve its value.
+  ignore_out_of_memory_ = false;
 }
 
 
@@ -327,6 +331,7 @@ void Isolate::PrintStack() {
     incomplete_message_ = &accumulator;
     PrintStack(&accumulator);
     accumulator.OutputToStdOut();
+    InitializeLoggingAndCounters();
     accumulator.Log();
     incomplete_message_ = NULL;
     stack_trace_nesting_level_ = 0;
@@ -947,11 +952,9 @@ Handle<Context> Isolate::GetCallingGlobalContext() {
 
 
 char* Isolate::ArchiveThread(char* to) {
-#ifdef ENABLE_LOGGING_AND_PROFILING
   if (RuntimeProfiler::IsEnabled() && current_vm_state() == JS) {
     RuntimeProfiler::IsolateExitedJS(this);
   }
-#endif
   memcpy(to, reinterpret_cast<char*>(thread_local_top()),
          sizeof(ThreadLocalTop));
   InitializeThreadLocal();
@@ -971,11 +974,9 @@ char* Isolate::RestoreThread(char* from) {
   thread_local_top()->simulator_ = Simulator::current(this);
 #endif
 #endif
-#ifdef ENABLE_LOGGING_AND_PROFILING
   if (RuntimeProfiler::IsEnabled() && current_vm_state() == JS) {
     RuntimeProfiler::IsolateEnteredJS(this);
   }
-#endif
   return from + sizeof(ThreadLocalTop);
 }
 
