@@ -31,7 +31,7 @@ include $(CLEAR_VARS)
 # TODO: remove the check when the v8 build is fixed for x86
 ifeq ($(TARGET_ARCH),arm)
     ifeq ($(ARCH_ARM_HAVE_ARMV7A),true)
-    ifndef ($(ARCH_ARM_HAVE_ARMV7A_bug),true)
+    ifndef ($(ARCH_ARM_HAVE_ARMV7A_BUG),true)
         ENABLE_V8_SNAPSHOT = true
     endif
     endif
