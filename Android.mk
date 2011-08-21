@@ -30,12 +30,12 @@ include $(CLEAR_VARS)
 # Build libv8 and v8shell
 # TODO: remove the check when the v8 build is fixed for x86
 ifeq ($(TARGET_ARCH),arm)
-    ifeq ($(ARCH_ARM_HAVE_ARMV7A),true)
     ifndef ($(ARCH_ARM_HAVE_ARMV7A_BUG),true)
+    ifeq ($(ARCH_ARM_HAVE_ARMV7A),true)
         ENABLE_V8_SNAPSHOT = true
     endif
-    endif
     include $(BASE_PATH)/Android.mksnapshot.mk
+    endif
     include $(BASE_PATH)/Android.libv8.mk
     include $(BASE_PATH)/Android.v8shell.mk
 endif
