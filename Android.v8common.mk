@@ -73,7 +73,7 @@ V8_LOCAL_SRC_FILES := \
 	src/runtime-profiler.cc \
 	src/safepoint-table.cc \
 	src/scanner.cc \
-	src/scanner-base.cc \
+	src/scanner-character-streams.cc \
 	src/scopeinfo.cc \
 	src/scopes.cc \
 	src/serialize.cc \

@@ -27,8 +27,9 @@
 
 #include <stdarg.h>
 #include <math.h>
+#include <limits>
 
-#include "platform.h"
+#include "globals.h"
 #include "utils.h"
 #include "strtod.h"
 #include "bignum.h"

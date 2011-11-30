@@ -28,6 +28,35 @@
 #ifndef V8_GLOBALS_H_
 #define V8_GLOBALS_H_
 
+// Define V8_INFINITY
+#define V8_INFINITY INFINITY
+
+// GCC specific stuff
+#ifdef __GNUC__
+
+#define __GNUC_VERSION_FOR_INFTY__ (__GNUC__ * 10000 + __GNUC_MINOR__ * 100)
+
+// Unfortunately, the INFINITY macro cannot be used with the '-pedantic'
+// warning flag and certain versions of GCC due to a bug:
+// http://gcc.gnu.org/bugzilla/show_bug.cgi?id=11931
+// For now, we use the more involved template-based version from <limits>, but
+// only when compiling with GCC versions affected by the bug (2.96.x - 4.0.x)
+// __GNUC_PREREQ is not defined in GCC for Mac OS X, so we define our own macro
+#if __GNUC_VERSION_FOR_INFTY__ >= 29600 && __GNUC_VERSION_FOR_INFTY__ < 40100
+#include <limits>
+#undef V8_INFINITY
+#define V8_INFINITY std::numeric_limits<double>::infinity()
+#endif
+#undef __GNUC_VERSION_FOR_INFTY__
+
+#endif  // __GNUC__
+
+#ifdef _MSC_VER
+#undef V8_INFINITY
+#define V8_INFINITY HUGE_VAL
+#endif
+
+
 #include "../include/v8stdint.h"
 
 namespace v8 {
@@ -225,10 +254,6 @@ const int kBinary32MaxExponent  = 0xFE;
 const int kBinary32MinExponent  = 0x01;
 const int kBinary32MantissaBits = 23;
 const int kBinary32ExponentShift = 23;
-
-// Quiet NaNs have bits 51 to 62 set, possibly the sign bit, and no
-// other bits set.
-const uint64_t kQuietNaNMask = static_cast<uint64_t>(0xfff) << 51;
 
 // ASCII/UC16 constants
 // Code-point values in Unicode 4.0 are 21 bits wide.

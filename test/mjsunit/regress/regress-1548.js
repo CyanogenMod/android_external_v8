@@ -25,9 +25,24 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Flags: --expose-gc --max-new-space-size=1024
+// Test that the caller and arguments objects are not available on native
+// functions.
 
-eval("function Node() { this.a = 1; this.a = 3; }");
-new Node;
-for (var i = 0; i < 4; ++i) gc();
-for (var i = 0; i < 100000; ++i) new Node;
+function testfn(f) { return [1].map(f)[0]; }
+function foo() { return [].map.caller; }
+assertEquals(null, testfn(foo));
+
+// Try to delete the caller property (to make sure that we can't get to the
+// caller accessor on the prototype.
+delete Array.prototype.map.caller;
+assertEquals(null, testfn(foo));
+
+// Redo tests with arguments object.
+function testarguments(f) { return [1].map(f)[0]; }
+function bar() { return [].map.arguments; }
+assertEquals(null, testfn(bar));
+
+// Try to delete the arguments property (to make sure that we can't get to the
+// caller accessor on the prototype.
+delete Array.prototype.map.arguments;
+assertEquals(null, testarguments(bar));

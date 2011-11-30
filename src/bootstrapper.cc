@@ -350,7 +350,14 @@ static Handle<JSFunction> InstallFunction(Handle<JSObject> target,
                                       prototype,
                                       call_code,
                                       is_ecma_native);
-  SetLocalPropertyNoThrow(target, symbol, function, DONT_ENUM);
+  PropertyAttributes attributes;
+  if (target->IsJSBuiltinsObject()) {
+    attributes =
+        static_cast<PropertyAttributes>(DONT_ENUM | DONT_DELETE | READ_ONLY);
+  } else {
+    attributes = DONT_ENUM;
+  }
+  SetLocalPropertyNoThrow(target, symbol, function, attributes);
   if (is_ecma_native) {
     function->shared()->set_instance_class_name(*symbol);
   }
@@ -1060,7 +1067,7 @@ void Genesis::InitializeGlobal(Handle<GlobalObject> inner_global,
     Handle<Map> new_map = factory->CopyMapDropTransitions(old_map);
     new_map->set_pre_allocated_property_fields(2);
     Handle<JSObject> result = factory->NewJSObjectFromMap(new_map);
-    new_map->set_elements_kind(JSObject::NON_STRICT_ARGUMENTS_ELEMENTS);
+    new_map->set_elements_kind(NON_STRICT_ARGUMENTS_ELEMENTS);
     // Set up a well-formed parameter map to make assertions happy.
     Handle<FixedArray> elements = factory->NewFixedArray(2);
     elements->set_map(heap->non_strict_arguments_elements_map());
@@ -1677,7 +1684,6 @@ bool Genesis::InstallNatives() {
     global_context()->set_regexp_result_map(*initial_map);
   }
 
-
 #ifdef DEBUG
   builtins->Verify();
 #endif
@@ -2056,7 +2062,7 @@ void Genesis::TransferNamedProperties(Handle<JSObject> from,
           break;
         }
         case MAP_TRANSITION:
-        case EXTERNAL_ARRAY_TRANSITION:
+        case ELEMENTS_TRANSITION:
         case CONSTANT_TRANSITION:
         case NULL_DESCRIPTOR:
           // Ignore non-properties.
