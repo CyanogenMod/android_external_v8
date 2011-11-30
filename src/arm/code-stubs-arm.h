@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -71,22 +71,108 @@ class ToBooleanStub: public CodeStub {
 };
 
 
-class TypeRecordingBinaryOpStub: public CodeStub {
+class UnaryOpStub: public CodeStub {
  public:
-  TypeRecordingBinaryOpStub(Token::Value op, OverwriteMode mode)
+  UnaryOpStub(Token::Value op, UnaryOverwriteMode mode)
       : op_(op),
         mode_(mode),
-        operands_type_(TRBinaryOpIC::UNINITIALIZED),
-        result_type_(TRBinaryOpIC::UNINITIALIZED),
+        operand_type_(UnaryOpIC::UNINITIALIZED),
+        name_(NULL) {
+  }
+
+  UnaryOpStub(
+      int key,
+      UnaryOpIC::TypeInfo operand_type)
+      : op_(OpBits::decode(key)),
+        mode_(ModeBits::decode(key)),
+        operand_type_(operand_type),
+        name_(NULL) {
+  }
+
+ private:
+  Token::Value op_;
+  UnaryOverwriteMode mode_;
+
+  // Operand type information determined at runtime.
+  UnaryOpIC::TypeInfo operand_type_;
+
+  char* name_;
+
+  const char* GetName();
+
+#ifdef DEBUG
+  void Print() {
+    PrintF("UnaryOpStub %d (op %s), "
+           "(mode %d, runtime_type_info %s)\n",
+           MinorKey(),
+           Token::String(op_),
+           static_cast<int>(mode_),
+           UnaryOpIC::GetName(operand_type_));
+  }
+#endif
+
+  class ModeBits: public BitField<UnaryOverwriteMode, 0, 1> {};
+  class OpBits: public BitField<Token::Value, 1, 7> {};
+  class OperandTypeInfoBits: public BitField<UnaryOpIC::TypeInfo, 8, 3> {};
+
+  Major MajorKey() { return UnaryOp; }
+  int MinorKey() {
+    return ModeBits::encode(mode_)
+           | OpBits::encode(op_)
+           | OperandTypeInfoBits::encode(operand_type_);
+  }
+
+  // Note: A lot of the helper functions below will vanish when we use virtual
+  // function instead of switch more often.
+  void Generate(MacroAssembler* masm);
+
+  void GenerateTypeTransition(MacroAssembler* masm);
+
+  void GenerateSmiStub(MacroAssembler* masm);
+  void GenerateSmiStubSub(MacroAssembler* masm);
+  void GenerateSmiStubBitNot(MacroAssembler* masm);
+  void GenerateSmiCodeSub(MacroAssembler* masm, Label* non_smi, Label* slow);
+  void GenerateSmiCodeBitNot(MacroAssembler* masm, Label* slow);
+
+  void GenerateHeapNumberStub(MacroAssembler* masm);
+  void GenerateHeapNumberStubSub(MacroAssembler* masm);
+  void GenerateHeapNumberStubBitNot(MacroAssembler* masm);
+  void GenerateHeapNumberCodeSub(MacroAssembler* masm, Label* slow);
+  void GenerateHeapNumberCodeBitNot(MacroAssembler* masm, Label* slow);
+
+  void GenerateGenericStub(MacroAssembler* masm);
+  void GenerateGenericStubSub(MacroAssembler* masm);
+  void GenerateGenericStubBitNot(MacroAssembler* masm);
+  void GenerateGenericCodeFallback(MacroAssembler* masm);
+
+  virtual int GetCodeKind() { return Code::UNARY_OP_IC; }
+
+  virtual InlineCacheState GetICState() {
+    return UnaryOpIC::ToState(operand_type_);
+  }
+
+  virtual void FinishCode(Code* code) {
+    code->set_unary_op_type(operand_type_);
+  }
+};
+
+
+class BinaryOpStub: public CodeStub {
+ public:
+  BinaryOpStub(Token::Value op, OverwriteMode mode)
+      : op_(op),
+        mode_(mode),
+        operands_type_(BinaryOpIC::UNINITIALIZED),
+        result_type_(BinaryOpIC::UNINITIALIZED),
         name_(NULL) {
     use_vfp3_ = CpuFeatures::IsSupported(VFP3);
     ASSERT(OpBits::is_valid(Token::NUM_TOKENS));
   }
 
-  TypeRecordingBinaryOpStub(
+  BinaryOpStub(
       int key,
-      TRBinaryOpIC::TypeInfo operands_type,
-      TRBinaryOpIC::TypeInfo result_type = TRBinaryOpIC::UNINITIALIZED)
+      BinaryOpIC::TypeInfo operands_type,
+      BinaryOpIC::TypeInfo result_type = BinaryOpIC::UNINITIALIZED)
       : op_(OpBits::decode(key)),
         mode_(ModeBits::decode(key)),
         use_vfp3_(VFP3Bits::decode(key)),
@@ -105,8 +191,8 @@ class TypeRecordingBinaryOpStub: public CodeStub {
   bool use_vfp3_;
 
   // Operand type information determined at runtime.
-  TRBinaryOpIC::TypeInfo operands_type_;
-  TRBinaryOpIC::TypeInfo result_type_;
+  BinaryOpIC::TypeInfo operands_type_;
+  BinaryOpIC::TypeInfo result_type_;
 
   char* name_;
 
@@ -114,12 +200,12 @@ class TypeRecordingBinaryOpStub: public CodeStub {
 
 #ifdef DEBUG
   void Print() {
-    PrintF("TypeRecordingBinaryOpStub %d (op %s), "
+    PrintF("BinaryOpStub %d (op %s), "
            "(mode %d, runtime_type_info %s)\n",
            MinorKey(),
            Token::String(op_),
            static_cast<int>(mode_),
-           TRBinaryOpIC::GetName(operands_type_));
+           BinaryOpIC::GetName(operands_type_));
   }
 #endif
 
@@ -127,10 +213,10 @@ class TypeRecordingBinaryOpStub: public CodeStub {
   class ModeBits: public BitField<OverwriteMode, 0, 2> {};
   class OpBits: public BitField<Token::Value, 2, 7> {};
   class VFP3Bits: public BitField<bool, 9, 1> {};
-  class OperandTypeInfoBits: public BitField<TRBinaryOpIC::TypeInfo, 10, 3> {};
-  class ResultTypeInfoBits: public BitField<TRBinaryOpIC::TypeInfo, 13, 3> {};
+  class OperandTypeInfoBits: public BitField<BinaryOpIC::TypeInfo, 10, 3> {};
+  class ResultTypeInfoBits: public BitField<BinaryOpIC::TypeInfo, 13, 3> {};
 
-  Major MajorKey() { return TypeRecordingBinaryOp; }
+  Major MajorKey() { return BinaryOp; }
   int MinorKey() {
     return OpBits::encode(op_)
            | ModeBits::encode(mode_)
@@ -158,6 +244,7 @@ class TypeRecordingBinaryOpStub: public CodeStub {
   void GenerateHeapNumberStub(MacroAssembler* masm);
   void GenerateOddballStub(MacroAssembler* masm);
   void GenerateStringStub(MacroAssembler* masm);
+  void GenerateBothStringStub(MacroAssembler* masm);
   void GenerateGenericStub(MacroAssembler* masm);
   void GenerateAddStrings(MacroAssembler* masm);
   void GenerateCallRuntime(MacroAssembler* masm);
@@ -172,15 +259,15 @@ class TypeRecordingBinaryOpStub: public CodeStub {
   void GenerateTypeTransition(MacroAssembler* masm);
   void GenerateTypeTransitionWithSavedArgs(MacroAssembler* masm);
 
-  virtual int GetCodeKind() { return Code::TYPE_RECORDING_BINARY_OP_IC; }
+  virtual int GetCodeKind() { return Code::BINARY_OP_IC; }
 
   virtual InlineCacheState GetICState() {
-    return TRBinaryOpIC::ToState(operands_type_);
+    return BinaryOpIC::ToState(operands_type_);
   }
 
   virtual void FinishCode(Code* code) {
-    code->set_type_recording_binary_op_type(operands_type_);
-    code->set_type_recording_binary_op_result_type(result_type_);
+    code->set_binary_op_type(operands_type_);
+    code->set_binary_op_result_type(result_type_);
   }
 
   friend class CodeGenerator;
@@ -240,8 +327,7 @@ class StringCompareStub: public CodeStub {
  public:
   StringCompareStub() { }
 
-  // Compare two flat ASCII strings and returns result in r0.
-  // Does not use the stack.
+  // Compares two flat ASCII strings and returns result in r0.
   static void GenerateCompareFlatAsciiStrings(MacroAssembler* masm,
                                               Register left,
                                               Register right,
@@ -250,11 +336,27 @@ class StringCompareStub: public CodeStub {
                                               Register scratch3,
                                               Register scratch4);
 
- private:
-  Major MajorKey() { return StringCompare; }
-  int MinorKey() { return 0; }
+  // Compares two flat ASCII strings for equality and returns result
+  // in r0.
+  static void GenerateFlatAsciiStringEquals(MacroAssembler* masm,
+                                            Register left,
+                                            Register right,
+                                            Register scratch1,
+                                            Register scratch2,
+                                            Register scratch3);
 
-  void Generate(MacroAssembler* masm);
+ private:
+  virtual Major MajorKey() { return StringCompare; }
+  virtual int MinorKey() { return 0; }
+  virtual void Generate(MacroAssembler* masm);
+
+  static void GenerateAsciiCharsCompareLoop(MacroAssembler* masm,
+                                            Register left,
+                                            Register right,
+                                            Register length,
+                                            Register scratch1,
+                                            Register scratch2,
+                                            Label* chars_not_equal);
 };
 
 
@@ -364,6 +466,205 @@ class DirectCEntryStub: public CodeStub {
   bool NeedsImmovableCode() { return true; }
 
   const char* GetName() { return "DirectCEntryStub"; }
+};
+
+
+class FloatingPointHelper : public AllStatic {
+ public:
+
+  enum Destination {
+    kVFPRegisters,
+    kCoreRegisters
+  };
+
+
+  // Loads smis from r0 and r1 (right and left in binary operations) into
+  // floating point registers. Depending on the destination the values ends up
+  // either d7 and d6 or in r2/r3 and r0/r1 respectively. If the destination is
+  // floating point registers VFP3 must be supported. If core registers are
+  // requested when VFP3 is supported d6 and d7 will be scratched.
+  static void LoadSmis(MacroAssembler* masm,
+                       Destination destination,
+                       Register scratch1,
+                       Register scratch2);
+
+  // Loads objects from r0 and r1 (right and left in binary operations) into
+  // floating point registers. Depending on the destination the values ends up
+  // either d7 and d6 or in r2/r3 and r0/r1 respectively. If the destination is
+  // floating point registers VFP3 must be supported. If core registers are
+  // requested when VFP3 is supported d6 and d7 will still be scratched. If
+  // either r0 or r1 is not a number (not smi and not heap number object) the
+  // not_number label is jumped to with r0 and r1 intact.
+  static void LoadOperands(MacroAssembler* masm,
+                           FloatingPointHelper::Destination destination,
+                           Register heap_number_map,
+                           Register scratch1,
+                           Register scratch2,
+                           Label* not_number);
+
+  // Convert the smi or heap number in object to an int32 using the rules
+  // for ToInt32 as described in ECMAScript 9.5.: the value is truncated
+  // and brought into the range -2^31 .. +2^31 - 1.
+  static void ConvertNumberToInt32(MacroAssembler* masm,
+                                   Register object,
+                                   Register dst,
+                                   Register heap_number_map,
+                                   Register scratch1,
+                                   Register scratch2,
+                                   Register scratch3,
+                                   DwVfpRegister double_scratch,
+                                   Label* not_int32);
+
+  // Converts the integer (untagged smi) in |int_scratch| to a double, storing
+  // the result either in |double_dst| or |dst2:dst1|, depending on
+  // |destination|.
+  // Warning: The value in |int_scratch| will be changed in the process!
+  static void ConvertIntToDouble(MacroAssembler* masm,
+                                 Register int_scratch,
+                                 Destination destination,
+                                 DwVfpRegister double_dst,
+                                 Register dst1,
+                                 Register dst2,
+                                 Register scratch2,
+                                 SwVfpRegister single_scratch);
+
+  // Load the number from object into double_dst in the double format.
+  // Control will jump to not_int32 if the value cannot be exactly represented
+  // by a 32-bit integer.
+  // Floating point value in the 32-bit integer range that are not exact integer
+  // won't be loaded.
+  static void LoadNumberAsInt32Double(MacroAssembler* masm,
+                                      Register object,
+                                      Destination destination,
+                                      DwVfpRegister double_dst,
+                                      Register dst1,
+                                      Register dst2,
+                                      Register heap_number_map,
+                                      Register scratch1,
+                                      Register scratch2,
+                                      SwVfpRegister single_scratch,
+                                      Label* not_int32);
+
+  // Loads the number from object into dst as a 32-bit integer.
+  // Control will jump to not_int32 if the object cannot be exactly represented
+  // by a 32-bit integer.
+  // Floating point value in the 32-bit integer range that are not exact integer
+  // won't be converted.
+  // scratch3 is not used when VFP3 is supported.
+  static void LoadNumberAsInt32(MacroAssembler* masm,
+                                Register object,
+                                Register dst,
+                                Register heap_number_map,
+                                Register scratch1,
+                                Register scratch2,
+                                Register scratch3,
+                                DwVfpRegister double_scratch,
+                                Label* not_int32);
+
+  // Generate non VFP3 code to check if a double can be exactly represented by a
+  // 32-bit integer. This does not check for 0 or -0, which need
+  // to be checked for separately.
+  // Control jumps to not_int32 if the value is not a 32-bit integer, and falls
+  // through otherwise.
+  // src1 and src2 will be cloberred.
+  //
+  // Expected input:
+  // - src1: higher (exponent) part of the double value.
+  // - src2: lower (mantissa) part of the double value.
+  // Output status:
+  // - dst: 32 higher bits of the mantissa. (mantissa[51:20])
+  // - src2: contains 1.
+  // - other registers are clobbered.
+  static void DoubleIs32BitInteger(MacroAssembler* masm,
+                                   Register src1,
+                                   Register src2,
+                                   Register dst,
+                                   Register scratch,
+                                   Label* not_int32);
+
+  // Generates code to call a C function to do a double operation using core
+  // registers. (Used when VFP3 is not supported.)
+  // This code never falls through, but returns with a heap number containing
+  // the result in r0.
+  // Register heapnumber_result must be a heap number in which the
+  // result of the operation will be stored.
+  // Requires the following layout on entry:
+  // r0: Left value (least significant part of mantissa).
+  // r1: Left value (sign, exponent, top of mantissa).
+  // r2: Right value (least significant part of mantissa).
+  // r3: Right value (sign, exponent, top of mantissa).
+  static void CallCCodeForDoubleOperation(MacroAssembler* masm,
+                                          Token::Value op,
+                                          Register heap_number_result,
+                                          Register scratch);
+
+ private:
+  static void LoadNumber(MacroAssembler* masm,
+                         FloatingPointHelper::Destination destination,
+                         Register object,
+                         DwVfpRegister dst,
+                         Register dst1,
+                         Register dst2,
+                         Register heap_number_map,
+                         Register scratch1,
+                         Register scratch2,
+                         Label* not_number);
+};
+
+
+class StringDictionaryLookupStub: public CodeStub {
+ public:
+  enum LookupMode { POSITIVE_LOOKUP, NEGATIVE_LOOKUP };
+
+  explicit StringDictionaryLookupStub(LookupMode mode) : mode_(mode) { }
+
+  void Generate(MacroAssembler* masm);
+
+  MUST_USE_RESULT static MaybeObject* GenerateNegativeLookup(
+      MacroAssembler* masm,
+      Label* miss,
+      Label* done,
+      Register receiver,
+      Register properties,
+      String* name,
+      Register scratch0);
+
+  static void GeneratePositiveLookup(MacroAssembler* masm,
+                                     Label* miss,
+                                     Label* done,
+                                     Register elements,
+                                     Register name,
+                                     Register r0,
+                                     Register r1);
+
+ private:
+  static const int kInlinedProbes = 4;
+  static const int kTotalProbes = 20;
+
+  static const int kCapacityOffset =
+      StringDictionary::kHeaderSize +
+      StringDictionary::kCapacityIndex * kPointerSize;
+
+  static const int kElementsStartOffset =
+      StringDictionary::kHeaderSize +
+      StringDictionary::kElementsStartIndex * kPointerSize;
+
+
+#ifdef DEBUG
+  void Print() {
+    PrintF("StringDictionaryLookupStub\n");
+  }
+#endif
+
+  Major MajorKey() { return StringDictionaryNegativeLookup; }
+
+  int MinorKey() {
+    return LookupModeBits::encode(mode_);
+  }
+
+  class LookupModeBits: public BitField<LookupMode, 0, 1> {};
+
+  LookupMode mode_;
 };
 
 

@@ -56,6 +56,7 @@ function InstallFunctions(object, attributes, functions) {
     %FunctionSetName(f, key);
     %FunctionRemovePrototype(f);
     %SetProperty(object, key, f, attributes);
+    %SetES5Flag(f);
   }
   %ToFastProperties(object);
 }
@@ -196,12 +197,20 @@ $Object.prototype.constructor = $Object;
 
 // ECMA-262 - 15.2.4.2
 function ObjectToString() {
+  if (IS_UNDEFINED(this) && !IS_UNDETECTABLE(this)) {
+    return '[object Undefined]';
+  }
+  if (IS_NULL(this)) return  '[object Null]';
   return "[object " + %_ClassOf(ToObject(this)) + "]";
 }
 
 
 // ECMA-262 - 15.2.4.3
 function ObjectToLocaleString() {
+  if (IS_NULL_OR_UNDEFINED(this) && !IS_UNDETECTABLE(this)) {
+    throw MakeTypeError("called_on_null_or_undefined",
+                        ["Object.prototype.toLocaleString"]);
+  }
   return this.toString();
 }
 
@@ -214,12 +223,16 @@ function ObjectValueOf() {
 
 // ECMA-262 - 15.2.4.5
 function ObjectHasOwnProperty(V) {
-  return %HasLocalProperty(ToObject(this), ToString(V));
+  return %HasLocalProperty(TO_OBJECT_INLINE(this), TO_STRING_INLINE(V));
 }
 
 
 // ECMA-262 - 15.2.4.6
 function ObjectIsPrototypeOf(V) {
+  if (IS_NULL_OR_UNDEFINED(this) && !IS_UNDETECTABLE(this)) {
+    throw MakeTypeError("called_on_null_or_undefined",
+                        ["Object.prototype.isPrototypeOf"]);
+  }
   if (!IS_SPEC_OBJECT(V)) return false;
   return %IsInPrototypeChain(this, V);
 }
@@ -313,18 +326,18 @@ function IsInconsistentDescriptor(desc) {
 // ES5 8.10.4
 function FromPropertyDescriptor(desc) {
   if (IS_UNDEFINED(desc)) return desc;
-  var obj = new $Object();
+
   if (IsDataDescriptor(desc)) {
-    obj.value = desc.getValue();
-    obj.writable = desc.isWritable();
+    return { value: desc.getValue(),
+             writable: desc.isWritable(),
+             enumerable: desc.isEnumerable(),
+             configurable: desc.isConfigurable() };
   }
-  if (IsAccessorDescriptor(desc)) {
-    obj.get = desc.getGet();
-    obj.set = desc.getSet();
-  }
-  obj.enumerable = desc.isEnumerable();
-  obj.configurable = desc.isConfigurable();
-  return obj;
+  // Must be an AccessorDescriptor then. We never return a generic descriptor.
+  return { get: desc.getGet(),
+           set: desc.getSet(),
+           enumerable: desc.isEnumerable(),
+           configurable: desc.isConfigurable() };
 }
 
 // ES5 8.10.5.
@@ -391,6 +404,7 @@ function PropertyDescriptor() {
 }
 
 PropertyDescriptor.prototype.__proto__ = null;
+
 PropertyDescriptor.prototype.toString = function() {
   return "[object PropertyDescriptor]";
 };
@@ -1050,6 +1064,10 @@ function NumberToString(radix) {
 
 // ECMA-262 section 15.7.4.3
 function NumberToLocaleString() {
+  if (IS_NULL_OR_UNDEFINED(this) && !IS_UNDETECTABLE(this)) {
+    throw MakeTypeError("called_on_null_or_undefined",
+                        ["Number.prototype.toLocaleString"]);
+  }
   return this.toString();
 }
 
@@ -1070,6 +1088,10 @@ function NumberToFixed(fractionDigits) {
   if (f < 0 || f > 20) {
     throw new $RangeError("toFixed() digits argument must be between 0 and 20");
   }
+  if (IS_NULL_OR_UNDEFINED(this) && !IS_UNDETECTABLE(this)) {
+    throw MakeTypeError("called_on_null_or_undefined",
+                        ["Number.prototype.toFixed"]);
+  }
   var x = ToNumber(this);
   return %NumberToFixed(x, f);
 }
@@ -1084,6 +1106,10 @@ function NumberToExponential(fractionDigits) {
       throw new $RangeError("toExponential() argument must be between 0 and 20");
     }
   }
+  if (IS_NULL_OR_UNDEFINED(this) && !IS_UNDETECTABLE(this)) {
+    throw MakeTypeError("called_on_null_or_undefined",
+                        ["Number.prototype.toExponential"]);
+  }
   var x = ToNumber(this);
   return %NumberToExponential(x, f);
 }
@@ -1091,6 +1117,10 @@ function NumberToExponential(fractionDigits) {
 
 // ECMA-262 section 15.7.4.7
 function NumberToPrecision(precision) {
+  if (IS_NULL_OR_UNDEFINED(this) && !IS_UNDETECTABLE(this)) {
+    throw MakeTypeError("called_on_null_or_undefined",
+                        ["Number.prototype.toPrecision"]);
+  }
   if (IS_UNDEFINED(precision)) return ToString(%_ValueOf(this));
   var p = TO_INTEGER(precision);
   if (p < 1 || p > 21) {

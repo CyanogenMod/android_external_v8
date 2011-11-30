@@ -72,6 +72,7 @@ namespace internal {
 struct Register {
   static const int kNumRegisters = 16;
   static const int kNumAllocatableRegisters = 8;
+  static const int kSizeInBytes = 4;
 
   static int ToAllocationIndex(Register reg) {
     ASSERT(reg.code() < kNumAllocatableRegisters);
@@ -1170,6 +1171,10 @@ class Assembler : public AssemblerBase {
   // Mark address of a debug break slot.
   void RecordDebugBreakSlot();
 
+  // Record the AST id of the CallIC being compiled, so that it can be placed
+  // in the relocation information.
+  void RecordAstId(unsigned ast_id) { ast_id_for_reloc_info_ = ast_id; }
+
   // Record a comment relocation entry that can be used by a disassembler.
   // Use --code-comments to enable.
   void RecordComment(const char* msg);
@@ -1184,12 +1189,6 @@ class Assembler : public AssemblerBase {
   int pc_offset() const { return pc_ - buffer_; }
 
   PositionsRecorder* positions_recorder() { return &positions_recorder_; }
-
-  bool can_peephole_optimize(int instructions) {
-    if (!allow_peephole_optimization_) return false;
-    if (last_bound_pos_ > pc_offset() - instructions * kInstrSize) return false;
-    return reloc_info_writer.last_pc() <= pc_ - instructions * kInstrSize;
-  }
 
   // Read/patch instructions
   static Instr instr_at(byte* pc) { return *reinterpret_cast<Instr*>(pc); }
@@ -1223,10 +1222,25 @@ class Assembler : public AssemblerBase {
   static int GetCmpImmediateRawImmediate(Instr instr);
   static bool IsNop(Instr instr, int type = NON_MARKING_NOP);
 
+  // Buffer size and constant pool distance are checked together at regular
+  // intervals of kBufferCheckInterval emitted bytes
+  static const int kBufferCheckInterval = 1*KB/2;
+  // Constants in pools are accessed via pc relative addressing, which can
+  // reach +/-4KB thereby defining a maximum distance between the instruction
+  // and the accessed constant. We satisfy this constraint by limiting the
+  // distance between pools.
+  static const int kMaxDistBetweenPools = 4*KB - 2*kBufferCheckInterval;
+  static const int kMaxNumPRInfo = kMaxDistBetweenPools/kInstrSize;
+
   // Check if is time to emit a constant pool for pending reloc info entries
   void CheckConstPool(bool force_emit, bool require_jump);
 
  protected:
+  // Relocation for a type-recording IC has the AST id added to it.  This
+  // member variable is a way to pass the information from the call site to
+  // the relocation info.
+  unsigned ast_id_for_reloc_info_;
+
   bool emit_debug_code() const { return emit_debug_code_; }
 
   int buffer_space() const { return reloc_info_writer.pos() - pc_; }
@@ -1264,9 +1278,6 @@ class Assembler : public AssemblerBase {
   // True if the assembler owns the buffer, false if buffer is external.
   bool own_buffer_;
 
-  // Buffer size and constant pool distance are checked together at regular
-  // intervals of kBufferCheckInterval emitted bytes
-  static const int kBufferCheckInterval = 1*KB/2;
   int next_buffer_check_;  // pc offset of next buffer check
 
   // Code generation
@@ -1299,12 +1310,6 @@ class Assembler : public AssemblerBase {
   // regular intervals of kDistBetweenPools bytes
   static const int kDistBetweenPools = 1*KB;
 
-  // Constants in pools are accessed via pc relative addressing, which can
-  // reach +/-4KB thereby defining a maximum distance between the instruction
-  // and the accessed constant. We satisfy this constraint by limiting the
-  // distance between pools.
-  static const int kMaxDistBetweenPools = 4*KB - 2*kBufferCheckInterval;
-
   // Emission of the constant pool may be blocked in some code sequences.
   int const_pool_blocked_nesting_;  // Block emission if this is not zero.
   int no_const_pool_before_;  // Block emission before this pc offset.
@@ -1322,7 +1327,6 @@ class Assembler : public AssemblerBase {
   // stored in a separate buffer until a constant pool is emitted.
   // If every instruction in a long sequence is accessing the pool, we need one
   // pending relocation entry per instruction.
-  static const int kMaxNumPRInfo = kMaxDistBetweenPools/kInstrSize;
   RelocInfo prinfo_[kMaxNumPRInfo];  // the buffer of pending relocation info
   int num_prinfo_;  // number of pending reloc info entries in the buffer
 
@@ -1356,7 +1360,6 @@ class Assembler : public AssemblerBase {
   friend class BlockConstPoolScope;
 
   PositionsRecorder positions_recorder_;
-  bool allow_peephole_optimization_;
   bool emit_debug_code_;
   friend class PositionsRecorder;
   friend class EnsureSpace;

@@ -36,7 +36,6 @@ V8_LOCAL_SRC_FILES := \
 	src/fast-dtoa.cc \
 	src/fixed-dtoa.cc \
 	src/flags.cc \
-	src/frame-element.cc \
 	src/frames.cc \
 	src/full-codegen.cc \
 	src/func-name-inferrer.cc \
@@ -50,6 +49,7 @@ V8_LOCAL_SRC_FILES := \
 	src/ic.cc \
 	src/interpreter-irregexp.cc \
 	src/isolate.cc \
+	src/json-parser.cc \
 	src/jsregexp.cc \
 	src/lithium.cc \
 	src/lithium-allocator.cc \
@@ -84,7 +84,6 @@ V8_LOCAL_SRC_FILES := \
 	src/strtod.cc \
 	src/stub-cache.cc \
 	src/token.cc \
-	src/top.cc \
 	src/type-info.cc \
 	src/unicode.cc \
 	src/utils.cc \

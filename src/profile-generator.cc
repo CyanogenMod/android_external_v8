@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -28,13 +28,14 @@
 #ifdef ENABLE_LOGGING_AND_PROFILING
 
 #include "v8.h"
+
+#include "profile-generator-inl.h"
+
 #include "global-handles.h"
 #include "heap-profiler.h"
 #include "scopeinfo.h"
 #include "unicode.h"
 #include "zone-inl.h"
-
-#include "profile-generator-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -1735,7 +1736,7 @@ const char* V8HeapExplorer::GetSystemEntryName(HeapObject* object) {
   switch (object->map()->instance_type()) {
     case MAP_TYPE: return "system / Map";
     case JS_GLOBAL_PROPERTY_CELL_TYPE: return "system / JSGlobalPropertyCell";
-    case PROXY_TYPE: return "system / Proxy";
+    case FOREIGN_TYPE: return "system / Foreign";
     case ODDBALL_TYPE: return "system / Oddball";
 #define MAKE_STRUCT_CASE(NAME, Name, name) \
     case NAME##_TYPE: return "system / "#Name;
@@ -1864,9 +1865,11 @@ void V8HeapExplorer::ExtractReferences(HeapObject* obj) {
     SetInternalReference(obj, entry,
                          "constructor", map->constructor(),
                          Map::kConstructorOffset);
-    SetInternalReference(obj, entry,
-                         "descriptors", map->instance_descriptors(),
-                         Map::kInstanceDescriptorsOffset);
+    if (!map->instance_descriptors()->IsEmpty()) {
+      SetInternalReference(obj, entry,
+                           "descriptors", map->instance_descriptors(),
+                           Map::kInstanceDescriptorsOrBitField3Offset);
+    }
     SetInternalReference(obj, entry,
                          "code_cache", map->code_cache(),
                          Map::kCodeCacheOffset);
@@ -1904,7 +1907,7 @@ void V8HeapExplorer::ExtractClosureReferences(JSObject* js_obj,
     HandleScope hs;
     JSFunction* func = JSFunction::cast(js_obj);
     Context* context = func->context();
-    ZoneScope zscope(DELETE_ON_EXIT);
+    ZoneScope zscope(Isolate::Current(), DELETE_ON_EXIT);
     SerializedScopeInfo* serialized_scope_info =
         context->closure()->shared()->scope_info();
     ScopeInfo<ZoneListAllocationPolicy> zone_scope_info(serialized_scope_info);

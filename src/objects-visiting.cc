@@ -85,13 +85,21 @@ StaticVisitorBase::VisitorId StaticVisitorBase::GetVisitorId(
     case JS_GLOBAL_PROPERTY_CELL_TYPE:
       return kVisitPropertyCell;
 
+    case JS_REGEXP_TYPE:
+      return kVisitJSRegExp;
+
     case SHARED_FUNCTION_INFO_TYPE:
       return kVisitSharedFunctionInfo;
 
-    case PROXY_TYPE:
+    case JS_PROXY_TYPE:
+      return GetVisitorIdForSize(kVisitStruct,
+                                 kVisitStructGeneric,
+                                 JSProxy::kSize);
+
+    case FOREIGN_TYPE:
       return GetVisitorIdForSize(kVisitDataObject,
                                  kVisitDataObjectGeneric,
-                                 Proxy::kSize);
+                                 Foreign::kSize);
 
     case FILLER_TYPE:
       return kVisitDataObjectGeneric;
@@ -100,7 +108,6 @@ StaticVisitorBase::VisitorId StaticVisitorBase::GetVisitorId(
     case JS_CONTEXT_EXTENSION_OBJECT_TYPE:
     case JS_VALUE_TYPE:
     case JS_ARRAY_TYPE:
-    case JS_REGEXP_TYPE:
     case JS_GLOBAL_PROXY_TYPE:
     case JS_GLOBAL_OBJECT_TYPE:
     case JS_BUILTINS_OBJECT_TYPE:
@@ -121,6 +128,7 @@ StaticVisitorBase::VisitorId StaticVisitorBase::GetVisitorId(
     case EXTERNAL_INT_ARRAY_TYPE:
     case EXTERNAL_UNSIGNED_INT_ARRAY_TYPE:
     case EXTERNAL_FLOAT_ARRAY_TYPE:
+    case EXTERNAL_DOUBLE_ARRAY_TYPE:
       return GetVisitorIdForSize(kVisitDataObject,
                                  kVisitDataObjectGeneric,
                                  instance_size);

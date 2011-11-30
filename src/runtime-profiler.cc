@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -153,6 +153,7 @@ void RuntimeProfiler::Optimize(JSFunction* function, bool eager, int delay) {
   if (FLAG_trace_opt) {
     PrintF("[marking (%s) ", eager ? "eagerly" : "lazily");
     function->PrintName();
+    PrintF(" 0x%" V8PRIxPTR, reinterpret_cast<intptr_t>(function->address()));
     PrintF(" for recompilation");
     if (delay > 0) {
       PrintF(" (delayed %0.3f ms)", static_cast<double>(delay) / 1000);
@@ -170,7 +171,7 @@ void RuntimeProfiler::AttemptOnStackReplacement(JSFunction* function) {
   // Debug::has_break_points().
   ASSERT(function->IsMarkedForLazyRecompilation());
   if (!FLAG_use_osr ||
-      isolate_->debug()->has_break_points() ||
+      isolate_->DebuggerHasBreakPoints() ||
       function->IsBuiltin()) {
     return;
   }

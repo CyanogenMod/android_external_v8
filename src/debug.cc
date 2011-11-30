@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -92,7 +92,7 @@ static Handle<Code> ComputeCallDebugBreak(int argc, Code::Kind kind) {
 }
 
 
-static Handle<Code> ComputeCallDebugPrepareStepIn(int argc,  Code::Kind kind) {
+static Handle<Code> ComputeCallDebugPrepareStepIn(int argc, Code::Kind kind) {
   Isolate* isolate = Isolate::Current();
   CALL_HEAP_FUNCTION(
       isolate,
@@ -167,7 +167,8 @@ void BreakLocationIterator::Next() {
       Address target = original_rinfo()->target_address();
       Code* code = Code::GetCodeFromTargetAddress(target);
       if ((code->is_inline_cache_stub() &&
-           !code->is_type_recording_binary_op_stub() &&
+           !code->is_binary_op_stub() &&
+           !code->is_unary_op_stub() &&
            !code->is_compare_ic_stub()) ||
           RelocInfo::IsConstructCall(rmode())) {
         break_point_++;
@@ -477,21 +478,6 @@ void BreakLocationIterator::SetDebugBreakAtIC() {
     // calling convention used by the call site.
     Handle<Code> dbgbrk_code(Debug::FindDebugBreak(code, mode));
     rinfo()->set_target_address(dbgbrk_code->entry());
-
-    // For stubs that refer back to an inlined version clear the cached map for
-    // the inlined case to always go through the IC. As long as the break point
-    // is set the patching performed by the runtime system will take place in
-    // the code copy and will therefore have no effect on the running code
-    // keeping it from using the inlined code.
-    if (code->is_keyed_load_stub()) {
-      KeyedLoadIC::ClearInlinedVersion(pc());
-    } else if (code->is_keyed_store_stub()) {
-      KeyedStoreIC::ClearInlinedVersion(pc());
-    } else if (code->is_load_stub()) {
-      LoadIC::ClearInlinedVersion(pc());
-    } else if (code->is_store_stub()) {
-      StoreIC::ClearInlinedVersion(pc());
-    }
   }
 }
 
@@ -499,20 +485,6 @@ void BreakLocationIterator::SetDebugBreakAtIC() {
 void BreakLocationIterator::ClearDebugBreakAtIC() {
   // Patch the code to the original invoke.
   rinfo()->set_target_address(original_rinfo()->target_address());
-
-  RelocInfo::Mode mode = rmode();
-  if (RelocInfo::IsCodeTarget(mode)) {
-    AssertNoAllocation nogc;
-    Address target = original_rinfo()->target_address();
-    Code* code = Code::GetCodeFromTargetAddress(target);
-
-    // Restore the inlined version of keyed stores to get back to the
-    // fast case.  We need to patch back the keyed store because no
-    // patching happens when running normally.  For keyed loads, the
-    // map check will get patched back when running normally after ICs
-    // have been cleared at GC.
-    if (code->is_keyed_store_stub()) KeyedStoreIC::RestoreInlinedVersion(pc());
-  }
 }
 
 
@@ -843,6 +815,7 @@ bool Debug::Load() {
   HandleScope scope(isolate_);
   Handle<Context> context =
       isolate_->bootstrapper()->CreateEnvironment(
+          isolate_,
           Handle<Object>::null(),
           v8::Handle<ObjectTemplate>(),
           NULL);
@@ -1017,6 +990,11 @@ Object* Debug::Break(Arguments args) {
   } else if (thread_local_.frame_drop_mode_ ==
       FRAME_DROPPED_IN_DIRECT_CALL) {
     // Nothing to do, after_break_target is not used here.
+  } else if (thread_local_.frame_drop_mode_ ==
+      FRAME_DROPPED_IN_RETURN_CALL) {
+    Code* plain_return = isolate_->builtins()->builtin(
+        Builtins::kFrameDropper_LiveEdit);
+    thread_local_.after_break_target_ = plain_return->entry();
   } else {
     UNREACHABLE();
   }
@@ -1986,8 +1964,8 @@ void Debug::AfterGarbageCollection() {
 }
 
 
-Debugger::Debugger(Isolate* isolate)
-    : debugger_access_(isolate->debugger_access()),
+Debugger::Debugger()
+    : debugger_access_(OS::CreateMutex()),
       event_listener_(Handle<Object>()),
       event_listener_data_(Handle<Object>()),
       compiling_natives_(false),
@@ -2003,12 +1981,13 @@ Debugger::Debugger(Isolate* isolate)
       agent_(NULL),
       command_queue_(kQueueInitialSize),
       command_received_(OS::CreateSemaphore(0)),
-      event_command_queue_(kQueueInitialSize),
-      isolate_(isolate) {
+      event_command_queue_(kQueueInitialSize) {
 }
 
 
 Debugger::~Debugger() {
+  delete debugger_access_;
+  debugger_access_ = 0;
   delete dispatch_handler_access_;
   dispatch_handler_access_ = 0;
   delete command_received_;
@@ -2387,7 +2366,7 @@ void Debugger::CallEventCallback(v8::DebugEvent event,
                                  Handle<Object> exec_state,
                                  Handle<Object> event_data,
                                  v8::Debug::ClientData* client_data) {
-  if (event_listener_->IsProxy()) {
+  if (event_listener_->IsForeign()) {
     CallCEventCallback(event, exec_state, event_data, client_data);
   } else {
     CallJSEventCallback(event, exec_state, event_data);
@@ -2399,9 +2378,9 @@ void Debugger::CallCEventCallback(v8::DebugEvent event,
                                   Handle<Object> exec_state,
                                   Handle<Object> event_data,
                                   v8::Debug::ClientData* client_data) {
-  Handle<Proxy> callback_obj(Handle<Proxy>::cast(event_listener_));
+  Handle<Foreign> callback_obj(Handle<Foreign>::cast(event_listener_));
   v8::Debug::EventCallback2 callback =
-      FUNCTION_CAST<v8::Debug::EventCallback2>(callback_obj->proxy());
+      FUNCTION_CAST<v8::Debug::EventCallback2>(callback_obj->address());
   EventDetailsImpl event_details(
       event,
       Handle<JSObject>::cast(exec_state),

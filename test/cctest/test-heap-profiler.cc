@@ -1,14 +1,16 @@
-// Copyright 2009 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 //
 // Tests for heap profiler
 
 #ifdef ENABLE_LOGGING_AND_PROFILING
 
 #include "v8.h"
+
+#include "cctest.h"
 #include "heap-profiler.h"
 #include "snapshot.h"
 #include "string-stream.h"
-#include "cctest.h"
+#include "utils-inl.h"
 #include "zone-inl.h"
 #include "../include/v8-profiler.h"
 
@@ -140,7 +142,7 @@ TEST(ClustersCoarserSimple) {
   v8::HandleScope scope;
   LocalContext env;
 
-  i::ZoneScope zn_scope(i::DELETE_ON_EXIT);
+  i::ZoneScope zn_scope(i::Isolate::Current(), i::DELETE_ON_EXIT);
 
   JSObjectsRetainerTree tree;
   JSObjectsCluster function(HEAP->function_class_symbol());
@@ -178,7 +180,7 @@ TEST(ClustersCoarserMultipleConstructors) {
   v8::HandleScope scope;
   LocalContext env;
 
-  i::ZoneScope zn_scope(i::DELETE_ON_EXIT);
+  i::ZoneScope zn_scope(i::Isolate::Current(), i::DELETE_ON_EXIT);
 
   JSObjectsRetainerTree tree;
   JSObjectsCluster function(HEAP->function_class_symbol());
@@ -208,7 +210,7 @@ TEST(ClustersCoarserPathsTraversal) {
   v8::HandleScope scope;
   LocalContext env;
 
-  i::ZoneScope zn_scope(i::DELETE_ON_EXIT);
+  i::ZoneScope zn_scope(i::Isolate::Current(), i::DELETE_ON_EXIT);
 
   JSObjectsRetainerTree tree;
 
@@ -260,7 +262,7 @@ TEST(ClustersCoarserSelf) {
   v8::HandleScope scope;
   LocalContext env;
 
-  i::ZoneScope zn_scope(i::DELETE_ON_EXIT);
+  i::ZoneScope zn_scope(i::Isolate::Current(), i::DELETE_ON_EXIT);
 
   JSObjectsRetainerTree tree;
 

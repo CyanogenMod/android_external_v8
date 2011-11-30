@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -28,8 +28,10 @@
 #ifndef V8_STUB_CACHE_H_
 #define V8_STUB_CACHE_H_
 
+#include "allocation.h"
 #include "arguments.h"
 #include "macro-assembler.h"
+#include "objects.h"
 #include "zone-inl.h"
 
 namespace v8 {
@@ -143,9 +145,6 @@ class StubCache {
       String* name,
       JSFunction* receiver);
 
-  MUST_USE_RESULT MaybeObject* ComputeKeyedLoadSpecialized(
-      JSObject* receiver);
-
   // ---
 
   MUST_USE_RESULT MaybeObject* ComputeStoreField(
@@ -184,25 +183,26 @@ class StubCache {
       Map* transition,
       StrictModeFlag strict_mode);
 
-  MUST_USE_RESULT MaybeObject* ComputeKeyedStoreSpecialized(
-      JSObject* receiver,
-      StrictModeFlag strict_mode);
-
-
   MUST_USE_RESULT MaybeObject* ComputeKeyedLoadOrStoreExternalArray(
       JSObject* receiver,
       bool is_store,
       StrictModeFlag strict_mode);
 
+  MUST_USE_RESULT MaybeObject* ComputeKeyedLoadOrStoreFastElement(
+      JSObject* receiver,
+      bool is_store,
+      StrictModeFlag strict_mode);
   // ---
 
-  MUST_USE_RESULT MaybeObject* ComputeCallField(int argc,
-                                                InLoopFlag in_loop,
-                                                Code::Kind,
-                                                String* name,
-                                                Object* object,
-                                                JSObject* holder,
-                                                int index);
+  MUST_USE_RESULT MaybeObject* ComputeCallField(
+      int argc,
+      InLoopFlag in_loop,
+      Code::Kind,
+      Code::ExtraICState extra_ic_state,
+      String* name,
+      Object* object,
+      JSObject* holder,
+      int index);
 
   MUST_USE_RESULT MaybeObject* ComputeCallConstant(
       int argc,
@@ -214,22 +214,27 @@ class StubCache {
       JSObject* holder,
       JSFunction* function);
 
-  MUST_USE_RESULT MaybeObject* ComputeCallNormal(int argc,
-                                                 InLoopFlag in_loop,
-                                                 Code::Kind,
-                                                 String* name,
-                                                 JSObject* receiver);
+  MUST_USE_RESULT MaybeObject* ComputeCallNormal(
+      int argc,
+      InLoopFlag in_loop,
+      Code::Kind,
+      Code::ExtraICState extra_ic_state,
+      String* name,
+      JSObject* receiver);
 
-  MUST_USE_RESULT MaybeObject* ComputeCallInterceptor(int argc,
-                                                      Code::Kind,
-                                                      String* name,
-                                                      Object* object,
-                                                      JSObject* holder);
+  MUST_USE_RESULT MaybeObject* ComputeCallInterceptor(
+      int argc,
+      Code::Kind,
+      Code::ExtraICState extra_ic_state,
+      String* name,
+      Object* object,
+      JSObject* holder);
 
   MUST_USE_RESULT MaybeObject* ComputeCallGlobal(
       int argc,
       InLoopFlag in_loop,
       Code::Kind,
+      Code::ExtraICState extra_ic_state,
       String* name,
       JSObject* receiver,
       GlobalObject* holder,
@@ -240,30 +245,39 @@ class StubCache {
 
   MUST_USE_RESULT MaybeObject* ComputeCallInitialize(int argc,
                                                      InLoopFlag in_loop,
+                                                     RelocInfo::Mode mode,
                                                      Code::Kind kind);
 
-  Handle<Code> ComputeCallInitialize(int argc, InLoopFlag in_loop);
+  Handle<Code> ComputeCallInitialize(int argc,
+                                     InLoopFlag in_loop,
+                                     RelocInfo::Mode mode);
 
   Handle<Code> ComputeKeyedCallInitialize(int argc, InLoopFlag in_loop);
 
   MUST_USE_RESULT MaybeObject* ComputeCallPreMonomorphic(
       int argc,
       InLoopFlag in_loop,
-      Code::Kind kind);
+      Code::Kind kind,
+      Code::ExtraICState extra_ic_state);
 
   MUST_USE_RESULT MaybeObject* ComputeCallNormal(int argc,
                                                  InLoopFlag in_loop,
-                                                 Code::Kind kind);
+                                                 Code::Kind kind,
+                                                 Code::ExtraICState state);
 
   MUST_USE_RESULT MaybeObject* ComputeCallMegamorphic(int argc,
                                                       InLoopFlag in_loop,
-                                                      Code::Kind kind);
+                                                      Code::Kind kind,
+                                                      Code::ExtraICState state);
 
-  MUST_USE_RESULT MaybeObject* ComputeCallMiss(int argc, Code::Kind kind);
+  MUST_USE_RESULT MaybeObject* ComputeCallMiss(int argc,
+                                               Code::Kind kind,
+                                               Code::ExtraICState state);
 
   // Finds the Code object stored in the Heap::non_monomorphic_cache().
   MUST_USE_RESULT Code* FindCallInitialize(int argc,
                                            InLoopFlag in_loop,
+                                           RelocInfo::Mode mode,
                                            Code::Kind kind);
 
 #ifdef ENABLE_DEBUGGER_SUPPORT
@@ -336,7 +350,7 @@ class StubCache {
   Entry secondary_[kSecondaryTableSize];
 
   // Computes the hashed offsets for primary and secondary caches.
-  RLYSTC int PrimaryOffset(String* name, Code::Flags flags, Map* map) {
+  static int PrimaryOffset(String* name, Code::Flags flags, Map* map) {
     // This works well because the heap object tag size and the hash
     // shift are equal.  Shifting down the length field to get the
     // hash code would effectively throw away two bits of the hash
@@ -359,7 +373,7 @@ class StubCache {
     return key & ((kPrimaryTableSize - 1) << kHeapObjectTagSize);
   }
 
-  RLYSTC int SecondaryOffset(String* name, Code::Flags flags, int seed) {
+  static int SecondaryOffset(String* name, Code::Flags flags, int seed) {
     // Use the seed from the primary cache in the secondary cache.
     uint32_t string_low32bits =
         static_cast<uint32_t>(reinterpret_cast<uintptr_t>(name));
@@ -376,7 +390,7 @@ class StubCache {
   // ends in String::kHashShift 0s.  Then we shift it so it is a multiple
   // of sizeof(Entry).  This makes it easier to avoid making mistakes
   // in the hashed offset computations.
-  RLYSTC Entry* entry(Entry* table, int offset) {
+  static Entry* entry(Entry* table, int offset) {
     const int shift_amount = kPointerSizeLog2 + 1 - String::kHashShift;
     return reinterpret_cast<Entry*>(
         reinterpret_cast<Address>(table) + (offset << shift_amount));
@@ -468,7 +482,10 @@ class StubCompiler BASE_EMBEDDED {
                                  Register scratch,
                                  Label* miss_label);
 
-  static void GenerateLoadMiss(MacroAssembler* masm, Code::Kind kind);
+  static void GenerateLoadMiss(MacroAssembler* masm,
+                               Code::Kind kind);
+
+  static void GenerateKeyedLoadMissForceGeneric(MacroAssembler* masm);
 
   // Generates code that verifies that the property holder has not changed
   // (checking maps of objects in the prototype chain for fast and global
@@ -633,10 +650,21 @@ class KeyedLoadStubCompiler: public StubCompiler {
   MUST_USE_RESULT MaybeObject* CompileLoadStringLength(String* name);
   MUST_USE_RESULT MaybeObject* CompileLoadFunctionPrototype(String* name);
 
-  MUST_USE_RESULT MaybeObject* CompileLoadSpecialized(JSObject* receiver);
+  MUST_USE_RESULT MaybeObject* CompileLoadFastElement(Map* receiver_map);
+
+  MUST_USE_RESULT MaybeObject* CompileLoadMegamorphic(
+      MapList* receiver_maps,
+      CodeList* handler_ics);
+
+  static void GenerateLoadExternalArray(MacroAssembler* masm,
+                                        ExternalArrayType array_type);
+
+  static void GenerateLoadFastElement(MacroAssembler* masm);
 
  private:
-  MaybeObject* GetCode(PropertyType type, String* name);
+  MaybeObject* GetCode(PropertyType type,
+                       String* name,
+                       InlineCacheState state = MONOMORPHIC);
 };
 
 
@@ -677,10 +705,22 @@ class KeyedStoreStubCompiler: public StubCompiler {
                                                  Map* transition,
                                                  String* name);
 
-  MUST_USE_RESULT MaybeObject* CompileStoreSpecialized(JSObject* receiver);
+  MUST_USE_RESULT MaybeObject* CompileStoreFastElement(Map* receiver_map);
+
+  MUST_USE_RESULT MaybeObject* CompileStoreMegamorphic(
+      MapList* receiver_maps,
+      CodeList* handler_ics);
+
+  static void GenerateStoreFastElement(MacroAssembler* masm,
+                                       bool is_js_array);
+
+  static void GenerateStoreExternalArray(MacroAssembler* masm,
+                                         ExternalArrayType array_type);
 
  private:
-  MaybeObject* GetCode(PropertyType type, String* name);
+  MaybeObject* GetCode(PropertyType type,
+                       String* name,
+                       InlineCacheState state = MONOMORPHIC);
 
   StrictModeFlag strict_mode_;
 };
@@ -708,23 +748,30 @@ class CallStubCompiler: public StubCompiler {
                    Code::ExtraICState extra_ic_state,
                    InlineCacheHolderFlag cache_holder);
 
-  MUST_USE_RESULT MaybeObject* CompileCallField(JSObject* object,
-                                                JSObject* holder,
-                                                int index,
-                                                String* name);
-  MUST_USE_RESULT MaybeObject* CompileCallConstant(Object* object,
-                                                   JSObject* holder,
-                                                   JSFunction* function,
-                                                   String* name,
-                                                   CheckType check);
-  MUST_USE_RESULT MaybeObject* CompileCallInterceptor(JSObject* object,
-                                                      JSObject* holder,
-                                                      String* name);
-  MUST_USE_RESULT MaybeObject* CompileCallGlobal(JSObject* object,
-                                                 GlobalObject* holder,
-                                                 JSGlobalPropertyCell* cell,
-                                                 JSFunction* function,
-                                                 String* name);
+  MUST_USE_RESULT MaybeObject* CompileCallField(
+      JSObject* object,
+      JSObject* holder,
+      int index,
+      String* name);
+
+  MUST_USE_RESULT MaybeObject* CompileCallConstant(
+      Object* object,
+      JSObject* holder,
+      JSFunction* function,
+      String* name,
+      CheckType check);
+
+  MUST_USE_RESULT MaybeObject* CompileCallInterceptor(
+      JSObject* object,
+      JSObject* holder,
+      String* name);
+
+  MUST_USE_RESULT MaybeObject* CompileCallGlobal(
+      JSObject* object,
+      GlobalObject* holder,
+      JSGlobalPropertyCell* cell,
+      JSFunction* function,
+      String* name);
 
   static bool HasCustomCallGenerator(JSFunction* function);
 
@@ -847,19 +894,35 @@ class CallOptimization BASE_EMBEDDED {
   CallHandlerInfo* api_call_info_;
 };
 
-class ExternalArrayStubCompiler: public StubCompiler {
+class ExternalArrayLoadStubCompiler: public StubCompiler {
  public:
-  explicit ExternalArrayStubCompiler() {}
+  explicit ExternalArrayLoadStubCompiler(StrictModeFlag strict_mode)
+    : strict_mode_(strict_mode) { }
 
-  MUST_USE_RESULT MaybeObject* CompileKeyedLoadStub(
-      JSObject* receiver, ExternalArrayType array_type, Code::Flags flags);
-
-  MUST_USE_RESULT MaybeObject* CompileKeyedStoreStub(
-      JSObject* receiver, ExternalArrayType array_type, Code::Flags flags);
+  MUST_USE_RESULT MaybeObject* CompileLoad(
+      JSObject* receiver, ExternalArrayType array_type);
 
  private:
-  MaybeObject* GetCode(Code::Flags flags);
+  MaybeObject* GetCode();
+
+  StrictModeFlag strict_mode_;
 };
+
+
+class ExternalArrayStoreStubCompiler: public StubCompiler {
+ public:
+  explicit ExternalArrayStoreStubCompiler(StrictModeFlag strict_mode)
+      : strict_mode_(strict_mode) {}
+
+  MUST_USE_RESULT MaybeObject* CompileStore(
+      JSObject* receiver, ExternalArrayType array_type);
+
+ private:
+  MaybeObject* GetCode();
+
+  StrictModeFlag strict_mode_;
+};
+
 
 } }  // namespace v8::internal
 

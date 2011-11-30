@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -57,11 +57,13 @@ function FormatString(format, message) {
   for (var i = 0; i < format.length; i++) {
     var str = format[i];
     for (arg_num = 0; arg_num < kReplacementMarkers.length; arg_num++) {
-      if (format[i] !== kReplacementMarkers[arg_num]) continue;
-      try {
-        str = ToDetailString(args[arg_num]);
-      } catch (e) {
-        str = "#<error>";
+      if (str == kReplacementMarkers[arg_num]) {
+        try {
+          str = ToDetailString(args[arg_num]);
+        } catch (e) {
+          str = "#<error>";
+        }
+        break;
       }
     }
     result += str;
@@ -100,7 +102,8 @@ function ToStringCheckErrorObject(obj) {
 
 
 function ToDetailString(obj) {
-  if (obj != null && IS_OBJECT(obj) && obj.toString === $Object.prototype.toString) {
+  if (obj != null && IS_OBJECT(obj) &&
+      obj.toString === $Object.prototype.toString) {
     var constructor = obj.constructor;
     if (!constructor) return ToStringCheckErrorObject(obj);
     var constructorName = constructor.name;
@@ -142,6 +145,7 @@ function FormatMessage(message) {
     kMessages = {
       // Error
       cyclic_proto:                 ["Cyclic __proto__ value"],
+      code_gen_from_strings:        ["Code generation from strings disallowed for this context"],
       // TypeError
       unexpected_token:             ["Unexpected token ", "%0"],
       unexpected_token_number:      ["Unexpected number"],
@@ -191,6 +195,7 @@ function FormatMessage(message) {
       redefine_disallowed:          ["Cannot redefine property: ", "%0"],
       define_disallowed:            ["Cannot define property, object is not extensible: ", "%0"],
       non_extensible_proto:         ["%0", " is not extensible"],
+      handler_trap_missing:         ["Proxy handler ", "%0", " has no '", "%1", "' trap"],
       // RangeError
       invalid_array_length:         ["Invalid array length"],
       stack_overflow:               ["Maximum call stack size exceeded"],
@@ -206,6 +211,7 @@ function FormatMessage(message) {
       invalid_json:                 ["String '", "%0", "' is not valid JSON"],
       circular_structure:           ["Converting circular structure to JSON"],
       obj_ctor_property_non_object: ["Object.", "%0", " called on non-object"],
+      called_on_null_or_undefined:  ["%0", " called on null or undefined"],
       array_indexof_not_defined:    ["Array.getIndexOf: Argument undefined"],
       object_not_extensible:        ["Can't add property ", "%0", ", object is not extensible"],
       illegal_access:               ["Illegal access"],
@@ -233,11 +239,10 @@ function FormatMessage(message) {
       strict_function:              ["In strict mode code, functions can only be declared at top level or immediately within another function." ],
       strict_read_only_property:    ["Cannot assign to read only property '", "%0", "' of ", "%1"],
       strict_cannot_assign:         ["Cannot assign to read only '", "%0", "' in strict mode"],
-      strict_arguments_callee:      ["Cannot access property 'callee' of strict mode arguments"],
-      strict_arguments_caller:      ["Cannot access property 'caller' of strict mode arguments"],
-      strict_function_caller:       ["Cannot access property 'caller' of a strict mode function"],
-      strict_function_arguments:    ["Cannot access property 'arguments' of a strict mode function"],
+      strict_poison_pill:           ["'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them"],
       strict_caller:                ["Illegal access to a strict mode caller function."],
+      cant_prevent_ext_external_array_elements: ["Cannot prevent extension of an object with external array elements"],
+      redef_external_array_element: ["Cannot redefine a property of an object with external array elements"],
     };
   }
   var message_type = %MessageGetType(message);
@@ -550,6 +555,7 @@ function SourceLocation(script, position, line, column, start, end) {
   this.end = end;
 }
 
+SourceLocation.prototype.__proto__ = null;
 
 const kLineLengthLimit = 78;
 
@@ -639,6 +645,7 @@ function SourceSlice(script, from_line, to_line, from_position, to_position) {
   this.to_position = to_position;
 }
 
+SourceSlice.prototype.__proto__ = null;
 
 /**
  * Get the source text for a SourceSlice
@@ -700,23 +707,28 @@ function CallSite(receiver, fun, pos) {
   this.pos = pos;
 }
 
+CallSite.prototype.__proto__ = null;
+
 CallSite.prototype.getThis = function () {
   return this.receiver;
 };
 
 CallSite.prototype.getTypeName = function () {
   var constructor = this.receiver.constructor;
-  if (!constructor)
+  if (!constructor) {
     return %_CallFunction(this.receiver, ObjectToString);
+  }
   var constructorName = constructor.name;
-  if (!constructorName)
+  if (!constructorName) {
     return %_CallFunction(this.receiver, ObjectToString);
+  }
   return constructorName;
 };
 
 CallSite.prototype.isToplevel = function () {
-  if (this.receiver == null)
+  if (this.receiver == null) {
     return true;
+  }
   return IS_GLOBAL(this.receiver);
 };
 
@@ -749,8 +761,9 @@ CallSite.prototype.getFunctionName = function () {
   }
   // Maybe this is an evaluation?
   var script = %FunctionGetScript(this.fun);
-  if (script && script.compilation_type == COMPILATION_TYPE_EVAL)
+  if (script && script.compilation_type == COMPILATION_TYPE_EVAL) {
     return "eval";
+  }
   return null;
 };
 
@@ -772,13 +785,15 @@ CallSite.prototype.getMethodName = function () {
         this.receiver.__lookupSetter__(prop) === this.fun ||
         (!this.receiver.__lookupGetter__(prop) && this.receiver[prop] === this.fun)) {
       // If we find more than one match bail out to avoid confusion.
-      if (name)
+      if (name) {
         return null;
+      }
       name = prop;
     }
   }
-  if (name)
+  if (name) {
     return name;
+  }
   return null;
 };
 
@@ -788,8 +803,9 @@ CallSite.prototype.getFileName = function () {
 };
 
 CallSite.prototype.getLineNumber = function () {
-  if (this.pos == -1)
+  if (this.pos == -1) {
     return null;
+  }
   var script = %FunctionGetScript(this.fun);
   var location = null;
   if (script) {
@@ -799,8 +815,9 @@ CallSite.prototype.getLineNumber = function () {
 };
 
 CallSite.prototype.getColumnNumber = function () {
-  if (this.pos == -1)
+  if (this.pos == -1) {
     return null;
+  }
   var script = %FunctionGetScript(this.fun);
   var location = null;
   if (script) {
@@ -820,15 +837,17 @@ CallSite.prototype.getPosition = function () {
 
 CallSite.prototype.isConstructor = function () {
   var constructor = this.receiver ? this.receiver.constructor : null;
-  if (!constructor)
+  if (!constructor) {
     return false;
+  }
   return this.fun === constructor;
 };
 
 function FormatEvalOrigin(script) {
   var sourceURL = script.nameOrSourceURL();
-  if (sourceURL)
+  if (sourceURL) {
     return sourceURL;
+  }
 
   var eval_origin = "eval at ";
   if (script.eval_from_function_name) {
@@ -1023,8 +1042,9 @@ function DefineError(f) {
 function captureStackTrace(obj, cons_opt) {
   var stackTraceLimit = $Error.stackTraceLimit;
   if (!stackTraceLimit || !IS_NUMBER(stackTraceLimit)) return;
-  if (stackTraceLimit < 0 || stackTraceLimit > 10000)
+  if (stackTraceLimit < 0 || stackTraceLimit > 10000) {
     stackTraceLimit = 10000;
+  }
   var raw_stack = %CollectStackTrace(cons_opt
                                      ? cons_opt
                                      : captureStackTrace, stackTraceLimit);
@@ -1071,6 +1091,10 @@ function errorToStringDetectCycle() {
 }
 
 function errorToString() {
+  if (IS_NULL_OR_UNDEFINED(this) && !IS_UNDETECTABLE(this)) {
+    throw MakeTypeError("called_on_null_or_undefined",
+                        ["Error.prototype.toString"]);
+  }
   // This helper function is needed because access to properties on
   // the builtins object do not work inside of a catch clause.
   function isCyclicErrorMarker(o) { return o === cyclic_error_marker; }
@@ -1080,8 +1104,10 @@ function errorToString() {
   } catch(e) {
     // If this error message was encountered already return the empty
     // string for it instead of recursively formatting it.
-    if (isCyclicErrorMarker(e)) return '';
-    else throw e;
+    if (isCyclicErrorMarker(e)) {
+      return '';
+    }
+    throw e;
   }
 }
 

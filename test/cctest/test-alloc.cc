@@ -139,11 +139,11 @@ TEST(StressJS) {
   // Patch the map to have an accessor for "get".
   Handle<Map> map(function->initial_map());
   Handle<DescriptorArray> instance_descriptors(map->instance_descriptors());
-  Handle<Proxy> proxy = FACTORY->NewProxy(&kDescriptor);
-  instance_descriptors = FACTORY->CopyAppendProxyDescriptor(
+  Handle<Foreign> foreign = FACTORY->NewForeign(&kDescriptor);
+  instance_descriptors = FACTORY->CopyAppendForeignDescriptor(
       instance_descriptors,
       FACTORY->NewStringFromAscii(Vector<const char>("get", 3)),
-      proxy,
+      foreign,
       static_cast<PropertyAttributes>(0));
   map->set_instance_descriptors(*instance_descriptors);
   // Add the Foo constructor the global object.
@@ -186,9 +186,7 @@ class Block {
 TEST(CodeRange) {
   const int code_range_size = 16*MB;
   OS::Setup();
-  Isolate::Current()->InitializeLoggingAndCounters();
-  CodeRange* code_range = new CodeRange(Isolate::Current());
-  code_range->Setup(code_range_size);
+  Isolate::Current()->code_range()->Setup(code_range_size);
   int current_allocated = 0;
   int total_allocated = 0;
   List<Block> blocks(1000);
@@ -200,7 +198,8 @@ TEST(CodeRange) {
       size_t requested = (Page::kPageSize << (Pseudorandom() % 6)) +
            Pseudorandom() % 5000 + 1;
       size_t allocated = 0;
-      void* base = code_range->AllocateRawMemory(requested, &allocated);
+      void* base = Isolate::Current()->code_range()->
+          AllocateRawMemory(requested, &allocated);
       CHECK(base != NULL);
       blocks.Add(Block(base, static_cast<int>(allocated)));
       current_allocated += static_cast<int>(allocated);
@@ -208,7 +207,8 @@ TEST(CodeRange) {
     } else {
       // Free a block.
       int index = Pseudorandom() % blocks.length();
-      code_range->FreeRawMemory(blocks[index].base, blocks[index].size);
+      Isolate::Current()->code_range()->FreeRawMemory(
+          blocks[index].base, blocks[index].size);
       current_allocated -= blocks[index].size;
       if (index < blocks.length() - 1) {
         blocks[index] = blocks.RemoveLast();
@@ -218,6 +218,5 @@ TEST(CodeRange) {
     }
   }
 
-  code_range->TearDown();
-  delete code_range;
+  Isolate::Current()->code_range()->TearDown();
 }

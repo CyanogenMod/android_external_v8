@@ -105,6 +105,7 @@ class LCodeGen BASE_EMBEDDED {
 
   // Parallel move support.
   void DoParallelMove(LParallelMove* move);
+  void DoGap(LGap* instr);
 
   // Emit frame translation commands for an environment.
   void WriteTranslation(LEnvironment* environment, Translation* translation);
@@ -147,8 +148,8 @@ class LCodeGen BASE_EMBEDDED {
                        Register temporary,
                        Register temporary2);
 
-  int StackSlotCount() const { return chunk()->spill_slot_count(); }
-  int ParameterCount() const { return scope()->num_parameters(); }
+  int GetStackSlotCount() const { return chunk()->spill_slot_count(); }
+  int GetParameterCount() const { return scope()->num_parameters(); }
 
   void Abort(const char* format, ...);
   void Comment(const char* format, ...);
@@ -207,7 +208,8 @@ class LCodeGen BASE_EMBEDDED {
   // to be in edi.
   void CallKnownFunction(Handle<JSFunction> function,
                          int arity,
-                         LInstruction* instr);
+                         LInstruction* instr,
+                         CallKind call_kind);
 
   void LoadHeapObject(Register result, Handle<HeapObject> object);
 
@@ -228,6 +230,9 @@ class LCodeGen BASE_EMBEDDED {
   Register ToRegister(int index) const;
   XMMRegister ToDoubleRegister(int index) const;
   int ToInteger32(LConstantOperand* op) const;
+  Operand BuildExternalArrayOperand(LOperand* external_pointer,
+                                    LOperand* key,
+                                    ExternalArrayType array_type);
 
   // Specific math operations - used from DoUnaryMathOperation.
   void EmitIntegerMathAbs(LUnaryMathOperation* instr);
@@ -280,10 +285,10 @@ class LCodeGen BASE_EMBEDDED {
   // Caller should branch on equal condition.
   void EmitIsConstructCall(Register temp);
 
-  void EmitLoadField(Register result,
-                     Register object,
-                     Handle<Map> type,
-                     Handle<String> name);
+  void EmitLoadFieldOrConstantFunction(Register result,
+                                       Register object,
+                                       Handle<Map> type,
+                                       Handle<String> name);
 
   LChunk* const chunk_;
   MacroAssembler* const masm_;

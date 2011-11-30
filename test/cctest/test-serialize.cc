@@ -99,10 +99,10 @@ static int make_code(TypeCode type, int id) {
 
 
 TEST(ExternalReferenceEncoder) {
+  OS::Setup();
   Isolate* isolate = i::Isolate::Current();
   isolate->stats_table()->SetCounterFunction(counter_function);
-  v8::V8::Initialize();
-
+  HEAP->Setup(false);
   ExternalReferenceEncoder encoder;
   CHECK_EQ(make_code(BUILTIN, Builtins::kArrayCode),
            Encode(encoder, Builtins::kArrayCode));
@@ -139,10 +139,10 @@ TEST(ExternalReferenceEncoder) {
 
 
 TEST(ExternalReferenceDecoder) {
+  OS::Setup();
   Isolate* isolate = i::Isolate::Current();
   isolate->stats_table()->SetCounterFunction(counter_function);
-  v8::V8::Initialize();
-
+  HEAP->Setup(false);
   ExternalReferenceDecoder decoder;
   CHECK_EQ(AddressOf(Builtins::kArrayCode),
            decoder.Decode(make_code(BUILTIN, Builtins::kArrayCode)));

@@ -1,4 +1,4 @@
-// Copyright 2008 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -115,14 +115,14 @@ void NeanderObject::set(int offset, v8::internal::Object* value) {
 template <typename T> static inline T ToCData(v8::internal::Object* obj) {
   STATIC_ASSERT(sizeof(T) == sizeof(v8::internal::Address));
   return reinterpret_cast<T>(
-      reinterpret_cast<intptr_t>(v8::internal::Proxy::cast(obj)->proxy()));
+      reinterpret_cast<intptr_t>(v8::internal::Foreign::cast(obj)->address()));
 }
 
 
 template <typename T>
 static inline v8::internal::Handle<v8::internal::Object> FromCData(T obj) {
   STATIC_ASSERT(sizeof(T) == sizeof(v8::internal::Address));
-  return FACTORY->NewProxy(
+  return FACTORY->NewForeign(
       reinterpret_cast<v8::internal::Address>(reinterpret_cast<intptr_t>(obj)));
 }
 
@@ -182,7 +182,7 @@ class Utils {
   static inline Local<Array> ToLocal(
       v8::internal::Handle<v8::internal::JSArray> obj);
   static inline Local<External> ToLocal(
-      v8::internal::Handle<v8::internal::Proxy> obj);
+      v8::internal::Handle<v8::internal::Foreign> obj);
   static inline Local<Message> MessageToLocal(
       v8::internal::Handle<v8::internal::Object> obj);
   static inline Local<StackTrace> StackTraceToLocal(
@@ -236,7 +236,7 @@ class Utils {
       OpenHandle(const v8::Signature* sig);
   static inline v8::internal::Handle<v8::internal::TypeSwitchInfo>
       OpenHandle(const v8::TypeSwitch* that);
-  static inline v8::internal::Handle<v8::internal::Proxy>
+  static inline v8::internal::Handle<v8::internal::Foreign>
       OpenHandle(const v8::External* that);
 };
 
@@ -273,7 +273,7 @@ MAKE_TO_LOCAL(ToLocal, String, String)
 MAKE_TO_LOCAL(ToLocal, JSRegExp, RegExp)
 MAKE_TO_LOCAL(ToLocal, JSObject, Object)
 MAKE_TO_LOCAL(ToLocal, JSArray, Array)
-MAKE_TO_LOCAL(ToLocal, Proxy, External)
+MAKE_TO_LOCAL(ToLocal, Foreign, External)
 MAKE_TO_LOCAL(ToLocal, FunctionTemplateInfo, FunctionTemplate)
 MAKE_TO_LOCAL(ToLocal, ObjectTemplateInfo, ObjectTemplate)
 MAKE_TO_LOCAL(ToLocal, SignatureInfo, Signature)
@@ -311,7 +311,7 @@ MAKE_OPEN_HANDLE(Script, Object)
 MAKE_OPEN_HANDLE(Function, JSFunction)
 MAKE_OPEN_HANDLE(Message, JSObject)
 MAKE_OPEN_HANDLE(Context, Context)
-MAKE_OPEN_HANDLE(External, Proxy)
+MAKE_OPEN_HANDLE(External, Foreign)
 MAKE_OPEN_HANDLE(StackTrace, JSArray)
 MAKE_OPEN_HANDLE(StackFrame, JSObject)
 
@@ -396,14 +396,16 @@ class StringTracker {
 // data. In multithreaded V8 programs this data is copied in and out of storage
 // so that the currently executing thread always has its own copy of this
 // data.
-ISOLATED_CLASS HandleScopeImplementer {
+class HandleScopeImplementer {
  public:
 
-  HandleScopeImplementer()
-      : blocks_(0),
+  explicit HandleScopeImplementer(Isolate* isolate)
+      : isolate_(isolate),
+        blocks_(0),
         entered_contexts_(0),
         saved_contexts_(0),
         spare_(NULL),
+        ignore_out_of_memory_(false),
         call_depth_(0) { }
 
   // Threading support for handle data.
@@ -436,6 +438,10 @@ ISOLATED_CLASS HandleScopeImplementer {
   inline bool HasSavedContexts();
 
   inline List<internal::Object**>* blocks() { return &blocks_; }
+  inline bool ignore_out_of_memory() { return ignore_out_of_memory_; }
+  inline void set_ignore_out_of_memory(bool value) {
+    ignore_out_of_memory_ = value;
+  }
 
  private:
   void ResetAfterArchive() {
@@ -443,6 +449,7 @@ ISOLATED_CLASS HandleScopeImplementer {
     entered_contexts_.Initialize(0);
     saved_contexts_.Initialize(0);
     spare_ = NULL;
+    ignore_out_of_memory_ = false;
     call_depth_ = 0;
   }
 
@@ -460,12 +467,14 @@ ISOLATED_CLASS HandleScopeImplementer {
     ASSERT(call_depth_ == 0);
   }
 
+  Isolate* isolate_;
   List<internal::Object**> blocks_;
   // Used as a stack to keep track of entered contexts.
   List<Handle<Object> > entered_contexts_;
   // Used as a stack to keep track of saved contexts.
   List<Context*> saved_contexts_;
   Object** spare_;
+  bool ignore_out_of_memory_;
   int call_depth_;
   // This is only used for threading support.
   v8::ImplementationUtilities::HandleScopeData handle_scope_data_;

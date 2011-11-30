@@ -1,4 +1,4 @@
-// Copyright 2006-2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -148,12 +148,12 @@ PageIterator::PageIterator(PagedSpace* space, Mode mode) : space_(space) {
 // CodeRange
 
 
-CodeRange::CodeRange(Isolate* isolate)
-    : isolate_(isolate),
-      code_range_(NULL),
+CodeRange::CodeRange()
+    : code_range_(NULL),
       free_list_(0),
       allocation_list_(0),
-      current_allocation_block_index_(0) {
+      current_allocation_block_index_(0),
+      isolate_(NULL) {
 }
 
 
@@ -279,9 +279,8 @@ void CodeRange::TearDown() {
 const int kEstimatedNumberOfChunks = 270;
 
 
-MemoryAllocator::MemoryAllocator(Isolate* isolate)
-    : isolate_(isolate),
-      capacity_(0),
+MemoryAllocator::MemoryAllocator()
+    : capacity_(0),
       capacity_executable_(0),
       size_(0),
       size_executable_(0),
@@ -289,7 +288,8 @@ MemoryAllocator::MemoryAllocator(Isolate* isolate)
       chunks_(kEstimatedNumberOfChunks),
       free_chunk_ids_(kEstimatedNumberOfChunks),
       max_nof_chunks_(0),
-      top_(0) {
+      top_(0),
+      isolate_(NULL) {
 }
 
 
@@ -1564,13 +1564,12 @@ static void ReportCodeKindStatistics() {
       CASE(BUILTIN);
       CASE(LOAD_IC);
       CASE(KEYED_LOAD_IC);
-      CASE(KEYED_EXTERNAL_ARRAY_LOAD_IC);
       CASE(STORE_IC);
       CASE(KEYED_STORE_IC);
-      CASE(KEYED_EXTERNAL_ARRAY_STORE_IC);
       CASE(CALL_IC);
       CASE(KEYED_CALL_IC);
-      CASE(TYPE_RECORDING_BINARY_OP_IC);
+      CASE(UNARY_OP_IC);
+      CASE(BINARY_OP_IC);
       CASE(COMPARE_IC);
     }
   }

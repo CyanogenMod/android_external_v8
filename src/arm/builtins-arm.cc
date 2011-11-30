@@ -584,7 +584,7 @@ void Builtins::Generate_StringConstructCode(MacroAssembler* masm) {
   __ IncrementCounter(counters->string_ctor_conversions(), 1, r3, r4);
   __ EnterInternalFrame();
   __ push(r0);
-  __ InvokeBuiltin(Builtins::TO_STRING, CALL_JS);
+  __ InvokeBuiltin(Builtins::TO_STRING, CALL_FUNCTION);
   __ LeaveInternalFrame();
   __ pop(function);
   __ mov(argument, r0);
@@ -636,6 +636,7 @@ void Builtins::Generate_JSConstructCall(MacroAssembler* masm) {
   // Set expected number of arguments to zero (not changing r0).
   __ mov(r2, Operand(0, RelocInfo::NONE));
   __ GetBuiltinEntry(r3, Builtins::CALL_NON_FUNCTION_AS_CONSTRUCTOR);
+  __ SetCallKind(r5, CALL_AS_METHOD);
   __ Jump(masm->isolate()->builtins()->ArgumentsAdaptorTrampoline(),
           RelocInfo::CODE_TARGET);
 }
@@ -914,10 +915,11 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
         masm->isolate()->builtins()->HandleApiCallConstruct();
     ParameterCount expected(0);
     __ InvokeCode(code, expected, expected,
-                  RelocInfo::CODE_TARGET, CALL_FUNCTION);
+                  RelocInfo::CODE_TARGET, CALL_FUNCTION, CALL_AS_METHOD);
   } else {
     ParameterCount actual(r0);
-    __ InvokeFunction(r1, actual, CALL_FUNCTION);
+    __ InvokeFunction(r1, actual, CALL_FUNCTION,
+                      NullCallWrapper(), CALL_AS_METHOD);
   }
 
   // Pop the function from the stack.
@@ -1049,7 +1051,8 @@ static void Generate_JSEntryTrampolineHelper(MacroAssembler* masm,
             RelocInfo::CODE_TARGET);
   } else {
     ParameterCount actual(r0);
-    __ InvokeFunction(r1, actual, CALL_FUNCTION);
+    __ InvokeFunction(r1, actual, CALL_FUNCTION,
+                      NullCallWrapper(), CALL_AS_METHOD);
   }
 
   // Exit the JS frame and remove the parameters (except function), and return.
@@ -1077,12 +1080,17 @@ void Builtins::Generate_LazyCompile(MacroAssembler* masm) {
 
   // Preserve the function.
   __ push(r1);
+  // Push call kind information.
+  __ push(r5);
 
   // Push the function on the stack as the argument to the runtime function.
   __ push(r1);
   __ CallRuntime(Runtime::kLazyCompile, 1);
   // Calculate the entry point.
   __ add(r2, r0, Operand(Code::kHeaderSize - kHeapObjectTag));
+
+  // Restore call kind information.
+  __ pop(r5);
   // Restore saved function.
   __ pop(r1);
 
@@ -1100,12 +1108,17 @@ void Builtins::Generate_LazyRecompile(MacroAssembler* masm) {
 
   // Preserve the function.
   __ push(r1);
+  // Push call kind information.
+  __ push(r5);
 
   // Push the function on the stack as the argument to the runtime function.
   __ push(r1);
   __ CallRuntime(Runtime::kLazyRecompile, 1);
   // Calculate the entry point.
   __ add(r2, r0, Operand(Code::kHeaderSize - kHeapObjectTag));
+
+  // Restore call kind information.
+  __ pop(r5);
   // Restore saved function.
   __ pop(r1);
 
@@ -1238,8 +1251,13 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
 
     // Do not transform the receiver for strict mode functions.
     __ ldr(r2, FieldMemOperand(r1, JSFunction::kSharedFunctionInfoOffset));
-    __ ldr(r2, FieldMemOperand(r2, SharedFunctionInfo::kCompilerHintsOffset));
-    __ tst(r2, Operand(1 << (SharedFunctionInfo::kStrictModeFunction +
+    __ ldr(r3, FieldMemOperand(r2, SharedFunctionInfo::kCompilerHintsOffset));
+    __ tst(r3, Operand(1 << (SharedFunctionInfo::kStrictModeFunction +
+                             kSmiTagSize)));
+    __ b(ne, &shift_arguments);
+
+    // Do not transform the receiver for native (Compilerhints already in r3).
+    __ tst(r3, Operand(1 << (SharedFunctionInfo::kES5Native +
                              kSmiTagSize)));
     __ b(ne, &shift_arguments);
 
@@ -1252,17 +1270,17 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
     __ tst(r2, Operand(kSmiTagMask));
     __ b(eq, &convert_to_object);
 
-    __ LoadRoot(r3, Heap::kNullValueRootIndex);
-    __ cmp(r2, r3);
-    __ b(eq, &use_global_receiver);
     __ LoadRoot(r3, Heap::kUndefinedValueRootIndex);
     __ cmp(r2, r3);
     __ b(eq, &use_global_receiver);
+    __ LoadRoot(r3, Heap::kNullValueRootIndex);
+    __ cmp(r2, r3);
+    __ b(eq, &use_global_receiver);
 
+    STATIC_ASSERT(LAST_JS_OBJECT_TYPE + 1 == LAST_TYPE);
+    STATIC_ASSERT(LAST_TYPE == JS_FUNCTION_TYPE);
     __ CompareObjectType(r2, r3, r3, FIRST_JS_OBJECT_TYPE);
-    __ b(lt, &convert_to_object);
-    __ cmp(r3, Operand(LAST_JS_OBJECT_TYPE));
-    __ b(le, &shift_arguments);
+    __ b(ge, &shift_arguments);
 
     __ bind(&convert_to_object);
     __ EnterInternalFrame();  // In order to preserve argument count.
@@ -1270,7 +1288,7 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
     __ push(r0);
 
     __ push(r2);
-    __ InvokeBuiltin(Builtins::TO_OBJECT, CALL_JS);
+    __ InvokeBuiltin(Builtins::TO_OBJECT, CALL_FUNCTION);
     __ mov(r2, r0);
 
     __ pop(r0);
@@ -1340,6 +1358,7 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
     // Expected number of arguments is 0 for CALL_NON_FUNCTION.
     __ mov(r2, Operand(0, RelocInfo::NONE));
     __ GetBuiltinEntry(r3, Builtins::CALL_NON_FUNCTION);
+    __ SetCallKind(r5, CALL_AS_METHOD);
     __ Jump(masm->isolate()->builtins()->ArgumentsAdaptorTrampoline(),
             RelocInfo::CODE_TARGET);
     __ bind(&function);
@@ -1355,13 +1374,15 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
          FieldMemOperand(r3, SharedFunctionInfo::kFormalParameterCountOffset));
   __ mov(r2, Operand(r2, ASR, kSmiTagSize));
   __ ldr(r3, FieldMemOperand(r1, JSFunction::kCodeEntryOffset));
+  __ SetCallKind(r5, CALL_AS_METHOD);
   __ cmp(r2, r0);  // Check formal and actual parameter counts.
   __ Jump(masm->isolate()->builtins()->ArgumentsAdaptorTrampoline(),
           RelocInfo::CODE_TARGET,
           ne);
 
   ParameterCount expected(0);
-  __ InvokeCode(r3, expected, expected, JUMP_FUNCTION);
+  __ InvokeCode(r3, expected, expected, JUMP_FUNCTION,
+                NullCallWrapper(), CALL_AS_METHOD);
 }
 
 
@@ -1378,7 +1399,7 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
   __ push(r0);
   __ ldr(r0, MemOperand(fp, kArgsOffset));  // get the args array
   __ push(r0);
-  __ InvokeBuiltin(Builtins::APPLY_PREPARE, CALL_JS);
+  __ InvokeBuiltin(Builtins::APPLY_PREPARE, CALL_FUNCTION);
 
   // Check the stack for overflow. We are not trying need to catch
   // interruptions (e.g. debug break and preemption) here, so the "real stack
@@ -1396,7 +1417,7 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
   __ ldr(r1, MemOperand(fp, kFunctionOffset));
   __ push(r1);
   __ push(r0);
-  __ InvokeBuiltin(Builtins::APPLY_OVERFLOW, CALL_JS);
+  __ InvokeBuiltin(Builtins::APPLY_OVERFLOW, CALL_FUNCTION);
   // End of stack check.
 
   // Push current limit and index.
@@ -1416,8 +1437,13 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
   __ ldr(r0, MemOperand(fp, kRecvOffset));
 
   // Do not transform the receiver for strict mode functions.
-  __ ldr(r1, FieldMemOperand(r1, SharedFunctionInfo::kCompilerHintsOffset));
-  __ tst(r1, Operand(1 << (SharedFunctionInfo::kStrictModeFunction +
+  __ ldr(r2, FieldMemOperand(r1, SharedFunctionInfo::kCompilerHintsOffset));
+  __ tst(r2, Operand(1 << (SharedFunctionInfo::kStrictModeFunction +
+                           kSmiTagSize)));
+  __ b(ne, &push_receiver);
+
+  // Do not transform the receiver for strict mode functions.
+  __ tst(r2, Operand(1 << (SharedFunctionInfo::kES5Native +
                            kSmiTagSize)));
   __ b(ne, &push_receiver);
 
@@ -1433,16 +1459,16 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
 
   // Check if the receiver is already a JavaScript object.
   // r0: receiver
+  STATIC_ASSERT(LAST_JS_OBJECT_TYPE + 1 == LAST_TYPE);
+  STATIC_ASSERT(LAST_TYPE == JS_FUNCTION_TYPE);
   __ CompareObjectType(r0, r1, r1, FIRST_JS_OBJECT_TYPE);
-  __ b(lt, &call_to_object);
-  __ cmp(r1, Operand(LAST_JS_OBJECT_TYPE));
-  __ b(le, &push_receiver);
+  __ b(ge, &push_receiver);
 
   // Convert the receiver to a regular object.
   // r0: receiver
   __ bind(&call_to_object);
   __ push(r0);
-  __ InvokeBuiltin(Builtins::TO_OBJECT, CALL_JS);
+  __ InvokeBuiltin(Builtins::TO_OBJECT, CALL_FUNCTION);
   __ b(&push_receiver);
 
   // Use the current global receiver object as the receiver.
@@ -1492,7 +1518,8 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
   ParameterCount actual(r0);
   __ mov(r0, Operand(r0, ASR, kSmiTagSize));
   __ ldr(r1, MemOperand(fp, kFunctionOffset));
-  __ InvokeFunction(r1, actual, CALL_FUNCTION);
+  __ InvokeFunction(r1, actual, CALL_FUNCTION,
+                    NullCallWrapper(), CALL_AS_METHOD);
 
   // Tear down the internal frame and remove function, receiver and args.
   __ LeaveInternalFrame();
@@ -1529,6 +1556,7 @@ void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {
   //  -- r1 : function (passed through to callee)
   //  -- r2 : expected number of arguments
   //  -- r3 : code entry to call
+  //  -- r5 : call kind information
   // -----------------------------------
 
   Label invoke, dont_adapt_arguments;
