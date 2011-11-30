@@ -46,7 +46,9 @@ namespace internal {
 // invalidate the cache whenever a prototype map is changed.  The stub
 // validates the map chain as in the mono-morphic case.
 
+class SmallMapList;
 class StubCache;
+
 
 class SCTableReference {
  public:
@@ -294,7 +296,7 @@ class StubCache {
   void Clear();
 
   // Collect all maps that match the name and flags.
-  void CollectMatchingMaps(ZoneMapList* types,
+  void CollectMatchingMaps(SmallMapList* types,
                            String* name,
                            Code::Flags flags);
 
@@ -355,7 +357,7 @@ class StubCache {
     // shift are equal.  Shifting down the length field to get the
     // hash code would effectively throw away two bits of the hash
     // code.
-    ASSERT(kHeapObjectTagSize == String::kHashShift);
+    STATIC_ASSERT(kHeapObjectTagSize == String::kHashShift);
     // Compute the hash of the name (use entire hash field).
     ASSERT(name->HasHashCode());
     uint32_t field = name->hash_field();

@@ -2174,7 +2174,7 @@ TEST(ScriptBreakPointLine) {
   f = v8::Local<v8::Function>::Cast(env->Global()->Get(v8::String::New("f")));
   g = v8::Local<v8::Function>::Cast(env->Global()->Get(v8::String::New("g")));
 
-  // Chesk that a break point was hit when the script was run.
+  // Check that a break point was hit when the script was run.
   CHECK_EQ(1, break_point_hit_count);
   CHECK_EQ(0, StrLength(last_function_hit));
 
@@ -5844,6 +5844,7 @@ TEST(DebuggerDebugMessageDispatch) {
 
 
 TEST(DebuggerAgent) {
+  v8::V8::Initialize();
   i::Debugger* debugger = i::Isolate::Current()->debugger();
   // Make sure these ports is not used by other tests to allow tests to run in
   // parallel.

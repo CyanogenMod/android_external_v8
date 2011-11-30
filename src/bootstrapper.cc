@@ -199,6 +199,7 @@ class Genesis BASE_EMBEDDED {
   // New context initialization.  Used for creating a context from scratch.
   void InitializeGlobal(Handle<GlobalObject> inner_global,
                         Handle<JSFunction> empty_function);
+  void InitializeExperimentalGlobal();
   // Installs the contents of the native .js files on the global objects.
   // Used for creating a context from scratch.
   void InstallNativeFunctions();
@@ -1159,7 +1160,7 @@ void Genesis::InitializeGlobal(Handle<GlobalObject> inner_global,
 
 
   {
-    // Setup the call-as-function delegate.
+    // Set up the call-as-function delegate.
     Handle<Code> code =
         Handle<Code>(isolate->builtins()->builtin(
             Builtins::kHandleApiCallAsFunction));
@@ -1171,7 +1172,7 @@ void Genesis::InitializeGlobal(Handle<GlobalObject> inner_global,
   }
 
   {
-    // Setup the call-as-constructor delegate.
+    // Set up the call-as-constructor delegate.
     Handle<Code> code =
         Handle<Code>(isolate->builtins()->builtin(
             Builtins::kHandleApiCallAsConstructor));
@@ -1187,6 +1188,20 @@ void Genesis::InitializeGlobal(Handle<GlobalObject> inner_global,
 
   // Initialize the data slot.
   global_context()->set_data(heap->undefined_value());
+}
+
+
+void Genesis::InitializeExperimentalGlobal() {
+  Handle<JSObject> global = Handle<JSObject>(global_context()->global());
+
+  // TODO(mstarzinger): Move this into Genesis::InitializeGlobal once we no
+  // longer need to live behind a flag, so WeakMap gets added to the snapshot.
+  if (FLAG_harmony_weakmaps) {  // -- W e a k M a p
+    Handle<JSObject> prototype =
+        factory()->NewJSObject(isolate()->object_function(), TENURED);
+    InstallFunction(global, "WeakMap", JS_WEAK_MAP_TYPE, JSWeakMap::kSize,
+                    prototype, Builtins::kIllegal, true);
+  }
 }
 
 
@@ -1680,6 +1695,11 @@ bool Genesis::InstallExperimentalNatives() {
                "native proxy.js") == 0) {
       if (!CompileExperimentalBuiltin(isolate(), i)) return false;
     }
+    if (FLAG_harmony_weakmaps &&
+        strcmp(ExperimentalNatives::GetScriptName(i).start(),
+               "native weakmap.js") == 0) {
+      if (!CompileExperimentalBuiltin(isolate(), i)) return false;
+    }
   }
 
   InstallExperimentalNativeFunctions();
@@ -2169,7 +2189,8 @@ Genesis::Genesis(Isolate* isolate,
     isolate->counters()->contexts_created_from_scratch()->Increment();
   }
 
-  // Install experimental natives.
+  // Initialize experimental globals and install experimental natives.
+  InitializeExperimentalGlobal();
   if (!InstallExperimentalNatives()) return;
 
   result_ = global_context_;

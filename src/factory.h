@@ -58,6 +58,8 @@ class Factory {
 
   Handle<StringDictionary> NewStringDictionary(int at_least_space_for);
 
+  Handle<ObjectHashTable> NewObjectHashTable(int at_least_space_for);
+
   Handle<DescriptorArray> NewDescriptorArray(int number_of_descriptors);
   Handle<DeoptimizationInputData> NewDeoptimizationInputData(
       int deopt_entry_count,
@@ -164,6 +166,11 @@ class Factory {
   Handle<Context> NewWithContext(Handle<JSFunction> function,
                                  Handle<Context> previous,
                                  Handle<JSObject> extension);
+
+  // Create a 'block' context.
+  Handle<Context> NewBlockContext(Handle<JSFunction> function,
+                                  Handle<Context> previous,
+                                  Handle<SerializedScopeInfo> scope_info);
 
   // Return the Symbol matching the passed in string.
   Handle<String> SymbolFromString(Handle<String> value);
@@ -274,6 +281,8 @@ class Factory {
       Handle<SharedFunctionInfo> function_info,
       Handle<Context> context,
       PretenureFlag pretenure = TENURED);
+
+  Handle<SerializedScopeInfo> NewSerializedScopeInfo(int length);
 
   Handle<Code> NewCode(const CodeDesc& desc,
                        Code::Flags flags,

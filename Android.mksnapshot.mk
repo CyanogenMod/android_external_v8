@@ -12,6 +12,7 @@ intermediates := $(call local-intermediates-dir)
 
 V8_LOCAL_SRC_FILES :=
 V8_LOCAL_JS_LIBRARY_FILES :=
+V8_LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES :=
 include $(LOCAL_PATH)/Android.v8common.mk
 
 V8_LOCAL_SRC_FILES += \
@@ -33,7 +34,7 @@ endif
 LOCAL_SRC_FILES := $(V8_LOCAL_SRC_FILES)
 
 LOCAL_JS_LIBRARY_FILES := $(addprefix $(LOCAL_PATH)/, $(V8_LOCAL_JS_LIBRARY_FILES))
-LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES := $(addprefix $(LOCAL_PATH)/, src/proxy.js)
+LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES := $(addprefix $(LOCAL_PATH)/, $(V8_LOCAL_EXPERIMENTAL_JS_LIBRARY_FILES))
 
 # Copy js2c.py to intermediates directory and invoke there to avoid generating
 # jsmin.pyc in the source directory

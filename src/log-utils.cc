@@ -34,7 +34,7 @@ namespace v8 {
 namespace internal {
 
 
-const char* Log::kLogToTemporaryFile = "&";
+const char* const Log::kLogToTemporaryFile = "&";
 
 
 Log::Log(Logger* logger)
@@ -86,8 +86,6 @@ void Log::Initialize() {
   if (open_log_file) {
     if (strcmp(FLAG_logfile, "-") == 0) {
       OpenStdout();
-    } else if (strcmp(FLAG_logfile, "*") == 0) {
-      // Does nothing for now. Will be removed.
     } else if (strcmp(FLAG_logfile, kLogToTemporaryFile) == 0) {
       OpenTemporaryFile();
     } else {

@@ -258,7 +258,7 @@ static void GenerateStringCheck(MacroAssembler* masm,
   // Check that the object is a string.
   __ movq(scratch, FieldOperand(receiver, HeapObject::kMapOffset));
   __ movzxbq(scratch, FieldOperand(scratch, Map::kInstanceTypeOffset));
-  ASSERT(kNotStringTag != 0);
+  STATIC_ASSERT(kNotStringTag != 0);
   __ testl(scratch, Immediate(kNotStringTag));
   __ j(not_zero, non_string_object);
 }
@@ -3070,7 +3070,7 @@ MaybeObject* ConstructStubCompiler::CompileConstructStub(JSFunction* function) {
   // Load the initial map and verify that it is in fact a map.
   __ movq(rbx, FieldOperand(rdi, JSFunction::kPrototypeOrInitialMapOffset));
   // Will both indicate a NULL and a Smi.
-  ASSERT(kSmiTag == 0);
+  STATIC_ASSERT(kSmiTag == 0);
   __ JumpIfSmi(rbx, &generic_stub_call);
   __ CmpObjectType(rbx, MAP_TYPE, rcx);
   __ j(not_equal, &generic_stub_call);
@@ -3244,7 +3244,7 @@ void KeyedLoadStubCompiler::GenerateLoadExternalArray(
   // Check that the index is in range.
   __ movq(rbx, FieldOperand(rdx, JSObject::kElementsOffset));
   __ SmiToInteger32(rcx, rax);
-  __ cmpl(rcx, FieldOperand(rbx, ExternalArray::kLengthOffset));
+  __ cmpq(rax, FieldOperand(rbx, ExternalArray::kLengthOffset));
   // Unsigned comparison catches both negative and too-large values.
   __ j(above_equal, &miss_force_generic);
 
@@ -3379,7 +3379,7 @@ void KeyedStoreStubCompiler::GenerateStoreExternalArray(
   // Check that the index is in range.
   __ movq(rbx, FieldOperand(rdx, JSObject::kElementsOffset));
   __ SmiToInteger32(rdi, rcx);  // Untag the index.
-  __ cmpl(rdi, FieldOperand(rbx, ExternalArray::kLengthOffset));
+  __ cmpq(rcx, FieldOperand(rbx, ExternalArray::kLengthOffset));
   // Unsigned comparison catches both negative and too-large values.
   __ j(above_equal, &miss_force_generic);
 
@@ -3752,10 +3752,11 @@ void KeyedStoreStubCompiler::GenerateStoreFastDoubleElement(
 
   __ bind(&smi_value);
   // Value is a smi. convert to a double and store.
-  __ SmiToInteger32(rax, rax);
-  __ push(rax);
+  // Preserve original value.
+  __ SmiToInteger32(rdx, rax);
+  __ push(rdx);
   __ fild_s(Operand(rsp, 0));
-  __ pop(rax);
+  __ pop(rdx);
   __ SmiToInteger32(rcx, rcx);
   __ fstp_d(FieldOperand(rdi, rcx, times_8, FixedDoubleArray::kHeaderSize));
   __ ret(0);

@@ -35,6 +35,7 @@
 #include "debug.h"
 #include "deoptimizer.h"
 #include "execution.h"
+#include "flags.h"
 #include "global-handles.h"
 #include "heap-profiler.h"
 #include "messages.h"
@@ -84,7 +85,7 @@ namespace v8 {
     if (has_pending_exception) {                                               \
       if (handle_scope_implementer->CallDepthIsZero() &&                       \
           (isolate)->is_out_of_memory()) {                                     \
-        if (!handle_scope_implementer->ignore_out_of_memory())                 \
+        if (!(isolate)->ignore_out_of_memory())                                \
           i::V8::FatalProcessOutOfMemory(NULL);                                \
       }                                                                        \
       bool call_depth_is_zero = handle_scope_implementer->CallDepthIsZero();   \
@@ -877,7 +878,6 @@ static void InitializeFunctionTemplate(
       i::Handle<i::FunctionTemplateInfo> info) {
   info->set_tag(i::Smi::FromInt(Consts::FUNCTION_TEMPLATE));
   info->set_flag(0);
-  info->set_prototype_attributes(i::Smi::FromInt(v8::None));
 }
 
 
@@ -1100,14 +1100,13 @@ void FunctionTemplate::SetHiddenPrototype(bool value) {
 }
 
 
-void FunctionTemplate::SetPrototypeAttributes(int attributes) {
+void FunctionTemplate::ReadOnlyPrototype() {
   i::Isolate* isolate = Utils::OpenHandle(this)->GetIsolate();
   if (IsDeadCheck(isolate, "v8::FunctionTemplate::SetPrototypeAttributes()")) {
     return;
   }
   ENTER_V8(isolate);
-  Utils::OpenHandle(this)->set_prototype_attributes(
-      i::Smi::FromInt(attributes));
+  Utils::OpenHandle(this)->set_read_only_prototype(true);
 }
 
 
@@ -1407,7 +1406,7 @@ void ObjectTemplate::SetInternalFieldCount(int value) {
 ScriptData* ScriptData::PreCompile(const char* input, int length) {
   i::Utf8ToUC16CharacterStream stream(
       reinterpret_cast<const unsigned char*>(input), length);
-  return i::ParserApi::PreParse(&stream, NULL);
+  return i::ParserApi::PreParse(&stream, NULL, i::FLAG_harmony_block_scoping);
 }
 
 
@@ -1416,10 +1415,10 @@ ScriptData* ScriptData::PreCompile(v8::Handle<String> source) {
   if (str->IsExternalTwoByteString()) {
     i::ExternalTwoByteStringUC16CharacterStream stream(
       i::Handle<i::ExternalTwoByteString>::cast(str), 0, str->length());
-    return i::ParserApi::PreParse(&stream, NULL);
+    return i::ParserApi::PreParse(&stream, NULL, i::FLAG_harmony_block_scoping);
   } else {
     i::GenericStringUC16CharacterStream stream(str, 0, str->length());
-    return i::ParserApi::PreParse(&stream, NULL);
+    return i::ParserApi::PreParse(&stream, NULL, i::FLAG_harmony_block_scoping);
   }
 }
 
@@ -3165,10 +3164,9 @@ static i::Context* GetCreationContext(i::JSObject* object) {
   i::Object* constructor = object->map()->constructor();
   i::JSFunction* function;
   if (!constructor->IsJSFunction()) {
-    // API functions have null as a constructor,
+    // Functions have null as a constructor,
     // but any JSFunction knows its context immediately.
-    ASSERT(object->IsJSFunction() &&
-           i::JSFunction::cast(object)->shared()->IsApiFunction());
+    ASSERT(object->IsJSFunction());
     function = i::JSFunction::cast(object);
   } else {
     function = i::JSFunction::cast(constructor);
@@ -3194,39 +3192,7 @@ int v8::Object::GetIdentityHash() {
   ENTER_V8(isolate);
   i::HandleScope scope(isolate);
   i::Handle<i::JSObject> self = Utils::OpenHandle(this);
-  i::Handle<i::Object> hidden_props_obj(i::GetHiddenProperties(self, true));
-  if (!hidden_props_obj->IsJSObject()) {
-    // We failed to create hidden properties.  That's a detached
-    // global proxy.
-    ASSERT(hidden_props_obj->IsUndefined());
-    return 0;
-  }
-  i::Handle<i::JSObject> hidden_props =
-      i::Handle<i::JSObject>::cast(hidden_props_obj);
-  i::Handle<i::String> hash_symbol = isolate->factory()->identity_hash_symbol();
-  if (hidden_props->HasLocalProperty(*hash_symbol)) {
-    i::Handle<i::Object> hash = i::GetProperty(hidden_props, hash_symbol);
-    CHECK(!hash.is_null());
-    CHECK(hash->IsSmi());
-    return i::Smi::cast(*hash)->value();
-  }
-
-  int hash_value;
-  int attempts = 0;
-  do {
-    // Generate a random 32-bit hash value but limit range to fit
-    // within a smi.
-    hash_value = i::V8::Random(self->GetIsolate()) & i::Smi::kMaxValue;
-    attempts++;
-  } while (hash_value == 0 && attempts < 30);
-  hash_value = hash_value != 0 ? hash_value : 1;  // never return 0
-  CHECK(!i::SetLocalPropertyIgnoreAttributes(
-          hidden_props,
-          hash_symbol,
-          i::Handle<i::Object>(i::Smi::FromInt(hash_value)),
-          static_cast<PropertyAttributes>(None)).is_null());
-
-  return hash_value;
+  return i::GetIdentityHash(self);
 }
 
 
@@ -3237,7 +3203,9 @@ bool v8::Object::SetHiddenValue(v8::Handle<v8::String> key,
   ENTER_V8(isolate);
   i::HandleScope scope(isolate);
   i::Handle<i::JSObject> self = Utils::OpenHandle(this);
-  i::Handle<i::Object> hidden_props(i::GetHiddenProperties(self, true));
+  i::Handle<i::Object> hidden_props(i::GetHiddenProperties(
+      self,
+      i::JSObject::ALLOW_CREATION));
   i::Handle<i::Object> key_obj = Utils::OpenHandle(*key);
   i::Handle<i::Object> value_obj = Utils::OpenHandle(*value);
   EXCEPTION_PREAMBLE(isolate);
@@ -3259,7 +3227,9 @@ v8::Local<v8::Value> v8::Object::GetHiddenValue(v8::Handle<v8::String> key) {
              return Local<v8::Value>());
   ENTER_V8(isolate);
   i::Handle<i::JSObject> self = Utils::OpenHandle(this);
-  i::Handle<i::Object> hidden_props(i::GetHiddenProperties(self, false));
+  i::Handle<i::Object> hidden_props(i::GetHiddenProperties(
+      self,
+      i::JSObject::OMIT_CREATION));
   if (hidden_props->IsUndefined()) {
     return v8::Local<v8::Value>();
   }
@@ -3281,7 +3251,9 @@ bool v8::Object::DeleteHiddenValue(v8::Handle<v8::String> key) {
   ENTER_V8(isolate);
   i::HandleScope scope(isolate);
   i::Handle<i::JSObject> self = Utils::OpenHandle(this);
-  i::Handle<i::Object> hidden_props(i::GetHiddenProperties(self, false));
+  i::Handle<i::Object> hidden_props(i::GetHiddenProperties(
+      self,
+      i::JSObject::OMIT_CREATION));
   if (hidden_props->IsUndefined()) {
     return true;
   }
@@ -3649,7 +3621,7 @@ int String::Utf8Length() const {
 int String::WriteUtf8(char* buffer,
                       int capacity,
                       int* nchars_ref,
-                      WriteHints hints) const {
+                      int options) const {
   i::Isolate* isolate = Utils::OpenHandle(this)->GetIsolate();
   if (IsDeadCheck(isolate, "v8::String::WriteUtf8()")) return 0;
   LOG_API(isolate, "String::WriteUtf8");
@@ -3657,7 +3629,7 @@ int String::WriteUtf8(char* buffer,
   i::StringInputBuffer& write_input_buffer = *isolate->write_input_buffer();
   i::Handle<i::String> str = Utils::OpenHandle(this);
   isolate->string_tracker()->RecordWrite(str);
-  if (hints & HINT_MANY_WRITES_EXPECTED) {
+  if (options & HINT_MANY_WRITES_EXPECTED) {
     // Flatten the string for efficiency.  This applies whether we are
     // using StringInputBuffer or Get(i) to access the characters.
     str->TryFlatten();
@@ -3697,7 +3669,8 @@ int String::WriteUtf8(char* buffer,
     }
   }
   if (nchars_ref != NULL) *nchars_ref = nchars;
-  if (i == len && (capacity == -1 || pos < capacity))
+  if (!(options & NO_NULL_TERMINATION) &&
+      (i == len && (capacity == -1 || pos < capacity)))
     buffer[pos++] = '\0';
   return pos;
 }
@@ -3706,7 +3679,7 @@ int String::WriteUtf8(char* buffer,
 int String::WriteAscii(char* buffer,
                        int start,
                        int length,
-                       WriteHints hints) const {
+                       int options) const {
   i::Isolate* isolate = Utils::OpenHandle(this)->GetIsolate();
   if (IsDeadCheck(isolate, "v8::String::WriteAscii()")) return 0;
   LOG_API(isolate, "String::WriteAscii");
@@ -3715,7 +3688,7 @@ int String::WriteAscii(char* buffer,
   ASSERT(start >= 0 && length >= -1);
   i::Handle<i::String> str = Utils::OpenHandle(this);
   isolate->string_tracker()->RecordWrite(str);
-  if (hints & HINT_MANY_WRITES_EXPECTED) {
+  if (options & HINT_MANY_WRITES_EXPECTED) {
     // Flatten the string for efficiency.  This applies whether we are
     // using StringInputBuffer or Get(i) to access the characters.
     str->TryFlatten();
@@ -3731,7 +3704,7 @@ int String::WriteAscii(char* buffer,
     if (c == '\0') c = ' ';
     buffer[i] = c;
   }
-  if (length == -1 || i < length)
+  if (!(options & NO_NULL_TERMINATION) && (length == -1 || i < length))
     buffer[i] = '\0';
   return i;
 }
@@ -3740,7 +3713,7 @@ int String::WriteAscii(char* buffer,
 int String::Write(uint16_t* buffer,
                   int start,
                   int length,
-                  WriteHints hints) const {
+                  int options) const {
   i::Isolate* isolate = Utils::OpenHandle(this)->GetIsolate();
   if (IsDeadCheck(isolate, "v8::String::Write()")) return 0;
   LOG_API(isolate, "String::Write");
@@ -3748,7 +3721,7 @@ int String::Write(uint16_t* buffer,
   ASSERT(start >= 0 && length >= -1);
   i::Handle<i::String> str = Utils::OpenHandle(this);
   isolate->string_tracker()->RecordWrite(str);
-  if (hints & HINT_MANY_WRITES_EXPECTED) {
+  if (options & HINT_MANY_WRITES_EXPECTED) {
     // Flatten the string for efficiency.  This applies whether we are
     // using StringInputBuffer or Get(i) to access the characters.
     str->TryFlatten();
@@ -3758,7 +3731,8 @@ int String::Write(uint16_t* buffer,
     end = str->length();
   if (end < 0) return 0;
   i::String::WriteToFlat(*str, buffer, start, end);
-  if (length == -1 || end - start < length) {
+  if (!(options & NO_NULL_TERMINATION) &&
+      (length == -1 || end - start < length)) {
     buffer[end - start] = '\0';
   }
   return end - start;
@@ -4146,7 +4120,7 @@ bool Context::InContext() {
 
 v8::Local<v8::Context> Context::GetEntered() {
   i::Isolate* isolate = i::Isolate::Current();
-  if (IsDeadCheck(isolate, "v8::Context::GetEntered()")) {
+  if (!EnsureInitializedForIsolate(isolate, "v8::Context::GetEntered()")) {
     return Local<Context>();
   }
   i::Handle<i::Object> last =
@@ -4287,8 +4261,8 @@ static void* ExternalValueImpl(i::Handle<i::Object> obj) {
 Local<Value> v8::External::Wrap(void* data) {
   i::Isolate* isolate = i::Isolate::Current();
   STATIC_ASSERT(sizeof(data) == sizeof(i::Address));
-  LOG_API(isolate, "External::Wrap");
   EnsureInitializedForIsolate(isolate, "v8::External::Wrap()");
+  LOG_API(isolate, "External::Wrap");
   ENTER_V8(isolate);
 
   v8::Local<v8::Value> result = CanBeEncodedAsSmi(data)
@@ -4332,8 +4306,8 @@ void* v8::External::FullUnwrap(v8::Handle<v8::Value> wrapper) {
 Local<External> v8::External::New(void* data) {
   STATIC_ASSERT(sizeof(data) == sizeof(i::Address));
   i::Isolate* isolate = i::Isolate::Current();
-  LOG_API(isolate, "External::New");
   EnsureInitializedForIsolate(isolate, "v8::External::New()");
+  LOG_API(isolate, "External::New");
   ENTER_V8(isolate);
   return ExternalNewImpl(data);
 }
@@ -4825,8 +4799,7 @@ Local<Integer> Integer::NewFromUnsigned(uint32_t value) {
 
 
 void V8::IgnoreOutOfMemoryException() {
-  EnterIsolateIfNeeded()->handle_scope_implementer()->set_ignore_out_of_memory(
-      true);
+  EnterIsolateIfNeeded()->set_ignore_out_of_memory(true);
 }
 
 
@@ -5790,6 +5763,16 @@ const HeapGraphNode* HeapGraphNode::GetDominatorNode() const {
   i::Isolate* isolate = i::Isolate::Current();
   IsDeadCheck(isolate, "v8::HeapSnapshot::GetDominatorNode");
   return reinterpret_cast<const HeapGraphNode*>(ToInternal(this)->dominator());
+}
+
+
+v8::Handle<v8::Value> HeapGraphNode::GetHeapValue() const {
+  i::Isolate* isolate = i::Isolate::Current();
+  IsDeadCheck(isolate, "v8::HeapGraphNode::GetHeapValue");
+  i::Handle<i::HeapObject> object = ToInternal(this)->GetHeapObject();
+  return v8::Handle<Value>(!object.is_null() ?
+                           ToApi<Value>(object) : ToApi<Value>(
+                               isolate->factory()->undefined_value()));
 }
 
 

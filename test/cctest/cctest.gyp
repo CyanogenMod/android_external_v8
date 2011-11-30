@@ -26,10 +26,10 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 {
+  'includes': ['../../build/common.gypi'],
   'variables': {
     'generated_file': '<(SHARED_INTERMEDIATE_DIR)/resources.cc',
   },
-  'includes': [ '../../build/v8-features.gypi' ],
   'targets': [
     {
       'target_name': 'cctest',
@@ -61,6 +61,7 @@
         'test-debug.cc',
         'test-decls.cc',
         'test-deoptimization.cc',
+        'test-dictionary.cc',
         'test-diy-fp.cc',
         'test-double.cc',
         'test-dtoa.cc',
@@ -78,6 +79,7 @@
         'test-log.cc',
         'test-mark-compact.cc',
         'test-parsing.cc',
+        'test-platform-tls.cc',
         'test-profile-generator.cc',
         'test-regexp.cc',
         'test-reloc-info.cc',

@@ -58,6 +58,9 @@ StaticVisitorBase::VisitorId StaticVisitorBase::GetVisitorId(
           return kVisitConsString;
         }
 
+      case kSlicedStringTag:
+        return kVisitSlicedString;
+
       case kExternalStringTag:
         return GetVisitorIdForSize(kVisitDataObject,
                                    kVisitDataObjectGeneric,
@@ -87,6 +90,9 @@ StaticVisitorBase::VisitorId StaticVisitorBase::GetVisitorId(
 
     case JS_GLOBAL_PROPERTY_CELL_TYPE:
       return kVisitPropertyCell;
+
+    case JS_WEAK_MAP_TYPE:
+      return kVisitJSWeakMap;
 
     case JS_REGEXP_TYPE:
       return kVisitJSRegExp;

@@ -142,6 +142,11 @@ MaybeObject* Heap::CopyFixedArray(FixedArray* src) {
 }
 
 
+MaybeObject* Heap::CopyFixedDoubleArray(FixedDoubleArray* src) {
+  return CopyFixedDoubleArrayWithMap(src, src->map());
+}
+
+
 MaybeObject* Heap::AllocateRaw(int size_in_bytes,
                                AllocationSpace space,
                                AllocationSpace retry_space) {
@@ -318,10 +323,10 @@ AllocationSpace Heap::TargetSpaceId(InstanceType type) {
   ASSERT(type != JS_GLOBAL_PROPERTY_CELL_TYPE);
 
   if (type < FIRST_NONSTRING_TYPE) {
-    // There are three string representations: sequential strings, cons
-    // strings, and external strings.  Only cons strings contain
-    // non-map-word pointers to heap objects.
-    return ((type & kStringRepresentationMask) == kConsStringTag)
+    // There are four string representations: sequential strings, external
+    // strings, cons strings, and sliced strings.
+    // Only the latter two contain non-map-word pointers to heap objects.
+    return ((type & kIsIndirectStringMask) == kIsIndirectStringTag)
         ? OLD_POINTER_SPACE
         : OLD_DATA_SPACE;
   } else {

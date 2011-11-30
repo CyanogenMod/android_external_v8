@@ -1211,17 +1211,11 @@ void LCodeGen::DoJSArrayLength(LJSArrayLength* instr) {
 }
 
 
-void LCodeGen::DoFixedArrayLength(LFixedArrayLength* instr) {
+void LCodeGen::DoFixedArrayBaseLength(
+    LFixedArrayBaseLength* instr) {
   Register result = ToRegister(instr->result());
   Register array = ToRegister(instr->InputAt(0));
-  __ mov(result, FieldOperand(array, FixedArray::kLengthOffset));
-}
-
-
-void LCodeGen::DoExternalArrayLength(LExternalArrayLength* instr) {
-  Register result = ToRegister(instr->result());
-  Register array = ToRegister(instr->InputAt(0));
-  __ mov(result, FieldOperand(array, ExternalArray::kLengthOffset));
+  __ mov(result, FieldOperand(array, FixedArrayBase::kLengthOffset));
 }
 
 
@@ -1393,44 +1387,98 @@ void LCodeGen::DoBranch(LBranch* instr) {
   } else {
     ASSERT(r.IsTagged());
     Register reg = ToRegister(instr->InputAt(0));
-    if (instr->hydrogen()->value()->type().IsBoolean()) {
+    HType type = instr->hydrogen()->value()->type();
+    if (type.IsBoolean()) {
       __ cmp(reg, factory()->true_value());
       EmitBranch(true_block, false_block, equal);
+    } else if (type.IsSmi()) {
+      __ test(reg, Operand(reg));
+      EmitBranch(true_block, false_block, not_equal);
     } else {
       Label* true_label = chunk_->GetAssemblyLabel(true_block);
       Label* false_label = chunk_->GetAssemblyLabel(false_block);
 
-      __ cmp(reg, factory()->undefined_value());
-      __ j(equal, false_label);
-      __ cmp(reg, factory()->true_value());
-      __ j(equal, true_label);
-      __ cmp(reg, factory()->false_value());
-      __ j(equal, false_label);
-      __ test(reg, Operand(reg));
-      __ j(equal, false_label);
-      __ JumpIfSmi(reg, true_label);
+      ToBooleanStub::Types expected = instr->hydrogen()->expected_input_types();
+      // Avoid deopts in the case where we've never executed this path before.
+      if (expected.IsEmpty()) expected = ToBooleanStub::all_types();
 
-      // Test for double values. Zero is false.
-      Label call_stub;
-      __ cmp(FieldOperand(reg, HeapObject::kMapOffset),
-             factory()->heap_number_map());
-      __ j(not_equal, &call_stub, Label::kNear);
-      __ fldz();
-      __ fld_d(FieldOperand(reg, HeapNumber::kValueOffset));
-      __ FCmp();
-      __ j(zero, false_label);
-      __ jmp(true_label);
+      if (expected.Contains(ToBooleanStub::UNDEFINED)) {
+        // undefined -> false.
+        __ cmp(reg, factory()->undefined_value());
+        __ j(equal, false_label);
+      }
+      if (expected.Contains(ToBooleanStub::BOOLEAN)) {
+        // true -> true.
+        __ cmp(reg, factory()->true_value());
+        __ j(equal, true_label);
+        // false -> false.
+        __ cmp(reg, factory()->false_value());
+        __ j(equal, false_label);
+      }
+      if (expected.Contains(ToBooleanStub::NULL_TYPE)) {
+        // 'null' -> false.
+        __ cmp(reg, factory()->null_value());
+        __ j(equal, false_label);
+      }
 
-      // The conversion stub doesn't cause garbage collections so it's
-      // safe to not record a safepoint after the call.
-      __ bind(&call_stub);
-      ToBooleanStub stub(eax);
-      __ pushad();
-      __ push(reg);
-      __ CallStub(&stub);
-      __ test(eax, Operand(eax));
-      __ popad();
-      EmitBranch(true_block, false_block, not_zero);
+      if (expected.Contains(ToBooleanStub::SMI)) {
+        // Smis: 0 -> false, all other -> true.
+        __ test(reg, Operand(reg));
+        __ j(equal, false_label);
+        __ JumpIfSmi(reg, true_label);
+      } else if (expected.NeedsMap()) {
+        // If we need a map later and have a Smi -> deopt.
+        __ test(reg, Immediate(kSmiTagMask));
+        DeoptimizeIf(zero, instr->environment());
+      }
+
+      Register map = no_reg;  // Keep the compiler happy.
+      if (expected.NeedsMap()) {
+        map = ToRegister(instr->TempAt(0));
+        ASSERT(!map.is(reg));
+        __ mov(map, FieldOperand(reg, HeapObject::kMapOffset));
+
+        if (expected.CanBeUndetectable()) {
+          // Undetectable -> false.
+          __ test_b(FieldOperand(map, Map::kBitFieldOffset),
+                    1 << Map::kIsUndetectable);
+          __ j(not_zero, false_label);
+        }
+      }
+
+      if (expected.Contains(ToBooleanStub::SPEC_OBJECT)) {
+        // spec object -> true.
+        __ CmpInstanceType(map, FIRST_SPEC_OBJECT_TYPE);
+        __ j(above_equal, true_label);
+      }
+
+      if (expected.Contains(ToBooleanStub::STRING)) {
+        // String value -> false iff empty.
+        Label not_string;
+        __ CmpInstanceType(map, FIRST_NONSTRING_TYPE);
+        __ j(above_equal, &not_string, Label::kNear);
+        __ cmp(FieldOperand(reg, String::kLengthOffset), Immediate(0));
+        __ j(not_zero, true_label);
+        __ jmp(false_label);
+        __ bind(&not_string);
+      }
+
+      if (expected.Contains(ToBooleanStub::HEAP_NUMBER)) {
+        // heap number -> false iff +0, -0, or NaN.
+        Label not_heap_number;
+        __ cmp(FieldOperand(reg, HeapObject::kMapOffset),
+               factory()->heap_number_map());
+        __ j(not_equal, &not_heap_number, Label::kNear);
+        __ fldz();
+        __ fld_d(FieldOperand(reg, HeapNumber::kValueOffset));
+        __ FCmp();
+        __ j(zero, false_label);
+        __ jmp(true_label);
+        __ bind(&not_heap_number);
+      }
+
+      // We've seen something for the first time -> deopt.
+      DeoptimizeIf(no_condition, instr->environment());
     }
   }
 }
@@ -2211,16 +2259,13 @@ void LCodeGen::DoAccessArgumentsAt(LAccessArgumentsAt* instr) {
 
 
 void LCodeGen::DoLoadKeyedFastElement(LLoadKeyedFastElement* instr) {
-  Register elements = ToRegister(instr->elements());
-  Register key = ToRegister(instr->key());
   Register result = ToRegister(instr->result());
-  ASSERT(result.is(elements));
 
   // Load the result.
-  __ mov(result, FieldOperand(elements,
-                              key,
-                              times_pointer_size,
-                              FixedArray::kHeaderSize));
+  __ mov(result,
+         BuildFastArrayOperand(instr->elements(), instr->key(),
+                               JSObject::FAST_ELEMENTS,
+                               FixedArray::kHeaderSize - kHeapObjectTag));
 
   // Check for the hole value.
   if (instr->hydrogen()->RequiresHoleCheck()) {
@@ -2253,22 +2298,22 @@ void LCodeGen::DoLoadKeyedFastDoubleElement(
 
 
 Operand LCodeGen::BuildFastArrayOperand(
-    LOperand* external_pointer,
+    LOperand* elements_pointer,
     LOperand* key,
     JSObject::ElementsKind elements_kind,
     uint32_t offset) {
-  Register external_pointer_reg = ToRegister(external_pointer);
+  Register elements_pointer_reg = ToRegister(elements_pointer);
   int shift_size = ElementsKindToShiftSize(elements_kind);
   if (key->IsConstantOperand()) {
     int constant_value = ToInteger32(LConstantOperand::cast(key));
     if (constant_value & 0xF0000000) {
       Abort("array index constant value too big");
     }
-    return Operand(external_pointer_reg,
+    return Operand(elements_pointer_reg,
                    constant_value * (1 << shift_size) + offset);
   } else {
     ScaleFactor scale_factor = static_cast<ScaleFactor>(shift_size);
-    return Operand(external_pointer_reg, ToRegister(key), scale_factor, offset);
+    return Operand(elements_pointer_reg, ToRegister(key), scale_factor, offset);
   }
 }
 
@@ -2665,23 +2710,53 @@ void LCodeGen::DoMathFloor(LUnaryMathOperation* instr) {
   XMMRegister xmm_scratch = xmm0;
   Register output_reg = ToRegister(instr->result());
   XMMRegister input_reg = ToDoubleRegister(instr->value());
-  __ xorps(xmm_scratch, xmm_scratch);  // Zero the register.
-  __ ucomisd(input_reg, xmm_scratch);
 
-  if (instr->hydrogen()->CheckFlag(HValue::kBailoutOnMinusZero)) {
-    DeoptimizeIf(below_equal, instr->environment());
+  if (CpuFeatures::IsSupported(SSE4_1)) {
+    CpuFeatures::Scope scope(SSE4_1);
+    if (instr->hydrogen()->CheckFlag(HValue::kBailoutOnMinusZero)) {
+      // Deoptimize on negative zero.
+      Label non_zero;
+      __ xorps(xmm_scratch, xmm_scratch);  // Zero the register.
+      __ ucomisd(input_reg, xmm_scratch);
+      __ j(not_equal, &non_zero, Label::kNear);
+      __ movmskpd(output_reg, input_reg);
+      __ test(output_reg, Immediate(1));
+      DeoptimizeIf(not_zero, instr->environment());
+      __ bind(&non_zero);
+    }
+    __ roundsd(xmm_scratch, input_reg, Assembler::kRoundDown);
+    __ cvttsd2si(output_reg, Operand(xmm_scratch));
+    // Overflow is signalled with minint.
+    __ cmp(output_reg, 0x80000000u);
+    DeoptimizeIf(equal, instr->environment());
   } else {
+    Label done;
+    // Deoptimize on negative numbers.
+    __ xorps(xmm_scratch, xmm_scratch);  // Zero the register.
+    __ ucomisd(input_reg, xmm_scratch);
     DeoptimizeIf(below, instr->environment());
+
+    if (instr->hydrogen()->CheckFlag(HValue::kBailoutOnMinusZero)) {
+      // Check for negative zero.
+      Label positive_sign;
+      __ j(above, &positive_sign, Label::kNear);
+      __ movmskpd(output_reg, input_reg);
+      __ test(output_reg, Immediate(1));
+      DeoptimizeIf(not_zero, instr->environment());
+      __ Set(output_reg, Immediate(0));
+      __ jmp(&done, Label::kNear);
+      __ bind(&positive_sign);
+    }
+
+    // Use truncating instruction (OK because input is positive).
+    __ cvttsd2si(output_reg, Operand(input_reg));
+
+    // Overflow is signalled with minint.
+    __ cmp(output_reg, 0x80000000u);
+    DeoptimizeIf(equal, instr->environment());
+    __ bind(&done);
   }
-
-  // Use truncating instruction (OK because input is positive).
-  __ cvttsd2si(output_reg, Operand(input_reg));
-
-  // Overflow is signalled with minint.
-  __ cmp(output_reg, 0x80000000u);
-  DeoptimizeIf(equal, instr->environment());
 }
-
 
 void LCodeGen::DoMathRound(LUnaryMathOperation* instr) {
   XMMRegister xmm_scratch = xmm0;
@@ -2692,12 +2767,10 @@ void LCodeGen::DoMathRound(LUnaryMathOperation* instr) {
   // xmm_scratch = 0.5
   ExternalReference one_half = ExternalReference::address_of_one_half();
   __ movdbl(xmm_scratch, Operand::StaticVariable(one_half));
-
   __ ucomisd(xmm_scratch, input_reg);
   __ j(above, &below_half);
   // input = input + 0.5
   __ addsd(input_reg, xmm_scratch);
-
 
   // Compute Math.floor(value + 0.5).
   // Use truncating instruction (OK because input is positive).
@@ -3017,8 +3090,14 @@ void LCodeGen::DoStoreNamedGeneric(LStoreNamedGeneric* instr) {
 
 
 void LCodeGen::DoBoundsCheck(LBoundsCheck* instr) {
-  __ cmp(ToRegister(instr->index()), ToOperand(instr->length()));
-  DeoptimizeIf(above_equal, instr->environment());
+  if (instr->index()->IsConstantOperand()) {
+    __ cmp(ToOperand(instr->length()),
+           ToImmediate(LConstantOperand::cast(instr->index())));
+    DeoptimizeIf(below_equal, instr->environment());
+  } else {
+    __ cmp(ToRegister(instr->index()), ToOperand(instr->length()));
+    DeoptimizeIf(above_equal, instr->environment());
+  }
 }
 
 
@@ -3096,6 +3175,7 @@ void LCodeGen::DoStoreKeyedFastElement(LStoreKeyedFastElement* instr) {
 void LCodeGen::DoStoreKeyedFastDoubleElement(
     LStoreKeyedFastDoubleElement* instr) {
   XMMRegister value = ToDoubleRegister(instr->value());
+  Register key = instr->key()->IsRegister() ? ToRegister(instr->key()) : no_reg;
   Label have_value;
 
   __ ucomisd(value, value);
@@ -3137,95 +3217,79 @@ void LCodeGen::DoStringCharCodeAt(LStringCharCodeAt* instr) {
   };
 
   Register string = ToRegister(instr->string());
-  Register index = no_reg;
-  int const_index = -1;
-  if (instr->index()->IsConstantOperand()) {
-    const_index = ToInteger32(LConstantOperand::cast(instr->index()));
-    STATIC_ASSERT(String::kMaxLength <= Smi::kMaxValue);
-    if (!Smi::IsValid(const_index)) {
-      // Guaranteed to be out of bounds because of the assert above.
-      // So the bounds check that must dominate this instruction must
-      // have deoptimized already.
-      if (FLAG_debug_code) {
-        __ Abort("StringCharCodeAt: out of bounds index.");
-      }
-      // No code needs to be generated.
-      return;
-    }
-  } else {
-    index = ToRegister(instr->index());
-  }
+  Register index = ToRegister(instr->index());
   Register result = ToRegister(instr->result());
 
   DeferredStringCharCodeAt* deferred =
       new DeferredStringCharCodeAt(this, instr);
 
-  Label flat_string, ascii_string, done;
-
   // Fetch the instance type of the receiver into result register.
   __ mov(result, FieldOperand(string, HeapObject::kMapOffset));
   __ movzx_b(result, FieldOperand(result, Map::kInstanceTypeOffset));
 
-  // We need special handling for non-flat strings.
-  STATIC_ASSERT(kSeqStringTag == 0);
-  __ test(result, Immediate(kStringRepresentationMask));
-  __ j(zero, &flat_string, Label::kNear);
+  // We need special handling for indirect strings.
+  Label check_sequential;
+  __ test(result, Immediate(kIsIndirectStringMask));
+  __ j(zero, &check_sequential, Label::kNear);
 
-  // Handle non-flat strings.
-  __ test(result, Immediate(kIsConsStringMask));
-  __ j(zero, deferred->entry());
+  // Dispatch on the indirect string shape: slice or cons.
+  Label cons_string;
+  __ test(result, Immediate(kSlicedNotConsMask));
+  __ j(zero, &cons_string, Label::kNear);
 
-  // ConsString.
+  // Handle slices.
+  Label indirect_string_loaded;
+  __ mov(result, FieldOperand(string, SlicedString::kOffsetOffset));
+  __ SmiUntag(result);
+  __ add(index, Operand(result));
+  __ mov(string, FieldOperand(string, SlicedString::kParentOffset));
+  __ jmp(&indirect_string_loaded, Label::kNear);
+
+  // Handle conses.
   // Check whether the right hand side is the empty string (i.e. if
   // this is really a flat string in a cons string). If that is not
   // the case we would rather go to the runtime system now to flatten
   // the string.
+  __ bind(&cons_string);
   __ cmp(FieldOperand(string, ConsString::kSecondOffset),
          Immediate(factory()->empty_string()));
   __ j(not_equal, deferred->entry());
-  // Get the first of the two strings and load its instance type.
   __ mov(string, FieldOperand(string, ConsString::kFirstOffset));
+
+  __ bind(&indirect_string_loaded);
   __ mov(result, FieldOperand(string, HeapObject::kMapOffset));
   __ movzx_b(result, FieldOperand(result, Map::kInstanceTypeOffset));
-  // If the first cons component is also non-flat, then go to runtime.
+
+  // Check whether the string is sequential. The only non-sequential
+  // shapes we support have just been unwrapped above.
+  __ bind(&check_sequential);
   STATIC_ASSERT(kSeqStringTag == 0);
   __ test(result, Immediate(kStringRepresentationMask));
   __ j(not_zero, deferred->entry());
 
-  // Check for ASCII or two-byte string.
-  __ bind(&flat_string);
+  // Dispatch on the encoding: ASCII or two-byte.
+  Label ascii_string;
   STATIC_ASSERT(kAsciiStringTag != 0);
   __ test(result, Immediate(kStringEncodingMask));
   __ j(not_zero, &ascii_string, Label::kNear);
 
   // Two-byte string.
   // Load the two-byte character code into the result register.
+  Label done;
   STATIC_ASSERT(kSmiTag == 0 && kSmiTagSize == 1);
-  if (instr->index()->IsConstantOperand()) {
-    __ movzx_w(result,
-               FieldOperand(string,
-                            SeqTwoByteString::kHeaderSize +
-                            (kUC16Size * const_index)));
-  } else {
-    __ movzx_w(result, FieldOperand(string,
-                                    index,
-                                    times_2,
-                                    SeqTwoByteString::kHeaderSize));
-  }
+  __ movzx_w(result, FieldOperand(string,
+                                  index,
+                                  times_2,
+                                  SeqTwoByteString::kHeaderSize));
   __ jmp(&done, Label::kNear);
 
   // ASCII string.
   // Load the byte into the result register.
   __ bind(&ascii_string);
-  if (instr->index()->IsConstantOperand()) {
-    __ movzx_b(result, FieldOperand(string,
-                                    SeqAsciiString::kHeaderSize + const_index));
-  } else {
-    __ movzx_b(result, FieldOperand(string,
-                                    index,
-                                    times_1,
-                                    SeqAsciiString::kHeaderSize));
-  }
+  __ movzx_b(result, FieldOperand(string,
+                                  index,
+                                  times_1,
+                                  SeqAsciiString::kHeaderSize));
   __ bind(&done);
   __ bind(deferred->exit());
 }
@@ -4108,6 +4172,10 @@ Condition LCodeGen::EmitTypeofIs(Label* true_label,
     __ cmp(input, factory()->false_value());
     final_branch_condition = equal;
 
+  } else if (FLAG_harmony_typeof && type_name->Equals(heap()->null_symbol())) {
+    __ cmp(input, factory()->null_value());
+    final_branch_condition = equal;
+
   } else if (type_name->Equals(heap()->undefined_symbol())) {
     __ cmp(input, factory()->undefined_value());
     __ j(equal, true_label);
@@ -4126,8 +4194,10 @@ Condition LCodeGen::EmitTypeofIs(Label* true_label,
 
   } else if (type_name->Equals(heap()->object_symbol())) {
     __ JumpIfSmi(input, false_label);
-    __ cmp(input, factory()->null_value());
-    __ j(equal, true_label);
+    if (!FLAG_harmony_typeof) {
+      __ cmp(input, factory()->null_value());
+      __ j(equal, true_label);
+    }
     __ CmpObjectType(input, FIRST_NONCALLABLE_SPEC_OBJECT_TYPE, input);
     __ j(below, false_label);
     __ CmpInstanceType(input, LAST_NONCALLABLE_SPEC_OBJECT_TYPE);

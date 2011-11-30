@@ -104,8 +104,7 @@ class LChunkBuilder;
   V(Div)                                       \
   V(ElementsKind)                              \
   V(EnterInlined)                              \
-  V(ExternalArrayLength)                       \
-  V(FixedArrayLength)                          \
+  V(FixedArrayBaseLength)                      \
   V(ForceRepresentation)                       \
   V(FunctionLiteral)                           \
   V(GetCachedArrayIndex)                       \
@@ -184,6 +183,7 @@ class LChunkBuilder;
   V(InobjectFields)                            \
   V(BackingStoreFields)                        \
   V(ArrayElements)                             \
+  V(DoubleArrayElements)                       \
   V(SpecializedArrayElements)                  \
   V(GlobalVars)                                \
   V(Maps)                                      \
@@ -227,14 +227,20 @@ class Range: public ZoneObject {
   Range* next() const { return next_; }
   Range* CopyClearLower() const { return new Range(kMinInt, upper_); }
   Range* CopyClearUpper() const { return new Range(lower_, kMaxInt); }
-  Range* Copy() const { return new Range(lower_, upper_); }
+  Range* Copy() const {
+    Range* result = new Range(lower_, upper_);
+    result->set_can_be_minus_zero(CanBeMinusZero());
+    return result;
+  }
   int32_t Mask() const;
   void set_can_be_minus_zero(bool b) { can_be_minus_zero_ = b; }
   bool CanBeMinusZero() const { return CanBeZero() && can_be_minus_zero_; }
   bool CanBeZero() const { return upper_ >= 0 && lower_ <= 0; }
   bool CanBeNegative() const { return lower_ < 0; }
   bool Includes(int value) const { return lower_ <= value && upper_ >= value; }
-  bool IsMostGeneric() const { return lower_ == kMinInt && upper_ == kMaxInt; }
+  bool IsMostGeneric() const {
+    return lower_ == kMinInt && upper_ == kMaxInt && CanBeMinusZero();
+  }
   bool IsInSmiRange() const {
     return lower_ >= Smi::kMinValue && upper_ <= Smi::kMaxValue;
   }
@@ -578,9 +584,9 @@ class HValue: public ZoneObject {
   virtual bool IsConvertibleToInteger() const { return true; }
 
   HType type() const { return type_; }
-  void set_type(HType type) {
-    ASSERT(HasNoUses());
-    type_ = type;
+  void set_type(HType new_type) {
+    ASSERT(new_type.IsSubtypeOf(type_));
+    type_ = new_type;
   }
 
   // An operation needs to override this function iff:
@@ -933,8 +939,12 @@ class HUnaryControlInstruction: public HTemplateControlInstruction<2, 1> {
 
 class HBranch: public HUnaryControlInstruction {
  public:
-  HBranch(HValue* value, HBasicBlock* true_target, HBasicBlock* false_target)
-      : HUnaryControlInstruction(value, true_target, false_target) {
+  HBranch(HValue* value,
+          HBasicBlock* true_target,
+          HBasicBlock* false_target,
+          ToBooleanStub::Types expected_input_types = ToBooleanStub::no_types())
+      : HUnaryControlInstruction(value, true_target, false_target),
+        expected_input_types_(expected_input_types) {
     ASSERT(true_target != NULL && false_target != NULL);
   }
   explicit HBranch(HValue* value)
@@ -945,7 +955,14 @@ class HBranch: public HUnaryControlInstruction {
     return Representation::None();
   }
 
+  ToBooleanStub::Types expected_input_types() const {
+    return expected_input_types_;
+  }
+
   DECLARE_CONCRETE_INSTRUCTION(Branch)
+
+ private:
+  ToBooleanStub::Types expected_input_types_;
 };
 
 
@@ -1089,10 +1106,6 @@ class HChange: public HUnaryOperation {
     set_representation(to);
     SetFlag(kUseGVN);
     if (is_truncating) SetFlag(kTruncatingToInt32);
-    if (from.IsInteger32() && to.IsTagged() && value->range() != NULL &&
-        value->range()->IsInSmiRange()) {
-      set_type(HType::Smi());
-    }
   }
 
   virtual HValue* EnsureAndPropagateNotMinusZero(BitVector* visited);
@@ -1103,6 +1116,8 @@ class HChange: public HUnaryOperation {
   virtual Representation RequiredInputRepresentation(int index) const {
     return from_;
   }
+
+  virtual Range* InferRange();
 
   virtual void PrintDataTo(StringStream* stream);
 
@@ -1663,12 +1678,14 @@ class HCallRuntime: public HCall<1> {
 };
 
 
-class HJSArrayLength: public HUnaryOperation {
+class HJSArrayLength: public HTemplateInstruction<2> {
  public:
-  explicit HJSArrayLength(HValue* value) : HUnaryOperation(value) {
+  HJSArrayLength(HValue* value, HValue* typecheck) {
     // The length of an array is stored as a tagged value in the array
     // object. It is guaranteed to be 32 bit integer, but it can be
     // represented as either a smi or heap number.
+    SetOperandAt(0, value);
+    SetOperandAt(1, typecheck);
     set_representation(Representation::Tagged());
     SetFlag(kUseGVN);
     SetFlag(kDependsOnArrayLengths);
@@ -1679,6 +1696,8 @@ class HJSArrayLength: public HUnaryOperation {
     return Representation::Tagged();
   }
 
+  HValue* value() { return OperandAt(0); }
+
   DECLARE_CONCRETE_INSTRUCTION(JSArrayLength)
 
  protected:
@@ -1686,9 +1705,9 @@ class HJSArrayLength: public HUnaryOperation {
 };
 
 
-class HFixedArrayLength: public HUnaryOperation {
+class HFixedArrayBaseLength: public HUnaryOperation {
  public:
-  explicit HFixedArrayLength(HValue* value) : HUnaryOperation(value) {
+  explicit HFixedArrayBaseLength(HValue* value) : HUnaryOperation(value) {
     set_representation(Representation::Tagged());
     SetFlag(kUseGVN);
     SetFlag(kDependsOnArrayLengths);
@@ -1698,28 +1717,7 @@ class HFixedArrayLength: public HUnaryOperation {
     return Representation::Tagged();
   }
 
-  DECLARE_CONCRETE_INSTRUCTION(FixedArrayLength)
-
- protected:
-  virtual bool DataEquals(HValue* other) { return true; }
-};
-
-
-class HExternalArrayLength: public HUnaryOperation {
- public:
-  explicit HExternalArrayLength(HValue* value) : HUnaryOperation(value) {
-    set_representation(Representation::Integer32());
-    // The result of this instruction is idempotent as long as its inputs don't
-    // change.  The length of a pixel array cannot change once set, so it's not
-    // necessary to introduce a kDependsOnArrayLengths or any other dependency.
-    SetFlag(kUseGVN);
-  }
-
-  virtual Representation RequiredInputRepresentation(int index) const {
-    return Representation::Tagged();
-  }
-
-  DECLARE_CONCRETE_INSTRUCTION(ExternalArrayLength)
+  DECLARE_CONCRETE_INSTRUCTION(FixedArrayBaseLength)
 
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
@@ -1894,10 +1892,14 @@ class HLoadExternalArrayPointer: public HUnaryOperation {
 };
 
 
-class HCheckMap: public HUnaryOperation {
+class HCheckMap: public HTemplateInstruction<2> {
  public:
-  HCheckMap(HValue* value, Handle<Map> map)
-      : HUnaryOperation(value), map_(map) {
+  HCheckMap(HValue* value, Handle<Map> map, HValue* typecheck = NULL)
+      : map_(map) {
+    SetOperandAt(0, value);
+    // If callers don't depend on a typecheck, they can pass in NULL. In that
+    // case we use a copy of the |value| argument as a dummy value.
+    SetOperandAt(1, typecheck != NULL ? typecheck : value);
     set_representation(Representation::Tagged());
     SetFlag(kUseGVN);
     SetFlag(kDependsOnMaps);
@@ -1909,10 +1911,7 @@ class HCheckMap: public HUnaryOperation {
   virtual void PrintDataTo(StringStream* stream);
   virtual HType CalculateInferredType();
 
-#ifdef DEBUG
-  virtual void Verify();
-#endif
-
+  HValue* value() { return OperandAt(0); }
   Handle<Map> map() const { return map_; }
 
   DECLARE_CONCRETE_INSTRUCTION(CheckMap)
@@ -1979,10 +1978,6 @@ class HCheckInstanceType: public HUnaryOperation {
   virtual Representation RequiredInputRepresentation(int index) const {
     return Representation::Tagged();
   }
-
-#ifdef DEBUG
-  virtual void Verify();
-#endif
 
   virtual HValue* Canonicalize();
 
@@ -2458,9 +2453,7 @@ class HBoundsCheck: public HTemplateInstruction<2> {
     return Representation::Integer32();
   }
 
-#ifdef DEBUG
-  virtual void Verify();
-#endif
+  virtual void PrintDataTo(StringStream* stream);
 
   HValue* index() { return OperandAt(0); }
   HValue* length() { return OperandAt(1); }
@@ -3063,6 +3056,7 @@ class HShr: public HBitwiseBinaryOperation {
   HShr(HValue* context, HValue* left, HValue* right)
       : HBitwiseBinaryOperation(context, left, right) { }
 
+  virtual Range* InferRange();
   virtual HType CalculateInferredType();
 
   DECLARE_CONCRETE_INSTRUCTION(Shr)
@@ -3415,18 +3409,20 @@ class HLoadNamedFieldPolymorphic: public HTemplateInstruction<2> {
  public:
   HLoadNamedFieldPolymorphic(HValue* context,
                              HValue* object,
-                             ZoneMapList* types,
+                             SmallMapList* types,
                              Handle<String> name);
 
   HValue* context() { return OperandAt(0); }
   HValue* object() { return OperandAt(1); }
-  ZoneMapList* types() { return &types_; }
+  SmallMapList* types() { return &types_; }
   Handle<String> name() { return name_; }
   bool need_generic() { return need_generic_; }
 
   virtual Representation RequiredInputRepresentation(int index) const {
     return Representation::Tagged();
   }
+
+  virtual void PrintDataTo(StringStream* stream);
 
   DECLARE_CONCRETE_INSTRUCTION(LoadNamedFieldPolymorphic)
 
@@ -3436,7 +3432,7 @@ class HLoadNamedFieldPolymorphic: public HTemplateInstruction<2> {
   virtual bool DataEquals(HValue* value);
 
  private:
-  ZoneMapList types_;
+  SmallMapList types_;
   Handle<String> name_;
   bool need_generic_;
 };
@@ -3460,6 +3456,8 @@ class HLoadNamedGeneric: public HTemplateInstruction<2> {
   virtual Representation RequiredInputRepresentation(int index) const {
     return Representation::Tagged();
   }
+
+  virtual void PrintDataTo(StringStream* stream);
 
   DECLARE_CONCRETE_INSTRUCTION(LoadNamedGeneric)
 
@@ -3527,7 +3525,7 @@ class HLoadKeyedFastDoubleElement: public HTemplateInstruction<2> {
     SetOperandAt(0, elements);
     SetOperandAt(1, key);
     set_representation(Representation::Double());
-    SetFlag(kDependsOnArrayElements);
+    SetFlag(kDependsOnDoubleArrayElements);
     SetFlag(kUseGVN);
   }
 
@@ -3745,7 +3743,7 @@ class HStoreKeyedFastDoubleElement: public HTemplateInstruction<3> {
     SetOperandAt(0, elements);
     SetOperandAt(1, key);
     SetOperandAt(2, val);
-    SetFlag(kChangesArrayElements);
+    SetFlag(kChangesDoubleArrayElements);
   }
 
   virtual Representation RequiredInputRepresentation(int index) const {

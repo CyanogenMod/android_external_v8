@@ -3494,7 +3494,7 @@ void KeyedLoadStubCompiler::GenerateLoadExternalArray(
   __ lw(t1, FieldMemOperand(a3, ExternalArray::kLengthOffset));
   __ sra(t2, key, kSmiTagSize);
   // Unsigned comparison catches both negative and too-large values.
-  __ Branch(&miss_force_generic, Uless, t1, Operand(t2));
+  __ Branch(&miss_force_generic, Ugreater_equal, key, Operand(t1));
 
   __ lw(a3, FieldMemOperand(a3, ExternalArray::kExternalPointerOffset));
   // a3: base pointer of external storage
@@ -3638,7 +3638,7 @@ void KeyedLoadStubCompiler::GenerateLoadExternalArray(
       // __ mtc1(zero_reg, f1);  // MS 32-bits are all zero.
       // __ cvt_d_l(f0, f0); // Use 64 bit conv to get correct unsigned 32-bit.
 
-      __ Cvt_d_uw(f0, value);
+      __ Cvt_d_uw(f0, value, f22);
 
       __ sdc1(f0, MemOperand(v0, HeapNumber::kValueOffset - kHeapObjectTag));
 
@@ -3822,16 +3822,16 @@ void KeyedStoreStubCompiler::GenerateStoreExternalArray(
   // This stub is meant to be tail-jumped to, the receiver must already
   // have been verified by the caller to not be a smi.
 
-  __ lw(a3, FieldMemOperand(receiver, JSObject::kElementsOffset));
-
-  // Check that the key is a smi.
+    // Check that the key is a smi.
   __ JumpIfNotSmi(key, &miss_force_generic);
+
+  __ lw(a3, FieldMemOperand(receiver, JSObject::kElementsOffset));
 
   // Check that the index is in range.
   __ SmiUntag(t0, key);
   __ lw(t1, FieldMemOperand(a3, ExternalArray::kLengthOffset));
   // Unsigned comparison catches both negative and too-large values.
-  __ Branch(&miss_force_generic, Ugreater_equal, t0, Operand(t1));
+  __ Branch(&miss_force_generic, Ugreater_equal, key, Operand(t1));
 
   // Handle both smis and HeapNumbers in the fast path. Go to the
   // runtime for all other kinds of values.
@@ -4428,7 +4428,8 @@ void KeyedStoreStubCompiler::GenerateStoreFastDoubleElement(
   __ sw(mantissa_reg, FieldMemOperand(scratch, FixedDoubleArray::kHeaderSize));
   uint32_t offset = FixedDoubleArray::kHeaderSize + sizeof(kHoleNanLower32);
   __ sw(exponent_reg, FieldMemOperand(scratch, offset));
-  __ Ret();
+  __ Ret(USE_DELAY_SLOT);
+  __ mov(v0, value_reg);  // In delay slot.
 
   __ bind(&maybe_nan);
   // Could be NaN or Infinity. If fraction is not zero, it's NaN, otherwise
@@ -4459,11 +4460,18 @@ void KeyedStoreStubCompiler::GenerateStoreFastDoubleElement(
   } else {
     destination = FloatingPointHelper::kCoreRegisters;
   }
-  __ SmiUntag(value_reg, value_reg);
+
+  Register untagged_value = receiver_reg;
+  __ SmiUntag(untagged_value, value_reg);
   FloatingPointHelper::ConvertIntToDouble(
-      masm, value_reg, destination,
-      f0, mantissa_reg, exponent_reg,  // These are: double_dst, dst1, dst2.
-      scratch4, f2);  // These are: scratch2, single_scratch.
+      masm,
+      untagged_value,
+      destination,
+      f0,
+      mantissa_reg,
+      exponent_reg,
+      scratch4,
+      f2);
   if (destination == FloatingPointHelper::kFPURegisters) {
     CpuFeatures::Scope scope(FPU);
     __ sdc1(f0, MemOperand(scratch, 0));
@@ -4471,7 +4479,8 @@ void KeyedStoreStubCompiler::GenerateStoreFastDoubleElement(
     __ sw(mantissa_reg, MemOperand(scratch, 0));
     __ sw(exponent_reg, MemOperand(scratch, Register::kSizeInBytes));
   }
-  __ Ret();
+  __ Ret(USE_DELAY_SLOT);
+  __ mov(v0, value_reg);  // In delay slot.
 
   // Handle store cache miss, replacing the ic with the generic stub.
   __ bind(&miss_force_generic);

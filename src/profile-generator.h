@@ -584,6 +584,8 @@ class HeapEntry BASE_EMBEDDED {
 
   void Print(int max_depth, int indent);
 
+  Handle<HeapObject> GetHeapObject();
+
   static int EntriesSize(int entries_count,
                          int children_count,
                          int retainers_count);
@@ -654,6 +656,7 @@ class HeapSnapshot {
   HeapEntry* gc_roots() { return gc_roots_entry_; }
   HeapEntry* natives_root() { return natives_root_entry_; }
   List<HeapEntry*>* entries() { return &entries_; }
+  int raw_entries_size() { return raw_entries_size_; }
 
   void AllocateEntries(
       int entries_count, int children_count, int retainers_count);
@@ -689,9 +692,7 @@ class HeapSnapshot {
   char* raw_entries_;
   List<HeapEntry*> entries_;
   bool entries_sorted_;
-#ifdef DEBUG
   int raw_entries_size_;
-#endif
 
   friend class HeapSnapshotTester;
 
@@ -763,6 +764,7 @@ class HeapSnapshotsCollection {
   TokenEnumerator* token_enumerator() { return token_enumerator_; }
 
   uint64_t GetObjectId(Address addr) { return ids_.FindObject(addr); }
+  Handle<HeapObject> FindHeapObjectById(uint64_t id);
   void ObjectMoveEvent(Address from, Address to) { ids_.MoveObject(from, to); }
 
  private:
@@ -920,6 +922,8 @@ class V8HeapExplorer : public HeapEntriesAllocator {
   int EstimateObjectsCount();
   bool IterateAndExtractReferences(SnapshotFillerInterface* filler);
   void TagGlobalObjects();
+
+  static String* GetConstructorName(JSObject* object);
 
   static HeapObject* const kInternalRootObject;
 
@@ -1095,6 +1099,7 @@ class HeapSnapshotJSONSerializer {
   }
 
   void EnumerateNodes();
+  HeapSnapshot* CreateFakeSnapshot();
   int GetNodeId(HeapEntry* entry);
   int GetStringId(const char* s);
   void SerializeEdge(HeapGraphEdge* edge);
@@ -1105,6 +1110,8 @@ class HeapSnapshotJSONSerializer {
   void SerializeString(const unsigned char* s);
   void SerializeStrings();
   void SortHashMap(HashMap* map, List<HashMap::Entry*>* sorted_entries);
+
+  static const int kMaxSerializableSnapshotRawSize;
 
   HeapSnapshot* snapshot_;
   HashMap nodes_;
@@ -1118,9 +1125,6 @@ class HeapSnapshotJSONSerializer {
 
   DISALLOW_COPY_AND_ASSIGN(HeapSnapshotJSONSerializer);
 };
-
-
-String* GetConstructorNameForHeapProfile(JSObject* object);
 
 } }  // namespace v8::internal
 

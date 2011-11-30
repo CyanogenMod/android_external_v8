@@ -106,13 +106,16 @@ function GlobalParseInt(string, radix) {
       // Truncate number.
       return string | 0;
     }
+    string = TO_STRING_INLINE(string);
     radix = radix | 0;
   } else {
+    // The spec says ToString should be evaluated before ToInt32.
+    string = TO_STRING_INLINE(string);
     radix = TO_INT32(radix);
     if (!(radix == 0 || (2 <= radix && radix <= 36)))
       return $NaN;
   }
-  string = TO_STRING_INLINE(string);
+
   if (%_HasCachedArrayIndex(string) &&
       (radix == 0 || radix == 10)) {
     return %_GetCachedArrayIndex(string);
@@ -209,7 +212,7 @@ function ObjectToString() {
   if (IS_UNDEFINED(this) && !IS_UNDETECTABLE(this)) {
     return '[object Undefined]';
   }
-  if (IS_NULL(this)) return  '[object Null]';
+  if (IS_NULL(this)) return '[object Null]';
   return "[object " + %_ClassOf(ToObject(this)) + "]";
 }
 
@@ -232,6 +235,10 @@ function ObjectValueOf() {
 
 // ECMA-262 - 15.2.4.5
 function ObjectHasOwnProperty(V) {
+  if (%IsJSProxy(this)) {
+    var handler = %GetHandler(this);
+    return CallTrap1(handler, "hasOwn", DerivedHasOwnTrap, TO_STRING_INLINE(V));
+  }
   return %HasLocalProperty(TO_OBJECT_INLINE(this), TO_STRING_INLINE(V));
 }
 
@@ -249,7 +256,12 @@ function ObjectIsPrototypeOf(V) {
 
 // ECMA-262 - 15.2.4.6
 function ObjectPropertyIsEnumerable(V) {
-  return %IsPropertyEnumerable(ToObject(this), ToString(V));
+  var P = ToString(V);
+  if (%IsJSProxy(this)) {
+    var desc = GetOwnProperty(this, P);
+    return IS_UNDEFINED(desc) ? false : desc.isEnumerable();
+  }
+  return %IsPropertyEnumerable(ToObject(this), P);
 }
 
 
@@ -310,9 +322,7 @@ function ObjectKeys(obj) {
     throw MakeTypeError("obj_ctor_property_non_object", ["keys"]);
   if (%IsJSProxy(obj)) {
     var handler = %GetHandler(obj);
-    var keys = handler.keys;
-    if (IS_UNDEFINED(keys)) keys = DerivedKeysTrap;
-    var names = %_CallFunction(handler, keys);
+    var names = CallTrap0(handler, "keys", DerivedKeysTrap);
     return ToStringArray(names);
   }
   return %LocalKeys(obj);
@@ -601,16 +611,42 @@ function ConvertDescriptorArrayToDescriptor(desc_array) {
 }
 
 
+// For Harmony proxies.
+function GetTrap(handler, name, defaultTrap) {
+  var trap = handler[name];
+  if (IS_UNDEFINED(trap)) {
+    if (IS_UNDEFINED(defaultTrap)) {
+      throw MakeTypeError("handler_trap_missing", [handler, name]);
+    }
+    trap = defaultTrap;
+  } else if (!IS_FUNCTION(trap)) {
+    throw MakeTypeError("handler_trap_must_be_callable", [handler, name]);
+  }
+  return trap;
+}
+
+
+function CallTrap0(handler, name, defaultTrap) {
+  return %_CallFunction(handler, GetTrap(handler, name, defaultTrap));
+}
+
+
+function CallTrap1(handler, name, defaultTrap, x) {
+  return %_CallFunction(handler, x, GetTrap(handler, name, defaultTrap));
+}
+
+
+function CallTrap2(handler, name, defaultTrap, x, y) {
+  return %_CallFunction(handler, x, y, GetTrap(handler, name, defaultTrap));
+}
+
+
 // ES5 section 8.12.1.
-function GetOwnProperty(obj, p) {
+function GetOwnProperty(obj, v) {
+  var p = ToString(v);
   if (%IsJSProxy(obj)) {
     var handler = %GetHandler(obj);
-    var getOwnProperty = handler.getOwnPropertyDescriptor;
-    if (IS_UNDEFINED(getOwnProperty)) {
-      throw MakeTypeError("handler_trap_missing",
-                          [handler, "getOwnPropertyDescriptor"]);
-    }
-    var descriptor = %_CallFunction(handler, p, getOwnProperty);
+    var descriptor = CallTrap1(handler, "getOwnPropertyDescriptor", void 0, p);
     if (IS_UNDEFINED(descriptor)) return descriptor;
     var desc = ToCompletePropertyDescriptor(descriptor);
     if (!desc.isConfigurable()) {
@@ -623,7 +659,7 @@ function GetOwnProperty(obj, p) {
   // GetOwnProperty returns an array indexed by the constants
   // defined in macros.py.
   // If p is not a property on obj undefined is returned.
-  var props = %GetOwnProperty(ToObject(obj), ToString(p));
+  var props = %GetOwnProperty(ToObject(obj), ToString(v));
 
   // A false value here means that access checks failed.
   if (props === false) return void 0;
@@ -635,11 +671,7 @@ function GetOwnProperty(obj, p) {
 // Harmony proxies.
 function DefineProxyProperty(obj, p, attributes, should_throw) {
   var handler = %GetHandler(obj);
-  var defineProperty = handler.defineProperty;
-  if (IS_UNDEFINED(defineProperty)) {
-    throw MakeTypeError("handler_trap_missing", [handler, "defineProperty"]);
-  }
-  var result = %_CallFunction(handler, p, attributes, defineProperty);
+  var result = CallTrap2(handler, "defineProperty", void 0, p, attributes);
   if (!ToBoolean(result)) {
     if (should_throw) {
       throw MakeTypeError("handler_returned_false",
@@ -868,12 +900,7 @@ function ObjectGetOwnPropertyNames(obj) {
   // Special handling for proxies.
   if (%IsJSProxy(obj)) {
     var handler = %GetHandler(obj);
-    var getOwnPropertyNames = handler.getOwnPropertyNames;
-    if (IS_UNDEFINED(getOwnPropertyNames)) {
-      throw MakeTypeError("handler_trap_missing",
-                          [handler, "getOwnPropertyNames"]);
-    }
-    var names = %_CallFunction(handler, getOwnPropertyNames);
+    var names = CallTrap0(handler, "getOwnPropertyNames", void 0);
     return ToStringArray(names, "getOwnPropertyNames");
   }
 
@@ -977,24 +1004,27 @@ function ObjectDefineProperty(obj, p, attributes) {
 }
 
 
+function GetOwnEnumerablePropertyNames(properties) {
+  var names = new InternalArray();
+  for (var key in properties) {
+    if (%HasLocalProperty(properties, key)) {
+      names.push(key);
+    }
+  }
+  return names;
+}
+
+
 // ES5 section 15.2.3.7.
 function ObjectDefineProperties(obj, properties) {
   if (!IS_SPEC_OBJECT(obj))
     throw MakeTypeError("obj_ctor_property_non_object", ["defineProperties"]);
   var props = ToObject(properties);
-  var key_values = [];
-  for (var key in props) {
-    if (%HasLocalProperty(props, key)) {
-      key_values.push(key);
-      var value = props[key];
-      var desc = ToPropertyDescriptor(value);
-      key_values.push(desc);
-    }
-  }
-  for (var i = 0; i < key_values.length; i += 2) {
-    var key = key_values[i];
-    var desc = key_values[i + 1];
-    DefineOwnProperty(obj, key, desc, true);
+  var names = GetOwnEnumerablePropertyNames(props);
+  for (var i = 0; i < names.length; i++) {
+    var name = names[i];
+    var desc = ToPropertyDescriptor(props[name]);
+    DefineOwnProperty(obj, name, desc, true);
   }
   return obj;
 }
@@ -1003,11 +1033,7 @@ function ObjectDefineProperties(obj, properties) {
 // Harmony proxies.
 function ProxyFix(obj) {
   var handler = %GetHandler(obj);
-  var fix = handler.fix;
-  if (IS_UNDEFINED(fix)) {
-    throw MakeTypeError("handler_trap_missing", [handler, "fix"]);
-  }
-  var props = %_CallFunction(handler, fix);
+  var props = CallTrap0(handler, "fix", void 0);
   if (IS_UNDEFINED(props)) {
     throw MakeTypeError("handler_returned_undefined", [handler, "fix"]);
   }
@@ -1466,9 +1492,9 @@ function FunctionBind(this_arg) { // Length is 1.
 
   // Set the correct length.
   var length = (this.length - argc_bound) > 0 ? this.length - argc_bound : 0;
-  %FunctionSetLength(result, length);
   %FunctionRemovePrototype(result);
   %FunctionSetBound(result);
+  %BoundFunctionSetLength(result, length);
   return result;
 }
 

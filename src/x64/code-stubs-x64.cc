@@ -230,68 +230,139 @@ void FastCloneShallowArrayStub::Generate(MacroAssembler* masm) {
 }
 
 
-// The stub returns zero for false, and a non-zero value for true.
+// The stub expects its argument on the stack and returns its result in tos_:
+// zero for false, and a non-zero value for true.
 void ToBooleanStub::Generate(MacroAssembler* masm) {
-  Label false_result, true_result, not_string;
+  Label patch;
+  const Register argument = rax;
   const Register map = rdx;
 
-  __ movq(rax, Operand(rsp, 1 * kPointerSize));
+  if (!types_.IsEmpty()) {
+    __ movq(argument, Operand(rsp, 1 * kPointerSize));
+  }
 
   // undefined -> false
-  __ CompareRoot(rax, Heap::kUndefinedValueRootIndex);
-  __ j(equal, &false_result);
+  CheckOddball(masm, UNDEFINED, Heap::kUndefinedValueRootIndex, false);
 
   // Boolean -> its value
-  __ CompareRoot(rax, Heap::kFalseValueRootIndex);
-  __ j(equal, &false_result);
-  __ CompareRoot(rax, Heap::kTrueValueRootIndex);
-  __ j(equal, &true_result);
-
-  // Smis: 0 -> false, all other -> true
-  __ Cmp(rax, Smi::FromInt(0));
-  __ j(equal, &false_result);
-  __ JumpIfSmi(rax, &true_result);
+  CheckOddball(masm, BOOLEAN, Heap::kFalseValueRootIndex, false);
+  CheckOddball(masm, BOOLEAN, Heap::kTrueValueRootIndex, true);
 
   // 'null' -> false.
-  __ CompareRoot(rax, Heap::kNullValueRootIndex);
-  __ j(equal, &false_result, Label::kNear);
+  CheckOddball(masm, NULL_TYPE, Heap::kNullValueRootIndex, false);
 
-  // Get the map of the heap object.
-  __ movq(map, FieldOperand(rax, HeapObject::kMapOffset));
+  if (types_.Contains(SMI)) {
+    // Smis: 0 -> false, all other -> true
+    Label not_smi;
+    __ JumpIfNotSmi(argument, &not_smi, Label::kNear);
+    // argument contains the correct return value already
+    if (!tos_.is(argument)) {
+      __ movq(tos_, argument);
+    }
+    __ ret(1 * kPointerSize);
+    __ bind(&not_smi);
+  } else if (types_.NeedsMap()) {
+    // If we need a map later and have a Smi -> patch.
+    __ JumpIfSmi(argument, &patch, Label::kNear);
+  }
 
-  // Undetectable -> false.
-  __ testb(FieldOperand(map, Map::kBitFieldOffset),
-           Immediate(1 << Map::kIsUndetectable));
-  __ j(not_zero, &false_result, Label::kNear);
+  if (types_.NeedsMap()) {
+    __ movq(map, FieldOperand(argument, HeapObject::kMapOffset));
 
-  // JavaScript object -> true.
-  __ CmpInstanceType(map, FIRST_SPEC_OBJECT_TYPE);
-  __ j(above_equal, &true_result, Label::kNear);
+    if (types_.CanBeUndetectable()) {
+      __ testb(FieldOperand(map, Map::kBitFieldOffset),
+               Immediate(1 << Map::kIsUndetectable));
+      // Undetectable -> false.
+      Label not_undetectable;
+      __ j(zero, &not_undetectable, Label::kNear);
+      __ Set(tos_, 0);
+      __ ret(1 * kPointerSize);
+      __ bind(&not_undetectable);
+    }
+  }
 
-  // String value -> false iff empty.
-  __ CmpInstanceType(map, FIRST_NONSTRING_TYPE);
-  __ j(above_equal, &not_string, Label::kNear);
-  __ cmpq(FieldOperand(rax, String::kLengthOffset), Immediate(0));
-  __ j(zero, &false_result, Label::kNear);
-  __ jmp(&true_result, Label::kNear);
+  if (types_.Contains(SPEC_OBJECT)) {
+    // spec object -> true.
+    Label not_js_object;
+    __ CmpInstanceType(map, FIRST_SPEC_OBJECT_TYPE);
+    __ j(below, &not_js_object, Label::kNear);
+    // argument contains the correct return value already.
+    if (!tos_.is(argument)) {
+      __ Set(tos_, 1);
+    }
+    __ ret(1 * kPointerSize);
+    __ bind(&not_js_object);
+  }
 
-  __ bind(&not_string);
-  // HeapNumber -> false iff +0, -0, or NaN.
-  // These three cases set the zero flag when compared to zero using ucomisd.
-  __ CompareRoot(map, Heap::kHeapNumberMapRootIndex);
-  __ j(not_equal, &true_result, Label::kNear);
-  __ xorps(xmm0, xmm0);
-  __ ucomisd(xmm0, FieldOperand(rax, HeapNumber::kValueOffset));
-  __ j(zero, &false_result, Label::kNear);
-  // Fall through to |true_result|.
+  if (types_.Contains(STRING)) {
+    // String value -> false iff empty.
+    Label not_string;
+    __ CmpInstanceType(map, FIRST_NONSTRING_TYPE);
+    __ j(above_equal, &not_string, Label::kNear);
+    __ movq(tos_, FieldOperand(argument, String::kLengthOffset));
+    __ ret(1 * kPointerSize);  // the string length is OK as the return value
+    __ bind(&not_string);
+  }
 
-  // Return 1/0 for true/false in tos_.
-  __ bind(&true_result);
-  __ Set(tos_, 1);
-  __ ret(1 * kPointerSize);
-  __ bind(&false_result);
-  __ Set(tos_, 0);
-  __ ret(1 * kPointerSize);
+  if (types_.Contains(HEAP_NUMBER)) {
+    // heap number -> false iff +0, -0, or NaN.
+    Label not_heap_number, false_result;
+    __ CompareRoot(map, Heap::kHeapNumberMapRootIndex);
+    __ j(not_equal, &not_heap_number, Label::kNear);
+    __ xorps(xmm0, xmm0);
+    __ ucomisd(xmm0, FieldOperand(argument, HeapNumber::kValueOffset));
+    __ j(zero, &false_result, Label::kNear);
+    // argument contains the correct return value already.
+    if (!tos_.is(argument)) {
+      __ Set(tos_, 1);
+    }
+    __ ret(1 * kPointerSize);
+    __ bind(&false_result);
+    __ Set(tos_, 0);
+    __ ret(1 * kPointerSize);
+    __ bind(&not_heap_number);
+  }
+
+  __ bind(&patch);
+  GenerateTypeTransition(masm);
+}
+
+
+void ToBooleanStub::CheckOddball(MacroAssembler* masm,
+                                 Type type,
+                                 Heap::RootListIndex value,
+                                 bool result) {
+  const Register argument = rax;
+  if (types_.Contains(type)) {
+    // If we see an expected oddball, return its ToBoolean value tos_.
+    Label different_value;
+    __ CompareRoot(argument, value);
+    __ j(not_equal, &different_value, Label::kNear);
+    if (!result) {
+      // If we have to return zero, there is no way around clearing tos_.
+      __ Set(tos_, 0);
+    } else if (!tos_.is(argument)) {
+      // If we have to return non-zero, we can re-use the argument if it is the
+      // same register as the result, because we never see Smi-zero here.
+      __ Set(tos_, 1);
+    }
+    __ ret(1 * kPointerSize);
+    __ bind(&different_value);
+  }
+}
+
+
+void ToBooleanStub::GenerateTypeTransition(MacroAssembler* masm) {
+  __ pop(rcx);  // Get return address, operand is now on top of stack.
+  __ Push(Smi::FromInt(tos_.code()));
+  __ Push(Smi::FromInt(types_.ToByte()));
+  __ push(rcx);  // Push return address.
+  // Patch the caller to an appropriate specialized stub and return the
+  // operation result to the caller of the stub.
+  __ TailCallExternalReference(
+      ExternalReference(IC_Utility(IC::kToBoolean_Patch), masm->isolate()),
+      3,
+      1);
 }
 
 
@@ -2303,7 +2374,6 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   __ testq(kScratchRegister, kScratchRegister);
   __ j(zero, &runtime);
 
-
   // Check that the first argument is a JSRegExp object.
   __ movq(rax, Operand(rsp, kJSRegExpOffset));
   __ JumpIfSmi(rax, &runtime);
@@ -2374,10 +2444,14 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   __ cmpl(rdx, rdi);
   __ j(greater, &runtime);
 
+  // Reset offset for possibly sliced string.
+  __ Set(r14, 0);
   // rax: RegExp data (FixedArray)
   // Check the representation and encoding of the subject string.
   Label seq_ascii_string, seq_two_byte_string, check_code;
   __ movq(rdi, Operand(rsp, kSubjectOffset));
+  // Make a copy of the original subject string.
+  __ movq(r15, rdi);
   __ movq(rbx, FieldOperand(rdi, HeapObject::kMapOffset));
   __ movzxbl(rbx, FieldOperand(rbx, Map::kInstanceTypeOffset));
   // First check for flat two byte string.
@@ -2386,28 +2460,40 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   STATIC_ASSERT((kStringTag | kSeqStringTag | kTwoByteStringTag) == 0);
   __ j(zero, &seq_two_byte_string, Label::kNear);
   // Any other flat string must be a flat ascii string.
-  __ testb(rbx, Immediate(kIsNotStringMask | kStringRepresentationMask));
+  __ andb(rbx, Immediate(kIsNotStringMask | kStringRepresentationMask));
   __ j(zero, &seq_ascii_string, Label::kNear);
 
-  // Check for flat cons string.
+  // Check for flat cons string or sliced string.
   // A flat cons string is a cons string where the second part is the empty
   // string. In that case the subject string is just the first part of the cons
   // string. Also in this case the first part of the cons string is known to be
   // a sequential string or an external string.
-  STATIC_ASSERT(kExternalStringTag !=0);
-  STATIC_ASSERT((kConsStringTag & kExternalStringTag) == 0);
-  __ testb(rbx, Immediate(kIsNotStringMask | kExternalStringTag));
-  __ j(not_zero, &runtime);
-  // String is a cons string.
+  // In the case of a sliced string its offset has to be taken into account.
+  Label cons_string, check_encoding;
+  STATIC_ASSERT(kConsStringTag < kExternalStringTag);
+  STATIC_ASSERT(kSlicedStringTag > kExternalStringTag);
+  __ cmpq(rbx, Immediate(kExternalStringTag));
+  __ j(less, &cons_string, Label::kNear);
+  __ j(equal, &runtime);
+
+  // String is sliced.
+  __ SmiToInteger32(r14, FieldOperand(rdi, SlicedString::kOffsetOffset));
+  __ movq(rdi, FieldOperand(rdi, SlicedString::kParentOffset));
+  // r14: slice offset
+  // r15: original subject string
+  // rdi: parent string
+  __ jmp(&check_encoding, Label::kNear);
+  // String is a cons string, check whether it is flat.
+  __ bind(&cons_string);
   __ CompareRoot(FieldOperand(rdi, ConsString::kSecondOffset),
                  Heap::kEmptyStringRootIndex);
   __ j(not_equal, &runtime);
   __ movq(rdi, FieldOperand(rdi, ConsString::kFirstOffset));
+  // rdi: first part of cons string or parent of sliced string.
+  // rbx: map of first part of cons string or map of parent of sliced string.
+  // Is first part of cons or parent of slice a flat two byte string?
+  __ bind(&check_encoding);
   __ movq(rbx, FieldOperand(rdi, HeapObject::kMapOffset));
-  // String is a cons string with empty second part.
-  // rdi: first part of cons string.
-  // rbx: map of first part of cons string.
-  // Is first part a flat two byte string?
   __ testb(FieldOperand(rbx, Map::kInstanceTypeOffset),
            Immediate(kStringRepresentationMask | kStringEncodingMask));
   STATIC_ASSERT((kSeqStringTag | kTwoByteStringTag) == 0);
@@ -2504,33 +2590,40 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   // rbx: previous index
   // rcx: encoding of subject string (1 if ascii 0 if two_byte);
   // r11: code
+  // r14: slice offset
+  // r15: original subject string
 
-  // Argument 4: End of string data
-  // Argument 3: Start of string data
-  Label setup_two_byte, setup_rest;
-  __ testb(rcx, rcx);  // Last use of rcx as encoding of subject string.
-  __ j(zero, &setup_two_byte, Label::kNear);
-  __ SmiToInteger32(rcx, FieldOperand(rdi, String::kLengthOffset));
-  __ lea(arg4, FieldOperand(rdi, rcx, times_1, SeqAsciiString::kHeaderSize));
-  __ lea(arg3, FieldOperand(rdi, rbx, times_1, SeqAsciiString::kHeaderSize));
-  __ jmp(&setup_rest, Label::kNear);
-  __ bind(&setup_two_byte);
-  __ SmiToInteger32(rcx, FieldOperand(rdi, String::kLengthOffset));
-  __ lea(arg4, FieldOperand(rdi, rcx, times_2, SeqTwoByteString::kHeaderSize));
-  __ lea(arg3, FieldOperand(rdi, rbx, times_2, SeqTwoByteString::kHeaderSize));
-
-  __ bind(&setup_rest);
   // Argument 2: Previous index.
   __ movq(arg2, rbx);
 
-  // Argument 1: Subject string.
-#ifdef _WIN64
-  __ movq(arg1, rdi);
-#else
-  // Already there in AMD64 calling convention.
-  ASSERT(arg1.is(rdi));
-  USE(arg1);
-#endif
+  // Argument 4: End of string data
+  // Argument 3: Start of string data
+  Label setup_two_byte, setup_rest, got_length, length_not_from_slice;
+  // Prepare start and end index of the input.
+  // Load the length from the original sliced string if that is the case.
+  __ addq(rbx, r14);
+  __ SmiToInteger32(arg3, FieldOperand(r15, String::kLengthOffset));
+  __ addq(r14, arg3);  // Using arg3 as scratch.
+
+  // rbx: start index of the input
+  // r14: end index of the input
+  // r15: original subject string
+  __ testb(rcx, rcx);  // Last use of rcx as encoding of subject string.
+  __ j(zero, &setup_two_byte, Label::kNear);
+  __ lea(arg4, FieldOperand(rdi, r14, times_1, SeqAsciiString::kHeaderSize));
+  __ lea(arg3, FieldOperand(rdi, rbx, times_1, SeqAsciiString::kHeaderSize));
+  __ jmp(&setup_rest, Label::kNear);
+  __ bind(&setup_two_byte);
+  __ lea(arg4, FieldOperand(rdi, r14, times_2, SeqTwoByteString::kHeaderSize));
+  __ lea(arg3, FieldOperand(rdi, rbx, times_2, SeqTwoByteString::kHeaderSize));
+  __ bind(&setup_rest);
+
+  // Argument 1: Original subject string.
+  // The original subject is in the previous stack frame. Therefore we have to
+  // use rbp, which points exactly to one pointer size below the previous rsp.
+  // (Because creating a new stack frame pushes the previous rbp onto the stack
+  // and thereby moves up rsp by one kPointerSize.)
+  __ movq(arg1, r15);
 
   // Locate the code entry and call it.
   __ addq(r11, Immediate(Code::kHeaderSize - kHeapObjectTag));
@@ -3780,6 +3873,7 @@ void StringCharCodeAtGenerator::GenerateFast(MacroAssembler* masm) {
   Label flat_string;
   Label ascii_string;
   Label got_char_code;
+  Label sliced_string;
 
   // If the receiver is a smi trigger the non-string case.
   __ JumpIfSmi(object_, receiver_not_string_);
@@ -3808,25 +3902,39 @@ void StringCharCodeAtGenerator::GenerateFast(MacroAssembler* masm) {
   __ j(zero, &flat_string);
 
   // Handle non-flat strings.
-  __ testb(result_, Immediate(kIsConsStringMask));
-  __ j(zero, &call_runtime_);
+  __ and_(result_, Immediate(kStringRepresentationMask));
+  STATIC_ASSERT(kConsStringTag < kExternalStringTag);
+  STATIC_ASSERT(kSlicedStringTag > kExternalStringTag);
+  __ cmpb(result_, Immediate(kExternalStringTag));
+  __ j(greater, &sliced_string);
+  __ j(equal, &call_runtime_);
 
   // ConsString.
   // Check whether the right hand side is the empty string (i.e. if
   // this is really a flat string in a cons string). If that is not
   // the case we would rather go to the runtime system now to flatten
   // the string.
+  Label assure_seq_string;
   __ CompareRoot(FieldOperand(object_, ConsString::kSecondOffset),
                  Heap::kEmptyStringRootIndex);
   __ j(not_equal, &call_runtime_);
   // Get the first of the two strings and load its instance type.
   __ movq(object_, FieldOperand(object_, ConsString::kFirstOffset));
+  __ jmp(&assure_seq_string, Label::kNear);
+
+  // SlicedString, unpack and add offset.
+  __ bind(&sliced_string);
+  __ addq(scratch_, FieldOperand(object_, SlicedString::kOffsetOffset));
+  __ movq(object_, FieldOperand(object_, SlicedString::kParentOffset));
+
+  __ bind(&assure_seq_string);
   __ movq(result_, FieldOperand(object_, HeapObject::kMapOffset));
   __ movzxbl(result_, FieldOperand(result_, Map::kInstanceTypeOffset));
   // If the first cons component is also non-flat, then go to runtime.
   STATIC_ASSERT(kSeqStringTag == 0);
   __ testb(result_, Immediate(kStringRepresentationMask));
   __ j(not_zero, &call_runtime_);
+  __ jmp(&flat_string);
 
   // Check for 1-byte or 2-byte string.
   __ bind(&flat_string);
@@ -4137,6 +4245,8 @@ void StringAddStub::Generate(MacroAssembler* masm) {
   __ and_(rcx, Immediate(kStringRepresentationMask));
   __ cmpl(rcx, Immediate(kExternalStringTag));
   __ j(equal, &string_add_runtime);
+  // We cannot encounter sliced strings here since:
+  STATIC_ASSERT(SlicedString::kMinLength >= String::kMinNonFlatLength);
   // Now check if both strings are ascii strings.
   // rax: first string
   // rbx: length of resulting flat string
@@ -4529,6 +4639,9 @@ void StringHelper::GenerateHashGetHash(MacroAssembler* masm,
 void SubStringStub::Generate(MacroAssembler* masm) {
   Label runtime;
 
+  if (FLAG_string_slices) {
+    __ jmp(&runtime);
+  }
   // Stack frame on entry.
   //  rsp[0]: return address
   //  rsp[8]: to

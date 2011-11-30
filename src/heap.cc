@@ -438,7 +438,9 @@ void Heap::GarbageCollectionEpilogue() {
 #if defined(DEBUG)
   ReportStatisticsAfterGC();
 #endif  // DEBUG
+#ifdef ENABLE_DEBUGGER_SUPPORT
   isolate_->debug()->AfterGarbageCollection();
+#endif  // ENABLE_DEBUGGER_SUPPORT
 }
 
 
@@ -1288,9 +1290,17 @@ class ScavengingVisitor : public StaticVisitorBase {
                     &ObjectEvacuationStrategy<POINTER_OBJECT>::
                         template VisitSpecialized<ConsString::kSize>);
 
+    table_.Register(kVisitSlicedString,
+                    &ObjectEvacuationStrategy<POINTER_OBJECT>::
+                        template VisitSpecialized<SlicedString::kSize>);
+
     table_.Register(kVisitSharedFunctionInfo,
                     &ObjectEvacuationStrategy<POINTER_OBJECT>::
                         template VisitSpecialized<SharedFunctionInfo::kSize>);
+
+    table_.Register(kVisitJSWeakMap,
+                    &ObjectEvacuationStrategy<POINTER_OBJECT>::
+                    Visit);
 
     table_.Register(kVisitJSRegExp,
                     &ObjectEvacuationStrategy<POINTER_OBJECT>::
@@ -1739,6 +1749,12 @@ bool Heap::CreateInitialMaps() {
   set_fixed_cow_array_map(Map::cast(obj));
   ASSERT(fixed_array_map() != fixed_cow_array_map());
 
+  { MaybeObject* maybe_obj =
+        AllocateMap(FIXED_ARRAY_TYPE, kVariableSizeSentinel);
+    if (!maybe_obj->ToObject(&obj)) return false;
+  }
+  set_serialized_scope_info_map(Map::cast(obj));
+
   { MaybeObject* maybe_obj = AllocateMap(HEAP_NUMBER_TYPE, HeapNumber::kSize);
     if (!maybe_obj->ToObject(&obj)) return false;
   }
@@ -1899,6 +1915,12 @@ bool Heap::CreateInitialMaps() {
     if (!maybe_obj->ToObject(&obj)) return false;
   }
   set_with_context_map(Map::cast(obj));
+
+  { MaybeObject* maybe_obj =
+        AllocateMap(FIXED_ARRAY_TYPE, kVariableSizeSentinel);
+    if (!maybe_obj->ToObject(&obj)) return false;
+  }
+  set_block_context_map(Map::cast(obj));
 
   { MaybeObject* maybe_obj =
         AllocateMap(FIXED_ARRAY_TYPE, kVariableSizeSentinel);
@@ -2546,6 +2568,8 @@ MaybeObject* Heap::AllocateConsString(String* first, String* second) {
 
   // If the resulting string is small make a flat string.
   if (length < String::kMinNonFlatLength) {
+    // Note that neither of the two inputs can be a slice because:
+    STATIC_ASSERT(String::kMinNonFlatLength <= SlicedString::kMinLength);
     ASSERT(first->IsFlat());
     ASSERT(second->IsFlat());
     if (is_ascii) {
@@ -2637,24 +2661,69 @@ MaybeObject* Heap::AllocateSubString(String* buffer,
   // Make an attempt to flatten the buffer to reduce access time.
   buffer = buffer->TryFlattenGetString();
 
-  Object* result;
-  { MaybeObject* maybe_result = buffer->IsAsciiRepresentation()
-                   ? AllocateRawAsciiString(length, pretenure )
-                   : AllocateRawTwoByteString(length, pretenure);
-    if (!maybe_result->ToObject(&result)) return maybe_result;
-  }
-  String* string_result = String::cast(result);
-  // Copy the characters into the new object.
-  if (buffer->IsAsciiRepresentation()) {
-    ASSERT(string_result->IsAsciiRepresentation());
-    char* dest = SeqAsciiString::cast(string_result)->GetChars();
-    String::WriteToFlat(buffer, dest, start, end);
-  } else {
-    ASSERT(string_result->IsTwoByteRepresentation());
-    uc16* dest = SeqTwoByteString::cast(string_result)->GetChars();
-    String::WriteToFlat(buffer, dest, start, end);
+  // TODO(1626): For now slicing external strings is not supported.  However,
+  // a flat cons string can have an external string as first part in some cases.
+  // Therefore we have to single out this case as well.
+  if (!FLAG_string_slices ||
+      (buffer->IsConsString() &&
+        (!buffer->IsFlat() ||
+         !ConsString::cast(buffer)->first()->IsSeqString())) ||
+      buffer->IsExternalString() ||
+      length < SlicedString::kMinLength ||
+      pretenure == TENURED) {
+    Object* result;
+    { MaybeObject* maybe_result = buffer->IsAsciiRepresentation()
+                     ? AllocateRawAsciiString(length, pretenure)
+                     : AllocateRawTwoByteString(length, pretenure);
+      if (!maybe_result->ToObject(&result)) return maybe_result;
+    }
+    String* string_result = String::cast(result);
+    // Copy the characters into the new object.
+    if (buffer->IsAsciiRepresentation()) {
+      ASSERT(string_result->IsAsciiRepresentation());
+      char* dest = SeqAsciiString::cast(string_result)->GetChars();
+      String::WriteToFlat(buffer, dest, start, end);
+    } else {
+      ASSERT(string_result->IsTwoByteRepresentation());
+      uc16* dest = SeqTwoByteString::cast(string_result)->GetChars();
+      String::WriteToFlat(buffer, dest, start, end);
+    }
+    return result;
   }
 
+  ASSERT(buffer->IsFlat());
+  ASSERT(!buffer->IsExternalString());
+#if DEBUG
+  buffer->StringVerify();
+#endif
+
+  Object* result;
+  { Map* map = buffer->IsAsciiRepresentation()
+                 ? sliced_ascii_string_map()
+                 : sliced_string_map();
+    MaybeObject* maybe_result = Allocate(map, NEW_SPACE);
+    if (!maybe_result->ToObject(&result)) return maybe_result;
+  }
+
+  AssertNoAllocation no_gc;
+  SlicedString* sliced_string = SlicedString::cast(result);
+  sliced_string->set_length(length);
+  sliced_string->set_hash_field(String::kEmptyHashField);
+  if (buffer->IsConsString()) {
+    ConsString* cons = ConsString::cast(buffer);
+    ASSERT(cons->second()->length() == 0);
+    sliced_string->set_parent(cons->first());
+    sliced_string->set_offset(start);
+  } else if (buffer->IsSlicedString()) {
+    // Prevent nesting sliced strings.
+    SlicedString* parent_slice = SlicedString::cast(buffer);
+    sliced_string->set_parent(parent_slice->parent());
+    sliced_string->set_offset(start + parent_slice->offset());
+  } else {
+    sliced_string->set_parent(buffer);
+    sliced_string->set_offset(start);
+  }
+  ASSERT(sliced_string->parent()->IsSeqString());
   return result;
 }
 
@@ -3389,17 +3458,22 @@ MaybeObject* Heap::CopyJSObject(JSObject* source) {
               object_size);
   }
 
-  FixedArray* elements = FixedArray::cast(source->elements());
+  FixedArrayBase* elements = FixedArrayBase::cast(source->elements());
   FixedArray* properties = FixedArray::cast(source->properties());
   // Update elements if necessary.
   if (elements->length() > 0) {
     Object* elem;
-    { MaybeObject* maybe_elem =
-          (elements->map() == fixed_cow_array_map()) ?
-          elements : CopyFixedArray(elements);
+    { MaybeObject* maybe_elem;
+      if (elements->map() == fixed_cow_array_map()) {
+        maybe_elem = FixedArray::cast(elements);
+      } else if (source->HasFastDoubleElements()) {
+        maybe_elem = CopyFixedDoubleArray(FixedDoubleArray::cast(elements));
+      } else {
+        maybe_elem = CopyFixedArray(FixedArray::cast(elements));
+      }
       if (!maybe_elem->ToObject(&elem)) return maybe_elem;
     }
-    JSObject::cast(clone)->set_elements(FixedArray::cast(elem));
+    JSObject::cast(clone)->set_elements(FixedArrayBase::cast(elem));
   }
   // Update properties if necessary.
   if (properties->length() > 0) {
@@ -3758,6 +3832,23 @@ MaybeObject* Heap::CopyFixedArrayWithMap(FixedArray* src, Map* map) {
 }
 
 
+MaybeObject* Heap::CopyFixedDoubleArrayWithMap(FixedDoubleArray* src,
+                                               Map* map) {
+  int len = src->length();
+  Object* obj;
+  { MaybeObject* maybe_obj = AllocateRawFixedDoubleArray(len, NOT_TENURED);
+    if (!maybe_obj->ToObject(&obj)) return maybe_obj;
+  }
+  HeapObject* dst = HeapObject::cast(obj);
+  dst->set_map(map);
+  CopyBlock(
+      dst->address() + FixedDoubleArray::kLengthOffset,
+      src->address() + FixedDoubleArray::kLengthOffset,
+      FixedDoubleArray::SizeFor(len) - FixedDoubleArray::kLengthOffset);
+  return obj;
+}
+
+
 MaybeObject* Heap::AllocateFixedArray(int length) {
   ASSERT(length >= 0);
   if (length == 0) return empty_fixed_array();
@@ -3986,6 +4077,36 @@ MaybeObject* Heap::AllocateWithContext(JSFunction* function,
   context->set_extension(extension);
   context->set_global(previous->global());
   return context;
+}
+
+
+MaybeObject* Heap::AllocateBlockContext(JSFunction* function,
+                                        Context* previous,
+                                        SerializedScopeInfo* scope_info) {
+  Object* result;
+  { MaybeObject* maybe_result =
+        AllocateFixedArrayWithHoles(scope_info->NumberOfContextSlots());
+    if (!maybe_result->ToObject(&result)) return maybe_result;
+  }
+  Context* context = reinterpret_cast<Context*>(result);
+  context->set_map(block_context_map());
+  context->set_closure(function);
+  context->set_previous(previous);
+  context->set_extension(scope_info);
+  context->set_global(previous->global());
+  return context;
+}
+
+
+MaybeObject* Heap::AllocateSerializedScopeInfo(int length) {
+  Object* result;
+  { MaybeObject* maybe_result = AllocateFixedArray(length, TENURED);
+    if (!maybe_result->ToObject(&result)) return maybe_result;
+  }
+  SerializedScopeInfo* scope_info =
+      reinterpret_cast<SerializedScopeInfo*>(result);
+  scope_info->set_map(serialized_scope_info_map());
+  return scope_info;
 }
 
 

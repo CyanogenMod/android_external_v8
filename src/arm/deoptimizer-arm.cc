@@ -35,7 +35,7 @@
 namespace v8 {
 namespace internal {
 
-int Deoptimizer::table_entry_size_ = 16;
+const int Deoptimizer::table_entry_size_ = 16;
 
 
 int Deoptimizer::patch_size() {
@@ -533,8 +533,6 @@ void Deoptimizer::DoComputeFrame(TranslationIterator* iterator,
     output_frame->SetContinuation(
         reinterpret_cast<uint32_t>(continuation->entry()));
   }
-
-  if (output_count_ - 1 == frame_index) iterator->Done();
 }
 
 
@@ -595,6 +593,8 @@ void Deoptimizer::EntryGenerator::Generate() {
   __ vstm(db_w, sp, first, last);
 
   // Push all 16 registers (needed to populate FrameDescription::registers_).
+  // TODO(1588) Note that using pc with stm is deprecated, so we should perhaps
+  // handle this a bit differently.
   __ stm(db_w, sp, restored_regs  | sp.bit() | lr.bit() | pc.bit());
 
   const int kSavedRegistersAreaSize =

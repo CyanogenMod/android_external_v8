@@ -1045,7 +1045,13 @@ LInstruction* LChunkBuilder::DoBranch(HBranch* instr) {
         : instr->SecondSuccessor();
     return new LGoto(successor->block_id());
   }
-  return new LBranch(UseRegisterAtStart(v));
+  ToBooleanStub::Types expected = instr->expected_input_types();
+  // We need a temporary register when we have to access the map *or* we have
+  // no type info yet, in which case we handle all cases (including the ones
+  // involving maps).
+  bool needs_temp = expected.NeedsMap() || expected.IsEmpty();
+  LOperand* temp = needs_temp ? TempRegister() : NULL;
+  return AssignEnvironment(new LBranch(UseRegister(v), temp));
 }
 
 
@@ -1536,16 +1542,10 @@ LInstruction* LChunkBuilder::DoJSArrayLength(HJSArrayLength* instr) {
 }
 
 
-LInstruction* LChunkBuilder::DoFixedArrayLength(HFixedArrayLength* instr) {
+LInstruction* LChunkBuilder::DoFixedArrayBaseLength(
+    HFixedArrayBaseLength* instr) {
   LOperand* array = UseRegisterAtStart(instr->value());
-  return DefineAsRegister(new LFixedArrayLength(array));
-}
-
-
-LInstruction* LChunkBuilder::DoExternalArrayLength(
-    HExternalArrayLength* instr) {
-  LOperand* array = UseRegisterAtStart(instr->value());
-  return DefineAsRegister(new LExternalArrayLength(array));
+  return DefineAsRegister(new LFixedArrayBaseLength(array));
 }
 
 
@@ -1563,8 +1563,9 @@ LInstruction* LChunkBuilder::DoValueOf(HValueOf* instr) {
 
 
 LInstruction* LChunkBuilder::DoBoundsCheck(HBoundsCheck* instr) {
-  return AssignEnvironment(new LBoundsCheck(UseRegisterAtStart(instr->index()),
-                                            UseAtStart(instr->length())));
+  return AssignEnvironment(new LBoundsCheck(
+      UseRegisterOrConstantAtStart(instr->index()),
+      UseAtStart(instr->length())));
 }
 
 
@@ -1885,9 +1886,9 @@ LInstruction* LChunkBuilder::DoLoadKeyedFastElement(
   ASSERT(instr->representation().IsTagged());
   ASSERT(instr->key()->representation().IsInteger32());
   LOperand* obj = UseRegisterAtStart(instr->object());
-  LOperand* key = UseRegisterAtStart(instr->key());
+  LOperand* key = UseRegisterOrConstantAtStart(instr->key());
   LLoadKeyedFastElement* result = new LLoadKeyedFastElement(obj, key);
-  return AssignEnvironment(DefineSameAsFirst(result));
+  return AssignEnvironment(DefineAsRegister(result));
 }
 
 
@@ -2061,8 +2062,8 @@ LInstruction* LChunkBuilder::DoStringAdd(HStringAdd* instr) {
 
 
 LInstruction* LChunkBuilder::DoStringCharCodeAt(HStringCharCodeAt* instr) {
-  LOperand* string = UseRegister(instr->string());
-  LOperand* index = UseRegisterOrConstant(instr->index());
+  LOperand* string = UseTempRegister(instr->string());
+  LOperand* index = UseTempRegister(instr->index());
   LOperand* context = UseAny(instr->context());
   LStringCharCodeAt* result = new LStringCharCodeAt(context, string, index);
   return AssignEnvironment(AssignPointerMap(DefineAsRegister(result)));

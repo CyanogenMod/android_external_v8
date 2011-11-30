@@ -172,12 +172,12 @@ function Join(array, length, separator, convert) {
     } else {
       for (var i = 0; i < length; i++) {
         var e = array[i];
-          if (IS_NUMBER(e)) {
-            e = %_NumberToString(e);
-          } else if (!IS_STRING(e)) {
-            e = convert(e);
-          }
-          elements[i] = e;
+        if (IS_NUMBER(e)) {
+          e = %_NumberToString(e);
+        } else if (!IS_STRING(e)) {
+          e = convert(e);
+        }
+        elements[i] = e;
       }
     }
     var result = %_FastAsciiArrayJoin(elements, separator);
@@ -742,8 +742,7 @@ function ArraySort(comparefn) {
       else return x < y ? -1 : 1;
     };
   }
-  var receiver =
-      %_IsNativeOrStrictMode(comparefn) ? void 0 : %GetGlobalReceiver();
+  var receiver = %GetDefaultReceiver(comparefn);
 
   function InsertionSort(a, from, to) {
     for (var i = from + 1; i < to; i++) {
@@ -997,6 +996,9 @@ function ArrayFilter(f, receiver) {
   if (!IS_FUNCTION(f)) {
     throw MakeTypeError('called_non_callable', [ f ]);
   }
+  if (IS_NULL_OR_UNDEFINED(receiver)) {
+    receiver = %GetDefaultReceiver(f) || receiver;
+  }
   // Pull out the length so that modifications to the length in the
   // loop will not affect the looping.
   var length = ToUint32(this.length);
@@ -1005,7 +1007,7 @@ function ArrayFilter(f, receiver) {
   for (var i = 0; i < length; i++) {
     var current = this[i];
     if (!IS_UNDEFINED(current) || i in this) {
-      if (f.call(receiver, current, i, this)) {
+      if (%_CallFunction(receiver, current, i, this, f)) {
         result[result_length++] = current;
       }
     }
@@ -1023,13 +1025,16 @@ function ArrayForEach(f, receiver) {
   if (!IS_FUNCTION(f)) {
     throw MakeTypeError('called_non_callable', [ f ]);
   }
+  if (IS_NULL_OR_UNDEFINED(receiver)) {
+    receiver = %GetDefaultReceiver(f) || receiver;
+  }
   // Pull out the length so that modifications to the length in the
   // loop will not affect the looping.
   var length =  TO_UINT32(this.length);
   for (var i = 0; i < length; i++) {
     var current = this[i];
     if (!IS_UNDEFINED(current) || i in this) {
-      f.call(receiver, current, i, this);
+      %_CallFunction(receiver, current, i, this, f);
     }
   }
 }
@@ -1046,13 +1051,16 @@ function ArraySome(f, receiver) {
   if (!IS_FUNCTION(f)) {
     throw MakeTypeError('called_non_callable', [ f ]);
   }
+  if (IS_NULL_OR_UNDEFINED(receiver)) {
+    receiver = %GetDefaultReceiver(f) || receiver;
+  }
   // Pull out the length so that modifications to the length in the
   // loop will not affect the looping.
   var length = TO_UINT32(this.length);
   for (var i = 0; i < length; i++) {
     var current = this[i];
     if (!IS_UNDEFINED(current) || i in this) {
-      if (f.call(receiver, current, i, this)) return true;
+      if (%_CallFunction(receiver, current, i, this, f)) return true;
     }
   }
   return false;
@@ -1068,13 +1076,16 @@ function ArrayEvery(f, receiver) {
   if (!IS_FUNCTION(f)) {
     throw MakeTypeError('called_non_callable', [ f ]);
   }
+  if (IS_NULL_OR_UNDEFINED(receiver)) {
+    receiver = %GetDefaultReceiver(f) || receiver;
+  }
   // Pull out the length so that modifications to the length in the
   // loop will not affect the looping.
   var length = TO_UINT32(this.length);
   for (var i = 0; i < length; i++) {
     var current = this[i];
     if (!IS_UNDEFINED(current) || i in this) {
-      if (!f.call(receiver, current, i, this)) return false;
+      if (!%_CallFunction(receiver, current, i, this, f)) return false;
     }
   }
   return true;
@@ -1089,6 +1100,9 @@ function ArrayMap(f, receiver) {
   if (!IS_FUNCTION(f)) {
     throw MakeTypeError('called_non_callable', [ f ]);
   }
+  if (IS_NULL_OR_UNDEFINED(receiver)) {
+    receiver = %GetDefaultReceiver(f) || receiver;
+  }
   // Pull out the length so that modifications to the length in the
   // loop will not affect the looping.
   var length = TO_UINT32(this.length);
@@ -1097,7 +1111,7 @@ function ArrayMap(f, receiver) {
   for (var i = 0; i < length; i++) {
     var current = this[i];
     if (!IS_UNDEFINED(current) || i in this) {
-      accumulator[i] = f.call(receiver, current, i, this);
+      accumulator[i] = %_CallFunction(receiver, current, i, this, f);
     }
   }
   %MoveArrayContents(accumulator, result);
@@ -1234,6 +1248,7 @@ function ArrayReduce(callback, current) {
   if (!IS_FUNCTION(callback)) {
     throw MakeTypeError('called_non_callable', [callback]);
   }
+
   // Pull out the length so that modifications to the length in the
   // loop will not affect the looping.
   var length = ToUint32(this.length);
@@ -1250,10 +1265,11 @@ function ArrayReduce(callback, current) {
     throw MakeTypeError('reduce_no_initial', []);
   }
 
+  var receiver = %GetDefaultReceiver(callback);
   for (; i < length; i++) {
     var element = this[i];
     if (!IS_UNDEFINED(element) || i in this) {
-      current = callback.call(void 0, current, element, i, this);
+      current = %_CallFunction(receiver, current, element, i, this, callback);
     }
   }
   return current;
@@ -1281,10 +1297,11 @@ function ArrayReduceRight(callback, current) {
     throw MakeTypeError('reduce_no_initial', []);
   }
 
+  var receiver = %GetDefaultReceiver(callback);
   for (; i >= 0; i--) {
     var element = this[i];
     if (!IS_UNDEFINED(element) || i in this) {
-      current = callback.call(void 0, current, element, i, this);
+      current = %_CallFunction(receiver, current, element, i, this, callback);
     }
   }
   return current;

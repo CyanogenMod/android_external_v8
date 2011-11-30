@@ -169,7 +169,8 @@ void BreakLocationIterator::Next() {
       if ((code->is_inline_cache_stub() &&
            !code->is_binary_op_stub() &&
            !code->is_unary_op_stub() &&
-           !code->is_compare_ic_stub()) ||
+           !code->is_compare_ic_stub() &&
+           !code->is_to_boolean_ic_stub()) ||
           RelocInfo::IsConstructCall(rmode())) {
         break_point_++;
         return;
@@ -1964,7 +1965,7 @@ void Debug::AfterGarbageCollection() {
 
 
 Debugger::Debugger(Isolate* isolate)
-    : debugger_access_(OS::CreateMutex()),
+    : debugger_access_(isolate->debugger_access()),
       event_listener_(Handle<Object>()),
       event_listener_data_(Handle<Object>()),
       compiling_natives_(false),
@@ -1986,8 +1987,6 @@ Debugger::Debugger(Isolate* isolate)
 
 
 Debugger::~Debugger() {
-  delete debugger_access_;
-  debugger_access_ = 0;
   delete dispatch_handler_access_;
   dispatch_handler_access_ = 0;
   delete command_received_;

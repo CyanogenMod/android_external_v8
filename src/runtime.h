@@ -65,7 +65,7 @@ namespace internal {
   F(ToSlowProperties, 1, 1) \
   F(FinishArrayPrototypeSetup, 1, 1) \
   F(SpecialArrayFunctions, 1, 1) \
-  F(GetGlobalReceiver, 0, 1) \
+  F(GetDefaultReceiver, 1, 1) \
   \
   F(GetPrototype, 1, 1) \
   F(IsInPrototypeChain, 2, 1) \
@@ -209,7 +209,9 @@ namespace internal {
   /* Reflection */ \
   F(FunctionSetInstanceClassName, 2, 1) \
   F(FunctionSetLength, 2, 1) \
+  F(BoundFunctionSetLength, 2, 1)    \
   F(FunctionSetPrototype, 2, 1) \
+  F(FunctionSetReadOnlyPrototype, 1, 1) \
   F(FunctionGetName, 1, 1) \
   F(FunctionSetName, 2, 1) \
   F(FunctionNameShouldPrintAsAnonymous, 1, 1) \
@@ -288,6 +290,11 @@ namespace internal {
   F(GetHandler, 1, 1) \
   F(Fix, 1, 1) \
   \
+  /* Harmony weakmaps */ \
+  F(WeakMapInitialize, 1, 1) \
+  F(WeakMapGet, 2, 1) \
+  F(WeakMapSet, 3, 1) \
+  \
   /* Statements */ \
   F(NewClosure, 3, 1) \
   F(NewObject, 1, 1) \
@@ -303,6 +310,7 @@ namespace internal {
   F(NewFunctionContext, 1, 1) \
   F(PushWithContext, 2, 1) \
   F(PushCatchContext, 3, 1) \
+  F(PushBlockContext, 2, 1) \
   F(DeleteContextSlot, 2, 1) \
   F(LoadContextSlot, 2, 2) \
   F(LoadContextSlotNoReferenceError, 2, 2) \
@@ -483,8 +491,7 @@ namespace internal {
   F(IsRegExpEquivalent, 2, 1)                                                \
   F(HasCachedArrayIndex, 1, 1)                                               \
   F(GetCachedArrayIndex, 1, 1)                                               \
-  F(FastAsciiArrayJoin, 2, 1)                                                \
-  F(IsNativeOrStrictMode, 1, 1)
+  F(FastAsciiArrayJoin, 2, 1)
 
 
 // ----------------------------------------------------------------------------

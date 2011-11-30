@@ -198,17 +198,19 @@ function FormatMessage(message) {
       non_extensible_proto:         ["%0", " is not extensible"],
       handler_non_object:           ["Proxy.", "%0", " called with non-object as handler"],
       handler_trap_missing:         ["Proxy handler ", "%0", " has no '", "%1", "' trap"],
+      handler_trap_must_be_callable: ["Proxy handler ", "%0", " has non-callable '", "%1", "' trap"],
       handler_returned_false:       ["Proxy handler ", "%0", " returned false for '", "%1", "' trap"],
       handler_returned_undefined:   ["Proxy handler ", "%0", " returned undefined for '", "%1", "' trap"],
       proxy_prop_not_configurable:  ["Trap ", "%1", " of proxy handler ", "%0", " returned non-configurable descriptor for property ", "%2"],
       proxy_non_object_prop_names:  ["Trap ", "%1", " returned non-object ", "%0"],
       proxy_repeated_prop_name:     ["Trap ", "%1", " returned repeated property name ", "%2"],
+      invalid_weakmap_key:          ["Invalid value used as weak map key"],
       // RangeError
       invalid_array_length:         ["Invalid array length"],
       stack_overflow:               ["Maximum call stack size exceeded"],
       // SyntaxError
       unable_to_parse:              ["Parse error"],
-      duplicate_regexp_flag:        ["Duplicate RegExp flag ", "%0"],
+      invalid_regexp_flags:         ["Invalid flags supplied to RegExp constructor '", "%0", "'"],
       invalid_regexp:               ["Invalid RegExp pattern /", "%0", "/"],
       illegal_break:                ["Illegal break statement"],
       illegal_continue:             ["Illegal continue statement"],
@@ -248,8 +250,9 @@ function FormatMessage(message) {
       strict_cannot_assign:         ["Cannot assign to read only '", "%0", "' in strict mode"],
       strict_poison_pill:           ["'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them"],
       strict_caller:                ["Illegal access to a strict mode caller function."],
+      unprotected_let:              ["Illegal let declaration in unprotected statement context."],
       cant_prevent_ext_external_array_elements: ["Cannot prevent extension of an object with external array elements"],
-      redef_external_array_element: ["Cannot redefine a property of an object"]
+      redef_external_array_element: ["Cannot redefine a property of an object with external array elements"],
     };
   }
   var message_type = %MessageGetType(message);

@@ -29,6 +29,7 @@ V8_LOCAL_SRC_FILES := \
 	src/disassembler.cc \
 	src/diy-fp.cc \
 	src/dtoa.cc \
+	src/elements.cc \
 	src/execution.cc \
 	src/extensions/externalize-string-extension.cc \
 	src/extensions/gc-extension.cc \
@@ -136,7 +137,7 @@ V8_LOCAL_JS_LIBRARY_FILES := \
 	src/uri.js \
 	src/math.js \
 	src/messages.js \
-	src/apinatives.js
+	src/apinatives.js 
 
 # These JS library sources must follow the above sources but their order is not
 # important.
@@ -150,3 +151,8 @@ V8_LOCAL_JS_LIBRARY_FILES += \
 
 V8_LOCAL_JS_LIBRARY_FILES += \
 	src/macros.py
+
+V8_LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES := \
+	src/proxy.js \
+	src/weakmap.js
+
