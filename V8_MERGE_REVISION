@@ -2,4 +2,4 @@ We are tracking the V8 3.2 release branch as used by the Chrome 12 release branc
 
 We have synced V8 past the last revision used in Chrome 12, as we continue to take 3.2 updates.
 
-http://v8.googlecode.com/svn/branches/3.2@9719
+http://v8.googlecode.com/svn/branches/3.2@10110
