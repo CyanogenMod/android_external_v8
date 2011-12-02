@@ -49,7 +49,6 @@ V8_LOCAL_SRC_FILES := \
 	src/ic.cc \
 	src/interpreter-irregexp.cc \
 	src/isolate.cc \
-	src/json-parser.cc \
 	src/jsregexp.cc \
 	src/lithium.cc \
 	src/lithium-allocator.cc \
@@ -89,6 +88,8 @@ V8_LOCAL_SRC_FILES := \
 	src/utils.cc \
 	src/v8-counters.cc \
 	src/v8.cc \
+	src/v8conversions.cc \
+	src/v8utils.cc \
 	src/v8threads.cc \
 	src/variables.cc \
 	src/version.cc \

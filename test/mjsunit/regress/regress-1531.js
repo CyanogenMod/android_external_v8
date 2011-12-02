@@ -25,12 +25,25 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// When 'eval' is overridden with a non-function object we should
-// check whether the object is callable.
+// Regression test for computing elements keys of arguments object.  Should
+// not crash or assert.
+function test(x) {
+  arguments[10] = 0;
+  var arr = [];
+  for (var p in arguments) arr.push(p);
+  return arr;
+}
+assertEquals(["0", "10"], test(0));
 
-function test() {
-  eval = /foo/;
-  assertEquals(["foo"], eval("foobar"));
+// Regression test for lookup after delete of a dictionary-mode arguments
+// backing store.  Should not crash or assert.
+function test1(x, y, z) {
+  // Put into dictionary mode.
+  arguments.__defineGetter__("5", function () { return 0; });
+  // Delete a property from the dictionary.
+  delete arguments[5];
+  // Look up a property in the dictionary.
+  return arguments[2];
 }
 
-test();
+assertEquals(void 0, test1(0));

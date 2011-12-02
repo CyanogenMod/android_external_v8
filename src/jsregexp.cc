@@ -1,4 +1,4 @@
-// Copyright 2006-2009 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -127,7 +127,7 @@ Handle<Object> RegExpImpl::Compile(Handle<JSRegExp> re,
     return re;
   }
   pattern = FlattenGetString(pattern);
-  CompilationZoneScope zone_scope(isolate, DELETE_ON_EXIT);
+  ZoneScope zone_scope(isolate, DELETE_ON_EXIT);
   PostponeInterruptsScope postpone(isolate);
   RegExpCompileData parse_result;
   FlatStringReader reader(isolate, pattern);
@@ -327,7 +327,7 @@ static bool CreateRegExpErrorObjectAndThrow(Handle<JSRegExp> re,
 bool RegExpImpl::CompileIrregexp(Handle<JSRegExp> re, bool is_ascii) {
   // Compile the RegExp.
   Isolate* isolate = re->GetIsolate();
-  CompilationZoneScope zone_scope(isolate, DELETE_ON_EXIT);
+  ZoneScope zone_scope(isolate, DELETE_ON_EXIT);
   PostponeInterruptsScope postpone(isolate);
   // If we had a compilation error the last time this is saved at the
   // saved code index.
@@ -848,6 +848,7 @@ class RegExpCompiler {
   }
 
   static const int kNoRegister = -1;
+
  private:
   EndNode* accept_;
   int next_register_;
@@ -1957,13 +1958,10 @@ void TextNode::GetQuickCheckDetails(QuickCheckDetails* details,
   ASSERT(characters_filled_in < details->characters());
   int characters = details->characters();
   int char_mask;
-  int char_shift;
   if (compiler->ascii()) {
     char_mask = String::kMaxAsciiCharCode;
-    char_shift = 8;
   } else {
     char_mask = String::kMaxUC16CharCode;
-    char_shift = 16;
   }
   for (int k = 0; k < elms_->length(); k++) {
     TextElement elm = elms_->at(k);
@@ -2806,6 +2804,7 @@ class AlternativeGenerationList {
   AlternativeGeneration* at(int i) {
     return alt_gens_[i];
   }
+
  private:
   static const int kAFew = 10;
   ZoneList<AlternativeGeneration*> alt_gens_;
@@ -3365,6 +3364,7 @@ class TableEntryHeaderPrinter {
     }
     stream()->Add("}}");
   }
+
  private:
   bool first_;
   StringStream* stream() { return stream_; }
@@ -4885,7 +4885,6 @@ void TextNode::CalculateOffsets() {
       cp_offset += elm.data.u_atom->data().length();
     } else {
       cp_offset++;
-      Vector<const uc16> quarks = elm.data.u_atom->data();
     }
   }
 }
@@ -5323,8 +5322,6 @@ RegExpEngine::CompilationResult RegExpEngine::Compile(RegExpCompileData* data,
     const char* error_message = analysis.error_message();
     return CompilationResult(error_message);
   }
-
-  NodeInfo info = *node->info();
 
   // Create the correct assembler for the architecture.
 #ifndef V8_INTERPRETED_REGEXP

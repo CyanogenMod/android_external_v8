@@ -48,7 +48,7 @@ $(GEN3): SCRIPT := $(intermediates)/js2c.py
 $(GEN3): $(LOCAL_JS_LIBRARY_FILES) $(JS2C_PY)
 	@echo "Generating libraries.cc"
 	@mkdir -p $(dir $@)
-	python $(SCRIPT) $(GEN3) CORE $(LOCAL_JS_LIBRARY_FILES)
+	python $(SCRIPT) $(GEN3) CORE off $(LOCAL_JS_LIBRARY_FILES)
 LOCAL_GENERATED_SOURCES := $(intermediates)/libraries.cc
 
 # Generate experimental-libraries.cc
@@ -57,7 +57,7 @@ $(GEN4): SCRIPT := $(intermediates)/js2c.py
 $(GEN4): $(LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES) $(JS2C_PY)
 	@echo "Generating experimental-libraries.cc"
 	@mkdir -p $(dir $@)
-	python $(SCRIPT) $(GEN4) EXPERIMENTAL $(LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES)
+	python $(SCRIPT) $(GEN4) EXPERIMENTAL off $(LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES)
 LOCAL_GENERATED_SOURCES += $(intermediates)/experimental-libraries.cc
 
 LOCAL_CFLAGS := \

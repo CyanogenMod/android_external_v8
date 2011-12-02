@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -199,6 +199,8 @@ const int kDoubleSize   = sizeof(double);    // NOLINT
 const int kIntptrSize   = sizeof(intptr_t);  // NOLINT
 const int kPointerSize  = sizeof(void*);     // NOLINT
 
+const int kDoubleSizeLog2 = 3;
+
 #if V8_HOST_ARCH_64_BIT
 const int kPointerSizeLog2 = 3;
 const intptr_t kIntptrSignBit = V8_INT64_C(0x8000000000000000);
@@ -223,6 +225,10 @@ const int kBinary32MaxExponent  = 0xFE;
 const int kBinary32MinExponent  = 0x01;
 const int kBinary32MantissaBits = 23;
 const int kBinary32ExponentShift = 23;
+
+// Quiet NaNs have bits 51 to 62 set, possibly the sign bit, and no
+// other bits set.
+const uint64_t kQuietNaNMask = static_cast<uint64_t>(0xfff) << 51;
 
 // ASCII/UC16 constants
 // Code-point values in Unicode 4.0 are 21 bits wide.

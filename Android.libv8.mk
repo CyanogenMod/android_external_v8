@@ -41,7 +41,7 @@ $(GEN1): SCRIPT := $(intermediates)/js2c.py
 $(GEN1): $(LOCAL_JS_LIBRARY_FILES) $(JS2C_PY)
 	@echo "Generating libraries.cc"
 	@mkdir -p $(dir $@)
-	python $(SCRIPT) $(GEN1) CORE $(LOCAL_JS_LIBRARY_FILES)
+	python $(SCRIPT) $(GEN1) CORE off $(LOCAL_JS_LIBRARY_FILES)
 V8_GENERATED_LIBRARIES := $(intermediates)/libraries.cc
 
 # Generate experimental-libraries.cc
@@ -50,7 +50,7 @@ $(GEN2): SCRIPT := $(intermediates)/js2c.py
 $(GEN2): $(LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES) $(JS2C_PY)
 	@echo "Generating experimental-libraries.cc"
 	@mkdir -p $(dir $@)
-	python $(SCRIPT) $(GEN2) EXPERIMENTAL $(LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES)
+	python $(SCRIPT) $(GEN2) EXPERIMENTAL off $(LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES)
 V8_GENERATED_LIBRARIES += $(intermediates)/experimental-libraries.cc
 
 LOCAL_GENERATED_SOURCES += $(V8_GENERATED_LIBRARIES)

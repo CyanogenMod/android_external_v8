@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -54,6 +54,16 @@ Handle<FixedArray> Factory::NewFixedArrayWithHoles(int size,
   CALL_HEAP_FUNCTION(
       isolate(),
       isolate()->heap()->AllocateFixedArrayWithHoles(size, pretenure),
+      FixedArray);
+}
+
+
+Handle<FixedArray> Factory::NewFixedDoubleArray(int size,
+                                                PretenureFlag pretenure) {
+  ASSERT(0 <= size);
+  CALL_HEAP_FUNCTION(
+      isolate(),
+      isolate()->heap()->AllocateUninitializedFixedDoubleArray(size, pretenure),
       FixedArray);
 }
 
@@ -169,21 +179,21 @@ Handle<String> Factory::NewStringFromTwoByte(Vector<const uc16> string,
 }
 
 
-Handle<String> Factory::NewRawAsciiString(int length,
-                                          PretenureFlag pretenure) {
+Handle<SeqAsciiString> Factory::NewRawAsciiString(int length,
+                                                  PretenureFlag pretenure) {
   CALL_HEAP_FUNCTION(
       isolate(),
       isolate()->heap()->AllocateRawAsciiString(length, pretenure),
-      String);
+      SeqAsciiString);
 }
 
 
-Handle<String> Factory::NewRawTwoByteString(int length,
-                                            PretenureFlag pretenure) {
+Handle<SeqTwoByteString> Factory::NewRawTwoByteString(int length,
+                                                      PretenureFlag pretenure) {
   CALL_HEAP_FUNCTION(
       isolate(),
       isolate()->heap()->AllocateRawTwoByteString(length, pretenure),
-      String);
+      SeqTwoByteString);
 }
 
 
@@ -200,6 +210,16 @@ Handle<String> Factory::NewSubString(Handle<String> str,
                                      int end) {
   CALL_HEAP_FUNCTION(isolate(),
                      str->SubString(begin, end),
+                     String);
+}
+
+
+Handle<String> Factory::NewProperSubString(Handle<String> str,
+                                           int begin,
+                                           int end) {
+  ASSERT(begin > 0 || end < str->length());
+  CALL_HEAP_FUNCTION(isolate(),
+                     isolate()->heap()->AllocateSubString(*str, begin, end),
                      String);
 }
 
@@ -231,22 +251,34 @@ Handle<Context> Factory::NewGlobalContext() {
 
 
 Handle<Context> Factory::NewFunctionContext(int length,
-                                            Handle<JSFunction> closure) {
+                                            Handle<JSFunction> function) {
   CALL_HEAP_FUNCTION(
       isolate(),
-      isolate()->heap()->AllocateFunctionContext(length, *closure),
+      isolate()->heap()->AllocateFunctionContext(length, *function),
       Context);
 }
 
 
-Handle<Context> Factory::NewWithContext(Handle<Context> previous,
-                                        Handle<JSObject> extension,
-                                        bool is_catch_context) {
+Handle<Context> Factory::NewCatchContext(Handle<JSFunction> function,
+                                         Handle<Context> previous,
+                                         Handle<String> name,
+                                         Handle<Object> thrown_object) {
   CALL_HEAP_FUNCTION(
       isolate(),
-      isolate()->heap()->AllocateWithContext(*previous,
-                                             *extension,
-                                             is_catch_context),
+      isolate()->heap()->AllocateCatchContext(*function,
+                                              *previous,
+                                              *name,
+                                              *thrown_object),
+      Context);
+}
+
+
+Handle<Context> Factory::NewWithContext(Handle<JSFunction> function,
+                                        Handle<Context> previous,
+                                        Handle<JSObject> extension) {
+  CALL_HEAP_FUNCTION(
+      isolate(),
+      isolate()->heap()->AllocateWithContext(*function, *previous, *extension),
       Context);
 }
 
@@ -857,6 +889,13 @@ Handle<JSProxy> Factory::NewJSProxy(Handle<Object> handler,
       isolate(),
       isolate()->heap()->AllocateJSProxy(*handler, *prototype),
       JSProxy);
+}
+
+
+void Factory::BecomeJSObject(Handle<JSProxy> object) {
+  CALL_HEAP_FUNCTION_VOID(
+      isolate(),
+      isolate()->heap()->ReinitializeJSProxyAsJSObject(*object));
 }
 
 

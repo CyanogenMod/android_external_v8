@@ -1,4 +1,4 @@
-# Copyright 2010 the V8 project authors. All rights reserved.
+# Copyright 2011 the V8 project authors. All rights reserved.
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are
 # met:
@@ -26,34 +26,42 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 {
+  'variables': {
+    'console%': '',
+  },
   'targets': [
     {
       'target_name': 'd8',
       'type': 'executable',
       'dependencies': [
-        'd8_js2c#host',
         '../tools/gyp/v8.gyp:v8',
       ],
       'include_dirs+': [
         '../src',
       ],
       'defines': [
-        'ENABLE_LOGGING_AND_PROFILING',
         'ENABLE_DEBUGGER_SUPPORT',
-        'ENABLE_VMSTATE_TRACKING',
-        'V8_FAST_TLS',
       ],
       'sources': [
         'd8.cc',
-        'd8-debug.cc',
-        '<(SHARED_INTERMEDIATE_DIR)/d8-js.cc',
       ],
       'conditions': [
-        [ 'OS=="linux" or OS=="mac" or OS=="freebsd" or OS=="openbsd" or OS=="solaris"', {
-          'sources': [ 'd8-posix.cc', ]
-        }],
-        [ 'OS=="win"', {
-          'sources': [ 'd8-windows.cc', ]
+        [ 'component!="shared_library"', {
+          'dependencies': [ 'd8_js2c#host', ], 
+          'sources': [ 'd8-debug.cc', '<(SHARED_INTERMEDIATE_DIR)/d8-js.cc', ],
+          'conditions': [
+            [ 'console=="readline"', {
+              'libraries': [ '-lreadline', ],
+              'sources': [ 'd8-readline.cc' ],
+            }],
+            [ '(OS=="linux" or OS=="mac" or OS=="freebsd" \
+              or OS=="openbsd" or OS=="solaris")', {
+              'sources': [ 'd8-posix.cc', ]
+            }],
+            [ 'OS=="win"', {
+              'sources': [ 'd8-windows.cc', ]
+            }],
+          ],
         }],
       ],
     },
@@ -82,6 +90,7 @@
             '../tools/js2c.py',
             '<@(_outputs)',
             'D8',
+            'off',  # compress startup data
             '<@(js_files)'
           ],
         },

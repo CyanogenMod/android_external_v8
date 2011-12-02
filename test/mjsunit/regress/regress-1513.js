@@ -25,10 +25,20 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-function f() { "use strict"; print(this); }
+// Deleting a mapped arguments property and adding it via
+// Object.defineProperty should not crash.
 
-function g() { assertEquals(void 0, f.apply(undefined, arguments)); }
+function testcase() {
+  return (function (a, b, c) {
+      delete arguments[0];
+      Object.defineProperty(arguments, "0", {
+              value: 10,
+              writable: false,
+              enumerable: false,
+              configurable: false
+            });
+      assertEquals(10, arguments[0]);
+    }(0, 1, 2));
+}
 
-for (var i = 0; i < 10; i++) g();
-%OptimizeFunctionOnNextCall(g);
-g();
+testcase();
