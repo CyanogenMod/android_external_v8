@@ -1,4 +1,4 @@
-// Copyright 2009 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -214,9 +214,10 @@ void NormalizeProperties(Handle<JSObject> object,
 }
 
 
-void NormalizeElements(Handle<JSObject> object) {
-  CALL_HEAP_FUNCTION_VOID(object->GetIsolate(),
-                          object->NormalizeElements());
+Handle<NumberDictionary> NormalizeElements(Handle<JSObject> object) {
+  CALL_HEAP_FUNCTION(object->GetIsolate(),
+                     object->NormalizeElements(),
+                     NumberDictionary);
 }
 
 
@@ -228,12 +229,14 @@ void TransformToFastProperties(Handle<JSObject> object,
 }
 
 
-void NumberDictionarySet(Handle<NumberDictionary> dictionary,
-                         uint32_t index,
-                         Handle<Object> value,
-                         PropertyDetails details) {
-  CALL_HEAP_FUNCTION_VOID(dictionary->GetIsolate(),
-                          dictionary->Set(index, *value, details));
+Handle<NumberDictionary> NumberDictionarySet(
+    Handle<NumberDictionary> dictionary,
+    uint32_t index,
+    Handle<Object> value,
+    PropertyDetails details) {
+  CALL_HEAP_FUNCTION(dictionary->GetIsolate(),
+                     dictionary->Set(index, *value, details),
+                     NumberDictionary);
 }
 
 
@@ -258,7 +261,7 @@ Handle<Object> SetPrototype(Handle<JSFunction> function,
 }
 
 
-Handle<Object> SetProperty(Handle<JSObject> object,
+Handle<Object> SetProperty(Handle<JSReceiver> object,
                            Handle<String> key,
                            Handle<Object> value,
                            PropertyAttributes attributes,
@@ -353,22 +356,11 @@ Handle<Object> SetPropertyWithInterceptor(Handle<JSObject> object,
 }
 
 
-Handle<Object> GetProperty(Handle<JSObject> obj,
+Handle<Object> GetProperty(Handle<JSReceiver> obj,
                            const char* name) {
   Isolate* isolate = obj->GetIsolate();
   Handle<String> str = isolate->factory()->LookupAsciiSymbol(name);
   CALL_HEAP_FUNCTION(isolate, obj->GetProperty(*str), Object);
-}
-
-
-Handle<Object> GetProperty(Handle<Object> obj,
-                           const char* name,
-                           LookupResult* result) {
-  Isolate* isolate = Isolate::Current();
-  Handle<String> str = isolate->factory()->LookupAsciiSymbol(name);
-  PropertyAttributes attributes;
-  CALL_HEAP_FUNCTION(
-      isolate, obj->GetProperty(*obj, result, *str, &attributes), Object);
 }
 
 
@@ -380,7 +372,7 @@ Handle<Object> GetProperty(Handle<Object> obj,
 }
 
 
-Handle<Object> GetProperty(Handle<JSObject> obj,
+Handle<Object> GetProperty(Handle<JSReceiver> obj,
                            Handle<String> name,
                            LookupResult* result) {
   PropertyAttributes attributes;
@@ -430,43 +422,18 @@ Handle<Object> PreventExtensions(Handle<JSObject> object) {
 
 
 Handle<Object> GetHiddenProperties(Handle<JSObject> obj,
-                                   bool create_if_needed) {
-  Isolate* isolate = obj->GetIsolate();
-  Object* holder = obj->BypassGlobalProxy();
-  if (holder->IsUndefined()) return isolate->factory()->undefined_value();
-  obj = Handle<JSObject>(JSObject::cast(holder), isolate);
+                                   JSObject::HiddenPropertiesFlag flag) {
+  CALL_HEAP_FUNCTION(obj->GetIsolate(),
+                     obj->GetHiddenProperties(flag),
+                     Object);
+}
 
-  if (obj->HasFastProperties()) {
-    // If the object has fast properties, check whether the first slot
-    // in the descriptor array matches the hidden symbol. Since the
-    // hidden symbols hash code is zero (and no other string has hash
-    // code zero) it will always occupy the first entry if present.
-    DescriptorArray* descriptors = obj->map()->instance_descriptors();
-    if ((descriptors->number_of_descriptors() > 0) &&
-        (descriptors->GetKey(0) == isolate->heap()->hidden_symbol()) &&
-        descriptors->IsProperty(0)) {
-      ASSERT(descriptors->GetType(0) == FIELD);
-      return Handle<Object>(obj->FastPropertyAt(descriptors->GetFieldIndex(0)),
-                            isolate);
-    }
-  }
 
-  // Only attempt to find the hidden properties in the local object and not
-  // in the prototype chain.  Note that HasLocalProperty() can cause a GC in
-  // the general case in the presence of interceptors.
-  if (!obj->HasHiddenPropertiesObject()) {
-    // Hidden properties object not found. Allocate a new hidden properties
-    // object if requested. Otherwise return the undefined value.
-    if (create_if_needed) {
-      Handle<Object> hidden_obj =
-          isolate->factory()->NewJSObject(isolate->object_function());
-      CALL_HEAP_FUNCTION(isolate,
-                         obj->SetHiddenPropertiesObject(*hidden_obj), Object);
-    } else {
-      return isolate->factory()->undefined_value();
-    }
-  }
-  return Handle<Object>(obj->GetHiddenPropertiesObject(), isolate);
+int GetIdentityHash(Handle<JSObject> obj) {
+  CALL_AND_RETRY(obj->GetIsolate(),
+                 obj->GetIdentityHash(JSObject::ALLOW_CREATION),
+                 return Smi::cast(__object__)->value(),
+                 return 0);
 }
 
 
@@ -516,7 +483,8 @@ Handle<Object> SetElement(Handle<JSObject> object,
     }
   }
   CALL_HEAP_FUNCTION(object->GetIsolate(),
-                     object->SetElement(index, *value, strict_mode), Object);
+                     object->SetElement(index, *value, strict_mode, true),
+                     Object);
 }
 
 
@@ -550,11 +518,6 @@ Handle<Object> SetAccessor(Handle<JSObject> obj, Handle<AccessorInfo> info) {
 // associated with the wrapper and get rid of both the wrapper and the
 // handle.
 static void ClearWrapperCache(Persistent<v8::Value> handle, void*) {
-#ifdef ENABLE_HEAP_PROTECTION
-  // Weak reference callbacks are called as if from outside V8.  We
-  // need to reeenter to unprotect the heap.
-  VMState state(OTHER);
-#endif
   Handle<Object> cache = Utils::OpenHandle(*handle);
   JSValue* wrapper = JSValue::cast(*cache);
   Foreign* foreign = Script::cast(wrapper->value())->wrapper();
@@ -654,15 +617,17 @@ Handle<FixedArray> CalculateLineEnds(Handle<String> src,
   {
     AssertNoAllocation no_heap_allocation;  // ensure vectors stay valid.
     // Dispatch on type of strings.
-    if (src->IsAsciiRepresentation()) {
+    String::FlatContent content = src->GetFlatContent();
+    ASSERT(content.IsFlat());
+    if (content.IsAscii()) {
       CalculateLineEnds(isolate,
                         &line_ends,
-                        src->ToAsciiVector(),
+                        content.ToAsciiVector(),
                         with_last_line);
     } else {
       CalculateLineEnds(isolate,
                         &line_ends,
-                        src->ToUC16Vector(),
+                        content.ToUC16Vector(),
                         with_last_line);
     }
   }
@@ -917,6 +882,15 @@ Handle<FixedArray> GetEnumPropertyKeys(Handle<JSObject> object,
     object->property_dictionary()->CopyEnumKeysTo(*storage, *sort_array);
     return storage;
   }
+}
+
+
+Handle<ObjectHashTable> PutIntoObjectHashTable(Handle<ObjectHashTable> table,
+                                               Handle<JSObject> key,
+                                               Handle<Object> value) {
+  CALL_HEAP_FUNCTION(table->GetIsolate(),
+                     table->Put(*key, *value),
+                     ObjectHashTable);
 }
 
 

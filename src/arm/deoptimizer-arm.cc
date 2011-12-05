@@ -35,7 +35,7 @@
 namespace v8 {
 namespace internal {
 
-int Deoptimizer::table_entry_size_ = 16;
+const int Deoptimizer::table_entry_size_ = 16;
 
 
 int Deoptimizer::patch_size() {
@@ -270,6 +270,9 @@ void Deoptimizer::DoComputeOsrOutputFrame() {
   output_ = new FrameDescription*[1];
   output_[0] = new(output_frame_size) FrameDescription(
       output_frame_size, function_);
+#ifdef DEBUG
+  output_[0]->SetKind(Code::OPTIMIZED_FUNCTION);
+#endif
 
   // Clear the incoming parameters in the optimized frame to avoid
   // confusing the garbage collector.
@@ -385,6 +388,9 @@ void Deoptimizer::DoComputeFrame(TranslationIterator* iterator,
   // Allocate and store the output frame description.
   FrameDescription* output_frame =
       new(output_frame_size) FrameDescription(output_frame_size, function);
+#ifdef DEBUG
+  output_frame->SetKind(Code::FUNCTION);
+#endif
 
   bool is_bottommost = (0 == frame_index);
   bool is_topmost = (output_count_ - 1 == frame_index);
@@ -519,7 +525,7 @@ void Deoptimizer::DoComputeFrame(TranslationIterator* iterator,
 
 
   // Set the continuation for the topmost frame.
-  if (is_topmost) {
+  if (is_topmost && bailout_type_ != DEBUGGER) {
     Builtins* builtins = isolate_->builtins();
     Code* continuation = (bailout_type_ == EAGER)
         ? builtins->builtin(Builtins::kNotifyDeoptimized)
@@ -527,13 +533,31 @@ void Deoptimizer::DoComputeFrame(TranslationIterator* iterator,
     output_frame->SetContinuation(
         reinterpret_cast<uint32_t>(continuation->entry()));
   }
+}
 
-  if (output_count_ - 1 == frame_index) iterator->Done();
+
+void Deoptimizer::FillInputFrame(Address tos, JavaScriptFrame* frame) {
+  // Set the register values. The values are not important as there are no
+  // callee saved registers in JavaScript frames, so all registers are
+  // spilled. Registers fp and sp are set to the correct values though.
+
+  for (int i = 0; i < Register::kNumRegisters; i++) {
+    input_->SetRegister(i, i * 4);
+  }
+  input_->SetRegister(sp.code(), reinterpret_cast<intptr_t>(frame->sp()));
+  input_->SetRegister(fp.code(), reinterpret_cast<intptr_t>(frame->fp()));
+  for (int i = 0; i < DoubleRegister::kNumAllocatableRegisters; i++) {
+    input_->SetDoubleRegister(i, 0.0);
+  }
+
+  // Fill the frame content from the actual data on the frame.
+  for (unsigned i = 0; i < input_->GetFrameSize(); i += kPointerSize) {
+    input_->SetFrameSlot(i, Memory::uint32_at(tos + i));
+  }
 }
 
 
 #define __ masm()->
-
 
 // This code tries to be close to ia32 code so that any changes can be
 // easily ported.
@@ -569,6 +593,8 @@ void Deoptimizer::EntryGenerator::Generate() {
   __ vstm(db_w, sp, first, last);
 
   // Push all 16 registers (needed to populate FrameDescription::registers_).
+  // TODO(1588) Note that using pc with stm is deprecated, so we should perhaps
+  // handle this a bit differently.
   __ stm(db_w, sp, restored_regs  | sp.bit() | lr.bit() | pc.bit());
 
   const int kSavedRegistersAreaSize =

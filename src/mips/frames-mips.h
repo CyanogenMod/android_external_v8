@@ -59,10 +59,10 @@ static const RegList kCalleeSaved =
   // Saved temporaries.
   1 << 16 | 1 << 17 | 1 << 18 | 1 << 19 |
   1 << 20 | 1 << 21 | 1 << 22 | 1 << 23 |
-  // gp, sp, fp.
-  1 << 28 | 1 << 29 | 1 << 30;
+  // fp.
+  1 << 30;
 
-static const int kNumCalleeSaved = 11;
+static const int kNumCalleeSaved = 9;
 
 
 // Number of registers for which space is reserved in safepoints. Must be a
@@ -121,10 +121,11 @@ static const int kSafepointRegisterStackIndexMap[kNumRegs] = {
 
 class StackHandlerConstants : public AllStatic {
  public:
-  static const int kNextOffset  = 0 * kPointerSize;
-  static const int kStateOffset = 1 * kPointerSize;
-  static const int kFPOffset    = 2 * kPointerSize;
-  static const int kPCOffset    = 3 * kPointerSize;
+  static const int kNextOffset    = 0 * kPointerSize;
+  static const int kStateOffset   = 1 * kPointerSize;
+  static const int kContextOffset = 2 * kPointerSize;
+  static const int kFPOffset      = 3 * kPointerSize;
+  static const int kPCOffset      = 4 * kPointerSize;
 
   static const int kSize = kPCOffset + kPointerSize;
 };

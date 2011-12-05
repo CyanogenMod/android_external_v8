@@ -449,6 +449,13 @@ void Assembler::push(const Operand& src) {
 }
 
 
+void Assembler::push(Handle<Object> handle) {
+  EnsureSpace ensure_space(this);
+  EMIT(0x68);
+  emit(handle);
+}
+
+
 void Assembler::pop(Register dst) {
   ASSERT(reloc_info_writer.last_pc() != NULL);
   EnsureSpace ensure_space(this);
@@ -1949,6 +1956,18 @@ void Assembler::ucomisd(XMMRegister dst, XMMRegister src) {
   emit_sse_operand(dst, src);
 }
 
+
+void Assembler::roundsd(XMMRegister dst, XMMRegister src, RoundingMode mode) {
+  ASSERT(CpuFeatures::IsEnabled(SSE4_1));
+  EnsureSpace ensure_space(this);
+  EMIT(0x66);
+  EMIT(0x0F);
+  EMIT(0x3A);
+  EMIT(0x0B);
+  emit_sse_operand(dst, src);
+  // Mask precision exeption.
+  EMIT(static_cast<byte>(mode) | 0x8);
+}
 
 void Assembler::movmskpd(Register dst, XMMRegister src) {
   ASSERT(CpuFeatures::IsEnabled(SSE2));

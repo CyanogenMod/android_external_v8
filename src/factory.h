@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -39,7 +39,7 @@ namespace internal {
 
 class Factory {
  public:
-  // Allocate a new fixed array with undefined entries.
+  // Allocate a new uninitialized fixed array.
   Handle<FixedArray> NewFixedArray(
       int size,
       PretenureFlag pretenure = NOT_TENURED);
@@ -49,9 +49,16 @@ class Factory {
       int size,
       PretenureFlag pretenure = NOT_TENURED);
 
+  // Allocate a new uninitialized fixed double array.
+  Handle<FixedArray> NewFixedDoubleArray(
+      int size,
+      PretenureFlag pretenure = NOT_TENURED);
+
   Handle<NumberDictionary> NewNumberDictionary(int at_least_space_for);
 
   Handle<StringDictionary> NewStringDictionary(int at_least_space_for);
+
+  Handle<ObjectHashTable> NewObjectHashTable(int at_least_space_for);
 
   Handle<DescriptorArray> NewDescriptorArray(int number_of_descriptors);
   Handle<DeoptimizationInputData> NewDeoptimizationInputData(
@@ -112,10 +119,10 @@ class Factory {
   // Allocates and partially initializes an ASCII or TwoByte String. The
   // characters of the string are uninitialized. Currently used in regexp code
   // only, where they are pretenured.
-  Handle<String> NewRawAsciiString(
+  Handle<SeqAsciiString> NewRawAsciiString(
       int length,
       PretenureFlag pretenure = NOT_TENURED);
-  Handle<String> NewRawTwoByteString(
+  Handle<SeqTwoByteString> NewRawTwoByteString(
       int length,
       PretenureFlag pretenure = NOT_TENURED);
 
@@ -127,6 +134,11 @@ class Factory {
   Handle<String> NewSubString(Handle<String> str,
                               int begin,
                               int end);
+
+  // Create a new string object which holds a proper substring of a string.
+  Handle<String> NewProperSubString(Handle<String> str,
+                                    int begin,
+                                    int end);
 
   // Creates a new external String object.  There are two String encodings
   // in the system: ASCII and two byte.  Unlike other String types, it does
@@ -142,12 +154,23 @@ class Factory {
 
   // Create a function context.
   Handle<Context> NewFunctionContext(int length,
-                                     Handle<JSFunction> closure);
+                                     Handle<JSFunction> function);
+
+  // Create a catch context.
+  Handle<Context> NewCatchContext(Handle<JSFunction> function,
+                                  Handle<Context> previous,
+                                  Handle<String> name,
+                                  Handle<Object> thrown_object);
 
   // Create a 'with' context.
-  Handle<Context> NewWithContext(Handle<Context> previous,
-                                 Handle<JSObject> extension,
-                                 bool is_catch_context);
+  Handle<Context> NewWithContext(Handle<JSFunction> function,
+                                 Handle<Context> previous,
+                                 Handle<JSObject> extension);
+
+  // Create a 'block' context.
+  Handle<Context> NewBlockContext(Handle<JSFunction> function,
+                                  Handle<Context> previous,
+                                  Handle<SerializedScopeInfo> scope_info);
 
   // Return the Symbol matching the passed in string.
   Handle<String> SymbolFromString(Handle<String> value);
@@ -237,6 +260,9 @@ class Factory {
 
   Handle<JSProxy> NewJSProxy(Handle<Object> handler, Handle<Object> prototype);
 
+  // Change the type of the argument into a regular JS object and reinitialize.
+  void BecomeJSObject(Handle<JSProxy> object);
+
   Handle<JSFunction> NewFunction(Handle<String> name,
                                  Handle<Object> prototype);
 
@@ -255,6 +281,8 @@ class Factory {
       Handle<SharedFunctionInfo> function_info,
       Handle<Context> context,
       PretenureFlag pretenure = TENURED);
+
+  Handle<SerializedScopeInfo> NewSerializedScopeInfo(int length);
 
   Handle<Code> NewCode(const CodeDesc& desc,
                        Code::Flags flags,

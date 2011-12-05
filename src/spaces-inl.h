@@ -295,13 +295,13 @@ void Page::SetIsLargeObjectPage(bool is_large_object_page) {
   SetPageFlag(IS_NORMAL_PAGE, !is_large_object_page);
 }
 
-bool Page::IsPageExecutable() {
-  return GetPageFlag(IS_EXECUTABLE);
+Executability Page::PageExecutability() {
+  return GetPageFlag(IS_EXECUTABLE) ? EXECUTABLE : NOT_EXECUTABLE;
 }
 
 
-void Page::SetIsPageExecutable(bool is_page_executable) {
-  SetPageFlag(IS_EXECUTABLE, is_page_executable);
+void Page::SetPageExecutability(Executability executable) {
+  SetPageFlag(IS_EXECUTABLE, executable == EXECUTABLE);
 }
 
 
@@ -379,35 +379,6 @@ bool MemoryAllocator::InInitialChunk(Address address) {
 }
 
 
-#ifdef ENABLE_HEAP_PROTECTION
-
-void MemoryAllocator::Protect(Address start, size_t size) {
-  OS::Protect(start, size);
-}
-
-
-void MemoryAllocator::Unprotect(Address start,
-                                size_t size,
-                                Executability executable) {
-  OS::Unprotect(start, size, executable);
-}
-
-
-void MemoryAllocator::ProtectChunkFromPage(Page* page) {
-  int id = GetChunkId(page);
-  OS::Protect(chunks_[id].address(), chunks_[id].size());
-}
-
-
-void MemoryAllocator::UnprotectChunkFromPage(Page* page) {
-  int id = GetChunkId(page);
-  OS::Unprotect(chunks_[id].address(), chunks_[id].size(),
-                chunks_[id].owner()->executable() == EXECUTABLE);
-}
-
-#endif
-
-
 // --------------------------------------------------------------------------
 // PagedSpace
 
@@ -462,23 +433,6 @@ MaybeObject* PagedSpace::MCAllocateRaw(int size_in_bytes) {
   return Failure::RetryAfterGC(identity());
 }
 
-
-// -----------------------------------------------------------------------------
-// LargeObjectChunk
-
-Address LargeObjectChunk::GetStartAddress() {
-  // Round the chunk address up to the nearest page-aligned address
-  // and return the heap object in that page.
-  Page* page = Page::FromAddress(RoundUp(address(), Page::kPageSize));
-  return page->ObjectAreaStart();
-}
-
-
-void LargeObjectChunk::Free(Executability executable) {
-  Isolate* isolate =
-      Page::FromAddress(RoundUp(address(), Page::kPageSize))->heap_->isolate();
-  isolate->memory_allocator()->FreeRawMemory(address(), size(), executable);
-}
 
 // -----------------------------------------------------------------------------
 // NewSpace

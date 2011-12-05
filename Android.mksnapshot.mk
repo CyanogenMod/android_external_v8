@@ -12,6 +12,7 @@ intermediates := $(call local-intermediates-dir)
 
 V8_LOCAL_SRC_FILES :=
 V8_LOCAL_JS_LIBRARY_FILES :=
+V8_LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES :=
 include $(LOCAL_PATH)/Android.v8common.mk
 
 V8_LOCAL_SRC_FILES += \
@@ -33,7 +34,7 @@ endif
 LOCAL_SRC_FILES := $(V8_LOCAL_SRC_FILES)
 
 LOCAL_JS_LIBRARY_FILES := $(addprefix $(LOCAL_PATH)/, $(V8_LOCAL_JS_LIBRARY_FILES))
-LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES := $(addprefix $(LOCAL_PATH)/, src/proxy.js)
+LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES := $(addprefix $(LOCAL_PATH)/, $(V8_LOCAL_EXPERIMENTAL_JS_LIBRARY_FILES))
 
 # Copy js2c.py to intermediates directory and invoke there to avoid generating
 # jsmin.pyc in the source directory
@@ -48,7 +49,7 @@ $(GEN3): SCRIPT := $(intermediates)/js2c.py
 $(GEN3): $(LOCAL_JS_LIBRARY_FILES) $(JS2C_PY)
 	@echo "Generating libraries.cc"
 	@mkdir -p $(dir $@)
-	python $(SCRIPT) $(GEN3) CORE $(LOCAL_JS_LIBRARY_FILES)
+	python $(SCRIPT) $(GEN3) CORE off $(LOCAL_JS_LIBRARY_FILES)
 LOCAL_GENERATED_SOURCES := $(intermediates)/libraries.cc
 
 # Generate experimental-libraries.cc
@@ -57,7 +58,7 @@ $(GEN4): SCRIPT := $(intermediates)/js2c.py
 $(GEN4): $(LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES) $(JS2C_PY)
 	@echo "Generating experimental-libraries.cc"
 	@mkdir -p $(dir $@)
-	python $(SCRIPT) $(GEN4) EXPERIMENTAL $(LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES)
+	python $(SCRIPT) $(GEN4) EXPERIMENTAL off $(LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES)
 LOCAL_GENERATED_SOURCES += $(intermediates)/experimental-libraries.cc
 
 LOCAL_CFLAGS := \

@@ -659,6 +659,7 @@ class Assembler : public AssemblerBase {
   void push_imm32(int32_t imm32);
   void push(Register src);
   void push(const Operand& src);
+  void push(Handle<Object> handle);
 
   void pop(Register dst);
   void pop(const Operand& dst);
@@ -834,7 +835,7 @@ class Assembler : public AssemblerBase {
   void call(const Operand& adr);
   int CallSize(Handle<Code> code, RelocInfo::Mode mode);
   void call(Handle<Code> code,
-            RelocInfo::Mode rmode,
+            RelocInfo::Mode rmode = RelocInfo::CODE_TARGET,
             unsigned ast_id = kNoASTId);
 
   // Jumps
@@ -940,6 +941,16 @@ class Assembler : public AssemblerBase {
   void andpd(XMMRegister dst, XMMRegister src);
 
   void ucomisd(XMMRegister dst, XMMRegister src);
+
+  enum RoundingMode {
+    kRoundToNearest = 0x0,
+    kRoundDown      = 0x1,
+    kRoundUp        = 0x2,
+    kRoundToZero    = 0x3
+  };
+
+  void roundsd(XMMRegister dst, XMMRegister src, RoundingMode mode);
+
   void movmskpd(Register dst, XMMRegister src);
 
   void cmpltsd(XMMRegister dst, XMMRegister src);
@@ -989,7 +1000,9 @@ class Assembler : public AssemblerBase {
   void Print();
 
   // Check the code size generated from label to here.
-  int SizeOfCodeGeneratedSince(Label* l) { return pc_offset() - l->pos(); }
+  int SizeOfCodeGeneratedSince(Label* label) {
+    return pc_offset() - label->pos();
+  }
 
   // Mark address of the ExitJSFrame code.
   void RecordJSReturn();

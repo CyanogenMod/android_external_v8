@@ -109,8 +109,6 @@ void CompilationInfo::DisableOptimization() {
 void CompilationInfo::AbortOptimization() {
   Handle<Code> code(shared_info()->code());
   SetCode(code);
-  Isolate* isolate = code->GetIsolate();
-  isolate->compilation_cache()->MarkForLazyOptimizing(closure());
 }
 
 
@@ -340,7 +338,7 @@ bool Compiler::MakeCodeForLiveEdit(CompilationInfo* info) {
 
 static Handle<SharedFunctionInfo> MakeFunctionInfo(CompilationInfo* info) {
   Isolate* isolate = info->isolate();
-  CompilationZoneScope zone_scope(isolate, DELETE_ON_EXIT);
+  ZoneScope zone_scope(isolate, DELETE_ON_EXIT);
   PostponeInterruptsScope postpone(isolate);
 
   ASSERT(!isolate->global_context().is_null());
@@ -413,7 +411,8 @@ static Handle<SharedFunctionInfo> MakeFunctionInfo(CompilationInfo* info) {
         String::cast(script->name())));
     GDBJIT(AddCode(Handle<String>(String::cast(script->name())),
                    script,
-                   info->code()));
+                   info->code(),
+                   info));
   } else {
     PROFILE(isolate, CodeCreateEvent(
         info->is_eval()
@@ -422,7 +421,7 @@ static Handle<SharedFunctionInfo> MakeFunctionInfo(CompilationInfo* info) {
         *info->code(),
         *result,
         isolate->heap()->empty_string()));
-    GDBJIT(AddCode(Handle<String>(), script, info->code()));
+    GDBJIT(AddCode(Handle<String>(), script, info->code(), info));
   }
 
   // Hint to the runtime system used when allocating space for initial
@@ -479,15 +478,21 @@ Handle<SharedFunctionInfo> Compiler::Compile(Handle<String> source,
     // that would be compiled lazily anyway, so we skip the preparse step
     // in that case too.
     ScriptDataImpl* pre_data = input_pre_data;
+    bool harmony_block_scoping = natives != NATIVES_CODE &&
+                                 FLAG_harmony_block_scoping;
     if (pre_data == NULL
         && source_length >= FLAG_min_preparse_length) {
       if (source->IsExternalTwoByteString()) {
         ExternalTwoByteStringUC16CharacterStream stream(
             Handle<ExternalTwoByteString>::cast(source), 0, source->length());
-        pre_data = ParserApi::PartialPreParse(&stream, extension);
+        pre_data = ParserApi::PartialPreParse(&stream,
+                                              extension,
+                                              harmony_block_scoping);
       } else {
         GenericStringUC16CharacterStream stream(source, 0, source->length());
-        pre_data = ParserApi::PartialPreParse(&stream, extension);
+        pre_data = ParserApi::PartialPreParse(&stream,
+                                              extension,
+                                              harmony_block_scoping);
       }
     }
 
@@ -573,7 +578,7 @@ Handle<SharedFunctionInfo> Compiler::CompileEval(Handle<String> source,
 bool Compiler::CompileLazy(CompilationInfo* info) {
   Isolate* isolate = info->isolate();
 
-  CompilationZoneScope zone_scope(isolate, DELETE_ON_EXIT);
+  ZoneScope zone_scope(isolate, DELETE_ON_EXIT);
 
   // The VM is in the COMPILER state until exiting this function.
   VMState state(isolate, COMPILER);
@@ -614,6 +619,7 @@ bool Compiler::CompileLazy(CompilationInfo* info) {
       RecordFunctionCompilation(Logger::LAZY_COMPILE_TAG, info, shared);
 
       if (info->IsOptimizing()) {
+        ASSERT(shared->scope_info() != SerializedScopeInfo::Empty());
         function->ReplaceCode(*code);
       } else {
         // Update the shared function info with the compiled code and the
@@ -655,9 +661,6 @@ bool Compiler::CompileLazy(CompilationInfo* info) {
             CompilationInfo optimized(function);
             optimized.SetOptimizing(AstNode::kNoNumber);
             return CompileLazy(&optimized);
-          } else if (isolate->compilation_cache()->ShouldOptimizeEagerly(
-              function)) {
-            isolate->runtime_profiler()->OptimizeSoon(*function);
           }
         }
       }
@@ -736,6 +739,7 @@ void Compiler::SetFunctionInfo(Handle<SharedFunctionInfo> function_info,
   function_info->set_start_position(lit->start_position());
   function_info->set_end_position(lit->end_position());
   function_info->set_is_expression(lit->is_expression());
+  function_info->set_is_anonymous(lit->is_anonymous());
   function_info->set_is_toplevel(is_toplevel);
   function_info->set_inferred_name(*lit->inferred_name());
   function_info->SetThisPropertyAssignmentsInfo(
@@ -743,6 +747,8 @@ void Compiler::SetFunctionInfo(Handle<SharedFunctionInfo> function_info,
       *lit->this_property_assignments());
   function_info->set_allows_lazy_compilation(lit->AllowsLazyCompilation());
   function_info->set_strict_mode(lit->strict_mode());
+  function_info->set_uses_arguments(lit->scope()->arguments() != NULL);
+  function_info->set_has_duplicate_parameters(lit->has_duplicate_parameters());
 }
 
 
@@ -781,7 +787,8 @@ void Compiler::RecordFunctionCompilation(Logger::LogEventsAndTags tag,
 
   GDBJIT(AddCode(Handle<String>(shared->DebugName()),
                  Handle<Script>(info->script()),
-                 Handle<Code>(info->code())));
+                 Handle<Code>(info->code()),
+                 info));
 }
 
 } }  // namespace v8::internal

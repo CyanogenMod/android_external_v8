@@ -688,7 +688,6 @@ class FrameFunctionIterator {
         index_(0) {
     GetFunctions();
   }
-
   JSFunction* next() {
     if (functions_.length() == 0) return NULL;
     JSFunction* next_function = functions_[index_];

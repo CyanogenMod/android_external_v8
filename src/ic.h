@@ -59,14 +59,14 @@ namespace internal {
   ICU(StoreInterceptorProperty)                       \
   ICU(UnaryOp_Patch)                                  \
   ICU(BinaryOp_Patch)                                 \
-  ICU(CompareIC_Miss)
+  ICU(CompareIC_Miss)                                 \
+  ICU(ToBoolean_Patch)
 //
 // IC is the base class for LoadIC, StoreIC, CallIC, KeyedLoadIC,
 // and KeyedStoreIC.
 //
 class IC {
  public:
-
   // The ids for utility called from the generated code.
   enum UtilityId {
   #define CONST_NAME(name) k##name,
@@ -284,6 +284,7 @@ class KeyedCallIC: public CallICBase {
   static void GenerateMiss(MacroAssembler* masm, int argc);
   static void GenerateMegamorphic(MacroAssembler* masm, int argc);
   static void GenerateNormal(MacroAssembler* masm, int argc);
+  static void GenerateNonStrictArguments(MacroAssembler* masm, int argc);
 };
 
 
@@ -345,13 +346,9 @@ class KeyedIC: public IC {
   explicit KeyedIC(Isolate* isolate) : IC(NO_EXTRA_FRAME, isolate) {}
   virtual ~KeyedIC() {}
 
-  static const int kMaxKeyedPolymorphism = 4;
-
-  virtual MaybeObject* GetFastElementStubWithoutMapCheck(
-      bool is_js_array) = 0;
-
-  virtual MaybeObject* GetExternalArrayStubWithoutMapCheck(
-      ExternalArrayType array_type) = 0;
+  virtual MaybeObject* GetElementStubWithoutMapCheck(
+      bool is_js_array,
+      JSObject::ElementsKind elements_kind) = 0;
 
  protected:
   virtual Code* string_stub() {
@@ -359,8 +356,6 @@ class KeyedIC: public IC {
   }
 
   virtual Code::Kind kind() const = 0;
-
-  virtual String* GetStubNameForCache(IC::State ic_state) = 0;
 
   MaybeObject* ComputeStub(JSObject* receiver,
                            bool is_store,
@@ -377,8 +372,7 @@ class KeyedIC: public IC {
 
   MaybeObject* ComputeMonomorphicStubWithoutMapCheck(
       Map* receiver_map,
-      StrictModeFlag strict_mode,
-      Code* generic_stub);
+      StrictModeFlag strict_mode);
 
   MaybeObject* ComputeMonomorphicStub(JSObject* receiver,
                                       bool is_store,
@@ -409,8 +403,8 @@ class KeyedLoadIC: public KeyedIC {
   }
   static void GenerateGeneric(MacroAssembler* masm);
   static void GenerateString(MacroAssembler* masm);
-
   static void GenerateIndexedInterceptor(MacroAssembler* masm);
+  static void GenerateNonStrictArguments(MacroAssembler* masm);
 
   // Bit mask to be tested against bit field for the cases when
   // generic stub should go into slow case.
@@ -419,16 +413,12 @@ class KeyedLoadIC: public KeyedIC {
   static const int kSlowCaseBitFieldMask =
       (1 << Map::kIsAccessCheckNeeded) | (1 << Map::kHasIndexedInterceptor);
 
-  virtual MaybeObject* GetFastElementStubWithoutMapCheck(
-      bool is_js_array);
-
-  virtual MaybeObject* GetExternalArrayStubWithoutMapCheck(
-      ExternalArrayType array_type);
+  virtual MaybeObject* GetElementStubWithoutMapCheck(
+      bool is_js_array,
+      JSObject::ElementsKind elements_kind);
 
  protected:
   virtual Code::Kind kind() const { return Code::KEYED_LOAD_IC; }
-
-  virtual String* GetStubNameForCache(IC::State ic_state);
 
   virtual MaybeObject* ConstructMegamorphicStub(
       MapList* receiver_maps,
@@ -467,6 +457,10 @@ class KeyedLoadIC: public KeyedIC {
   Code* indexed_interceptor_stub() {
     return isolate()->builtins()->builtin(
         Builtins::kKeyedLoadIC_IndexedInterceptor);
+  }
+  Code* non_strict_arguments_stub() {
+    return isolate()->builtins()->builtin(
+        Builtins::kKeyedLoadIC_NonStrictArguments);
   }
 
   static void Clear(Address address, Code* target);
@@ -568,17 +562,14 @@ class KeyedStoreIC: public KeyedIC {
   static void GenerateRuntimeSetProperty(MacroAssembler* masm,
                                          StrictModeFlag strict_mode);
   static void GenerateGeneric(MacroAssembler* masm, StrictModeFlag strict_mode);
+  static void GenerateNonStrictArguments(MacroAssembler* masm);
 
-  virtual MaybeObject* GetFastElementStubWithoutMapCheck(
-      bool is_js_array);
-
-  virtual MaybeObject* GetExternalArrayStubWithoutMapCheck(
-      ExternalArrayType array_type);
+  virtual MaybeObject* GetElementStubWithoutMapCheck(
+      bool is_js_array,
+      JSObject::ElementsKind elements_kind);
 
  protected:
   virtual Code::Kind kind() const { return Code::KEYED_STORE_IC; }
-
-  virtual String* GetStubNameForCache(IC::State ic_state);
 
   virtual MaybeObject* ConstructMegamorphicStub(
       MapList* receiver_maps,
@@ -626,6 +617,10 @@ class KeyedStoreIC: public KeyedIC {
     return isolate()->builtins()->builtin(
         Builtins::kKeyedStoreIC_Generic_Strict);
   }
+  Code* non_strict_arguments_stub() {
+    return isolate()->builtins()->builtin(
+        Builtins::kKeyedStoreIC_NonStrictArguments);
+  }
 
   static void Clear(Address address, Code* target);
 
@@ -635,7 +630,6 @@ class KeyedStoreIC: public KeyedIC {
 
 class UnaryOpIC: public IC {
  public:
-
   // sorted: increasingly more unspecific (ignoring UNINITIALIZED)
   // TODO(svenpanne) Using enums+switch is an antipattern, use a class instead.
   enum TypeInfo {
@@ -662,7 +656,6 @@ class UnaryOpIC: public IC {
 // Type Recording BinaryOpIC, that records the types of the inputs and outputs.
 class BinaryOpIC: public IC {
  public:
-
   enum TypeInfo {
     UNINITIALIZED,
     SMI,
@@ -727,6 +720,15 @@ class CompareIC: public IC {
 
   Token::Value op_;
 };
+
+
+class ToBooleanIC: public IC {
+ public:
+  explicit ToBooleanIC(Isolate* isolate) : IC(NO_EXTRA_FRAME, isolate) { }
+
+  void patch(Code* code);
+};
+
 
 // Helper for BinaryOpIC and CompareIC.
 void PatchInlinedSmiCode(Address address);

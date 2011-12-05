@@ -46,7 +46,7 @@ bool Locker::active_ = false;
 // current thread will be guaranteed to have the lock for a given isolate.
 Locker::Locker(v8::Isolate* isolate)
   : has_lock_(false),
-    top_level_(false),
+    top_level_(true),
     isolate_(reinterpret_cast<i::Isolate*>(isolate)) {
   if (isolate_ == NULL) {
     isolate_ = i::Isolate::GetDefaultIsolateForLocking();
@@ -91,6 +91,11 @@ bool Locker::IsLocked(v8::Isolate* isolate) {
     internal_isolate = i::Isolate::GetDefaultIsolateForLocking();
   }
   return internal_isolate->thread_manager()->IsLockedByCurrentThread();
+}
+
+
+bool Locker::IsActive() {
+  return active_;
 }
 
 
@@ -300,7 +305,9 @@ ThreadManager::ThreadManager()
 
 
 ThreadManager::~ThreadManager() {
-  // TODO(isolates): Destroy mutexes.
+  delete mutex_;
+  delete free_anchor_;
+  delete in_use_anchor_;
 }
 
 
@@ -401,9 +408,10 @@ void ThreadManager::TerminateExecution(ThreadId thread_id) {
 
 
 ContextSwitcher::ContextSwitcher(Isolate* isolate, int every_n_ms)
-  : Thread(isolate, "v8:CtxtSwitcher"),
+  : Thread("v8:CtxtSwitcher"),
     keep_going_(true),
-    sleep_ms_(every_n_ms) {
+    sleep_ms_(every_n_ms),
+    isolate_(isolate) {
 }
 
 
@@ -411,7 +419,7 @@ ContextSwitcher::ContextSwitcher(Isolate* isolate, int every_n_ms)
 // ContextSwitcher thread if needed.
 void ContextSwitcher::StartPreemption(int every_n_ms) {
   Isolate* isolate = Isolate::Current();
-  ASSERT(Locker::IsLocked());
+  ASSERT(Locker::IsLocked(reinterpret_cast<v8::Isolate*>(isolate)));
   if (isolate->context_switcher() == NULL) {
     // If the ContextSwitcher thread is not running at the moment start it now.
     isolate->set_context_switcher(new ContextSwitcher(isolate, every_n_ms));
@@ -428,7 +436,7 @@ void ContextSwitcher::StartPreemption(int every_n_ms) {
 // must cooperatively schedule amongst them from this point on.
 void ContextSwitcher::StopPreemption() {
   Isolate* isolate = Isolate::Current();
-  ASSERT(Locker::IsLocked());
+  ASSERT(Locker::IsLocked(reinterpret_cast<v8::Isolate*>(isolate)));
   if (isolate->context_switcher() != NULL) {
     // The ContextSwitcher thread is running. We need to stop it and release
     // its resources.

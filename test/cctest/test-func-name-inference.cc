@@ -288,19 +288,28 @@ TEST(MultipleAssignments) {
   v8::HandleScope scope;
 
   v8::Handle<v8::Script> script = Compile(
-      "var fun1 = fun2 = function () { return 1; }");
+      "var fun1 = fun2 = function () { return 1; }\n"
+      "var bar1 = bar2 = bar3 = function () { return 2; }\n"
+      "foo1 = foo2 = function () { return 3; }\n"
+      "baz1 = baz2 = baz3 = function () { return 4; }");
   CheckFunctionName(script, "return 1", "fun2");
+  CheckFunctionName(script, "return 2", "bar3");
+  CheckFunctionName(script, "return 3", "foo2");
+  CheckFunctionName(script, "return 4", "baz3");
 }
 
 
-TEST(PassedAsConstructorParameter) {
+TEST(AsConstructorParameter) {
   InitializeVM();
   v8::HandleScope scope;
 
   v8::Handle<v8::Script> script = Compile(
       "function Foo() {}\n"
-      "var foo = new Foo(function() { return 1; })");
+      "var foo = new Foo(function() { return 1; })\n"
+      "var bar = new Foo(function() { return 2; }, function() { return 3; })");
   CheckFunctionName(script, "return 1", "");
+  CheckFunctionName(script, "return 2", "");
+  CheckFunctionName(script, "return 3", "");
 }
 
 
@@ -351,4 +360,43 @@ TEST(FactoryHashmapConditional) {
       "}");
   // Can't infer the function name statically.
   CheckFunctionName(script, "return 1", "obj.(anonymous function)");
+}
+
+
+TEST(GlobalAssignmentAndCall) {
+  InitializeVM();
+  v8::HandleScope scope;
+
+  v8::Handle<v8::Script> script = Compile(
+      "var Foo = function() {\n"
+      "  return 1;\n"
+      "}();\n"
+      "var Baz = Bar = function() {\n"
+      "  return 2;\n"
+      "}");
+  // The inferred name is empty, because this is an assignment of a result.
+  CheckFunctionName(script, "return 1", "");
+  // See MultipleAssignments test.
+  CheckFunctionName(script, "return 2", "Bar");
+}
+
+
+TEST(AssignmentAndCall) {
+  InitializeVM();
+  v8::HandleScope scope;
+
+  v8::Handle<v8::Script> script = Compile(
+      "(function Enclosing() {\n"
+      "  var Foo;\n"
+      "  Foo = function() {\n"
+      "    return 1;\n"
+      "  }();\n"
+      "  var Baz = Bar = function() {\n"
+      "    return 2;\n"
+      "  }\n"
+      "})();");
+  // The inferred name is empty, because this is an assignment of a result.
+  CheckFunctionName(script, "return 1", "");
+  // See MultipleAssignments test.
+  CheckFunctionName(script, "return 2", "Enclosing.Bar");
 }

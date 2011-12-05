@@ -138,7 +138,7 @@ static void AllocateEmptyJSArray(MacroAssembler* masm,
   __ str(scratch1, FieldMemOperand(result, JSArray::kElementsOffset));
 
   // Clear the heap tag on the elements array.
-  ASSERT(kSmiTag == 0);
+  STATIC_ASSERT(kSmiTag == 0);
   __ sub(scratch1, scratch1, Operand(kHeapObjectTag));
 
   // Initialize the FixedArray and fill it with holes. FixedArray length is
@@ -207,7 +207,7 @@ static void AllocateJSArray(MacroAssembler* masm,
   // Allocate the JSArray object together with space for a FixedArray with the
   // requested number of elements.
   __ bind(&not_empty);
-  ASSERT(kSmiTagSize == 1 && kSmiTag == 0);
+  STATIC_ASSERT(kSmiTagSize == 1 && kSmiTag == 0);
   __ mov(elements_array_end,
          Operand((JSArray::kSize + FixedArray::kHeaderSize) / kPointerSize));
   __ add(elements_array_end,
@@ -243,7 +243,7 @@ static void AllocateJSArray(MacroAssembler* masm,
          FieldMemOperand(result, JSArray::kElementsOffset));
 
   // Clear the heap tag on the elements array.
-  ASSERT(kSmiTag == 0);
+  STATIC_ASSERT(kSmiTag == 0);
   __ sub(elements_array_storage,
          elements_array_storage,
          Operand(kHeapObjectTag));
@@ -255,7 +255,7 @@ static void AllocateJSArray(MacroAssembler* masm,
   __ LoadRoot(scratch1, Heap::kFixedArrayMapRootIndex);
   ASSERT_EQ(0 * kPointerSize, FixedArray::kMapOffset);
   __ str(scratch1, MemOperand(elements_array_storage, kPointerSize, PostIndex));
-  ASSERT(kSmiTag == 0);
+  STATIC_ASSERT(kSmiTag == 0);
   __ tst(array_size, array_size);
   // Length of the FixedArray is the number of pre-allocated elements if
   // the actual JSArray has length 0 and the size of the JSArray for non-empty
@@ -272,7 +272,7 @@ static void AllocateJSArray(MacroAssembler* masm,
   // result: JSObject
   // elements_array_storage: elements array element storage
   // array_size: smi-tagged size of elements array
-  ASSERT(kSmiTag == 0 && kSmiTagSize < kPointerSizeLog2);
+  STATIC_ASSERT(kSmiTag == 0 && kSmiTagSize < kPointerSizeLog2);
   __ add(elements_array_end,
          elements_array_storage,
          Operand(array_size, LSL, kPointerSizeLog2 - kSmiTagSize));
@@ -337,14 +337,14 @@ static void ArrayNativeCode(MacroAssembler* masm,
   __ bind(&argc_one_or_more);
   __ cmp(r0, Operand(1));
   __ b(ne, &argc_two_or_more);
-  ASSERT(kSmiTag == 0);
+  STATIC_ASSERT(kSmiTag == 0);
   __ ldr(r2, MemOperand(sp));  // Get the argument from the stack.
   __ and_(r3, r2, Operand(kIntptrSignBit | kSmiTagMask), SetCC);
   __ b(ne, call_generic_code);
 
   // Handle construction of an empty array of a certain size. Bail out if size
   // is too large to actually allocate an elements array.
-  ASSERT(kSmiTag == 0);
+  STATIC_ASSERT(kSmiTag == 0);
   __ cmp(r2, Operand(JSObject::kInitialMaxFastElementArray << kSmiTagSize));
   __ b(ge, call_generic_code);
 
@@ -571,7 +571,7 @@ void Builtins::Generate_StringConstructCode(MacroAssembler* masm) {
   // Is it a String?
   __ ldr(r2, FieldMemOperand(r0, HeapObject::kMapOffset));
   __ ldrb(r3, FieldMemOperand(r2, Map::kInstanceTypeOffset));
-  ASSERT(kNotStringTag != 0);
+  STATIC_ASSERT(kNotStringTag != 0);
   __ tst(r3, Operand(kIsNotStringMask));
   __ b(ne, &convert_argument);
   __ mov(argument, r0);
@@ -619,8 +619,7 @@ void Builtins::Generate_JSConstructCall(MacroAssembler* masm) {
 
   Label non_function_call;
   // Check that the function is not a smi.
-  __ tst(r1, Operand(kSmiTagMask));
-  __ b(eq, &non_function_call);
+  __ JumpIfSmi(r1, &non_function_call);
   // Check that the function is a JSFunction.
   __ CompareObjectType(r1, r2, r2, JS_FUNCTION_TYPE);
   __ b(ne, &non_function_call);
@@ -675,8 +674,7 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
     // Load the initial map and verify that it is in fact a map.
     // r1: constructor function
     __ ldr(r2, FieldMemOperand(r1, JSFunction::kPrototypeOrInitialMapOffset));
-    __ tst(r2, Operand(kSmiTagMask));
-    __ b(eq, &rt_call);
+    __ JumpIfSmi(r2, &rt_call);
     __ CompareObjectType(r2, r3, r4, MAP_TYPE);
     __ b(ne, &rt_call);
 
@@ -946,12 +944,11 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
   // sp[0]: receiver (newly allocated object)
   // sp[1]: constructor function
   // sp[2]: number of arguments (smi-tagged)
-  __ tst(r0, Operand(kSmiTagMask));
-  __ b(eq, &use_receiver);
+  __ JumpIfSmi(r0, &use_receiver);
 
   // If the type of the result (stored in its map) is less than
-  // FIRST_JS_OBJECT_TYPE, it is not an object in the ECMA sense.
-  __ CompareObjectType(r0, r3, r3, FIRST_JS_OBJECT_TYPE);
+  // FIRST_SPEC_OBJECT_TYPE, it is not an object in the ECMA sense.
+  __ CompareObjectType(r0, r3, r3, FIRST_SPEC_OBJECT_TYPE);
   __ b(ge, &exit);
 
   // Throw away the result of the constructor invocation and use the
@@ -1047,8 +1044,7 @@ static void Generate_JSEntryTrampolineHelper(MacroAssembler* masm,
   // Invoke the code and pass argc as r0.
   __ mov(r0, Operand(r3));
   if (is_construct) {
-    __ Call(masm->isolate()->builtins()->JSConstructCall(),
-            RelocInfo::CODE_TARGET);
+    __ Call(masm->isolate()->builtins()->JSConstructCall());
   } else {
     ParameterCount actual(r0);
     __ InvokeFunction(r1, actual, CALL_FUNCTION,
@@ -1236,8 +1232,7 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
   // r0: actual number of arguments
   Label non_function;
   __ ldr(r1, MemOperand(sp, r0, LSL, kPointerSizeLog2));
-  __ tst(r1, Operand(kSmiTagMask));
-  __ b(eq, &non_function);
+  __ JumpIfSmi(r1, &non_function);
   __ CompareObjectType(r1, r2, r2, JS_FUNCTION_TYPE);
   __ b(ne, &non_function);
 
@@ -1257,8 +1252,7 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
     __ b(ne, &shift_arguments);
 
     // Do not transform the receiver for native (Compilerhints already in r3).
-    __ tst(r3, Operand(1 << (SharedFunctionInfo::kES5Native +
-                             kSmiTagSize)));
+    __ tst(r3, Operand(1 << (SharedFunctionInfo::kNative + kSmiTagSize)));
     __ b(ne, &shift_arguments);
 
     // Compute the receiver in non-strict mode.
@@ -1267,8 +1261,7 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
     // r0: actual number of arguments
     // r1: function
     // r2: first argument
-    __ tst(r2, Operand(kSmiTagMask));
-    __ b(eq, &convert_to_object);
+    __ JumpIfSmi(r2, &convert_to_object);
 
     __ LoadRoot(r3, Heap::kUndefinedValueRootIndex);
     __ cmp(r2, r3);
@@ -1277,9 +1270,8 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
     __ cmp(r2, r3);
     __ b(eq, &use_global_receiver);
 
-    STATIC_ASSERT(LAST_JS_OBJECT_TYPE + 1 == LAST_TYPE);
-    STATIC_ASSERT(LAST_TYPE == JS_FUNCTION_TYPE);
-    __ CompareObjectType(r2, r3, r3, FIRST_JS_OBJECT_TYPE);
+    STATIC_ASSERT(LAST_SPEC_OBJECT_TYPE == LAST_TYPE);
+    __ CompareObjectType(r2, r3, r3, FIRST_SPEC_OBJECT_TYPE);
     __ b(ge, &shift_arguments);
 
     __ bind(&convert_to_object);
@@ -1443,13 +1435,11 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
   __ b(ne, &push_receiver);
 
   // Do not transform the receiver for strict mode functions.
-  __ tst(r2, Operand(1 << (SharedFunctionInfo::kES5Native +
-                           kSmiTagSize)));
+  __ tst(r2, Operand(1 << (SharedFunctionInfo::kNative + kSmiTagSize)));
   __ b(ne, &push_receiver);
 
   // Compute the receiver in non-strict mode.
-  __ tst(r0, Operand(kSmiTagMask));
-  __ b(eq, &call_to_object);
+  __ JumpIfSmi(r0, &call_to_object);
   __ LoadRoot(r1, Heap::kNullValueRootIndex);
   __ cmp(r0, r1);
   __ b(eq, &use_global_receiver);
@@ -1459,9 +1449,8 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
 
   // Check if the receiver is already a JavaScript object.
   // r0: receiver
-  STATIC_ASSERT(LAST_JS_OBJECT_TYPE + 1 == LAST_TYPE);
-  STATIC_ASSERT(LAST_TYPE == JS_FUNCTION_TYPE);
-  __ CompareObjectType(r0, r1, r1, FIRST_JS_OBJECT_TYPE);
+  STATIC_ASSERT(LAST_SPEC_OBJECT_TYPE == LAST_TYPE);
+  __ CompareObjectType(r0, r1, r1, FIRST_SPEC_OBJECT_TYPE);
   __ b(ge, &push_receiver);
 
   // Convert the receiver to a regular object.

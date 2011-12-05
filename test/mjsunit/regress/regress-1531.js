@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -24,32 +24,26 @@
 // THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-//
-// A simple interactive shell.  Enable with --shell.
 
-#ifndef V8_SHELL_H_
-#define V8_SHELL_H_
+// Regression test for computing elements keys of arguments object.  Should
+// not crash or assert.
+function test(x) {
+  arguments[10] = 0;
+  var arr = [];
+  for (var p in arguments) arr.push(p);
+  return arr;
+}
+assertEquals(["0", "10"], test(0));
 
-#include "../public/debug.h"
+// Regression test for lookup after delete of a dictionary-mode arguments
+// backing store.  Should not crash or assert.
+function test1(x, y, z) {
+  // Put into dictionary mode.
+  arguments.__defineGetter__("5", function () { return 0; });
+  // Delete a property from the dictionary.
+  delete arguments[5];
+  // Look up a property in the dictionary.
+  return arguments[2];
+}
 
-namespace v8 {
-namespace internal {
-
-// Debug event handler for interactive debugging.
-void handle_debug_event(v8::DebugEvent event,
-                        v8::Handle<v8::Object> exec_state,
-                        v8::Handle<v8::Object> event_data,
-                        v8::Handle<Value> data);
-
-
-class Shell {
- public:
-  static void PrintObject(v8::Handle<v8::Value> obj);
-  // Run the read-eval loop, executing code in the specified
-  // environment.
-  static void Run(v8::Handle<v8::Context> context);
-};
-
-} }  // namespace v8::internal
-
-#endif  // V8_SHELL_H_
+assertEquals(void 0, test1(0));

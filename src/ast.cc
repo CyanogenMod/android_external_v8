@@ -37,11 +37,11 @@ namespace v8 {
 namespace internal {
 
 AstSentinels::AstSentinels()
-    : this_proxy_(true),
-      identifier_proxy_(false),
-      valid_left_hand_side_sentinel_(),
-      this_property_(&this_proxy_, NULL, 0),
-      call_sentinel_(NULL, NULL, 0) {
+    : this_proxy_(Isolate::Current(), true),
+      identifier_proxy_(Isolate::Current(), false),
+      valid_left_hand_side_sentinel_(Isolate::Current()),
+      this_property_(Isolate::Current(), &this_proxy_, NULL, 0),
+      call_sentinel_(Isolate::Current(), NULL, NULL, 0) {
 }
 
 
@@ -72,8 +72,9 @@ CountOperation* ExpressionStatement::StatementAsCountOperation() {
 }
 
 
-VariableProxy::VariableProxy(Variable* var)
-    : name_(var->name()),
+VariableProxy::VariableProxy(Isolate* isolate, Variable* var)
+    : Expression(isolate),
+      name_(var->name()),
       var_(NULL),  // Will be set by the call to BindTo.
       is_this_(var->is_this()),
       inside_with_(false),
@@ -83,26 +84,29 @@ VariableProxy::VariableProxy(Variable* var)
 }
 
 
-VariableProxy::VariableProxy(Handle<String> name,
+VariableProxy::VariableProxy(Isolate* isolate,
+                             Handle<String> name,
                              bool is_this,
                              bool inside_with,
                              int position)
-  : name_(name),
-    var_(NULL),
-    is_this_(is_this),
-    inside_with_(inside_with),
-    is_trivial_(false),
-    position_(position) {
+    : Expression(isolate),
+      name_(name),
+      var_(NULL),
+      is_this_(is_this),
+      inside_with_(inside_with),
+      is_trivial_(false),
+      position_(position) {
   // Names must be canonicalized for fast equality checks.
   ASSERT(name->IsSymbol());
 }
 
 
-VariableProxy::VariableProxy(bool is_this)
-  : var_(NULL),
-    is_this_(is_this),
-    inside_with_(false),
-    is_trivial_(false) {
+VariableProxy::VariableProxy(Isolate* isolate, bool is_this)
+    : Expression(isolate),
+      var_(NULL),
+      is_this_(is_this),
+      inside_with_(false),
+      is_trivial_(false) {
 }
 
 
@@ -120,26 +124,31 @@ void VariableProxy::BindTo(Variable* var) {
 }
 
 
-Assignment::Assignment(Token::Value op,
+Assignment::Assignment(Isolate* isolate,
+                       Token::Value op,
                        Expression* target,
                        Expression* value,
                        int pos)
-    : op_(op),
+    : Expression(isolate),
+      op_(op),
       target_(target),
       value_(value),
       pos_(pos),
       binary_operation_(NULL),
       compound_load_id_(kNoNumber),
-      assignment_id_(GetNextId()),
+      assignment_id_(GetNextId(isolate)),
       block_start_(false),
       block_end_(false),
-      is_monomorphic_(false),
-      receiver_types_(NULL) {
+      is_monomorphic_(false) {
   ASSERT(Token::IsAssignmentOp(op));
   if (is_compound()) {
     binary_operation_ =
-        new BinaryOperation(binary_op(), target, value, pos + 1);
-    compound_load_id_ = GetNextId();
+        new(isolate->zone()) BinaryOperation(isolate,
+                                             binary_op(),
+                                             target,
+                                             value,
+                                             pos + 1);
+    compound_load_id_ = GetNextId(isolate);
   }
 }
 
@@ -186,8 +195,9 @@ ObjectLiteral::Property::Property(Literal* key, Expression* value) {
 
 
 ObjectLiteral::Property::Property(bool is_getter, FunctionLiteral* value) {
+  Isolate* isolate = Isolate::Current();
   emit_store_ = true;
-  key_ = new Literal(value->name());
+  key_ = new(isolate->zone()) Literal(isolate, value->name());
   value_ = value;
   kind_ = is_getter ? GETTER : SETTER;
 }
@@ -293,11 +303,11 @@ void ObjectLiteral::CalculateEmitStore() {
 
 void TargetCollector::AddTarget(Label* target) {
   // Add the label to the collector, but discard duplicates.
-  int length = targets_->length();
+  int length = targets_.length();
   for (int i = 0; i < length; i++) {
-    if (targets_->at(i) == target) return;
+    if (targets_[i] == target) return;
   }
-  targets_->Add(target);
+  targets_.Add(target);
 }
 
 
@@ -337,12 +347,64 @@ bool BinaryOperation::ResultOverwriteAllowed() {
 }
 
 
+bool CompareOperation::IsLiteralCompareTypeof(Expression** expr,
+                                              Handle<String>* check) {
+  if (op_ != Token::EQ && op_ != Token::EQ_STRICT) return false;
+
+  UnaryOperation* left_unary = left_->AsUnaryOperation();
+  UnaryOperation* right_unary = right_->AsUnaryOperation();
+  Literal* left_literal = left_->AsLiteral();
+  Literal* right_literal = right_->AsLiteral();
+
+  // Check for the pattern: typeof <expression> == <string literal>.
+  if (left_unary != NULL && left_unary->op() == Token::TYPEOF &&
+      right_literal != NULL && right_literal->handle()->IsString()) {
+    *expr = left_unary->expression();
+    *check = Handle<String>::cast(right_literal->handle());
+    return true;
+  }
+
+  // Check for the pattern: <string literal> == typeof <expression>.
+  if (right_unary != NULL && right_unary->op() == Token::TYPEOF &&
+      left_literal != NULL && left_literal->handle()->IsString()) {
+    *expr = right_unary->expression();
+    *check = Handle<String>::cast(left_literal->handle());
+    return true;
+  }
+
+  return false;
+}
+
+
+bool CompareOperation::IsLiteralCompareUndefined(Expression** expr) {
+  if (op_ != Token::EQ_STRICT) return false;
+
+  UnaryOperation* left_unary = left_->AsUnaryOperation();
+  UnaryOperation* right_unary = right_->AsUnaryOperation();
+
+  // Check for the pattern: <expression> === void <literal>.
+  if (right_unary != NULL && right_unary->op() == Token::VOID &&
+      right_unary->expression()->AsLiteral() != NULL) {
+    *expr = left_;
+    return true;
+  }
+
+  // Check for the pattern: void <literal> === <expression>.
+  if (left_unary != NULL && left_unary->op() == Token::VOID &&
+      left_unary->expression()->AsLiteral() != NULL) {
+    *expr = right_;
+    return true;
+  }
+
+  return false;
+}
+
+
 // ----------------------------------------------------------------------------
 // Inlining support
 
 bool Declaration::IsInlineable() const {
-  UNREACHABLE();
-  return false;
+  return proxy()->var()->IsStackAllocated() && fun() == NULL;
 }
 
 
@@ -363,12 +425,12 @@ bool ForInStatement::IsInlineable() const {
 }
 
 
-bool WithEnterStatement::IsInlineable() const {
+bool WithStatement::IsInlineable() const {
   return false;
 }
 
 
-bool WithExitStatement::IsInlineable() const {
+bool ExitContextStatement::IsInlineable() const {
   return false;
 }
 
@@ -389,11 +451,6 @@ bool TryCatchStatement::IsInlineable() const {
 
 
 bool TryFinallyStatement::IsInlineable() const {
-  return false;
-}
-
-
-bool CatchExtensionObject::IsInlineable() const {
   return false;
 }
 
@@ -593,7 +650,8 @@ bool CountOperation::IsInlineable() const {
 
 void Property::RecordTypeFeedback(TypeFeedbackOracle* oracle) {
   // Record type feedback from the oracle in the AST.
-  is_monomorphic_ = oracle->LoadIsMonomorphic(this);
+  is_monomorphic_ = oracle->LoadIsMonomorphicNormal(this);
+  receiver_types_.Clear();
   if (key()->IsPropertyName()) {
     if (oracle->LoadIsBuiltin(this, Builtins::kLoadIC_ArrayLength)) {
       is_array_length_ = true;
@@ -606,16 +664,15 @@ void Property::RecordTypeFeedback(TypeFeedbackOracle* oracle) {
       Literal* lit_key = key()->AsLiteral();
       ASSERT(lit_key != NULL && lit_key->handle()->IsString());
       Handle<String> name = Handle<String>::cast(lit_key->handle());
-      ZoneMapList* types = oracle->LoadReceiverTypes(this, name);
-      receiver_types_ = types;
+      oracle->LoadReceiverTypes(this, name, &receiver_types_);
     }
   } else if (oracle->LoadIsBuiltin(this, Builtins::kKeyedLoadIC_String)) {
     is_string_access_ = true;
   } else if (is_monomorphic_) {
-    monomorphic_receiver_type_ = oracle->LoadMonomorphicReceiverType(this);
-    if (monomorphic_receiver_type_->has_external_array_elements()) {
-      set_external_array_type(oracle->GetKeyedLoadExternalArrayType(this));
-    }
+    receiver_types_.Add(oracle->LoadMonomorphicReceiverType(this));
+  } else if (oracle->LoadIsMegamorphicWithTypeInfo(this)) {
+    receiver_types_.Reserve(kMaxKeyedPolymorphism);
+    oracle->CollectKeyedReceiverTypes(this->id(), &receiver_types_);
   }
 }
 
@@ -623,31 +680,32 @@ void Property::RecordTypeFeedback(TypeFeedbackOracle* oracle) {
 void Assignment::RecordTypeFeedback(TypeFeedbackOracle* oracle) {
   Property* prop = target()->AsProperty();
   ASSERT(prop != NULL);
-  is_monomorphic_ = oracle->StoreIsMonomorphic(this);
+  is_monomorphic_ = oracle->StoreIsMonomorphicNormal(this);
+  receiver_types_.Clear();
   if (prop->key()->IsPropertyName()) {
     Literal* lit_key = prop->key()->AsLiteral();
     ASSERT(lit_key != NULL && lit_key->handle()->IsString());
     Handle<String> name = Handle<String>::cast(lit_key->handle());
-    ZoneMapList* types = oracle->StoreReceiverTypes(this, name);
-    receiver_types_ = types;
+    oracle->StoreReceiverTypes(this, name, &receiver_types_);
   } else if (is_monomorphic_) {
-    // Record receiver type for monomorphic keyed loads.
-    monomorphic_receiver_type_ = oracle->StoreMonomorphicReceiverType(this);
-    if (monomorphic_receiver_type_->has_external_array_elements()) {
-      set_external_array_type(oracle->GetKeyedStoreExternalArrayType(this));
-    }
+    // Record receiver type for monomorphic keyed stores.
+    receiver_types_.Add(oracle->StoreMonomorphicReceiverType(this));
+  } else if (oracle->StoreIsMegamorphicWithTypeInfo(this)) {
+    receiver_types_.Reserve(kMaxKeyedPolymorphism);
+    oracle->CollectKeyedReceiverTypes(this->id(), &receiver_types_);
   }
 }
 
 
 void CountOperation::RecordTypeFeedback(TypeFeedbackOracle* oracle) {
-  is_monomorphic_ = oracle->StoreIsMonomorphic(this);
+  is_monomorphic_ = oracle->StoreIsMonomorphicNormal(this);
+  receiver_types_.Clear();
   if (is_monomorphic_) {
-    // Record receiver type for monomorphic keyed loads.
-    monomorphic_receiver_type_ = oracle->StoreMonomorphicReceiverType(this);
-    if (monomorphic_receiver_type_->has_external_array_elements()) {
-      set_external_array_type(oracle->GetKeyedStoreExternalArrayType(this));
-    }
+    // Record receiver type for monomorphic keyed stores.
+    receiver_types_.Add(oracle->StoreMonomorphicReceiverType(this));
+  } else if (oracle->StoreIsMegamorphicWithTypeInfo(this)) {
+    receiver_types_.Reserve(kMaxKeyedPolymorphism);
+    oracle->CollectKeyedReceiverTypes(this->id(), &receiver_types_);
   }
 }
 
@@ -731,15 +789,14 @@ void Call::RecordTypeFeedback(TypeFeedbackOracle* oracle,
   Literal* key = property->key()->AsLiteral();
   ASSERT(key != NULL && key->handle()->IsString());
   Handle<String> name = Handle<String>::cast(key->handle());
-  receiver_types_ = oracle->CallReceiverTypes(this, name, call_kind);
+  receiver_types_.Clear();
+  oracle->CallReceiverTypes(this, name, call_kind, &receiver_types_);
 #ifdef DEBUG
   if (FLAG_enable_slow_asserts) {
-    if (receiver_types_ != NULL) {
-      int length = receiver_types_->length();
-      for (int i = 0; i < length; i++) {
-        Handle<Map> map = receiver_types_->at(i);
-        ASSERT(!map.is_null() && *map != NULL);
-      }
+    int length = receiver_types_.length();
+    for (int i = 0; i < length; i++) {
+      Handle<Map> map = receiver_types_.at(i);
+      ASSERT(!map.is_null() && *map != NULL);
     }
   }
 #endif
@@ -747,9 +804,9 @@ void Call::RecordTypeFeedback(TypeFeedbackOracle* oracle,
   check_type_ = oracle->GetCallCheckType(this);
   if (is_monomorphic_) {
     Handle<Map> map;
-    if (receiver_types_ != NULL && receiver_types_->length() > 0) {
+    if (receiver_types_.length() > 0) {
       ASSERT(check_type_ == RECEIVER_MAP_CHECK);
-      map = receiver_types_->at(0);
+      map = receiver_types_.at(0);
     } else {
       ASSERT(check_type_ != RECEIVER_MAP_CHECK);
       holder_ = Handle<JSObject>(
@@ -1143,15 +1200,16 @@ RegExpAlternative::RegExpAlternative(ZoneList<RegExpTree*>* nodes)
 }
 
 
-CaseClause::CaseClause(Expression* label,
+CaseClause::CaseClause(Isolate* isolate,
+                       Expression* label,
                        ZoneList<Statement*>* statements,
                        int pos)
     : label_(label),
       statements_(statements),
       position_(pos),
       compare_type_(NONE),
-      compare_id_(AstNode::GetNextId()),
-      entry_id_(AstNode::GetNextId()) {
+      compare_id_(AstNode::GetNextId(isolate)),
+      entry_id_(AstNode::GetNextId(isolate)) {
 }
 
 } }  // namespace v8::internal

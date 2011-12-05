@@ -139,7 +139,7 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
     // rdi: constructor
     __ movq(rax, FieldOperand(rdi, JSFunction::kPrototypeOrInitialMapOffset));
     // Will both indicate a NULL and a Smi
-    ASSERT(kSmiTag == 0);
+    STATIC_ASSERT(kSmiTag == 0);
     __ JumpIfSmi(rax, &rt_call);
     // rdi: constructor
     // rax: initial map (if proven valid below)
@@ -362,8 +362,9 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
   __ JumpIfSmi(rax, &use_receiver);
 
   // If the type of the result (stored in its map) is less than
-  // FIRST_JS_OBJECT_TYPE, it is not an object in the ECMA sense.
-  __ CmpObjectType(rax, FIRST_JS_OBJECT_TYPE, rcx);
+  // FIRST_SPEC_OBJECT_TYPE, it is not an object in the ECMA sense.
+  STATIC_ASSERT(LAST_SPEC_OBJECT_TYPE == LAST_TYPE);
+  __ CmpObjectType(rax, FIRST_SPEC_OBJECT_TYPE, rcx);
   __ j(above_equal, &exit);
 
   // Throw away the result of the constructor invocation and use the
@@ -675,8 +676,8 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
 
     // Do not transform the receiver for natives.
     // SharedFunctionInfo is already loaded into rbx.
-    __ testb(FieldOperand(rbx, SharedFunctionInfo::kES5NativeByteOffset),
-             Immediate(1 << SharedFunctionInfo::kES5NativeBitWithinByte));
+    __ testb(FieldOperand(rbx, SharedFunctionInfo::kNativeByteOffset),
+             Immediate(1 << SharedFunctionInfo::kNativeBitWithinByte));
     __ j(not_zero, &shift_arguments);
 
     // Compute the receiver in non-strict mode.
@@ -688,9 +689,8 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
     __ CompareRoot(rbx, Heap::kUndefinedValueRootIndex);
     __ j(equal, &use_global_receiver);
 
-    STATIC_ASSERT(LAST_JS_OBJECT_TYPE + 1 == LAST_TYPE);
-    STATIC_ASSERT(LAST_TYPE == JS_FUNCTION_TYPE);
-    __ CmpObjectType(rbx, FIRST_JS_OBJECT_TYPE, rcx);
+    STATIC_ASSERT(LAST_SPEC_OBJECT_TYPE == LAST_TYPE);
+    __ CmpObjectType(rbx, FIRST_SPEC_OBJECT_TYPE, rcx);
     __ j(above_equal, &shift_arguments);
 
     __ bind(&convert_to_object);
@@ -847,9 +847,9 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
   __ j(not_equal, &push_receiver);
 
   // Do not transform the receiver for natives.
-  __ testb(FieldOperand(rdx, SharedFunctionInfo::kES5NativeByteOffset),
-           Immediate(1 << SharedFunctionInfo::kES5NativeBitWithinByte));
-  __ j(not_zero, &push_receiver);
+  __ testb(FieldOperand(rdx, SharedFunctionInfo::kNativeByteOffset),
+           Immediate(1 << SharedFunctionInfo::kNativeBitWithinByte));
+  __ j(not_equal, &push_receiver);
 
   // Compute the receiver in non-strict mode.
   __ JumpIfSmi(rbx, &call_to_object, Label::kNear);
@@ -860,9 +860,8 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
 
   // If given receiver is already a JavaScript object then there's no
   // reason for converting it.
-  STATIC_ASSERT(LAST_JS_OBJECT_TYPE + 1 == LAST_TYPE);
-  STATIC_ASSERT(LAST_TYPE == JS_FUNCTION_TYPE);
-  __ CmpObjectType(rbx, FIRST_JS_OBJECT_TYPE, rcx);
+  STATIC_ASSERT(LAST_SPEC_OBJECT_TYPE == LAST_TYPE);
+  __ CmpObjectType(rbx, FIRST_SPEC_OBJECT_TYPE, rcx);
   __ j(above_equal, &push_receiver);
 
   // Convert the receiver to an object.
@@ -1284,7 +1283,7 @@ void Builtins::Generate_ArrayCode(MacroAssembler* masm) {
     // Initial map for the builtin Array functions should be maps.
     __ movq(rbx, FieldOperand(rdi, JSFunction::kPrototypeOrInitialMapOffset));
     // Will both indicate a NULL and a Smi.
-    ASSERT(kSmiTag == 0);
+    STATIC_ASSERT(kSmiTag == 0);
     Condition not_smi = NegateCondition(masm->CheckSmi(rbx));
     __ Check(not_smi, "Unexpected initial map for Array function");
     __ CmpObjectType(rbx, MAP_TYPE, rcx);
@@ -1318,7 +1317,7 @@ void Builtins::Generate_ArrayConstructCode(MacroAssembler* masm) {
     // Initial map for the builtin Array function should be a map.
     __ movq(rbx, FieldOperand(rdi, JSFunction::kPrototypeOrInitialMapOffset));
     // Will both indicate a NULL and a Smi.
-    ASSERT(kSmiTag == 0);
+    STATIC_ASSERT(kSmiTag == 0);
     Condition not_smi = NegateCondition(masm->CheckSmi(rbx));
     __ Check(not_smi, "Unexpected initial map for Array function");
     __ CmpObjectType(rbx, MAP_TYPE, rcx);

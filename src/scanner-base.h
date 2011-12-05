@@ -362,7 +362,7 @@ class Scanner {
   // Call this after setting source_ to the input.
   void Init() {
     // Set c0_ (one character ahead)
-    ASSERT(kCharacterLookaheadBufferSize == 1);
+    STATIC_ASSERT(kCharacterLookaheadBufferSize == 1);
     Advance();
     // Initialize current_ to not refer to a literal.
     current_.literal_chars = NULL;
@@ -419,7 +419,7 @@ class Scanner {
     }
   }
 
-  uc32 ScanHexEscape(uc32 c, int length);
+  uc32 ScanHexNumber(int expected_length);
 
   // Return the current source position.
   int source_pos() {
@@ -471,12 +471,16 @@ class JavaScriptScanner : public Scanner {
 
   explicit JavaScriptScanner(UnicodeCache* scanner_contants);
 
+  void Initialize(UC16CharacterStream* source);
+
   // Returns the next token.
   Token::Value Next();
 
-  // Returns true if there was a line terminator before the peek'ed token.
-  bool has_line_terminator_before_next() const {
-    return has_line_terminator_before_next_;
+  // Returns true if there was a line terminator before the peek'ed token,
+  // possibly inside a multi-line comment.
+  bool HasAnyLineTerminatorBeforeNext() const {
+    return has_line_terminator_before_next_ ||
+           has_multiline_comment_before_next_;
   }
 
   // Scans the input as a regular expression pattern, previous
@@ -503,6 +507,14 @@ class JavaScriptScanner : public Scanner {
   // tokens, which is what it is used for.
   void SeekForward(int pos);
 
+  bool HarmonyBlockScoping() const {
+    return harmony_block_scoping_;
+  }
+  void SetHarmonyBlockScoping(bool block_scoping) {
+    harmony_block_scoping_ = block_scoping;
+  }
+
+
  protected:
   bool SkipWhiteSpace();
   Token::Value SkipSingleLineComment();
@@ -525,145 +537,25 @@ class JavaScriptScanner : public Scanner {
   // Decodes a unicode escape-sequence which is part of an identifier.
   // If the escape sequence cannot be decoded the result is kBadChar.
   uc32 ScanIdentifierUnicodeEscape();
+  // Recognizes a uniocde escape-sequence and adds its characters,
+  // uninterpreted, to the current literal. Used for parsing RegExp
+  // flags.
+  bool ScanLiteralUnicodeEscape();
 
   // Start position of the octal literal last scanned.
   Location octal_pos_;
 
+  // Whether there is a line terminator whitespace character after
+  // the current token, and  before the next. Does not count newlines
+  // inside multiline comments.
   bool has_line_terminator_before_next_;
+  // Whether there is a multi-line comment that contains a
+  // line-terminator after the current token, and before the next.
+  bool has_multiline_comment_before_next_;
+  // Whether we scan 'let' as a keyword for harmony block scoped
+  // let bindings.
+  bool harmony_block_scoping_;
 };
-
-
-// ----------------------------------------------------------------------------
-// Keyword matching state machine.
-
-class KeywordMatcher {
-//  Incrementally recognize keywords.
-//
-//  Recognized keywords:
-//      break case catch const* continue debugger* default delete do else
-//      finally false for function if in instanceof native* new null
-//      return switch this throw true try typeof var void while with
-//
-//  *: Actually "future reserved keywords". These are the only ones we
-//     recognize, the remaining are allowed as identifiers.
-//     In ES5 strict mode, we should disallow all reserved keywords.
- public:
-  KeywordMatcher()
-      : state_(INITIAL),
-        token_(Token::IDENTIFIER),
-        keyword_(NULL),
-        counter_(0),
-        keyword_token_(Token::ILLEGAL) {}
-
-  Token::Value token() { return token_; }
-
-  inline bool AddChar(unibrow::uchar input) {
-    if (state_ != UNMATCHABLE) {
-      Step(input);
-    }
-    return state_ != UNMATCHABLE;
-  }
-
-  void Fail() {
-    token_ = Token::IDENTIFIER;
-    state_ = UNMATCHABLE;
-  }
-
- private:
-  enum State {
-    UNMATCHABLE,
-    INITIAL,
-    KEYWORD_PREFIX,
-    KEYWORD_MATCHED,
-    C,
-    CA,
-    CO,
-    CON,
-    D,
-    DE,
-    E,
-    EX,
-    F,
-    I,
-    IM,
-    IMP,
-    IN,
-    N,
-    P,
-    PR,
-    S,
-    T,
-    TH,
-    TR,
-    V,
-    W
-  };
-
-  struct FirstState {
-    const char* keyword;
-    State state;
-    Token::Value token;
-  };
-
-  // Range of possible first characters of a keyword.
-  static const unsigned int kFirstCharRangeMin = 'b';
-  static const unsigned int kFirstCharRangeMax = 'y';
-  static const unsigned int kFirstCharRangeLength =
-      kFirstCharRangeMax - kFirstCharRangeMin + 1;
-  // State map for first keyword character range.
-  static FirstState first_states_[kFirstCharRangeLength];
-
-  // If input equals keyword's character at position, continue matching keyword
-  // from that position.
-  inline bool MatchKeywordStart(unibrow::uchar input,
-                                const char* keyword,
-                                int position,
-                                Token::Value token_if_match) {
-    if (input != static_cast<unibrow::uchar>(keyword[position])) {
-      return false;
-    }
-    state_ = KEYWORD_PREFIX;
-    this->keyword_ = keyword;
-    this->counter_ = position + 1;
-    this->keyword_token_ = token_if_match;
-    return true;
-  }
-
-  // If input equals match character, transition to new state and return true.
-  inline bool MatchState(unibrow::uchar input, char match, State new_state) {
-    if (input != static_cast<unibrow::uchar>(match)) {
-      return false;
-    }
-    state_ = new_state;
-    return true;
-  }
-
-  inline bool MatchKeyword(unibrow::uchar input,
-                           char match,
-                           State new_state,
-                           Token::Value keyword_token) {
-    if (input != static_cast<unibrow::uchar>(match)) {
-      return false;
-    }
-    state_ = new_state;
-    token_ = keyword_token;
-    return true;
-  }
-
-  void Step(unibrow::uchar input);
-
-  // Current state.
-  State state_;
-  // Token for currently added characters.
-  Token::Value token_;
-
-  // Matching a specific keyword string (there is only one possible valid
-  // keyword with the current prefix).
-  const char* keyword_;
-  int counter_;
-  Token::Value keyword_token_;
-};
-
 
 } }  // namespace v8::internal
 

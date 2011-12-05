@@ -30,11 +30,12 @@
 
 #include "allocation.h"
 #include "globals.h"
-#include "zone.h"
 #include "zone-inl.h"
 
 namespace v8 {
 namespace internal {
+
+const int kMaxKeyedPolymorphism = 4;
 
 //         Unknown
 //           |   \____________
@@ -202,39 +203,52 @@ enum StringStubFeedback {
 
 // Forward declarations.
 class Assignment;
-class UnaryOperation;
 class BinaryOperation;
 class Call;
-class CompareOperation;
-class CountOperation;
-class CompilationInfo;
-class Property;
 class CaseClause;
+class CompareOperation;
+class CompilationInfo;
+class CountOperation;
+class Property;
+class SmallMapList;
+class UnaryOperation;
+
 
 class TypeFeedbackOracle BASE_EMBEDDED {
  public:
   TypeFeedbackOracle(Handle<Code> code, Handle<Context> global_context);
 
-  bool LoadIsMonomorphic(Property* expr);
-  bool StoreIsMonomorphic(Expression* expr);
+  bool LoadIsMonomorphicNormal(Property* expr);
+  bool LoadIsMegamorphicWithTypeInfo(Property* expr);
+  bool StoreIsMonomorphicNormal(Expression* expr);
+  bool StoreIsMegamorphicWithTypeInfo(Expression* expr);
   bool CallIsMonomorphic(Call* expr);
 
   Handle<Map> LoadMonomorphicReceiverType(Property* expr);
   Handle<Map> StoreMonomorphicReceiverType(Expression* expr);
 
-  ZoneMapList* LoadReceiverTypes(Property* expr, Handle<String> name);
-  ZoneMapList* StoreReceiverTypes(Assignment* expr, Handle<String> name);
-  ZoneMapList* CallReceiverTypes(Call* expr,
-                                 Handle<String> name,
-                                 CallKind call_kind);
-
-  ExternalArrayType GetKeyedLoadExternalArrayType(Property* expr);
-  ExternalArrayType GetKeyedStoreExternalArrayType(Expression* expr);
+  void LoadReceiverTypes(Property* expr,
+                         Handle<String> name,
+                         SmallMapList* types);
+  void StoreReceiverTypes(Assignment* expr,
+                          Handle<String> name,
+                          SmallMapList* types);
+  void CallReceiverTypes(Call* expr,
+                         Handle<String> name,
+                         CallKind call_kind,
+                         SmallMapList* types);
+  void CollectKeyedReceiverTypes(unsigned ast_id,
+                                 SmallMapList* types);
 
   CheckType GetCallCheckType(Call* expr);
   Handle<JSObject> GetPrototypeForPrimitiveCheck(CheckType check);
 
   bool LoadIsBuiltin(Property* expr, Builtins::Name id);
+
+  // TODO(1571) We can't use ToBooleanStub::Types as the return value because
+  // of various cylces in our headers. Death to tons of implementations in
+  // headers!! :-P
+  byte ToBooleanTypes(unsigned ast_id);
 
   // Get type information for arithmetic operations and compares.
   TypeInfo UnaryType(UnaryOperation* expr);
@@ -245,17 +259,21 @@ class TypeFeedbackOracle BASE_EMBEDDED {
   TypeInfo IncrementType(CountOperation* expr);
 
  private:
-  ZoneMapList* CollectReceiverTypes(unsigned ast_id,
-                                    Handle<String> name,
-                                    Code::Flags flags);
+  void CollectReceiverTypes(unsigned ast_id,
+                            Handle<String> name,
+                            Code::Flags flags,
+                            SmallMapList* types);
 
   void SetInfo(unsigned ast_id, Object* target);
 
-  void PopulateMap(Handle<Code> code);
-
-  void CollectIds(Code* code,
-                  List<int>* code_positions,
-                  List<unsigned>* ast_ids);
+  void BuildDictionary(Handle<Code> code);
+  void GetRelocInfos(Handle<Code> code, ZoneList<RelocInfo>* infos);
+  void CreateDictionary(Handle<Code> code, ZoneList<RelocInfo>* infos);
+  void RelocateRelocInfos(ZoneList<RelocInfo>* infos,
+                          byte* old_start,
+                          byte* new_start);
+  void ProcessRelocInfos(ZoneList<RelocInfo>* infos);
+  void ProcessTarget(unsigned ast_id, Code* target);
 
   // Returns an element from the backing store. Returns undefined if
   // there is no information.

@@ -2,14 +2,10 @@
 //
 // Tests of profiles generator and utilities.
 
-#ifdef ENABLE_LOGGING_AND_PROFILING
-
 #include "v8.h"
 #include "cpu-profiler-inl.h"
 #include "cctest.h"
 #include "../include/v8-profiler.h"
-
-namespace i = v8::internal;
 
 using i::CodeEntry;
 using i::CpuProfile;
@@ -24,7 +20,7 @@ using i::TokenEnumerator;
 TEST(StartStop) {
   CpuProfilesCollection profiles;
   ProfileGenerator generator(&profiles);
-  ProfilerEventsProcessor processor(i::Isolate::Current(), &generator);
+  ProfilerEventsProcessor processor(&generator);
   processor.Start();
   processor.Stop();
   processor.Join();
@@ -85,7 +81,7 @@ TEST(CodeEvents) {
   CpuProfilesCollection profiles;
   profiles.StartProfiling("", 1);
   ProfileGenerator generator(&profiles);
-  ProfilerEventsProcessor processor(i::Isolate::Current(), &generator);
+  ProfilerEventsProcessor processor(&generator);
   processor.Start();
 
   // Enqueue code creation events.
@@ -146,7 +142,7 @@ TEST(TickEvents) {
   CpuProfilesCollection profiles;
   profiles.StartProfiling("", 1);
   ProfileGenerator generator(&profiles);
-  ProfilerEventsProcessor processor(i::Isolate::Current(), &generator);
+  ProfilerEventsProcessor processor(&generator);
   processor.Start();
 
   processor.CodeCreateEvent(i::Logger::BUILTIN_TAG,
@@ -236,7 +232,7 @@ TEST(Issue1398) {
   CpuProfilesCollection profiles;
   profiles.StartProfiling("", 1);
   ProfileGenerator generator(&profiles);
-  ProfilerEventsProcessor processor(i::Isolate::Current(), &generator);
+  ProfilerEventsProcessor processor(&generator);
   processor.Start();
 
   processor.CodeCreateEvent(i::Logger::BUILTIN_TAG,
@@ -401,5 +397,3 @@ TEST(DeleteCpuProfileDifferentTokens) {
   CHECK_EQ(0, CpuProfiler::GetProfilesCount());
   CHECK_EQ(NULL, v8::CpuProfiler::FindProfile(uid3));
 }
-
-#endif  // ENABLE_LOGGING_AND_PROFILING

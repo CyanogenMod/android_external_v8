@@ -82,8 +82,7 @@ void Builtins::Generate_JSConstructCall(MacroAssembler* masm) {
 
   Label non_function_call;
   // Check that function is not a smi.
-  __ test(edi, Immediate(kSmiTagMask));
-  __ j(zero, &non_function_call);
+  __ JumpIfSmi(edi, &non_function_call);
   // Check that function is a JSFunction.
   __ CmpObjectType(edi, JS_FUNCTION_TYPE, ecx);
   __ j(not_equal, &non_function_call);
@@ -140,8 +139,7 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
     // edi: constructor
     __ mov(eax, FieldOperand(edi, JSFunction::kPrototypeOrInitialMapOffset));
     // Will both indicate a NULL and a Smi
-    __ test(eax, Immediate(kSmiTagMask));
-    __ j(zero, &rt_call);
+    __ JumpIfSmi(eax, &rt_call);
     // edi: constructor
     // eax: initial map (if proven valid below)
     __ CmpObjectType(eax, MAP_TYPE, ebx);
@@ -357,12 +355,11 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
   Label use_receiver, exit;
 
   // If the result is a smi, it is *not* an object in the ECMA sense.
-  __ test(eax, Immediate(kSmiTagMask));
-  __ j(zero, &use_receiver);
+  __ JumpIfSmi(eax, &use_receiver);
 
   // If the type of the result (stored in its map) is less than
-  // FIRST_JS_OBJECT_TYPE, it is not an object in the ECMA sense.
-  __ CmpObjectType(eax, FIRST_JS_OBJECT_TYPE, ecx);
+  // FIRST_SPEC_OBJECT_TYPE, it is not an object in the ECMA sense.
+  __ CmpObjectType(eax, FIRST_SPEC_OBJECT_TYPE, ecx);
   __ j(above_equal, &exit);
 
   // Throw away the result of the constructor invocation and use the
@@ -376,7 +373,7 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
   __ LeaveConstructFrame();
 
   // Remove caller arguments from the stack and return.
-  ASSERT(kSmiTagSize == 1 && kSmiTag == 0);
+  STATIC_ASSERT(kSmiTagSize == 1 && kSmiTag == 0);
   __ pop(ecx);
   __ lea(esp, Operand(esp, ebx, times_2, 1 * kPointerSize));  // 1 ~ receiver
   __ push(ecx);
@@ -596,8 +593,7 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
   Label non_function;
   // 1 ~ return address.
   __ mov(edi, Operand(esp, eax, times_4, 1 * kPointerSize));
-  __ test(edi, Immediate(kSmiTagMask));
-  __ j(zero, &non_function);
+  __ JumpIfSmi(edi, &non_function);
   __ CmpObjectType(edi, JS_FUNCTION_TYPE, ecx);
   __ j(not_equal, &non_function);
 
@@ -615,8 +611,8 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
     __ j(not_equal, &shift_arguments);
 
     // Do not transform the receiver for natives (shared already in ebx).
-    __ test_b(FieldOperand(ebx, SharedFunctionInfo::kES5NativeByteOffset),
-              1 << SharedFunctionInfo::kES5NativeBitWithinByte);
+    __ test_b(FieldOperand(ebx, SharedFunctionInfo::kNativeByteOffset),
+              1 << SharedFunctionInfo::kNativeBitWithinByte);
     __ j(not_equal, &shift_arguments);
 
     // Compute the receiver in non-strict mode.
@@ -624,15 +620,13 @@ void Builtins::Generate_FunctionCall(MacroAssembler* masm) {
 
     // Call ToObject on the receiver if it is not an object, or use the
     // global object if it is null or undefined.
-    __ test(ebx, Immediate(kSmiTagMask));
-    __ j(zero, &convert_to_object);
+    __ JumpIfSmi(ebx, &convert_to_object);
     __ cmp(ebx, factory->null_value());
     __ j(equal, &use_global_receiver);
     __ cmp(ebx, factory->undefined_value());
     __ j(equal, &use_global_receiver);
-    STATIC_ASSERT(LAST_JS_OBJECT_TYPE + 1 == LAST_TYPE);
-    STATIC_ASSERT(LAST_TYPE == JS_FUNCTION_TYPE);
-    __ CmpObjectType(ebx, FIRST_JS_OBJECT_TYPE, ecx);
+    STATIC_ASSERT(LAST_SPEC_OBJECT_TYPE == LAST_TYPE);
+    __ CmpObjectType(ebx, FIRST_SPEC_OBJECT_TYPE, ecx);
     __ j(above_equal, &shift_arguments);
 
     __ bind(&convert_to_object);
@@ -780,22 +774,20 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
   Factory* factory = masm->isolate()->factory();
 
   // Do not transform the receiver for natives (shared already in ecx).
-  __ test_b(FieldOperand(ecx, SharedFunctionInfo::kES5NativeByteOffset),
-            1 << SharedFunctionInfo::kES5NativeBitWithinByte);
+  __ test_b(FieldOperand(ecx, SharedFunctionInfo::kNativeByteOffset),
+            1 << SharedFunctionInfo::kNativeBitWithinByte);
   __ j(not_equal, &push_receiver);
 
   // Compute the receiver in non-strict mode.
   // Call ToObject on the receiver if it is not an object, or use the
   // global object if it is null or undefined.
-  __ test(ebx, Immediate(kSmiTagMask));
-  __ j(zero, &call_to_object);
+  __ JumpIfSmi(ebx, &call_to_object);
   __ cmp(ebx, factory->null_value());
   __ j(equal, &use_global_receiver);
   __ cmp(ebx, factory->undefined_value());
   __ j(equal, &use_global_receiver);
-  STATIC_ASSERT(LAST_JS_OBJECT_TYPE + 1 == LAST_TYPE);
-  STATIC_ASSERT(LAST_TYPE == JS_FUNCTION_TYPE);
-  __ CmpObjectType(ebx, FIRST_JS_OBJECT_TYPE, ecx);
+  STATIC_ASSERT(LAST_SPEC_OBJECT_TYPE == LAST_TYPE);
+  __ CmpObjectType(ebx, FIRST_SPEC_OBJECT_TYPE, ecx);
   __ j(above_equal, &push_receiver);
 
   __ bind(&call_to_object);
@@ -931,7 +923,7 @@ static void AllocateEmptyJSArray(MacroAssembler* masm,
   // Fill the FixedArray with the hole value. Inline the code if short.
   // Reconsider loop unfolding if kPreallocatedArrayElements gets changed.
   static const int kLoopUnfoldLimit = 4;
-  ASSERT(kPreallocatedArrayElements <= kLoopUnfoldLimit);
+  STATIC_ASSERT(kPreallocatedArrayElements <= kLoopUnfoldLimit);
   if (initial_capacity <= kLoopUnfoldLimit) {
     // Use a scratch register here to have only one reloc info when unfolding
     // the loop.
@@ -983,7 +975,7 @@ static void AllocateJSArray(MacroAssembler* masm,
 
   // Allocate the JSArray object together with space for a FixedArray with the
   // requested elements.
-  ASSERT(kSmiTagSize == 1 && kSmiTag == 0);
+  STATIC_ASSERT(kSmiTagSize == 1 && kSmiTag == 0);
   __ AllocateInNewSpace(JSArray::kSize + FixedArray::kHeaderSize,
                         times_half_pointer_size,  // array_size is a smi.
                         array_size,
@@ -1108,7 +1100,7 @@ static void ArrayNativeCode(MacroAssembler* masm,
   __ bind(&argc_one_or_more);
   __ cmp(eax, 1);
   __ j(not_equal, &argc_two_or_more);
-  ASSERT(kSmiTag == 0);
+  STATIC_ASSERT(kSmiTag == 0);
   __ mov(ecx, Operand(esp, (push_count + 1) * kPointerSize));
   __ test(ecx, Operand(ecx));
   __ j(not_zero, &not_empty_array);
@@ -1163,7 +1155,7 @@ static void ArrayNativeCode(MacroAssembler* masm,
 
   // Handle construction of an array from a list of arguments.
   __ bind(&argc_two_or_more);
-  ASSERT(kSmiTag == 0);
+  STATIC_ASSERT(kSmiTag == 0);
   __ SmiTag(eax);  // Convet argc to a smi.
   // eax: array_size (smi)
   // edi: constructor
@@ -1392,8 +1384,7 @@ void Builtins::Generate_StringConstructCode(MacroAssembler* masm) {
   Label convert_argument;
   __ bind(&not_cached);
   STATIC_ASSERT(kSmiTag == 0);
-  __ test(eax, Immediate(kSmiTagMask));
-  __ j(zero, &convert_argument);
+  __ JumpIfSmi(eax, &convert_argument);
   Condition is_string = masm->IsObjectStringType(eax, ebx, ecx);
   __ j(NegateCondition(is_string), &convert_argument);
   __ mov(ebx, eax);
@@ -1446,7 +1437,7 @@ static void EnterArgumentsAdaptorFrame(MacroAssembler* masm) {
   // Preserve the number of arguments on the stack. Must preserve eax,
   // ebx and ecx because these registers are used when copying the
   // arguments and the receiver.
-  ASSERT(kSmiTagSize == 1);
+  STATIC_ASSERT(kSmiTagSize == 1);
   __ lea(edi, Operand(eax, eax, times_1, kSmiTag));
   __ push(edi);
 }
@@ -1460,7 +1451,7 @@ static void LeaveArgumentsAdaptorFrame(MacroAssembler* masm) {
   __ leave();
 
   // Remove caller arguments from the stack.
-  ASSERT(kSmiTagSize == 1 && kSmiTag == 0);
+  STATIC_ASSERT(kSmiTagSize == 1 && kSmiTag == 0);
   __ pop(ecx);
   __ lea(esp, Operand(esp, ebx, times_2, 1 * kPointerSize));  // 1 ~ receiver
   __ push(ecx);

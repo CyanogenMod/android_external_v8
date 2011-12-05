@@ -25,12 +25,12 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// When 'eval' is overridden with a non-function object we should
-// check whether the object is callable.
-
-function test() {
-  eval = /foo/;
-  assertEquals(["foo"], eval("foobar"));
+// Check that arguments access ICs correctly handle non-JSObject
+// receivers.
+function f(array) { return array[0]; }
+function args(a) { return arguments; }
+// Put the keyed load in f into the keyed-load-arguments state.
+for (var i = 0; i < 10; i++) {
+  f(args(1));
 }
-
-test();
+f('123');

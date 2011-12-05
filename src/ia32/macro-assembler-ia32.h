@@ -209,12 +209,21 @@ class MacroAssembler: public Assembler {
   void SafeSet(Register dst, const Immediate& x);
   void SafePush(const Immediate& x);
 
+  // Compare a register against a known root, e.g. undefined, null, true, ...
+  void CompareRoot(Register with, Heap::RootListIndex index);
+
   // Compare object type for heap object.
   // Incoming register is heap_object and outgoing register is map.
   void CmpObjectType(Register heap_object, InstanceType type, Register map);
 
   // Compare instance type for map.
   void CmpInstanceType(Register map, InstanceType type);
+
+  // Check if a map for a JSObject indicates that the object has fast elements.
+  // Jump to the specified label if it does not.
+  void CheckFastElements(Register map,
+                         Label* fail,
+                         Label::Distance distance = Label::kFar);
 
   // Check if the map of an object is equal to a specified map and branch to
   // label if not. Skip the smi check if not required (object is known to be a
@@ -266,8 +275,8 @@ class MacroAssembler: public Assembler {
 
   // Smi tagging support.
   void SmiTag(Register reg) {
-    ASSERT(kSmiTag == 0);
-    ASSERT(kSmiTagSize == 1);
+    STATIC_ASSERT(kSmiTag == 0);
+    STATIC_ASSERT(kSmiTagSize == 1);
     add(reg, Operand(reg));
   }
   void SmiUntag(Register reg) {
@@ -276,21 +285,32 @@ class MacroAssembler: public Assembler {
 
   // Modifies the register even if it does not contain a Smi!
   void SmiUntag(Register reg, Label* is_smi) {
-    ASSERT(kSmiTagSize == 1);
+    STATIC_ASSERT(kSmiTagSize == 1);
     sar(reg, kSmiTagSize);
-    ASSERT(kSmiTag == 0);
+    STATIC_ASSERT(kSmiTag == 0);
     j(not_carry, is_smi);
   }
 
   // Jump the register contains a smi.
-  inline void JumpIfSmi(Register value, Label* smi_label) {
+  inline void JumpIfSmi(Register value,
+                        Label* smi_label,
+                        Label::Distance distance = Label::kFar) {
     test(value, Immediate(kSmiTagMask));
-    j(zero, smi_label);
+    j(zero, smi_label, distance);
+  }
+  // Jump if the operand is a smi.
+  inline void JumpIfSmi(Operand value,
+                        Label* smi_label,
+                        Label::Distance distance = Label::kFar) {
+    test(value, Immediate(kSmiTagMask));
+    j(zero, smi_label, distance);
   }
   // Jump if register contain a non-smi.
-  inline void JumpIfNotSmi(Register value, Label* not_smi_label) {
+  inline void JumpIfNotSmi(Register value,
+                           Label* not_smi_label,
+                           Label::Distance distance = Label::kFar) {
     test(value, Immediate(kSmiTagMask));
-    j(not_zero, not_smi_label);
+    j(not_zero, not_smi_label, distance);
   }
 
   void LoadInstanceDescriptors(Register map, Register descriptors);
@@ -333,6 +353,15 @@ class MacroAssembler: public Assembler {
   void CheckAccessGlobalProxy(Register holder_reg,
                               Register scratch,
                               Label* miss);
+
+
+  void LoadFromNumberDictionary(Label* miss,
+                                Register elements,
+                                Register key,
+                                Register r0,
+                                Register r1,
+                                Register r2,
+                                Register result);
 
 
   // ---------------------------------------------------------------------------
@@ -416,6 +445,17 @@ class MacroAssembler: public Assembler {
                                Register scratch1,
                                Register scratch2,
                                Label* gc_required);
+
+  // Allocate a raw sliced string object. Only the map field of the result is
+  // initialized.
+  void AllocateSlicedString(Register result,
+                            Register scratch1,
+                            Register scratch2,
+                            Label* gc_required);
+  void AllocateAsciiSlicedString(Register result,
+                                 Register scratch1,
+                                 Register scratch2,
+                                 Label* gc_required);
 
   // Copy memory, byte-by-byte, from source to destination.  Not optimized for
   // long or aligned copies.
@@ -541,10 +581,10 @@ class MacroAssembler: public Assembler {
 
   // Prepares stack to put arguments (aligns and so on). Reserves
   // space for return value if needed (assumes the return value is a handle).
-  // Uses callee-saved esi to restore stack state after call. Arguments must be
-  // stored in ApiParameterOperand(0), ApiParameterOperand(1) etc. Saves
-  // context (esi).
-  void PrepareCallApiFunction(int argc, Register scratch);
+  // Arguments must be stored in ApiParameterOperand(0), ApiParameterOperand(1)
+  // etc. Saves context (esi). If space was reserved for return value then
+  // stores the pointer to the reserved slot into esi.
+  void PrepareCallApiFunction(int argc);
 
   // Calls an API function. Allocates HandleScope, extracts
   // returned value from handle and propagates exceptions.
@@ -584,6 +624,9 @@ class MacroAssembler: public Assembler {
   void Move(Register target, Register source);
 
   void Move(Register target, Handle<Object> value);
+
+  // Push a handle value.
+  void Push(Handle<Object> handle) { push(handle); }
 
   Handle<Object> CodeObject() {
     ASSERT(!code_object_.is_null());

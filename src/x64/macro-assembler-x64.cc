@@ -385,6 +385,9 @@ void MacroAssembler::AssertFastElements(Register elements) {
                 Heap::kFixedArrayMapRootIndex);
     j(equal, &ok, Label::kNear);
     CompareRoot(FieldOperand(elements, HeapObject::kMapOffset),
+                Heap::kFixedDoubleArrayMapRootIndex);
+    j(equal, &ok, Label::kNear);
+    CompareRoot(FieldOperand(elements, HeapObject::kMapOffset),
                 Heap::kFixedCOWArrayMapRootIndex);
     j(equal, &ok, Label::kNear);
     Abort("JSObject with fast elements map has slow elements");
@@ -920,7 +923,7 @@ void MacroAssembler::LoadSmiConstant(Register dst, Smi* source) {
 
 
 void MacroAssembler::Integer32ToSmi(Register dst, Register src) {
-  ASSERT_EQ(0, kSmiTag);
+  STATIC_ASSERT(kSmiTag == 0);
   if (!dst.is(src)) {
     movl(dst, src);
   }
@@ -958,7 +961,7 @@ void MacroAssembler::Integer64PlusConstantToSmi(Register dst,
 
 
 void MacroAssembler::SmiToInteger32(Register dst, Register src) {
-  ASSERT_EQ(0, kSmiTag);
+  STATIC_ASSERT(kSmiTag == 0);
   if (!dst.is(src)) {
     movq(dst, src);
   }
@@ -972,7 +975,7 @@ void MacroAssembler::SmiToInteger32(Register dst, const Operand& src) {
 
 
 void MacroAssembler::SmiToInteger64(Register dst, Register src) {
-  ASSERT_EQ(0, kSmiTag);
+  STATIC_ASSERT(kSmiTag == 0);
   if (!dst.is(src)) {
     movq(dst, src);
   }
@@ -1108,21 +1111,21 @@ void MacroAssembler::SmiOrIfSmis(Register dst, Register src1, Register src2,
 
 
 Condition MacroAssembler::CheckSmi(Register src) {
-  ASSERT_EQ(0, kSmiTag);
+  STATIC_ASSERT(kSmiTag == 0);
   testb(src, Immediate(kSmiTagMask));
   return zero;
 }
 
 
 Condition MacroAssembler::CheckSmi(const Operand& src) {
-  ASSERT_EQ(0, kSmiTag);
+  STATIC_ASSERT(kSmiTag == 0);
   testb(src, Immediate(kSmiTagMask));
   return zero;
 }
 
 
 Condition MacroAssembler::CheckNonNegativeSmi(Register src) {
-  ASSERT_EQ(0, kSmiTag);
+  STATIC_ASSERT(kSmiTag == 0);
   // Test that both bits of the mask 0x8000000000000001 are zero.
   movq(kScratchRegister, src);
   rol(kScratchRegister, Immediate(1));
@@ -1135,7 +1138,7 @@ Condition MacroAssembler::CheckBothSmi(Register first, Register second) {
   if (first.is(second)) {
     return CheckSmi(first);
   }
-  ASSERT(kSmiTag == 0 && kHeapObjectTag == 1 && kHeapObjectTagMask == 3);
+  STATIC_ASSERT(kSmiTag == 0 && kHeapObjectTag == 1 && kHeapObjectTagMask == 3);
   leal(kScratchRegister, Operand(first, second, times_1, 0));
   testb(kScratchRegister, Immediate(0x03));
   return zero;
@@ -1291,7 +1294,7 @@ void MacroAssembler::SmiTryAddConstant(Register dst,
                                        Label::Distance near_jump) {
   // Does not assume that src is a smi.
   ASSERT_EQ(static_cast<int>(1), static_cast<int>(kSmiTagMask));
-  ASSERT_EQ(0, kSmiTag);
+  STATIC_ASSERT(kSmiTag == 0);
   ASSERT(!dst.is(kScratchRegister));
   ASSERT(!src.is(kScratchRegister));
 
@@ -1995,7 +1998,7 @@ void MacroAssembler::SelectNonSmi(Register dst,
     Check(not_both_smis, "Both registers were smis in SelectNonSmi.");
   }
 #endif
-  ASSERT_EQ(0, kSmiTag);
+  STATIC_ASSERT(kSmiTag == 0);
   ASSERT_EQ(0, Smi::FromInt(0));
   movl(kScratchRegister, Immediate(kSmiTagMask));
   and_(kScratchRegister, src1);
@@ -2384,18 +2387,15 @@ Operand MacroAssembler::SafepointRegisterSlot(Register reg) {
 void MacroAssembler::PushTryHandler(CodeLocation try_location,
                                     HandlerType type) {
   // Adjust this code if not the case.
-  ASSERT(StackHandlerConstants::kSize == 4 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kSize == 5 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kNextOffset == 0 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kContextOffset == 1 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kFPOffset == 2 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kStateOffset == 3 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kPCOffset == 4 * kPointerSize);
 
   // The pc (return address) is already on TOS.  This code pushes state,
-  // frame pointer and current handler.  Check that they are expected
-  // next on the stack, in that order.
-  ASSERT_EQ(StackHandlerConstants::kStateOffset,
-            StackHandlerConstants::kPCOffset - kPointerSize);
-  ASSERT_EQ(StackHandlerConstants::kFPOffset,
-            StackHandlerConstants::kStateOffset - kPointerSize);
-  ASSERT_EQ(StackHandlerConstants::kNextOffset,
-            StackHandlerConstants::kFPOffset - kPointerSize);
-
+  // frame pointer, context, and current handler.
   if (try_location == IN_JAVASCRIPT) {
     if (type == TRY_CATCH_HANDLER) {
       push(Immediate(StackHandler::TRY_CATCH));
@@ -2403,6 +2403,7 @@ void MacroAssembler::PushTryHandler(CodeLocation try_location,
       push(Immediate(StackHandler::TRY_FINALLY));
     }
     push(rbp);
+    push(rsi);
   } else {
     ASSERT(try_location == IN_JS_ENTRY);
     // The frame pointer does not point to a JS frame so we save NULL
@@ -2410,6 +2411,7 @@ void MacroAssembler::PushTryHandler(CodeLocation try_location,
     // before dereferencing it to restore the context.
     push(Immediate(StackHandler::ENTRY));
     push(Immediate(0));  // NULL frame pointer.
+    Push(Smi::FromInt(0));  // No context.
   }
   // Save the current handler.
   Operand handler_operand =
@@ -2432,12 +2434,13 @@ void MacroAssembler::PopTryHandler() {
 
 
 void MacroAssembler::Throw(Register value) {
-  // Check that stack should contain next handler, frame pointer, state and
-  // return address in that order.
-  STATIC_ASSERT(StackHandlerConstants::kFPOffset + kPointerSize ==
-            StackHandlerConstants::kStateOffset);
-  STATIC_ASSERT(StackHandlerConstants::kStateOffset + kPointerSize ==
-            StackHandlerConstants::kPCOffset);
+  // Adjust this code if not the case.
+  STATIC_ASSERT(StackHandlerConstants::kSize == 5 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kNextOffset == 0 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kContextOffset == 1 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kFPOffset == 2 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kStateOffset == 3 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kPCOffset == 4 * kPointerSize);
   // Keep thrown value in rax.
   if (!value.is(rax)) {
     movq(rax, value);
@@ -2448,23 +2451,32 @@ void MacroAssembler::Throw(Register value) {
   movq(rsp, handler_operand);
   // get next in chain
   pop(handler_operand);
-  pop(rbp);  // pop frame pointer
-  pop(rdx);  // remove state
+  pop(rsi);  // Context.
+  pop(rbp);  // Frame pointer.
+  pop(rdx);  // State.
 
-  // Before returning we restore the context from the frame pointer if not NULL.
-  // The frame pointer is NULL in the exception handler of a JS entry frame.
-  Set(rsi, 0);  // Tentatively set context pointer to NULL
+  // If the handler is a JS frame, restore the context to the frame.
+  // (rdx == ENTRY) == (rbp == 0) == (rsi == 0), so we could test any
+  // of them.
   Label skip;
-  cmpq(rbp, Immediate(0));
+  cmpq(rdx, Immediate(StackHandler::ENTRY));
   j(equal, &skip, Label::kNear);
-  movq(rsi, Operand(rbp, StandardFrameConstants::kContextOffset));
+  movq(Operand(rbp, StandardFrameConstants::kContextOffset), rsi);
   bind(&skip);
+
   ret(0);
 }
 
 
 void MacroAssembler::ThrowUncatchable(UncatchableExceptionType type,
                                       Register value) {
+  // Adjust this code if not the case.
+  STATIC_ASSERT(StackHandlerConstants::kSize == 5 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kNextOffset == 0 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kContextOffset == 1 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kFPOffset == 2 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kStateOffset == 3 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kPCOffset == 4 * kPointerSize);
   // Keep thrown value in rax.
   if (!value.is(rax)) {
     movq(rax, value);
@@ -2504,19 +2516,13 @@ void MacroAssembler::ThrowUncatchable(UncatchableExceptionType type,
     Store(pending_exception, rax);
   }
 
-  // Clear the context pointer.
+  // Discard the context saved in the handler and clear the context pointer.
+  pop(rdx);
   Set(rsi, 0);
 
-  // Restore registers from handler.
-  STATIC_ASSERT(StackHandlerConstants::kNextOffset + kPointerSize ==
-                StackHandlerConstants::kFPOffset);
-  pop(rbp);  // FP
-  STATIC_ASSERT(StackHandlerConstants::kFPOffset + kPointerSize ==
-                StackHandlerConstants::kStateOffset);
-  pop(rdx);  // State
+  pop(rbp);  // Restore frame pointer.
+  pop(rdx);  // Discard state.
 
-  STATIC_ASSERT(StackHandlerConstants::kStateOffset + kPointerSize ==
-                StackHandlerConstants::kPCOffset);
   ret(0);
 }
 
@@ -2555,6 +2561,16 @@ void MacroAssembler::CmpObjectType(Register heap_object,
 void MacroAssembler::CmpInstanceType(Register map, InstanceType type) {
   cmpb(FieldOperand(map, Map::kInstanceTypeOffset),
        Immediate(static_cast<int8_t>(type)));
+}
+
+
+void MacroAssembler::CheckFastElements(Register map,
+                                       Label* fail,
+                                       Label::Distance distance) {
+  STATIC_ASSERT(JSObject::FAST_ELEMENTS == 0);
+  cmpb(FieldOperand(map, Map::kBitField2Offset),
+       Immediate(Map::kMaximumBitField2FastElementValue));
+  j(above, fail, distance);
 }
 
 
@@ -2683,7 +2699,7 @@ Condition MacroAssembler::IsObjectStringType(Register heap_object,
                                              Register instance_type) {
   movq(map, FieldOperand(heap_object, HeapObject::kMapOffset));
   movzxbl(instance_type, FieldOperand(map, Map::kInstanceTypeOffset));
-  ASSERT(kNotStringTag != 0);
+  STATIC_ASSERT(kNotStringTag != 0);
   testb(instance_type, Immediate(kIsNotStringMask));
   return zero;
 }
@@ -3194,6 +3210,109 @@ void MacroAssembler::CheckAccessGlobalProxy(Register holder_reg,
 }
 
 
+void MacroAssembler::LoadFromNumberDictionary(Label* miss,
+                                              Register elements,
+                                              Register key,
+                                              Register r0,
+                                              Register r1,
+                                              Register r2,
+                                              Register result) {
+  // Register use:
+  //
+  // elements - holds the slow-case elements of the receiver on entry.
+  //            Unchanged unless 'result' is the same register.
+  //
+  // key      - holds the smi key on entry.
+  //            Unchanged unless 'result' is the same register.
+  //
+  // Scratch registers:
+  //
+  // r0 - holds the untagged key on entry and holds the hash once computed.
+  //
+  // r1 - used to hold the capacity mask of the dictionary
+  //
+  // r2 - used for the index into the dictionary.
+  //
+  // result - holds the result on exit if the load succeeded.
+  //          Allowed to be the same as 'key' or 'result'.
+  //          Unchanged on bailout so 'key' or 'result' can be used
+  //          in further computation.
+
+  Label done;
+
+  // Compute the hash code from the untagged key.  This must be kept in sync
+  // with ComputeIntegerHash in utils.h.
+  //
+  // hash = ~hash + (hash << 15);
+  movl(r1, r0);
+  notl(r0);
+  shll(r1, Immediate(15));
+  addl(r0, r1);
+  // hash = hash ^ (hash >> 12);
+  movl(r1, r0);
+  shrl(r1, Immediate(12));
+  xorl(r0, r1);
+  // hash = hash + (hash << 2);
+  leal(r0, Operand(r0, r0, times_4, 0));
+  // hash = hash ^ (hash >> 4);
+  movl(r1, r0);
+  shrl(r1, Immediate(4));
+  xorl(r0, r1);
+  // hash = hash * 2057;
+  imull(r0, r0, Immediate(2057));
+  // hash = hash ^ (hash >> 16);
+  movl(r1, r0);
+  shrl(r1, Immediate(16));
+  xorl(r0, r1);
+
+  // Compute capacity mask.
+  SmiToInteger32(r1,
+                 FieldOperand(elements, NumberDictionary::kCapacityOffset));
+  decl(r1);
+
+  // Generate an unrolled loop that performs a few probes before giving up.
+  const int kProbes = 4;
+  for (int i = 0; i < kProbes; i++) {
+    // Use r2 for index calculations and keep the hash intact in r0.
+    movq(r2, r0);
+    // Compute the masked index: (hash + i + i * i) & mask.
+    if (i > 0) {
+      addl(r2, Immediate(NumberDictionary::GetProbeOffset(i)));
+    }
+    and_(r2, r1);
+
+    // Scale the index by multiplying by the entry size.
+    ASSERT(NumberDictionary::kEntrySize == 3);
+    lea(r2, Operand(r2, r2, times_2, 0));  // r2 = r2 * 3
+
+    // Check if the key matches.
+    cmpq(key, FieldOperand(elements,
+                           r2,
+                           times_pointer_size,
+                           NumberDictionary::kElementsStartOffset));
+    if (i != (kProbes - 1)) {
+      j(equal, &done);
+    } else {
+      j(not_equal, miss);
+    }
+  }
+
+  bind(&done);
+  // Check that the value is a normal propety.
+  const int kDetailsOffset =
+      NumberDictionary::kElementsStartOffset + 2 * kPointerSize;
+  ASSERT_EQ(NORMAL, 0);
+  Test(FieldOperand(elements, r2, times_pointer_size, kDetailsOffset),
+       Smi::FromInt(PropertyDetails::TypeField::mask()));
+  j(not_zero, miss);
+
+  // Get the value at the masked, scaled index.
+  const int kValueOffset =
+      NumberDictionary::kElementsStartOffset + kPointerSize;
+  movq(result, FieldOperand(elements, r2, times_pointer_size, kValueOffset));
+}
+
+
 void MacroAssembler::LoadAllocationTopHelper(Register result,
                                              Register scratch,
                                              AllocationFlags flags) {
@@ -3607,15 +3726,10 @@ void MacroAssembler::CopyBytes(Register destination,
 void MacroAssembler::LoadContext(Register dst, int context_chain_length) {
   if (context_chain_length > 0) {
     // Move up the chain of contexts to the context containing the slot.
-    movq(dst, Operand(rsi, Context::SlotOffset(Context::CLOSURE_INDEX)));
-    // Load the function context (which is the incoming, outer context).
-    movq(dst, FieldOperand(dst, JSFunction::kContextOffset));
+    movq(dst, Operand(rsi, Context::SlotOffset(Context::PREVIOUS_INDEX)));
     for (int i = 1; i < context_chain_length; i++) {
-      movq(dst, Operand(dst, Context::SlotOffset(Context::CLOSURE_INDEX)));
-      movq(dst, FieldOperand(dst, JSFunction::kContextOffset));
+      movq(dst, Operand(dst, Context::SlotOffset(Context::PREVIOUS_INDEX)));
     }
-    // The context may be an intermediate context, not a function context.
-    movq(dst, Operand(dst, Context::SlotOffset(Context::FCONTEXT_INDEX)));
   } else {
     // Slot is in the current function context.  Move it into the
     // destination register in case we store into it (the write barrier
@@ -3623,14 +3737,14 @@ void MacroAssembler::LoadContext(Register dst, int context_chain_length) {
     movq(dst, rsi);
   }
 
-  // We should not have found a 'with' context by walking the context chain
-  // (i.e., the static scope chain and runtime context chain do not agree).
-  // A variable occurring in such a scope should have slot type LOOKUP and
-  // not CONTEXT.
+  // We should not have found a with context by walking the context
+  // chain (i.e., the static scope chain and runtime context chain do
+  // not agree).  A variable occurring in such a scope should have
+  // slot type LOOKUP and not CONTEXT.
   if (emit_debug_code()) {
-    cmpq(dst, Operand(dst, Context::SlotOffset(Context::FCONTEXT_INDEX)));
-    Check(equal, "Yo dawg, I heard you liked function contexts "
-                 "so I put function contexts in all your contexts");
+    CompareRoot(FieldOperand(dst, HeapObject::kMapOffset),
+                Heap::kWithContextMapRootIndex);
+    Check(not_equal, "Variable resolved to with context.");
   }
 }
 

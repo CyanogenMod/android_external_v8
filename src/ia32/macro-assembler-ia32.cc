@@ -69,8 +69,8 @@ void MacroAssembler::RecordWriteHelper(Register object,
 
   // Compute number of region covering addr. See Page::GetRegionNumberForAddress
   // method for more details.
-  and_(addr, Page::kPageAlignmentMask);
   shr(addr, Page::kRegionSizeLog2);
+  and_(addr, Page::kPageAlignmentMask >> Page::kRegionSizeLog2);
 
   // Set dirty mark for region.
   // Bit tests with a memory operand should be avoided on Intel processors,
@@ -148,9 +148,8 @@ void MacroAssembler::RecordWrite(Register object,
   Label done;
 
   // Skip barrier if writing a smi.
-  ASSERT_EQ(0, kSmiTag);
-  test(value, Immediate(kSmiTagMask));
-  j(zero, &done, Label::kNear);
+  STATIC_ASSERT(kSmiTag == 0);
+  JumpIfSmi(value, &done, Label::kNear);
 
   InNewSpace(object, value, equal, &done, Label::kNear);
 
@@ -167,8 +166,8 @@ void MacroAssembler::RecordWrite(Register object,
     // Array access: calculate the destination address in the same manner as
     // KeyedStoreIC::GenerateGeneric.  Multiply a smi by 2 to get an offset
     // into an array of words.
-    ASSERT_EQ(1, kSmiTagSize);
-    ASSERT_EQ(0, kSmiTag);
+    STATIC_ASSERT(kSmiTagSize == 1);
+    STATIC_ASSERT(kSmiTag == 0);
     lea(dst, Operand(object, dst, times_half_pointer_size,
                      FixedArray::kHeaderSize - kHeapObjectTag));
   }
@@ -194,9 +193,8 @@ void MacroAssembler::RecordWrite(Register object,
   Label done;
 
   // Skip barrier if writing a smi.
-  ASSERT_EQ(0, kSmiTag);
-  test(value, Immediate(kSmiTagMask));
-  j(zero, &done);
+  STATIC_ASSERT(kSmiTag == 0);
+  JumpIfSmi(value, &done, Label::kNear);
 
   InNewSpace(object, value, equal, &done);
 
@@ -265,6 +263,13 @@ void MacroAssembler::SafePush(const Immediate& x) {
 }
 
 
+void MacroAssembler::CompareRoot(Register with, Heap::RootListIndex index) {
+  // see ROOT_ACCESSOR macro in factory.h
+  Handle<Object> value(&isolate()->heap()->roots_address()[index]);
+  cmp(with, value);
+}
+
+
 void MacroAssembler::CmpObjectType(Register heap_object,
                                    InstanceType type,
                                    Register map) {
@@ -276,6 +281,16 @@ void MacroAssembler::CmpObjectType(Register heap_object,
 void MacroAssembler::CmpInstanceType(Register map, InstanceType type) {
   cmpb(FieldOperand(map, Map::kInstanceTypeOffset),
        static_cast<int8_t>(type));
+}
+
+
+void MacroAssembler::CheckFastElements(Register map,
+                                       Label* fail,
+                                       Label::Distance distance) {
+  STATIC_ASSERT(JSObject::FAST_ELEMENTS == 0);
+  cmpb(FieldOperand(map, Map::kBitField2Offset),
+       Map::kMaximumBitField2FastElementValue);
+  j(above, fail, distance);
 }
 
 
@@ -311,7 +326,7 @@ Condition MacroAssembler::IsObjectStringType(Register heap_object,
                                              Register instance_type) {
   mov(map, FieldOperand(heap_object, HeapObject::kMapOffset));
   movzx_b(instance_type, FieldOperand(map, Map::kInstanceTypeOffset));
-  ASSERT(kNotStringTag != 0);
+  STATIC_ASSERT(kNotStringTag != 0);
   test(instance_type, Immediate(kIsNotStringMask));
   return zero;
 }
@@ -330,8 +345,9 @@ void MacroAssembler::IsInstanceJSObjectType(Register map,
                                             Register scratch,
                                             Label* fail) {
   movzx_b(scratch, FieldOperand(map, Map::kInstanceTypeOffset));
-  sub(Operand(scratch), Immediate(FIRST_JS_OBJECT_TYPE));
-  cmp(scratch, LAST_JS_OBJECT_TYPE - FIRST_JS_OBJECT_TYPE);
+  sub(Operand(scratch), Immediate(FIRST_NONCALLABLE_SPEC_OBJECT_TYPE));
+  cmp(scratch,
+      LAST_NONCALLABLE_SPEC_OBJECT_TYPE - FIRST_NONCALLABLE_SPEC_OBJECT_TYPE);
   j(above, fail);
 }
 
@@ -353,8 +369,7 @@ void MacroAssembler::FCmp() {
 
 void MacroAssembler::AbortIfNotNumber(Register object) {
   Label ok;
-  test(object, Immediate(kSmiTagMask));
-  j(zero, &ok);
+  JumpIfSmi(object, &ok);
   cmp(FieldOperand(object, HeapObject::kMapOffset),
       isolate()->factory()->heap_number_map());
   Assert(equal, "Operand not a number");
@@ -527,7 +542,12 @@ void MacroAssembler::LeaveApiExitFrame() {
 void MacroAssembler::PushTryHandler(CodeLocation try_location,
                                     HandlerType type) {
   // Adjust this code if not the case.
-  ASSERT(StackHandlerConstants::kSize == 4 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kSize == 5 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kNextOffset == 0);
+  STATIC_ASSERT(StackHandlerConstants::kContextOffset == 1 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kFPOffset == 2 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kStateOffset == 3 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kPCOffset == 4 * kPointerSize);
   // The pc (return address) is already on TOS.
   if (try_location == IN_JAVASCRIPT) {
     if (type == TRY_CATCH_HANDLER) {
@@ -536,6 +556,7 @@ void MacroAssembler::PushTryHandler(CodeLocation try_location,
       push(Immediate(StackHandler::TRY_FINALLY));
     }
     push(ebp);
+    push(esi);
   } else {
     ASSERT(try_location == IN_JS_ENTRY);
     // The frame pointer does not point to a JS frame so we save NULL
@@ -543,6 +564,7 @@ void MacroAssembler::PushTryHandler(CodeLocation try_location,
     // before dereferencing it to restore the context.
     push(Immediate(StackHandler::ENTRY));
     push(Immediate(0));  // NULL frame pointer.
+    push(Immediate(Smi::FromInt(0)));  // No context.
   }
   // Save the current handler as the next handler.
   push(Operand::StaticVariable(ExternalReference(Isolate::k_handler_address,
@@ -555,7 +577,7 @@ void MacroAssembler::PushTryHandler(CodeLocation try_location,
 
 
 void MacroAssembler::PopTryHandler() {
-  ASSERT_EQ(0, StackHandlerConstants::kNextOffset);
+  STATIC_ASSERT(StackHandlerConstants::kNextOffset == 0);
   pop(Operand::StaticVariable(ExternalReference(Isolate::k_handler_address,
                                                 isolate())));
   add(Operand(esp), Immediate(StackHandlerConstants::kSize - kPointerSize));
@@ -564,8 +586,12 @@ void MacroAssembler::PopTryHandler() {
 
 void MacroAssembler::Throw(Register value) {
   // Adjust this code if not the case.
-  STATIC_ASSERT(StackHandlerConstants::kSize == 4 * kPointerSize);
-
+  STATIC_ASSERT(StackHandlerConstants::kSize == 5 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kNextOffset == 0);
+  STATIC_ASSERT(StackHandlerConstants::kContextOffset == 1 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kFPOffset == 2 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kStateOffset == 3 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kPCOffset == 4 * kPointerSize);
   // eax must hold the exception.
   if (!value.is(eax)) {
     mov(eax, value);
@@ -576,24 +602,21 @@ void MacroAssembler::Throw(Register value) {
                                     isolate());
   mov(esp, Operand::StaticVariable(handler_address));
 
-  // Restore next handler and frame pointer, discard handler state.
-  STATIC_ASSERT(StackHandlerConstants::kNextOffset == 0);
+  // Restore next handler, context, and frame pointer; discard handler state.
   pop(Operand::StaticVariable(handler_address));
-  STATIC_ASSERT(StackHandlerConstants::kFPOffset == 1 * kPointerSize);
-  pop(ebp);
-  pop(edx);  // Remove state.
+  pop(esi);  // Context.
+  pop(ebp);  // Frame pointer.
+  pop(edx);  // State.
 
-  // Before returning we restore the context from the frame pointer if
-  // not NULL.  The frame pointer is NULL in the exception handler of
-  // a JS entry frame.
-  Set(esi, Immediate(0));  // Tentatively set context pointer to NULL.
+  // If the handler is a JS frame, restore the context to the frame.
+  // (edx == ENTRY) == (ebp == 0) == (esi == 0), so we could test any
+  // of them.
   Label skip;
-  cmp(ebp, 0);
+  cmp(Operand(edx), Immediate(StackHandler::ENTRY));
   j(equal, &skip, Label::kNear);
-  mov(esi, Operand(ebp, StandardFrameConstants::kContextOffset));
+  mov(Operand(ebp, StandardFrameConstants::kContextOffset), esi);
   bind(&skip);
 
-  STATIC_ASSERT(StackHandlerConstants::kPCOffset == 3 * kPointerSize);
   ret(0);
 }
 
@@ -601,7 +624,12 @@ void MacroAssembler::Throw(Register value) {
 void MacroAssembler::ThrowUncatchable(UncatchableExceptionType type,
                                       Register value) {
   // Adjust this code if not the case.
-  STATIC_ASSERT(StackHandlerConstants::kSize == 4 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kSize == 5 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kNextOffset == 0);
+  STATIC_ASSERT(StackHandlerConstants::kContextOffset == 1 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kFPOffset == 2 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kStateOffset == 3 * kPointerSize);
+  STATIC_ASSERT(StackHandlerConstants::kPCOffset == 4 * kPointerSize);
 
   // eax must hold the exception.
   if (!value.is(eax)) {
@@ -627,7 +655,6 @@ void MacroAssembler::ThrowUncatchable(UncatchableExceptionType type,
   bind(&done);
 
   // Set the top handler address to next handler past the current ENTRY handler.
-  STATIC_ASSERT(StackHandlerConstants::kNextOffset == 0);
   pop(Operand::StaticVariable(handler_address));
 
   if (type == OUT_OF_MEMORY) {
@@ -645,15 +672,14 @@ void MacroAssembler::ThrowUncatchable(UncatchableExceptionType type,
     mov(Operand::StaticVariable(pending_exception), eax);
   }
 
-  // Clear the context pointer.
+  // Discard the context saved in the handler and clear the context pointer.
+  pop(edx);
   Set(esi, Immediate(0));
 
   // Restore fp from handler and discard handler state.
-  STATIC_ASSERT(StackHandlerConstants::kFPOffset == 1 * kPointerSize);
   pop(ebp);
   pop(edx);  // State.
 
-  STATIC_ASSERT(StackHandlerConstants::kPCOffset == 3 * kPointerSize);
   ret(0);
 }
 
@@ -723,6 +749,104 @@ void MacroAssembler::CheckAccessGlobalProxy(Register holder_reg,
   j(not_equal, miss);
 
   bind(&same_contexts);
+}
+
+
+void MacroAssembler::LoadFromNumberDictionary(Label* miss,
+                                              Register elements,
+                                              Register key,
+                                              Register r0,
+                                              Register r1,
+                                              Register r2,
+                                              Register result) {
+  // Register use:
+  //
+  // elements - holds the slow-case elements of the receiver and is unchanged.
+  //
+  // key      - holds the smi key on entry and is unchanged.
+  //
+  // Scratch registers:
+  //
+  // r0 - holds the untagged key on entry and holds the hash once computed.
+  //
+  // r1 - used to hold the capacity mask of the dictionary
+  //
+  // r2 - used for the index into the dictionary.
+  //
+  // result - holds the result on exit if the load succeeds and we fall through.
+
+  Label done;
+
+  // Compute the hash code from the untagged key.  This must be kept in sync
+  // with ComputeIntegerHash in utils.h.
+  //
+  // hash = ~hash + (hash << 15);
+  mov(r1, r0);
+  not_(r0);
+  shl(r1, 15);
+  add(r0, Operand(r1));
+  // hash = hash ^ (hash >> 12);
+  mov(r1, r0);
+  shr(r1, 12);
+  xor_(r0, Operand(r1));
+  // hash = hash + (hash << 2);
+  lea(r0, Operand(r0, r0, times_4, 0));
+  // hash = hash ^ (hash >> 4);
+  mov(r1, r0);
+  shr(r1, 4);
+  xor_(r0, Operand(r1));
+  // hash = hash * 2057;
+  imul(r0, r0, 2057);
+  // hash = hash ^ (hash >> 16);
+  mov(r1, r0);
+  shr(r1, 16);
+  xor_(r0, Operand(r1));
+
+  // Compute capacity mask.
+  mov(r1, FieldOperand(elements, NumberDictionary::kCapacityOffset));
+  shr(r1, kSmiTagSize);  // convert smi to int
+  dec(r1);
+
+  // Generate an unrolled loop that performs a few probes before giving up.
+  const int kProbes = 4;
+  for (int i = 0; i < kProbes; i++) {
+    // Use r2 for index calculations and keep the hash intact in r0.
+    mov(r2, r0);
+    // Compute the masked index: (hash + i + i * i) & mask.
+    if (i > 0) {
+      add(Operand(r2), Immediate(NumberDictionary::GetProbeOffset(i)));
+    }
+    and_(r2, Operand(r1));
+
+    // Scale the index by multiplying by the entry size.
+    ASSERT(NumberDictionary::kEntrySize == 3);
+    lea(r2, Operand(r2, r2, times_2, 0));  // r2 = r2 * 3
+
+    // Check if the key matches.
+    cmp(key, FieldOperand(elements,
+                          r2,
+                          times_pointer_size,
+                          NumberDictionary::kElementsStartOffset));
+    if (i != (kProbes - 1)) {
+      j(equal, &done);
+    } else {
+      j(not_equal, miss);
+    }
+  }
+
+  bind(&done);
+  // Check that the value is a normal propety.
+  const int kDetailsOffset =
+      NumberDictionary::kElementsStartOffset + 2 * kPointerSize;
+  ASSERT_EQ(NORMAL, 0);
+  test(FieldOperand(elements, r2, times_pointer_size, kDetailsOffset),
+       Immediate(PropertyDetails::TypeField::mask() << kSmiTagSize));
+  j(not_zero, miss);
+
+  // Get the value at the masked, scaled index.
+  const int kValueOffset =
+      NumberDictionary::kElementsStartOffset + kPointerSize;
+  mov(result, FieldOperand(elements, r2, times_pointer_size, kValueOffset));
 }
 
 
@@ -1084,6 +1208,42 @@ void MacroAssembler::AllocateAsciiConsString(Register result,
 }
 
 
+void MacroAssembler::AllocateSlicedString(Register result,
+                                          Register scratch1,
+                                          Register scratch2,
+                                          Label* gc_required) {
+  // Allocate heap number in new space.
+  AllocateInNewSpace(SlicedString::kSize,
+                     result,
+                     scratch1,
+                     scratch2,
+                     gc_required,
+                     TAG_OBJECT);
+
+  // Set the map. The other fields are left uninitialized.
+  mov(FieldOperand(result, HeapObject::kMapOffset),
+      Immediate(isolate()->factory()->sliced_string_map()));
+}
+
+
+void MacroAssembler::AllocateAsciiSlicedString(Register result,
+                                               Register scratch1,
+                                               Register scratch2,
+                                               Label* gc_required) {
+  // Allocate heap number in new space.
+  AllocateInNewSpace(SlicedString::kSize,
+                     result,
+                     scratch1,
+                     scratch2,
+                     gc_required,
+                     TAG_OBJECT);
+
+  // Set the map. The other fields are left uninitialized.
+  mov(FieldOperand(result, HeapObject::kMapOffset),
+      Immediate(isolate()->factory()->sliced_ascii_string_map()));
+}
+
+
 // Copy memory, byte-by-byte, from source to destination.  Not optimized for
 // long or aligned copies.  The contents of scratch and length are destroyed.
 // Source and destination are incremented by length.
@@ -1165,8 +1325,7 @@ void MacroAssembler::TryGetFunctionPrototype(Register function,
                                              Register scratch,
                                              Label* miss) {
   // Check that the receiver isn't a smi.
-  test(function, Immediate(kSmiTagMask));
-  j(zero, miss);
+  JumpIfSmi(function, miss);
 
   // Check that the function really is a function.
   CmpObjectType(function, JS_FUNCTION_TYPE, result);
@@ -1405,32 +1564,30 @@ Operand ApiParameterOperand(int index) {
 }
 
 
-void MacroAssembler::PrepareCallApiFunction(int argc, Register scratch) {
+void MacroAssembler::PrepareCallApiFunction(int argc) {
   if (kReturnHandlesDirectly) {
     EnterApiExitFrame(argc);
     // When handles are returned directly we don't have to allocate extra
     // space for and pass an out parameter.
+    if (emit_debug_code()) {
+      mov(esi, Immediate(BitCast<int32_t>(kZapValue)));
+    }
   } else {
     // We allocate two additional slots: return value and pointer to it.
     EnterApiExitFrame(argc + 2);
 
     // The argument slots are filled as follows:
     //
-    //   n + 1: output cell
+    //   n + 1: output slot
     //   n: arg n
     //   ...
     //   1: arg1
-    //   0: pointer to the output cell
-    //
-    // Note that this is one more "argument" than the function expects
-    // so the out cell will have to be popped explicitly after returning
-    // from the function. The out cell contains Handle.
+    //   0: pointer to the output slot
 
-    // pointer to out cell.
-    lea(scratch, Operand(esp, (argc + 1) * kPointerSize));
-    mov(Operand(esp, 0 * kPointerSize), scratch);  // output.
+    lea(esi, Operand(esp, (argc + 1) * kPointerSize));
+    mov(Operand(esp, 0 * kPointerSize), esi);
     if (emit_debug_code()) {
-      mov(Operand(esp, (argc + 1) * kPointerSize), Immediate(0));  // out cell.
+      mov(Operand(esi, 0), Immediate(0));
     }
   }
 }
@@ -1454,9 +1611,9 @@ MaybeObject* MacroAssembler::TryCallApiFunctionAndReturn(ApiFunction* function,
   call(function->address(), RelocInfo::RUNTIME_ENTRY);
 
   if (!kReturnHandlesDirectly) {
-    // The returned value is a pointer to the handle holding the result.
-    // Dereference this to get to the location.
-    mov(eax, Operand(eax, 0));
+    // PrepareCallApiFunction saved pointer to the output slot into
+    // callee-save register esi.
+    mov(eax, Operand(esi, 0));
   }
 
   Label empty_handle;
@@ -1748,12 +1905,9 @@ void MacroAssembler::GetBuiltinEntry(Register target, Builtins::JavaScript id) {
 void MacroAssembler::LoadContext(Register dst, int context_chain_length) {
   if (context_chain_length > 0) {
     // Move up the chain of contexts to the context containing the slot.
-    mov(dst, Operand(esi, Context::SlotOffset(Context::CLOSURE_INDEX)));
-    // Load the function context (which is the incoming, outer context).
-    mov(dst, FieldOperand(dst, JSFunction::kContextOffset));
+    mov(dst, Operand(esi, Context::SlotOffset(Context::PREVIOUS_INDEX)));
     for (int i = 1; i < context_chain_length; i++) {
-      mov(dst, Operand(dst, Context::SlotOffset(Context::CLOSURE_INDEX)));
-      mov(dst, FieldOperand(dst, JSFunction::kContextOffset));
+      mov(dst, Operand(dst, Context::SlotOffset(Context::PREVIOUS_INDEX)));
     }
   } else {
     // Slot is in the current function context.  Move it into the
@@ -1762,14 +1916,14 @@ void MacroAssembler::LoadContext(Register dst, int context_chain_length) {
     mov(dst, esi);
   }
 
-  // We should not have found a 'with' context by walking the context chain
+  // We should not have found a with context by walking the context chain
   // (i.e., the static scope chain and runtime context chain do not agree).
   // A variable occurring in such a scope should have slot type LOOKUP and
   // not CONTEXT.
   if (emit_debug_code()) {
-    cmp(dst, Operand(dst, Context::SlotOffset(Context::FCONTEXT_INDEX)));
-    Check(equal, "Yo dawg, I heard you liked function contexts "
-                 "so I put function contexts in all your contexts");
+    cmp(FieldOperand(dst, HeapObject::kMapOffset),
+        isolate()->factory()->with_context_map());
+    Check(not_equal, "Variable resolved to with context.");
   }
 }
 
@@ -1944,6 +2098,9 @@ void MacroAssembler::AssertFastElements(Register elements) {
         Immediate(factory->fixed_array_map()));
     j(equal, &ok);
     cmp(FieldOperand(elements, HeapObject::kMapOffset),
+        Immediate(factory->fixed_double_array_map()));
+    j(equal, &ok);
+    cmp(FieldOperand(elements, HeapObject::kMapOffset),
         Immediate(factory->fixed_cow_array_map()));
     j(equal, &ok);
     Abort("JSObject with fast elements map has slow elements");
@@ -2045,11 +2202,10 @@ void MacroAssembler::JumpIfNotBothSequentialAsciiStrings(Register object1,
                                                          Register scratch2,
                                                          Label* failure) {
   // Check that both objects are not smis.
-  ASSERT_EQ(0, kSmiTag);
+  STATIC_ASSERT(kSmiTag == 0);
   mov(scratch1, Operand(object1));
   and_(scratch1, Operand(object2));
-  test(scratch1, Immediate(kSmiTagMask));
-  j(zero, failure);
+  JumpIfSmi(scratch1, failure);
 
   // Load instance type for both strings.
   mov(scratch1, FieldOperand(object1, HeapObject::kMapOffset));

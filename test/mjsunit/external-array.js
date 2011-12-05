@@ -87,8 +87,10 @@ types = [Array, Int8Array, Uint8Array, Int16Array, Uint16Array, Int32Array,
 
 test_result_nan = [NaN, 0, 0, 0, 0, 0, 0, 0, NaN, NaN];
 test_result_low_int = [-1, -1, 255, -1, 65535, -1, 0xFFFFFFFF, 0, -1, -1];
+test_result_low_double = [-1.25, -1, 255, -1, 65535, -1, 0xFFFFFFFF, 0, -1.25, -1.25];
 test_result_middle = [253.75, -3, 253, 253, 253, 253, 253, 254, 253.75, 253.75];
 test_result_high_int = [256, 0, 0, 256, 256, 256, 256, 255, 256, 256];
+test_result_high_double = [256.25, 0, 0, 256, 256, 256, 256, 255, 256.25, 256.25];
 
 const kElementCount = 40;
 
@@ -120,15 +122,27 @@ function test_store_const_key(array, sum) {
   return sum;
 }
 
+function zero() {
+  return 0.0;
+}
 
-function test_store_middle_double(array, sum) {
+function test_store_middle_tagged(array, sum) {
   array[0] = 253.75;
   return array[0];
 }
 
+function test_store_high_tagged(array, sum) {
+  array[0] = 256.25;
+  return array[0];
+}
+
+function test_store_middle_double(array, sum) {
+  array[0] = 253.75 + zero(); // + forces double type feedback
+  return array[0];
+}
 
 function test_store_high_double(array, sum) {
-  array[0] = 256.25;
+  array[0] = 256.25 + zero(); // + forces double type feedback
   return array[0];
 }
 
@@ -139,6 +153,16 @@ function test_store_high_double(array, sum) {
 
 function test_store_low_int(array, sum) {
   array[0] = -1;
+  return array[0];
+}
+
+function test_store_low_tagged(array, sum) {
+  array[0] = -1.25;
+  return array[0];
+}
+
+function test_store_low_double(array, sum) {
+  array[0] = -1.25 + zero(); // + forces double type feedback
   return array[0];
 }
 
@@ -166,10 +190,19 @@ function run_test(test_func, array, expected_result) {
   gc();  // Makes V8 forget about type information for test_func.
 }
 
+function run_bounds_test(test_func, array, expected_result) {
+  assertEquals(undefined, a[kElementCount]);
+  a[kElementCount] = 456;
+  assertEquals(undefined, a[kElementCount]);
+  assertEquals(undefined, a[kElementCount+1]);
+  a[kElementCount+1] = 456;
+  assertEquals(undefined, a[kElementCount+1]);
+}
+
 for (var t = 0; t < types.length; t++) {
   var type = types[t];
-  print ("type = " + t);
   var a = new type(kElementCount);
+
   for (var i = 0; i < kElementCount; i++) {
     a[i] = i;
   }
@@ -180,9 +213,14 @@ for (var t = 0; t < types.length; t++) {
   run_test(test_store, a, 820 * kRuns);
   run_test(test_store_const_key, a, 6 * kRuns);
   run_test(test_store_low_int, a, test_result_low_int[t]);
+  run_test(test_store_low_double, a, test_result_low_double[t]);
+  run_test(test_store_low_tagged, a, test_result_low_double[t]);
   run_test(test_store_high_int, a, test_result_high_int[t]);
   run_test(test_store_nan, a, test_result_nan[t]);
   run_test(test_store_middle_double, a, test_result_middle[t]);
+  run_test(test_store_middle_tagged, a, test_result_middle[t]);
+  run_test(test_store_high_double, a, test_result_high_double[t]);
+  run_test(test_store_high_tagged, a, test_result_high_double[t]);
 
   // Test the correct behavior of the |length| property (which is read-only).
   if (t != 0) {
@@ -192,6 +230,16 @@ for (var t = 0; t < types.length; t++) {
     assertTrue(delete a.length);
     a.length = 2;
     assertEquals(2, a.length);
+
+    // Make sure bounds checks are handled correctly for external arrays.
+    run_bounds_test(a);
+    run_bounds_test(a);
+    run_bounds_test(a);
+    %OptimizeFunctionOnNextCall(run_bounds_test);
+    run_bounds_test(a);
+    %DeoptimizeFunction(run_bounds_test);
+    gc();  // Makes V8 forget about type information for test_func.
+
   }
 
   function array_load_set_smi_check(a) {

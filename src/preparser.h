@@ -77,6 +77,12 @@ class PreParser {
     kFunctionScope
   };
 
+  enum VariableDeclarationContext {
+    kSourceElement,
+    kStatement,
+    kForStatement
+  };
+
   class Expression;
 
   class Identifier {
@@ -93,15 +99,23 @@ class PreParser {
     static Identifier FutureReserved()  {
       return Identifier(kFutureReservedIdentifier);
     }
+    static Identifier FutureStrictReserved()  {
+      return Identifier(kFutureStrictReservedIdentifier);
+    }
     bool IsEval() { return type_ == kEvalIdentifier; }
     bool IsArguments() { return type_ == kArgumentsIdentifier; }
     bool IsEvalOrArguments() { return type_ >= kEvalIdentifier; }
     bool IsFutureReserved() { return type_ == kFutureReservedIdentifier; }
+    bool IsFutureStrictReserved() {
+      return type_ == kFutureStrictReservedIdentifier;
+    }
     bool IsValidStrictVariable() { return type_ == kUnknownIdentifier; }
+
    private:
     enum Type {
       kUnknownIdentifier,
       kFutureReservedIdentifier,
+      kFutureStrictReservedIdentifier,
       kEvalIdentifier,
       kArgumentsIdentifier
     };
@@ -336,7 +350,8 @@ class PreParser {
         strict_mode_violation_type_(NULL),
         stack_overflow_(false),
         allow_lazy_(true),
-        parenthesized_function_(false) { }
+        parenthesized_function_(false),
+        harmony_block_scoping_(scanner->HarmonyBlockScoping()) { }
 
   // Preparse the program. Only called in PreParseProgram after creating
   // the instance.
@@ -369,13 +384,16 @@ class PreParser {
   // which is set to false if parsing failed; it is unchanged otherwise.
   // By making the 'exception handling' explicit, we are forced to check
   // for failure at the call sites.
+  Statement ParseSourceElement(bool* ok);
   SourceElements ParseSourceElements(int end_token, bool* ok);
   Statement ParseStatement(bool* ok);
   Statement ParseFunctionDeclaration(bool* ok);
-  Statement ParseNativeDeclaration(bool* ok);
   Statement ParseBlock(bool* ok);
-  Statement ParseVariableStatement(bool* ok);
-  Statement ParseVariableDeclarations(bool accept_IN, int* num_decl, bool* ok);
+  Statement ParseVariableStatement(VariableDeclarationContext var_context,
+                                   bool* ok);
+  Statement ParseVariableDeclarations(VariableDeclarationContext var_context,
+                                      int* num_decl,
+                                      bool* ok);
   Statement ParseExpressionOrLabelledStatement(bool* ok);
   Statement ParseIfStatement(bool* ok);
   Statement ParseContinueStatement(bool* ok);
@@ -411,7 +429,9 @@ class PreParser {
 
   Identifier ParseIdentifier(bool* ok);
   Identifier ParseIdentifierName(bool* ok);
-  Identifier ParseIdentifierOrGetOrSet(bool* is_get, bool* is_set, bool* ok);
+  Identifier ParseIdentifierNameOrGetOrSet(bool* is_get,
+                                           bool* is_set,
+                                           bool* ok);
 
   // Logs the currently parsed literal as a symbol in the preparser data.
   void LogSymbol();
@@ -487,6 +507,7 @@ class PreParser {
   bool stack_overflow_;
   bool allow_lazy_;
   bool parenthesized_function_;
+  bool harmony_block_scoping_;
 };
 } }  // v8::preparser
 

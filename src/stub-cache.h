@@ -46,7 +46,9 @@ namespace internal {
 // invalidate the cache whenever a prototype map is changed.  The stub
 // validates the map chain as in the mono-morphic case.
 
+class SmallMapList;
 class StubCache;
+
 
 class SCTableReference {
  public:
@@ -183,15 +185,11 @@ class StubCache {
       Map* transition,
       StrictModeFlag strict_mode);
 
-  MUST_USE_RESULT MaybeObject* ComputeKeyedLoadOrStoreExternalArray(
+  MUST_USE_RESULT MaybeObject* ComputeKeyedLoadOrStoreElement(
       JSObject* receiver,
       bool is_store,
       StrictModeFlag strict_mode);
 
-  MUST_USE_RESULT MaybeObject* ComputeKeyedLoadOrStoreFastElement(
-      JSObject* receiver,
-      bool is_store,
-      StrictModeFlag strict_mode);
   // ---
 
   MUST_USE_RESULT MaybeObject* ComputeCallField(
@@ -265,6 +263,10 @@ class StubCache {
                                                  Code::Kind kind,
                                                  Code::ExtraICState state);
 
+  MUST_USE_RESULT MaybeObject* ComputeCallArguments(int argc,
+                                                    InLoopFlag in_loop,
+                                                    Code::Kind kind);
+
   MUST_USE_RESULT MaybeObject* ComputeCallMegamorphic(int argc,
                                                       InLoopFlag in_loop,
                                                       Code::Kind kind,
@@ -294,7 +296,7 @@ class StubCache {
   void Clear();
 
   // Collect all maps that match the name and flags.
-  void CollectMatchingMaps(ZoneMapList* types,
+  void CollectMatchingMaps(SmallMapList* types,
                            String* name,
                            Code::Flags flags);
 
@@ -355,7 +357,7 @@ class StubCache {
     // shift are equal.  Shifting down the length field to get the
     // hash code would effectively throw away two bits of the hash
     // code.
-    ASSERT(kHeapObjectTagSize == String::kHashShift);
+    STATIC_ASSERT(kHeapObjectTagSize == String::kHashShift);
     // Compute the hash of the name (use entire hash field).
     ASSERT(name->HasHashCode());
     uint32_t field = name->hash_field();
@@ -429,6 +431,7 @@ class StubCompiler BASE_EMBEDDED {
   MUST_USE_RESULT MaybeObject* CompileCallPreMonomorphic(Code::Flags flags);
   MUST_USE_RESULT MaybeObject* CompileCallNormal(Code::Flags flags);
   MUST_USE_RESULT MaybeObject* CompileCallMegamorphic(Code::Flags flags);
+  MUST_USE_RESULT MaybeObject* CompileCallArguments(Code::Flags flags);
   MUST_USE_RESULT MaybeObject* CompileCallMiss(Code::Flags flags);
 #ifdef ENABLE_DEBUGGER_SUPPORT
   MUST_USE_RESULT MaybeObject* CompileCallDebugBreak(Code::Flags flags);
@@ -650,16 +653,20 @@ class KeyedLoadStubCompiler: public StubCompiler {
   MUST_USE_RESULT MaybeObject* CompileLoadStringLength(String* name);
   MUST_USE_RESULT MaybeObject* CompileLoadFunctionPrototype(String* name);
 
-  MUST_USE_RESULT MaybeObject* CompileLoadFastElement(Map* receiver_map);
+  MUST_USE_RESULT MaybeObject* CompileLoadElement(Map* receiver_map);
 
   MUST_USE_RESULT MaybeObject* CompileLoadMegamorphic(
       MapList* receiver_maps,
       CodeList* handler_ics);
 
   static void GenerateLoadExternalArray(MacroAssembler* masm,
-                                        ExternalArrayType array_type);
+                                        JSObject::ElementsKind elements_kind);
 
   static void GenerateLoadFastElement(MacroAssembler* masm);
+
+  static void GenerateLoadFastDoubleElement(MacroAssembler* masm);
+
+  static void GenerateLoadDictionaryElement(MacroAssembler* masm);
 
  private:
   MaybeObject* GetCode(PropertyType type,
@@ -705,7 +712,7 @@ class KeyedStoreStubCompiler: public StubCompiler {
                                                  Map* transition,
                                                  String* name);
 
-  MUST_USE_RESULT MaybeObject* CompileStoreFastElement(Map* receiver_map);
+  MUST_USE_RESULT MaybeObject* CompileStoreElement(Map* receiver_map);
 
   MUST_USE_RESULT MaybeObject* CompileStoreMegamorphic(
       MapList* receiver_maps,
@@ -714,8 +721,13 @@ class KeyedStoreStubCompiler: public StubCompiler {
   static void GenerateStoreFastElement(MacroAssembler* masm,
                                        bool is_js_array);
 
+  static void GenerateStoreFastDoubleElement(MacroAssembler* masm,
+                                             bool is_js_array);
+
   static void GenerateStoreExternalArray(MacroAssembler* masm,
-                                         ExternalArrayType array_type);
+                                         JSObject::ElementsKind elements_kind);
+
+  static void GenerateStoreDictionaryElement(MacroAssembler* masm);
 
  private:
   MaybeObject* GetCode(PropertyType type,
@@ -892,35 +904,6 @@ class CallOptimization BASE_EMBEDDED {
   bool is_simple_api_call_;
   FunctionTemplateInfo* expected_receiver_type_;
   CallHandlerInfo* api_call_info_;
-};
-
-class ExternalArrayLoadStubCompiler: public StubCompiler {
- public:
-  explicit ExternalArrayLoadStubCompiler(StrictModeFlag strict_mode)
-    : strict_mode_(strict_mode) { }
-
-  MUST_USE_RESULT MaybeObject* CompileLoad(
-      JSObject* receiver, ExternalArrayType array_type);
-
- private:
-  MaybeObject* GetCode();
-
-  StrictModeFlag strict_mode_;
-};
-
-
-class ExternalArrayStoreStubCompiler: public StubCompiler {
- public:
-  explicit ExternalArrayStoreStubCompiler(StrictModeFlag strict_mode)
-      : strict_mode_(strict_mode) {}
-
-  MUST_USE_RESULT MaybeObject* CompileStore(
-      JSObject* receiver, ExternalArrayType array_type);
-
- private:
-  MaybeObject* GetCode();
-
-  StrictModeFlag strict_mode_;
 };
 
 

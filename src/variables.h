@@ -46,6 +46,8 @@ class Variable: public ZoneObject {
 
     CONST,     // declared via 'const' declarations
 
+    LET,       // declared via 'let' declarations
+
     // Variables introduced by the compiler:
     DYNAMIC,         // always require dynamic lookup (we don't know
                      // the declaration)
@@ -81,7 +83,7 @@ class Variable: public ZoneObject {
   // Printing support
   static const char* Mode2String(Mode mode);
 
-  // Type testing & conversion
+  // Type testing & conversion.  Global variables are not slots.
   Property* AsProperty() const;
   Slot* AsSlot() const;
 
@@ -99,6 +101,7 @@ class Variable: public ZoneObject {
     return is_accessed_from_inner_scope_;
   }
   void MarkAsAccessedFromInnerScope() {
+    ASSERT(mode_ != TEMPORARY);
     is_accessed_from_inner_scope_ = true;
   }
   bool is_used() { return is_used_; }
@@ -138,8 +141,8 @@ class Variable: public ZoneObject {
     local_if_not_shadowed_ = local;
   }
 
-  Expression* rewrite() const { return rewrite_; }
-  void set_rewrite(Expression* expr) { rewrite_ = expr; }
+  Slot* rewrite() const { return rewrite_; }
+  void set_rewrite(Slot* slot) { rewrite_ = slot; }
 
  private:
   Scope* scope_;
@@ -150,8 +153,7 @@ class Variable: public ZoneObject {
   Variable* local_if_not_shadowed_;
 
   // Code generation.
-  // rewrite_ is usually a Slot or a Property, but may be any expression.
-  Expression* rewrite_;
+  Slot* rewrite_;
 
   // Valid as a LHS? (const and this are not valid LHS, for example)
   bool is_valid_LHS_;

@@ -88,6 +88,9 @@ void HeapObject::HeapObjectVerify() {
     case FIXED_ARRAY_TYPE:
       FixedArray::cast(this)->FixedArrayVerify();
       break;
+    case FIXED_DOUBLE_ARRAY_TYPE:
+      FixedDoubleArray::cast(this)->FixedDoubleArrayVerify();
+      break;
     case BYTE_ARRAY_TYPE:
       ByteArray::cast(this)->ByteArrayVerify();
       break;
@@ -149,6 +152,9 @@ void HeapObject::HeapObjectVerify() {
       break;
     case JS_ARRAY_TYPE:
       JSArray::cast(this)->JSArrayVerify();
+      break;
+    case JS_WEAK_MAP_TYPE:
+      JSWeakMap::cast(this)->JSWeakMapVerify();
       break;
     case JS_REGEXP_TYPE:
       JSRegExp::cast(this)->JSRegExpVerify();
@@ -289,6 +295,12 @@ void CodeCache::CodeCacheVerify() {
 }
 
 
+void PolymorphicCodeCache::PolymorphicCodeCacheVerify() {
+  VerifyHeapPointer(cache());
+  ASSERT(cache()->IsUndefined() || cache()->IsPolymorphicCodeCacheHashTable());
+}
+
+
 void FixedArray::FixedArrayVerify() {
   for (int i = 0; i < length(); i++) {
     Object* e = get(i);
@@ -296,6 +308,18 @@ void FixedArray::FixedArrayVerify() {
       VerifyHeapPointer(e);
     } else {
       e->Verify();
+    }
+  }
+}
+
+
+void FixedDoubleArray::FixedDoubleArrayVerify() {
+  for (int i = 0; i < length(); i++) {
+    if (!is_the_hole(i)) {
+      double value = get_scalar(i);
+      ASSERT(!isnan(value) ||
+             (BitCast<uint64_t>(value) ==
+              BitCast<uint64_t>(canonical_not_the_hole_nan_as_double())));
     }
   }
 }
@@ -328,6 +352,31 @@ void String::StringVerify() {
   if (IsSymbol()) {
     CHECK(!HEAP->InNewSpace(this));
   }
+  if (IsConsString()) {
+    ConsString::cast(this)->ConsStringVerify();
+  } else if (IsSlicedString()) {
+    SlicedString::cast(this)->SlicedStringVerify();
+  }
+}
+
+
+void ConsString::ConsStringVerify() {
+  CHECK(this->first()->IsString());
+  CHECK(this->second() == GetHeap()->empty_string() ||
+        this->second()->IsString());
+  CHECK(this->length() >= String::kMinNonFlatLength);
+  if (this->IsFlat()) {
+    // A flat cons can only be created by String::SlowTryFlatten.
+    // Afterwards, the first part may be externalized.
+    CHECK(this->first()->IsSeqString() || this->first()->IsExternalString());
+  }
+}
+
+
+void SlicedString::SlicedStringVerify() {
+  CHECK(!this->parent()->IsConsString());
+  CHECK(!this->parent()->IsSlicedString());
+  CHECK(this->length() >= SlicedString::kMinLength);
 }
 
 
@@ -426,7 +475,17 @@ void Code::CodeVerify() {
 void JSArray::JSArrayVerify() {
   JSObjectVerify();
   ASSERT(length()->IsNumber() || length()->IsUndefined());
-  ASSERT(elements()->IsUndefined() || elements()->IsFixedArray());
+  ASSERT(elements()->IsUndefined() ||
+         elements()->IsFixedArray() ||
+         elements()->IsFixedDoubleArray());
+}
+
+
+void JSWeakMap::JSWeakMapVerify() {
+  CHECK(IsJSWeakMap());
+  JSObjectVerify();
+  VerifyHeapPointer(table());
+  ASSERT(table()->IsHashTable());
 }
 
 

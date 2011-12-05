@@ -60,17 +60,8 @@ LIBRARY_FLAGS = {
     'mode:debug': {
       'CPPDEFINES': ['V8_ENABLE_CHECKS', 'OBJECT_PRINT']
     },
-    'vmstate:on': {
-      'CPPDEFINES':   ['ENABLE_VMSTATE_TRACKING'],
-    },
     'objectprint:on': {
       'CPPDEFINES':   ['OBJECT_PRINT'],
-    },
-    'protectheap:on': {
-      'CPPDEFINES':   ['ENABLE_VMSTATE_TRACKING', 'ENABLE_HEAP_PROTECTION'],
-    },
-    'profilingsupport:on': {
-      'CPPDEFINES':   ['ENABLE_VMSTATE_TRACKING', 'ENABLE_LOGGING_AND_PROFILING'],
     },
     'debuggersupport:on': {
       'CPPDEFINES':   ['ENABLE_DEBUGGER_SUPPORT'],
@@ -78,8 +69,8 @@ LIBRARY_FLAGS = {
     'inspector:on': {
       'CPPDEFINES':   ['INSPECTOR'],
     },
-    'fasttls:on': {
-      'CPPDEFINES':   ['V8_FAST_TLS'],
+    'fasttls:off': {
+      'CPPDEFINES':   ['V8_NO_FAST_TLS'],
     },
     'liveobjectlist:on': {
       'CPPDEFINES':   ['ENABLE_DEBUGGER_SUPPORT', 'INSPECTOR',
@@ -89,7 +80,7 @@ LIBRARY_FLAGS = {
   'gcc': {
     'all': {
       'CCFLAGS':      ['$DIALECTFLAGS', '$WARNINGFLAGS'],
-      'CXXFLAGS':     ['$CCFLAGS', '-fno-rtti', '-fno-exceptions'],
+      'CXXFLAGS':     ['-fno-rtti', '-fno-exceptions'],
     },
     'visibility:hidden': {
       # Use visibility=default to disable this.
@@ -162,13 +153,19 @@ LIBRARY_FLAGS = {
         }
       },
       'armeabi:softfp' : {
-        'CPPDEFINES' : ['USE_EABI_HARDFLOAT=0', 'CAN_USE_VFP_INSTRUCTIONS'],
+        'CPPDEFINES' : ['USE_EABI_HARDFLOAT=0'],
+        'vfp3:on': {
+          'CPPDEFINES' : ['CAN_USE_VFP_INSTRUCTIONS']
+        },
         'simulator:none': {
           'CCFLAGS':     ['-mfloat-abi=softfp'],
         }
       },
       'armeabi:hard' : {
-        'CPPDEFINES' : ['USE_EABI_HARDFLOAT=1', 'CAN_USE_VFP_INSTRUCTIONS'],
+        'CPPDEFINES' : ['USE_EABI_HARDFLOAT=1'],
+        'vfp3:on': {
+          'CPPDEFINES' : ['CAN_USE_VFP_INSTRUCTIONS']
+        },
         'simulator:none': {
           'CCFLAGS':     ['-mfloat-abi=hard'],
         }
@@ -230,7 +227,7 @@ LIBRARY_FLAGS = {
   'msvc': {
     'all': {
       'CCFLAGS':      ['$DIALECTFLAGS', '$WARNINGFLAGS'],
-      'CXXFLAGS':     ['$CCFLAGS', '/GR-', '/Gy'],
+      'CXXFLAGS':     ['/GR-', '/Gy'],
       'CPPDEFINES':   ['WIN32'],
       'LINKFLAGS':    ['/INCREMENTAL:NO', '/NXCOMPAT', '/IGNORE:4221'],
       'CCPDBFLAGS':   ['/Zi']
@@ -400,16 +397,20 @@ DTOA_EXTRA_FLAGS = {
 CCTEST_EXTRA_FLAGS = {
   'all': {
     'CPPPATH': [join(root_dir, 'src')],
+    'library:shared': {
+      'CPPDEFINES': ['USING_V8_SHARED']
+    },
   },
   'gcc': {
     'all': {
       'LIBPATH':      [abspath('.')],
       'CCFLAGS':      ['$DIALECTFLAGS', '$WARNINGFLAGS'],
-      'CXXFLAGS':     ['$CCFLAGS', '-fno-rtti', '-fno-exceptions'],
+      'CXXFLAGS':     ['-fno-rtti', '-fno-exceptions'],
       'LINKFLAGS':    ['$CCFLAGS'],
     },
     'os:linux': {
       'LIBS':         ['pthread'],
+      'CCFLAGS':      ['-Wno-unused-but-set-variable'],
     },
     'os:macos': {
       'LIBS':         ['pthread'],
@@ -436,15 +437,12 @@ CCTEST_EXTRA_FLAGS = {
       'CPPDEFINES': ['_HAS_EXCEPTIONS=0'],
       'LIBS': ['winmm', 'ws2_32']
     },
-    'library:shared': {
-      'CPPDEFINES': ['USING_V8_SHARED']
-    },
     'arch:ia32': {
       'CPPDEFINES': ['V8_TARGET_ARCH_IA32']
     },
     'arch:x64': {
       'CPPDEFINES':   ['V8_TARGET_ARCH_X64'],
-      'LINKFLAGS': ['/STACK:2091752']
+      'LINKFLAGS': ['/STACK:2097152']
     },
   }
 }
@@ -453,12 +451,15 @@ CCTEST_EXTRA_FLAGS = {
 SAMPLE_FLAGS = {
   'all': {
     'CPPPATH': [join(abspath('.'), 'include')],
+    'library:shared': {
+      'CPPDEFINES': ['USING_V8_SHARED']
+    },
   },
   'gcc': {
     'all': {
       'LIBPATH':      ['.'],
       'CCFLAGS':      ['$DIALECTFLAGS', '$WARNINGFLAGS'],
-      'CXXFLAGS':     ['$CCFLAGS', '-fno-rtti', '-fno-exceptions'],
+      'CXXFLAGS':     ['-fno-rtti', '-fno-exceptions'],
       'LINKFLAGS':    ['$CCFLAGS'],
     },
     'os:linux': {
@@ -472,6 +473,9 @@ SAMPLE_FLAGS = {
       'LIBS':         ['execinfo', 'pthread']
     },
     'os:solaris': {
+      # On Solaris, to get isinf, INFINITY, fpclassify and other macros one
+      # needs to define __C99FEATURES__.
+      'CPPDEFINES': ['__C99FEATURES__'],
       'LIBPATH' :     ['/usr/local/lib'],
       'LIBS':         ['m', 'pthread', 'socket', 'nsl', 'rt'],
       'LINKFLAGS':    ['-mt']
@@ -498,7 +502,10 @@ SAMPLE_FLAGS = {
         }
       },
       'armeabi:hard' : {
-        'CPPDEFINES' : ['USE_EABI_HARDFLOAT=1', 'CAN_USE_VFP_INSTRUCTIONS'],
+        'CPPDEFINES' : ['USE_EABI_HARDFLOAT=1'],
+        'vfp3:on': {
+          'CPPDEFINES' : ['CAN_USE_VFP_INSTRUCTIONS']
+        },
         'simulator:none': {
           'CCFLAGS':     ['-mfloat-abi=hard'],
         }
@@ -572,9 +579,6 @@ SAMPLE_FLAGS = {
     'verbose:on': {
       'LINKFLAGS': ['/VERBOSE']
     },
-    'library:shared': {
-      'CPPDEFINES': ['USING_V8_SHARED']
-    },
     'prof:on': {
       'LINKFLAGS': ['/MAP']
     },
@@ -606,7 +610,7 @@ SAMPLE_FLAGS = {
     },
     'arch:x64': {
       'CPPDEFINES': ['V8_TARGET_ARCH_X64', 'WIN32'],
-      'LINKFLAGS': ['/MACHINE:X64', '/STACK:2091752']
+      'LINKFLAGS': ['/MACHINE:X64', '/STACK:2097152']
     },
     'mode:debug': {
       'CCFLAGS':    ['/Od'],
@@ -625,13 +629,16 @@ SAMPLE_FLAGS = {
 
 PREPARSER_FLAGS = {
   'all': {
-    'CPPPATH': [join(abspath('.'), 'include'), join(abspath('.'), 'src')]
+    'CPPPATH': [join(abspath('.'), 'include'), join(abspath('.'), 'src')],
+    'library:shared': {
+      'CPPDEFINES': ['USING_V8_SHARED']
+    },
   },
   'gcc': {
     'all': {
       'LIBPATH':      ['.'],
       'CCFLAGS':      ['$DIALECTFLAGS', '$WARNINGFLAGS'],
-      'CXXFLAGS':     ['$CCFLAGS', '-fno-rtti', '-fno-exceptions'],
+      'CXXFLAGS':     ['-fno-rtti', '-fno-exceptions'],
       'LINKFLAGS':    ['$CCFLAGS'],
     },
     'os:win32': {
@@ -712,6 +719,9 @@ PREPARSER_FLAGS = {
       'CCFLAGS':      ['-g', '-O0'],
       'CPPDEFINES':   ['DEBUG']
     },
+    'os:freebsd': {
+      'LIBPATH' : ['/usr/local/lib'],
+    },
   },
   'msvc': {
     'all': {
@@ -723,9 +733,6 @@ PREPARSER_FLAGS = {
     },
     'verbose:on': {
       'LINKFLAGS': ['/VERBOSE']
-    },
-    'library:shared': {
-      'CPPDEFINES': ['USING_V8_SHARED']
     },
     'prof:on': {
       'LINKFLAGS': ['/MAP']
@@ -758,7 +765,7 @@ PREPARSER_FLAGS = {
     },
     'arch:x64': {
       'CPPDEFINES': ['V8_TARGET_ARCH_X64', 'WIN32'],
-      'LINKFLAGS': ['/MACHINE:X64', '/STACK:2091752']
+      'LINKFLAGS': ['/MACHINE:X64', '/STACK:2097152']
     },
     'mode:debug': {
       'CCFLAGS':    ['/Od'],
@@ -776,10 +783,17 @@ PREPARSER_FLAGS = {
 
 
 D8_FLAGS = {
+  'all': {
+    'library:shared': {
+      'CPPDEFINES': ['V8_SHARED'],
+      'LIBS': ['v8'],
+      'LIBPATH': ['.']
+    },
+  },
   'gcc': {
     'all': {
       'CCFLAGS': ['$DIALECTFLAGS', '$WARNINGFLAGS'],
-      'CXXFLAGS': ['$CCFLAGS', '-fno-rtti', '-fno-exceptions'],
+      'CXXFLAGS': ['-fno-rtti', '-fno-exceptions'],
       'LINKFLAGS': ['$CCFLAGS'],
     },
     'console:readline': {
@@ -807,10 +821,67 @@ D8_FLAGS = {
     'arch:arm': {
       'LINKFLAGS':   ARM_LINK_FLAGS
     },
+    'compress_startup_data:bz2': {
+      'CPPDEFINES':   ['COMPRESS_STARTUP_DATA_BZ2'],
+      'os:linux': {
+        'LIBS': ['bz2']
+      }
+    }
   },
   'msvc': {
     'all': {
       'LIBS': ['winmm', 'ws2_32']
+    },
+    'verbose:off': {
+      'CCFLAGS': ['/nologo'],
+      'LINKFLAGS': ['/NOLOGO']
+    },
+    'verbose:on': {
+      'LINKFLAGS': ['/VERBOSE']
+    },
+    'prof:on': {
+      'LINKFLAGS': ['/MAP']
+    },
+    'mode:release': {
+      'CCFLAGS':   ['/O2'],
+      'LINKFLAGS': ['/OPT:REF', '/OPT:ICF'],
+      'msvcrt:static': {
+        'CCFLAGS': ['/MT']
+      },
+      'msvcrt:shared': {
+        'CCFLAGS': ['/MD']
+      },
+      'msvcltcg:on': {
+        'CCFLAGS':      ['/GL'],
+        'pgo:off': {
+          'LINKFLAGS':    ['/LTCG'],
+        },
+      },
+      'pgo:instrument': {
+        'LINKFLAGS':    ['/LTCG:PGI']
+      },
+      'pgo:optimize': {
+        'LINKFLAGS':    ['/LTCG:PGO']
+      }
+    },
+    'arch:ia32': {
+      'CPPDEFINES': ['V8_TARGET_ARCH_IA32', 'WIN32'],
+      'LINKFLAGS': ['/MACHINE:X86']
+    },
+    'arch:x64': {
+      'CPPDEFINES': ['V8_TARGET_ARCH_X64', 'WIN32'],
+      'LINKFLAGS': ['/MACHINE:X64', '/STACK:2097152']
+    },
+    'mode:debug': {
+      'CCFLAGS':    ['/Od'],
+      'LINKFLAGS':  ['/DEBUG'],
+      'CPPDEFINES': ['DEBUG'],
+      'msvcrt:static': {
+        'CCFLAGS':  ['/MTd']
+      },
+      'msvcrt:shared': {
+        'CCFLAGS':  ['/MDd']
+      }
     }
   }
 }
@@ -917,20 +988,10 @@ SIMPLE_OPTIONS = {
     'default': 'static',
     'help': 'the type of library to produce'
   },
-  'vmstate': {
-    'values': ['on', 'off'],
-    'default': 'off',
-    'help': 'enable VM state tracking'
-  },
   'objectprint': {
     'values': ['on', 'off'],
     'default': 'off',
     'help': 'enable object printing'
-  },
-  'protectheap': {
-    'values': ['on', 'off'],
-    'default': 'off',
-    'help': 'enable heap protection'
   },
   'profilingsupport': {
     'values': ['on', 'off'],
@@ -1038,6 +1099,12 @@ SIMPLE_OPTIONS = {
     'default': 'off',
     'help': 'compress startup data (snapshot) [Linux only]'
   },
+  'vfp3': {
+    'values': ['on', 'off'],
+    'default': 'on',
+    'help': 'use vfp3 instructions when building the snapshot [Arm only]'
+  },
+
 }
 
 ALL_OPTIONS = dict(PLATFORM_OPTIONS, **SIMPLE_OPTIONS)
@@ -1146,8 +1213,8 @@ def VerifyOptions(env):
     return False
   if env['os'] == 'win32' and env['library'] == 'shared' and env['prof'] == 'on':
     Abort("Profiling on windows only supported for static library.")
-  if env['gdbjit'] == 'on' and (env['os'] != 'linux' or (env['arch'] != 'ia32' and env['arch'] != 'x64' and env['arch'] != 'arm')):
-    Abort("GDBJIT interface is supported only for Intel-compatible (ia32 or x64) Linux target.")
+  if env['gdbjit'] == 'on' and ((env['os'] != 'linux' and env['os'] != 'macos') or (env['arch'] != 'ia32' and env['arch'] != 'x64' and env['arch'] != 'arm')):
+    Abort("GDBJIT interface is supported only for Intel-compatible (ia32 or x64) Linux/OSX target.")
   if env['os'] == 'win32' and env['soname'] == 'on':
     Abort("Shared Object soname not applicable for Windows.")
   if env['soname'] == 'on' and env['library'] == 'static':
@@ -1342,10 +1409,12 @@ def BuildSpecific(env, mode, env_overrides, tools):
     env['SONAME'] = soname
 
   # Build the object files by invoking SCons recursively.
+  d8_env = Environment(tools=tools)
+  d8_env.Replace(**context.flags['d8'])
   (object_files, shell_files, mksnapshot, preparser_files) = env.SConscript(
     join('src', 'SConscript'),
     build_dir=join('obj', target_id),
-    exports='context tools',
+    exports='context tools d8_env',
     duplicate=False
   )
 
@@ -1366,16 +1435,20 @@ def BuildSpecific(env, mode, env_overrides, tools):
     pdb_name = library_name + '.dll.pdb'
     library = env.SharedLibrary(library_name, object_files, PDB=pdb_name)
     preparser_pdb_name = preparser_library_name + '.dll.pdb';
+    preparser_soname = 'lib' + preparser_library_name + '.so';
     preparser_library = env.SharedLibrary(preparser_library_name,
                                           preparser_files,
-                                          PDB=preparser_pdb_name)
+                                          PDB=preparser_pdb_name,
+                                          SONAME=preparser_soname)
   context.library_targets.append(library)
   context.library_targets.append(preparser_library)
 
-  d8_env = Environment(tools=tools)
-  d8_env.Replace(**context.flags['d8'])
   context.ApplyEnvOverrides(d8_env)
-  shell = d8_env.Program('d8' + suffix, object_files + shell_files)
+  if context.options['library'] == 'static':
+    shell = d8_env.Program('d8' + suffix, object_files + shell_files)
+  else:
+    shell = d8_env.Program('d8' + suffix, shell_files)
+    d8_env.Depends(shell, library)
   context.d8_targets.append(shell)
 
   for sample in context.samples:
@@ -1411,7 +1484,7 @@ def BuildSpecific(env, mode, env_overrides, tools):
   preparser_object = preparser_env.SConscript(
     join('preparser', 'SConscript'),
     build_dir=join('obj', 'preparser', target_id),
-    exports='context',
+    exports='context tools',
     duplicate=False
   )
   preparser_name = join('obj', 'preparser', target_id, 'preparser')

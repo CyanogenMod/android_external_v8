@@ -94,7 +94,7 @@ class LCodeGen BASE_EMBEDDED {
   void DoDeferredNumberTagD(LNumberTagD* instr);
   void DoDeferredTaggedToI(LTaggedToI* instr);
   void DoDeferredMathAbsTaggedHeapNumber(LUnaryMathOperation* instr);
-  void DoDeferredStackCheck(LGoto* instr);
+  void DoDeferredStackCheck(LStackCheck* instr);
   void DoDeferredStringCharCodeAt(LStringCharCodeAt* instr);
   void DoDeferredStringCharFromCode(LStringCharFromCode* instr);
   void DoDeferredLInstanceOfKnownGlobal(LInstanceOfKnownGlobal* instr,
@@ -215,9 +215,11 @@ class LCodeGen BASE_EMBEDDED {
 
   Register ToRegister(int index) const;
   XMMRegister ToDoubleRegister(int index) const;
-  Operand BuildExternalArrayOperand(LOperand* external_pointer,
-                                    LOperand* key,
-                                    ExternalArrayType array_type);
+  Operand BuildFastArrayOperand(
+      LOperand* elements_pointer,
+      LOperand* key,
+      JSObject::ElementsKind elements_kind,
+      uint32_t offset);
 
   // Specific math operations - used from DoUnaryMathOperation.
   void EmitIntegerMathAbs(LUnaryMathOperation* instr);
@@ -246,7 +248,7 @@ class LCodeGen BASE_EMBEDDED {
   }
 
   static Condition TokenToCondition(Token::Value op, bool is_unsigned);
-  void EmitGoto(int block, LDeferredCode* deferred_stack_check = NULL);
+  void EmitGoto(int block);
   void EmitBranch(int left_block, int right_block, Condition cc);
   void EmitCmpI(LOperand* left, LOperand* right);
   void EmitNumberUntagD(Register input,
