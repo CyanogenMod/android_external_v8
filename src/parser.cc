@@ -30,6 +30,7 @@
 #include "api.h"
 #include "ast-inl.h"
 #include "bootstrapper.h"
+#include "char-predicates-inl.h"
 #include "codegen.h"
 #include "compiler.h"
 #include "func-name-inferrer.h"
@@ -38,6 +39,7 @@
 #include "platform.h"
 #include "preparser.h"
 #include "runtime.h"
+#include "scanner-character-streams.h"
 #include "scopeinfo.h"
 #include "string-stream.h"
 
@@ -532,7 +534,7 @@ LexicalScope::LexicalScope(Parser* parser, Scope* scope, Isolate* isolate)
   parser->top_scope_ = scope;
   parser->lexical_scope_ = this;
   parser->with_nesting_level_ = 0;
-  isolate->set_ast_node_id(AstNode::kFunctionEntryId + 1);
+  isolate->set_ast_node_id(AstNode::kDeclarationsId + 1);
 }
 
 
@@ -647,6 +649,11 @@ FunctionLiteral* Parser::DoParseProgram(Handle<String> source,
     if (ok && top_scope_->is_strict_mode()) {
       CheckOctalLiteral(beg_loc, scanner().location().end_pos, &ok);
     }
+
+    if (ok && harmony_block_scoping_) {
+      CheckConflictingVarDeclarations(scope, &ok);
+    }
+
     if (ok) {
       result = new(zone()) FunctionLiteral(
           isolate(),
@@ -950,18 +957,17 @@ class InitializationBlockFinder : public ParserFinder {
 };
 
 
-// A ThisNamedPropertyAssignmentFinder finds and marks statements of the form
+// A ThisNamedPropertyAssigmentFinder finds and marks statements of the form
 // this.x = ...;, where x is a named property. It also determines whether a
 // function contains only assignments of this type.
-class ThisNamedPropertyAssignmentFinder : public ParserFinder {
+class ThisNamedPropertyAssigmentFinder : public ParserFinder {
  public:
-  explicit ThisNamedPropertyAssignmentFinder(Isolate* isolate)
+  explicit ThisNamedPropertyAssigmentFinder(Isolate* isolate)
       : isolate_(isolate),
         only_simple_this_property_assignments_(true),
-        names_(0),
-        assigned_arguments_(0),
-        assigned_constants_(0) {
-  }
+        names_(NULL),
+        assigned_arguments_(NULL),
+        assigned_constants_(NULL) {}
 
   void Update(Scope* scope, Statement* stat) {
     // Bail out if function already has property assignment that are
@@ -988,17 +994,19 @@ class ThisNamedPropertyAssignmentFinder : public ParserFinder {
   // Returns a fixed array containing three elements for each assignment of the
   // form this.x = y;
   Handle<FixedArray> GetThisPropertyAssignments() {
-    if (names_.is_empty()) {
+    if (names_ == NULL) {
       return isolate_->factory()->empty_fixed_array();
     }
-    ASSERT_EQ(names_.length(), assigned_arguments_.length());
-    ASSERT_EQ(names_.length(), assigned_constants_.length());
+    ASSERT(names_ != NULL);
+    ASSERT(assigned_arguments_ != NULL);
+    ASSERT_EQ(names_->length(), assigned_arguments_->length());
+    ASSERT_EQ(names_->length(), assigned_constants_->length());
     Handle<FixedArray> assignments =
-        isolate_->factory()->NewFixedArray(names_.length() * 3);
-    for (int i = 0; i < names_.length(); ++i) {
-      assignments->set(i * 3, *names_[i]);
-      assignments->set(i * 3 + 1, Smi::FromInt(assigned_arguments_[i]));
-      assignments->set(i * 3 + 2, *assigned_constants_[i]);
+        isolate_->factory()->NewFixedArray(names_->length() * 3);
+    for (int i = 0; i < names_->length(); i++) {
+      assignments->set(i * 3, *names_->at(i));
+      assignments->set(i * 3 + 1, Smi::FromInt(assigned_arguments_->at(i)));
+      assignments->set(i * 3 + 2, *assigned_constants_->at(i));
     }
     return assignments;
   }
@@ -1055,37 +1063,18 @@ class ThisNamedPropertyAssignmentFinder : public ParserFinder {
     AssignmentFromSomethingElse();
   }
 
-
-
-
-  // We will potentially reorder the property assignments, so they must be
-  // simple enough that the ordering does not matter.
   void AssignmentFromParameter(Handle<String> name, int index) {
-    EnsureInitialized();
-    for (int i = 0; i < names_.length(); ++i) {
-      if (name->Equals(*names_[i])) {
-        assigned_arguments_[i] = index;
-        assigned_constants_[i] = isolate_->factory()->undefined_value();
-        return;
-      }
-    }
-    names_.Add(name);
-    assigned_arguments_.Add(index);
-    assigned_constants_.Add(isolate_->factory()->undefined_value());
+    EnsureAllocation();
+    names_->Add(name);
+    assigned_arguments_->Add(index);
+    assigned_constants_->Add(isolate_->factory()->undefined_value());
   }
 
   void AssignmentFromConstant(Handle<String> name, Handle<Object> value) {
-    EnsureInitialized();
-    for (int i = 0; i < names_.length(); ++i) {
-      if (name->Equals(*names_[i])) {
-        assigned_arguments_[i] = -1;
-        assigned_constants_[i] = value;
-        return;
-      }
-    }
-    names_.Add(name);
-    assigned_arguments_.Add(-1);
-    assigned_constants_.Add(value);
+    EnsureAllocation();
+    names_->Add(name);
+    assigned_arguments_->Add(-1);
+    assigned_constants_->Add(value);
   }
 
   void AssignmentFromSomethingElse() {
@@ -1093,21 +1082,22 @@ class ThisNamedPropertyAssignmentFinder : public ParserFinder {
     only_simple_this_property_assignments_ = false;
   }
 
-  void EnsureInitialized() {
-    if (names_.capacity() == 0) {
-      ASSERT(assigned_arguments_.capacity() == 0);
-      ASSERT(assigned_constants_.capacity() == 0);
-      names_.Initialize(4);
-      assigned_arguments_.Initialize(4);
-      assigned_constants_.Initialize(4);
+  void EnsureAllocation() {
+    if (names_ == NULL) {
+      ASSERT(assigned_arguments_ == NULL);
+      ASSERT(assigned_constants_ == NULL);
+      Zone* zone = isolate_->zone();
+      names_ = new(zone) ZoneStringList(4);
+      assigned_arguments_ = new(zone) ZoneList<int>(4);
+      assigned_constants_ = new(zone) ZoneObjectList(4);
     }
   }
 
   Isolate* isolate_;
   bool only_simple_this_property_assignments_;
-  ZoneStringList names_;
-  ZoneList<int> assigned_arguments_;
-  ZoneObjectList assigned_constants_;
+  ZoneStringList* names_;
+  ZoneList<int>* assigned_arguments_;
+  ZoneObjectList* assigned_constants_;
 };
 
 
@@ -1144,7 +1134,7 @@ void* Parser::ParseSourceElements(ZoneList<Statement*>* processor,
 
   ASSERT(processor != NULL);
   InitializationBlockFinder block_finder(top_scope_, target_stack_);
-  ThisNamedPropertyAssignmentFinder this_property_assignment_finder(isolate());
+  ThisNamedPropertyAssigmentFinder this_property_assignment_finder(isolate());
   bool directive_prologue = true;     // Parsing directive prologue.
 
   while (peek() != end_token) {
@@ -1360,14 +1350,32 @@ VariableProxy* Parser::Declare(Handle<String> name,
       // Declare the name.
       var = declaration_scope->DeclareLocal(name, mode);
     } else {
-      // The name was declared before; check for conflicting re-declarations.
-      // We have a conflict if either of the declarations is not a var. There
-      // is similar code in runtime.cc in the Declare functions.
+      // The name was declared in this scope before; check for conflicting
+      // re-declarations. We have a conflict if either of the declarations is
+      // not a var. There is similar code in runtime.cc in the Declare
+      // functions. The function CheckNonConflictingScope checks for conflicting
+      // var and let bindings from different scopes whereas this is a check for
+      // conflicting declarations within the same scope. This check also covers
+      //
+      // function () { let x; { var x; } }
+      //
+      // because the var declaration is hoisted to the function scope where 'x'
+      // is already bound.
       if ((mode != Variable::VAR) || (var->mode() != Variable::VAR)) {
         // We only have vars, consts and lets in declarations.
         ASSERT(var->mode() == Variable::VAR ||
                var->mode() == Variable::CONST ||
                var->mode() == Variable::LET);
+        if (harmony_block_scoping_) {
+          // In harmony mode we treat re-declarations as early errors. See
+          // ES5 16 for a definition of early errors.
+          SmartArrayPointer<char> c_string = name->ToCString(DISALLOW_NULLS);
+          const char* elms[2] = { "Variable", *c_string };
+          Vector<const char*> args(elms, 2);
+          ReportMessage("redeclaration", args);
+          *ok = false;
+          return NULL;
+        }
         const char* type = (var->mode() == Variable::VAR) ? "var" :
                            (var->mode() == Variable::CONST) ? "const" : "let";
         Handle<String> type_string =
@@ -1396,8 +1404,10 @@ VariableProxy* Parser::Declare(Handle<String> name,
   // semantic issue as long as we keep the source order, but it may be
   // a performance issue since it may lead to repeated
   // Runtime::DeclareContextSlot() calls.
-  VariableProxy* proxy = declaration_scope->NewUnresolved(name, false);
-  declaration_scope->AddDeclaration(new(zone()) Declaration(proxy, mode, fun));
+  VariableProxy* proxy = declaration_scope->NewUnresolved(
+      name, false, scanner().location().beg_pos);
+  declaration_scope->AddDeclaration(
+      new(zone()) Declaration(proxy, mode, fun, top_scope_));
 
   // For global const variables we bind the proxy to a variable.
   if (mode == Variable::CONST && declaration_scope->is_global_scope()) {
@@ -1551,9 +1561,6 @@ Block* Parser::ParseScopedBlock(ZoneStringList* labels, bool* ok) {
   Scope* block_scope = NewScope(top_scope_,
                                 Scope::BLOCK_SCOPE,
                                 inside_with());
-  body->set_block_scope(block_scope);
-  block_scope->DeclareLocal(isolate()->factory()->block_scope_symbol(),
-                            Variable::VAR);
   if (top_scope_->is_strict_mode()) {
     block_scope->EnableStrictMode();
   }
@@ -1576,21 +1583,11 @@ Block* Parser::ParseScopedBlock(ZoneStringList* labels, bool* ok) {
     }
   }
   Expect(Token::RBRACE, CHECK_OK);
-
-  // Create exit block.
-  Block* exit = new(zone()) Block(isolate(), NULL, 1, false);
-  exit->AddStatement(new(zone()) ExitContextStatement());
-
-  // Create a try-finally statement.
-  TryFinallyStatement* try_finally =
-      new(zone()) TryFinallyStatement(body, exit);
-  try_finally->set_escaping_targets(collector.targets());
   top_scope_ = saved_scope;
 
-  // Create a result block.
-  Block* result = new(zone()) Block(isolate(), NULL, 1, false);
-  result->AddStatement(try_finally);
-  return result;
+  block_scope = block_scope->FinalizeBlockScope();
+  body->set_block_scope(block_scope);
+  return body;
 }
 
 
@@ -1839,18 +1836,21 @@ Block* Parser::ParseVariableDeclarations(VariableDeclarationContext var_context,
       block->AddStatement(new(zone()) ExpressionStatement(initialize));
     }
 
-    // Add an assignment node to the initialization statement block if
-    // we still have a pending initialization value. We must distinguish
-    // between variables and constants: Variable initializations are simply
+    // Add an assignment node to the initialization statement block if we still
+    // have a pending initialization value. We must distinguish between
+    // different kinds of declarations: 'var' initializations are simply
     // assignments (with all the consequences if they are inside a 'with'
     // statement - they may change a 'with' object property). Constant
     // initializations always assign to the declared constant which is
     // always at the function scope level. This is only relevant for
     // dynamically looked-up variables and constants (the start context
     // for constant lookups is always the function context, while it is
-    // the top context for variables). Sigh...
+    // the top context for var declared variables). Sigh...
+    // For 'let' declared variables the initialization is in the same scope
+    // as the declaration. Thus dynamic lookups are unnecessary even if the
+    // block scope is inside a with.
     if (value != NULL) {
-      bool in_with = is_const ? false : inside_with();
+      bool in_with = mode == Variable::VAR ? inside_with() : false;
       VariableProxy* proxy =
           initialization_scope->NewUnresolved(name, in_with);
       Assignment* assignment =
@@ -1904,7 +1904,7 @@ Statement* Parser::ParseExpressionOrLabelledStatement(ZoneStringList* labels,
     // structured.  However, these are probably changes we want to
     // make later anyway so we should go back and fix this then.
     if (ContainsLabel(labels, label) || TargetStackContainsLabel(label)) {
-      SmartPointer<char> c_string = label->ToCString(DISALLOW_NULLS);
+      SmartArrayPointer<char> c_string = label->ToCString(DISALLOW_NULLS);
       const char* elms[2] = { "Label", *c_string };
       Vector<const char*> args(elms, 2);
       ReportMessage("redeclaration", args);
@@ -2219,22 +2219,19 @@ TryStatement* Parser::ParseTryStatement(bool* ok) {
     Expect(Token::RPAREN, CHECK_OK);
 
     if (peek() == Token::LBRACE) {
-      // Rewrite the catch body { B } to a block:
-      // { { B } ExitContext; }.
       Target target(&this->target_stack_, &catch_collector);
       catch_scope = NewScope(top_scope_, Scope::CATCH_SCOPE, inside_with());
       if (top_scope_->is_strict_mode()) {
         catch_scope->EnableStrictMode();
       }
-      catch_variable = catch_scope->DeclareLocal(name, Variable::VAR);
-      catch_block = new(zone()) Block(isolate(), NULL, 2, false);
+      Variable::Mode mode = harmony_block_scoping_
+          ? Variable::LET : Variable::VAR;
+      catch_variable = catch_scope->DeclareLocal(name, mode);
 
       Scope* saved_scope = top_scope_;
       top_scope_ = catch_scope;
-      Block* catch_body = ParseBlock(NULL, CHECK_OK);
+      catch_block = ParseBlock(NULL, CHECK_OK);
       top_scope_ = saved_scope;
-      catch_block->AddStatement(catch_body);
-      catch_block->AddStatement(new(zone()) ExitContextStatement());
     } else {
       Expect(Token::LBRACE, CHECK_OK);
     }
@@ -3013,7 +3010,7 @@ void Parser::ReportUnexpectedToken(Token::Value token) {
 
 
 void Parser::ReportInvalidPreparseData(Handle<String> name, bool* ok) {
-  SmartPointer<char> name_string = name->ToCString(DISALLOW_NULLS);
+  SmartArrayPointer<char> name_string = name->ToCString(DISALLOW_NULLS);
   const char* element[1] = { *name_string };
   ReportMessage("invalid_preparser_data",
                 Vector<const char*>(element, 1));
@@ -3757,7 +3754,10 @@ FunctionLiteral* Parser::ParseFunctionLiteral(Handle<String> function_name,
         reserved_loc = scanner().location();
       }
 
-      top_scope_->DeclareParameter(param_name);
+      top_scope_->DeclareParameter(param_name,
+                                   harmony_block_scoping_
+                                   ? Variable::LET
+                                   : Variable::VAR);
       num_parameters++;
       if (num_parameters > kMaxNumFunctionParameters) {
         ReportMessageAt(scanner().location(), "too_many_parameters",
@@ -3882,6 +3882,10 @@ FunctionLiteral* Parser::ParseFunctionLiteral(Handle<String> function_name,
       }
       CheckOctalLiteral(start_pos, end_pos, CHECK_OK);
     }
+  }
+
+  if (harmony_block_scoping_) {
+    CheckConflictingVarDeclarations(scope, CHECK_OK);
   }
 
   FunctionLiteral* function_literal =
@@ -4085,6 +4089,25 @@ void Parser::CheckOctalLiteral(int beg_pos, int end_pos, bool* ok) {
     ReportMessageAt(octal, "strict_octal_literal",
                     Vector<const char*>::empty());
     scanner().clear_octal_position();
+    *ok = false;
+  }
+}
+
+
+void Parser::CheckConflictingVarDeclarations(Scope* scope, bool* ok) {
+  Declaration* decl = scope->CheckConflictingVarDeclarations();
+  if (decl != NULL) {
+    // In harmony mode we treat conflicting variable bindinds as early
+    // errors. See ES5 16 for a definition of early errors.
+    Handle<String> name = decl->proxy()->name();
+    SmartArrayPointer<char> c_string = name->ToCString(DISALLOW_NULLS);
+    const char* elms[2] = { "Variable", *c_string };
+    Vector<const char*> args(elms, 2);
+    int position = decl->proxy()->position();
+    Scanner::Location location = position == RelocInfo::kNoPosition
+        ? Scanner::Location::invalid()
+        : Scanner::Location(position, position + 1);
+    ReportMessageAt(location, "redeclaration", args);
     *ok = false;
   }
 }
