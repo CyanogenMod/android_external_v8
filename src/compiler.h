@@ -28,8 +28,8 @@
 #ifndef V8_COMPILER_H_
 #define V8_COMPILER_H_
 
+#include "allocation.h"
 #include "ast.h"
-#include "frame-element.h"
 #include "zone.h"
 
 namespace v8 {
@@ -143,6 +143,10 @@ class CompilationInfo BASE_EMBEDDED {
   bool AllowOptimize() {
     return V8::UseCrankshaft() && !closure_.is_null();
   }
+
+  // Disable all optimization attempts of this info for the rest of the
+  // current compilation pipeline.
+  void AbortOptimization();
 
  private:
   Isolate* isolate_;
@@ -293,7 +297,9 @@ class Compiler : public AllStatic {
 // clear this list of handles as well.
 class CompilationZoneScope : public ZoneScope {
  public:
-  explicit CompilationZoneScope(ZoneScopeMode mode) : ZoneScope(mode) { }
+  CompilationZoneScope(Isolate* isolate, ZoneScopeMode mode)
+      : ZoneScope(isolate, mode) {}
+
   virtual ~CompilationZoneScope() {
     if (ShouldDeleteOnExit()) {
       Isolate* isolate = Isolate::Current();

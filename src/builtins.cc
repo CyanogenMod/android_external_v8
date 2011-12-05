@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -982,33 +982,11 @@ BUILTIN(ArrayConcat) {
 // Strict mode poison pills
 
 
-BUILTIN(StrictArgumentsCallee) {
+BUILTIN(StrictModePoisonPill) {
   HandleScope scope;
   return isolate->Throw(*isolate->factory()->NewTypeError(
-      "strict_arguments_callee", HandleVector<Object>(NULL, 0)));
+      "strict_poison_pill", HandleVector<Object>(NULL, 0)));
 }
-
-
-BUILTIN(StrictArgumentsCaller) {
-  HandleScope scope;
-  return isolate->Throw(*isolate->factory()->NewTypeError(
-      "strict_arguments_caller", HandleVector<Object>(NULL, 0)));
-}
-
-
-BUILTIN(StrictFunctionCaller) {
-  HandleScope scope;
-  return isolate->Throw(*isolate->factory()->NewTypeError(
-      "strict_function_caller", HandleVector<Object>(NULL, 0)));
-}
-
-
-BUILTIN(StrictFunctionArguments) {
-  HandleScope scope;
-  return isolate->Throw(*isolate->factory()->NewTypeError(
-      "strict_function_arguments", HandleVector<Object>(NULL, 0)));
-}
-
 
 // -----------------------------------------------------------------------------
 //
@@ -1025,6 +1003,8 @@ static inline Object* TypeCheck(Heap* heap,
                                 Object** argv,
                                 FunctionTemplateInfo* info) {
   Object* recv = argv[0];
+  // API calls are only supported with JSObject receivers.
+  if (!recv->IsJSObject()) return heap->null_value();
   Object* sig_obj = info->signature();
   if (sig_obj->IsUndefined()) return recv;
   SignatureInfo* sig = SignatureInfo::cast(sig_obj);
@@ -1338,8 +1318,18 @@ static void Generate_KeyedLoadIC_Initialize(MacroAssembler* masm) {
 }
 
 
+static void Generate_KeyedLoadIC_Slow(MacroAssembler* masm) {
+  KeyedLoadIC::GenerateRuntimeGetProperty(masm);
+}
+
+
 static void Generate_KeyedLoadIC_Miss(MacroAssembler* masm) {
-  KeyedLoadIC::GenerateMiss(masm);
+  KeyedLoadIC::GenerateMiss(masm, false);
+}
+
+
+static void Generate_KeyedLoadIC_MissForceGeneric(MacroAssembler* masm) {
+  KeyedLoadIC::GenerateMiss(masm, true);
 }
 
 
@@ -1428,7 +1418,17 @@ static void Generate_KeyedStoreIC_Generic_Strict(MacroAssembler* masm) {
 
 
 static void Generate_KeyedStoreIC_Miss(MacroAssembler* masm) {
-  KeyedStoreIC::GenerateMiss(masm);
+  KeyedStoreIC::GenerateMiss(masm, false);
+}
+
+
+static void Generate_KeyedStoreIC_MissForceGeneric(MacroAssembler* masm) {
+  KeyedStoreIC::GenerateMiss(masm, true);
+}
+
+
+static void Generate_KeyedStoreIC_Slow(MacroAssembler* masm) {
+  KeyedStoreIC::GenerateSlow(masm);
 }
 
 

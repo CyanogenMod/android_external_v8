@@ -28,6 +28,8 @@
 #ifndef V8_OBJECTS_VISITING_H_
 #define V8_OBJECTS_VISITING_H_
 
+#include "allocation.h"
+
 // This file provides base classes and auxiliary methods for defining
 // static object visitors used during GC.
 // Visiting HeapObject body with a normal ObjectVisitor requires performing
@@ -102,6 +104,7 @@ class StaticVisitorBase : public AllStatic {
     kVisitPropertyCell,
     kVisitSharedFunctionInfo,
     kVisitJSFunction,
+    kVisitJSRegExp,
 
     kVisitorIdCount,
     kMinObjectSizeInWords = 2
@@ -295,6 +298,8 @@ class StaticNewSpaceVisitor : public StaticVisitorBase {
                                       SharedFunctionInfo::BodyDescriptor,
                                       int>::Visit);
 
+    table_.Register(kVisitJSRegExp, &VisitJSRegExp);
+
     table_.Register(kVisitSeqAsciiString, &VisitSeqAsciiString);
 
     table_.Register(kVisitSeqTwoByteString, &VisitSeqTwoByteString);
@@ -330,6 +335,10 @@ class StaticNewSpaceVisitor : public StaticVisitorBase {
   static inline int VisitSeqAsciiString(Map* map, HeapObject* object) {
     return SeqAsciiString::cast(object)->
         SeqAsciiStringSize(map->instance_type());
+  }
+
+  static inline int VisitJSRegExp(Map* map, HeapObject* object) {
+    return JSObjectVisitor::Visit(map, object);
   }
 
   static inline int VisitSeqTwoByteString(Map* map, HeapObject* object) {

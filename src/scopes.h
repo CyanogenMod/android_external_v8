@@ -218,10 +218,16 @@ class Scope: public ZoneObject {
   bool is_function_scope() const { return type_ == FUNCTION_SCOPE; }
   bool is_global_scope() const { return type_ == GLOBAL_SCOPE; }
   bool is_strict_mode() const { return strict_mode_; }
+  bool is_strict_mode_eval_scope() const {
+    return is_eval_scope() && is_strict_mode();
+  }
 
   // Information about which scopes calls eval.
   bool calls_eval() const { return scope_calls_eval_; }
   bool outer_scope_calls_eval() const { return outer_scope_calls_eval_; }
+  bool outer_scope_calls_non_strict_eval() const {
+    return outer_scope_calls_non_strict_eval_;
+  }
 
   // Is this scope inside a with statement.
   bool inside_with() const { return scope_inside_with_; }
@@ -379,6 +385,7 @@ class Scope: public ZoneObject {
 
   // Computed via PropagateScopeInfo.
   bool outer_scope_calls_eval_;
+  bool outer_scope_calls_non_strict_eval_;
   bool inner_scope_calls_eval_;
   bool outer_scope_is_eval_scope_;
   bool force_eager_compilation_;
@@ -410,6 +417,7 @@ class Scope: public ZoneObject {
 
   // Scope analysis.
   bool PropagateScopeInfo(bool outer_scope_calls_eval,
+                          bool outer_scope_calls_non_strict_eval,
                           bool outer_scope_is_eval_scope);
   bool HasTrivialContext() const;
 

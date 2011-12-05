@@ -1,4 +1,4 @@
-// Copyright 2006-2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -28,7 +28,8 @@
 #ifndef V8_SPACES_H_
 #define V8_SPACES_H_
 
-#include "list-inl.h"
+#include "allocation.h"
+#include "list.h"
 #include "log.h"
 
 namespace v8 {
@@ -413,8 +414,6 @@ class Space : public Malloced {
 // manages a range of virtual memory.
 class CodeRange {
  public:
-  explicit CodeRange(Isolate* isolate);
-
   // Reserves a range of virtual memory, but does not commit any of it.
   // Can only be called once, at heap initialization time.
   // Returns false on failure.
@@ -424,9 +423,9 @@ class CodeRange {
   // manage it.
   void TearDown();
 
-  bool exists() { return this != NULL && code_range_ != NULL; }
+  bool exists() { return code_range_ != NULL; }
   bool contains(Address address) {
-    if (this == NULL || code_range_ == NULL) return false;
+    if (code_range_ == NULL) return false;
     Address start = static_cast<Address>(code_range_->address());
     return start <= address && address < start + code_range_->size();
   }
@@ -439,7 +438,7 @@ class CodeRange {
   void FreeRawMemory(void* buf, size_t length);
 
  private:
-  Isolate* isolate_;
+  CodeRange();
 
   // The reserved range of virtual memory that all code objects are put in.
   VirtualMemory* code_range_;
@@ -473,6 +472,10 @@ class CodeRange {
   static int CompareFreeBlockAddress(const FreeBlock* left,
                                      const FreeBlock* right);
 
+  friend class Isolate;
+
+  Isolate* isolate_;
+
   DISALLOW_COPY_AND_ASSIGN(CodeRange);
 };
 
@@ -503,8 +506,6 @@ class CodeRange {
 
 class MemoryAllocator {
  public:
-  explicit MemoryAllocator(Isolate* isolate);
-
   // Initializes its internal bookkeeping structures.
   // Max capacity of the total space and executable memory limit.
   bool Setup(intptr_t max_capacity, intptr_t capacity_executable);
@@ -675,10 +676,10 @@ class MemoryAllocator {
 #endif
 
  private:
+  MemoryAllocator();
+
   static const int kChunkSize = kPagesPerChunk * Page::kPageSize;
   static const int kChunkSizeLog2 = kPagesPerChunkLog2 + kPageSizeBits;
-
-  Isolate* isolate_;
 
   // Maximum space size in bytes.
   intptr_t capacity_;
@@ -771,6 +772,10 @@ class MemoryAllocator {
                            size_t chunk_size,
                            Page* prev,
                            Page** last_page_in_use);
+
+  friend class Isolate;
+
+  Isolate* isolate_;
 
   DISALLOW_COPY_AND_ASSIGN(MemoryAllocator);
 };

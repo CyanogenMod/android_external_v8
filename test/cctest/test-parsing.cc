@@ -134,8 +134,6 @@ TEST(KeywordMatcher) {
 
 
 TEST(ScanHTMLEndComments) {
-  v8::V8::Initialize();
-
   // Regression test. See:
   //    http://code.google.com/p/chromium/issues/detail?id=53548
   // Tests that --> is correctly interpreted as comment-to-end-of-line if there
@@ -247,8 +245,6 @@ TEST(Preparsing) {
 
 
 TEST(StandAlonePreParser) {
-  v8::V8::Initialize();
-
   int marker;
   i::Isolate::Current()->stack_guard()->SetStackLimit(
       reinterpret_cast<uintptr_t>(&marker) - 128 * 1024);
@@ -285,8 +281,6 @@ TEST(StandAlonePreParser) {
 
 
 TEST(RegressChromium62639) {
-  v8::V8::Initialize();
-
   int marker;
   i::Isolate::Current()->stack_guard()->SetStackLimit(
       reinterpret_cast<uintptr_t>(&marker) - 128 * 1024);
@@ -308,8 +302,6 @@ TEST(RegressChromium62639) {
 
 
 TEST(Regress928) {
-  v8::V8::Initialize();
-
   // Preparsing didn't consider the catch clause of a try statement
   // as with-content, which made it assume that a function inside
   // the block could be lazily compiled, and an extra, unexpected,
@@ -350,8 +342,6 @@ TEST(Regress928) {
 
 
 TEST(PreParseOverflow) {
-  v8::V8::Initialize();
-
   int marker;
   i::Isolate::Current()->stack_guard()->SetStackLimit(
       reinterpret_cast<uintptr_t>(&marker) - 128 * 1024);
@@ -602,8 +592,6 @@ void TestStreamScanner(i::UC16CharacterStream* stream,
 }
 
 TEST(StreamScanner) {
-  v8::V8::Initialize();
-
   const char* str1 = "{ foo get for : */ <- \n\n /*foo*/ bib";
   i::Utf8ToUC16CharacterStream stream1(reinterpret_cast<const i::byte*>(str1),
                                        static_cast<unsigned>(strlen(str1)));
@@ -684,8 +672,6 @@ void TestScanRegExp(const char* re_source, const char* expected) {
 
 
 TEST(RegExpScanning) {
-  v8::V8::Initialize();
-
   // RegExp token with added garbage at the end. The scanner should only
   // scan the RegExp until the terminating slash just before "flipperwald".
   TestScanRegExp("/b/flipperwald", "b");

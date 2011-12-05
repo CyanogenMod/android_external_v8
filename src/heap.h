@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -30,6 +30,7 @@
 
 #include <math.h>
 
+#include "allocation.h"
 #include "globals.h"
 #include "list.h"
 #include "mark-compact.h"
@@ -103,6 +104,7 @@ inline Heap* _inline_get_heap_();
   V(Map, external_int_array_map, ExternalIntArrayMap)                          \
   V(Map, external_unsigned_int_array_map, ExternalUnsignedIntArrayMap)         \
   V(Map, external_float_array_map, ExternalFloatArrayMap)                      \
+  V(Map, external_double_array_map, ExternalDoubleArrayMap)                    \
   V(Map, context_map, ContextMap)                                              \
   V(Map, catch_context_map, CatchContextMap)                                   \
   V(Map, code_map, CodeMap)                                                    \
@@ -110,12 +112,12 @@ inline Heap* _inline_get_heap_();
   V(Map, global_property_cell_map, GlobalPropertyCellMap)                      \
   V(Map, shared_function_info_map, SharedFunctionInfoMap)                      \
   V(Map, message_object_map, JSMessageObjectMap)                               \
-  V(Map, proxy_map, ProxyMap)                                                  \
+  V(Map, foreign_map, ForeignMap)                                              \
   V(Object, nan_value, NanValue)                                               \
   V(Object, minus_zero_value, MinusZeroValue)                                  \
   V(Map, neander_map, NeanderMap)                                              \
   V(JSObject, message_listeners, MessageListeners)                             \
-  V(Proxy, prototype_accessors, PrototypeAccessors)                            \
+  V(Foreign, prototype_accessors, PrototypeAccessors)                          \
   V(NumberDictionary, code_stubs, CodeStubs)                                   \
   V(NumberDictionary, non_monomorphic_cache, NonMonomorphicCache)              \
   V(Code, js_entry_code, JsEntryCode)                                          \
@@ -176,8 +178,14 @@ inline Heap* _inline_get_heap_();
   V(value_of_symbol, "valueOf")                                          \
   V(InitializeVarGlobal_symbol, "InitializeVarGlobal")                   \
   V(InitializeConstGlobal_symbol, "InitializeConstGlobal")               \
-  V(KeyedLoadSpecialized_symbol, "KeyedLoadSpecialized")                 \
-  V(KeyedStoreSpecialized_symbol, "KeyedStoreSpecialized")               \
+  V(KeyedLoadSpecializedMonomorphic_symbol,                              \
+    "KeyedLoadSpecializedMonomorphic")                                   \
+  V(KeyedLoadSpecializedPolymorphic_symbol,                              \
+    "KeyedLoadSpecializedPolymorphic")                                   \
+  V(KeyedStoreSpecializedMonomorphic_symbol,                             \
+    "KeyedStoreSpecializedMonomorphic")                                  \
+  V(KeyedStoreSpecializedPolymorphic_symbol,                             \
+    "KeyedStoreSpecializedPolymorphic")                                  \
   V(stack_overflow_symbol, "kStackOverflowBoilerplate")                  \
   V(illegal_access_symbol, "illegal access")                             \
   V(out_of_memory_symbol, "out-of-memory")                               \
@@ -205,30 +213,7 @@ inline Heap* _inline_get_heap_();
   V(global_eval_symbol, "GlobalEval")                                    \
   V(identity_hash_symbol, "v8::IdentityHash")                            \
   V(closure_symbol, "(closure)")                                         \
-  V(use_strict, "use strict")                                            \
-  V(KeyedLoadExternalByteArray_symbol, "KeyedLoadExternalByteArray")     \
-  V(KeyedLoadExternalUnsignedByteArray_symbol,                           \
-      "KeyedLoadExternalUnsignedByteArray")                              \
-  V(KeyedLoadExternalShortArray_symbol,                                  \
-      "KeyedLoadExternalShortArray")                                     \
-  V(KeyedLoadExternalUnsignedShortArray_symbol,                          \
-      "KeyedLoadExternalUnsignedShortArray")                             \
-  V(KeyedLoadExternalIntArray_symbol, "KeyedLoadExternalIntArray")       \
-  V(KeyedLoadExternalUnsignedIntArray_symbol,                            \
-       "KeyedLoadExternalUnsignedIntArray")                              \
-  V(KeyedLoadExternalFloatArray_symbol, "KeyedLoadExternalFloatArray")   \
-  V(KeyedLoadExternalPixelArray_symbol, "KeyedLoadExternalPixelArray")   \
-  V(KeyedStoreExternalByteArray_symbol, "KeyedStoreExternalByteArray")   \
-  V(KeyedStoreExternalUnsignedByteArray_symbol,                          \
-        "KeyedStoreExternalUnsignedByteArray")                           \
-  V(KeyedStoreExternalShortArray_symbol, "KeyedStoreExternalShortArray") \
-  V(KeyedStoreExternalUnsignedShortArray_symbol,                         \
-        "KeyedStoreExternalUnsignedShortArray")                          \
-  V(KeyedStoreExternalIntArray_symbol, "KeyedStoreExternalIntArray")     \
-  V(KeyedStoreExternalUnsignedIntArray_symbol,                           \
-        "KeyedStoreExternalUnsignedIntArray")                            \
-  V(KeyedStoreExternalFloatArray_symbol, "KeyedStoreExternalFloatArray") \
-  V(KeyedStoreExternalPixelArray_symbol, "KeyedStoreExternalPixelArray")
+  V(use_strict, "use strict")
 
 // Forward declarations.
 class GCTracer;
@@ -447,6 +432,13 @@ class Heap {
   // failed.
   // Please note this does not perform a garbage collection.
   MUST_USE_RESULT MaybeObject* AllocateFunctionPrototype(JSFunction* function);
+
+  // Allocates a Harmony Proxy.
+  // Returns Failure::RetryAfterGC(requested_bytes, space) if the allocation
+  // failed.
+  // Please note this does not perform a garbage collection.
+  MUST_USE_RESULT MaybeObject* AllocateJSProxy(Object* handler,
+                                               Object* prototype);
 
   // Reinitialize an JSGlobalProxy based on a constructor.  The object
   // must have the same size as objects allocated using the
@@ -696,12 +688,12 @@ class Heap {
   // Please note this does not perform a garbage collection.
   MUST_USE_RESULT inline MaybeObject* NumberFromUint32(uint32_t value);
 
-  // Allocates a new proxy object.
+  // Allocates a new foreign object.
   // Returns Failure::RetryAfterGC(requested_bytes, space) if the allocation
   // failed.
   // Please note this does not perform a garbage collection.
-  MUST_USE_RESULT MaybeObject* AllocateProxy(
-      Address proxy, PretenureFlag pretenure = NOT_TENURED);
+  MUST_USE_RESULT MaybeObject* AllocateForeign(
+      Address address, PretenureFlag pretenure = NOT_TENURED);
 
   // Allocates a new SharedFunctionInfo object.
   // Returns Failure::RetryAfterGC(requested_bytes, space) if the allocation
@@ -798,6 +790,10 @@ class Heap {
     return LookupSymbol(CStrVector(str));
   }
   MUST_USE_RESULT MaybeObject* LookupSymbol(String* str);
+  MUST_USE_RESULT MaybeObject* LookupAsciiSymbol(Handle<SeqAsciiString> string,
+                                                 int from,
+                                                 int length);
+
   bool LookupSymbolIfExists(String* str, String** symbol);
   bool LookupTwoCharsSymbolIfExists(String* str, String** symbol);
 
@@ -1232,6 +1228,11 @@ class Heap {
     return &external_string_table_;
   }
 
+  // Returns the current sweep generation.
+  int sweep_generation() {
+    return sweep_generation_;
+  }
+
   inline Isolate* isolate();
   bool is_safe_to_read_maps() { return is_safe_to_read_maps_; }
 
@@ -1260,6 +1261,9 @@ class Heap {
   // For keeping track of how much data has survived
   // scavenge since last new space expansion.
   int survived_since_last_expansion_;
+
+  // For keeping track on when to flush RegExp code.
+  int sweep_generation_;
 
   int always_allocate_scope_depth_;
   int linear_allocation_scope_depth_;

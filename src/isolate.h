@@ -224,6 +224,7 @@ class ThreadLocalTop BASE_EMBEDDED {
     ASSERT(try_catch_handler_address_ == NULL);
   }
 
+  Isolate* isolate_;
   // The context where the current execution method is created and for variable
   // lookups.
   Context* context_;
@@ -267,9 +268,6 @@ class ThreadLocalTop BASE_EMBEDDED {
   // Call back function to report unsafe JS accesses.
   v8::FailedAccessCheckCallback failed_access_check_callback_;
 
-  // Whether out of memory exceptions should be ignored.
-  bool ignore_out_of_memory_;
-
  private:
   void InitializeInternal();
 
@@ -297,7 +295,6 @@ class HashMap;
 #ifdef ENABLE_DEBUGGER_SUPPORT
 
 #define ISOLATE_DEBUGGER_INIT_LIST(V)                                          \
-  V(uint64_t, enabled_cpu_features, 0)                                         \
   V(v8::Debug::EventCallback, debug_event_callback, NULL)                      \
   V(DebuggerAgent*, debugger_agent_instance, NULL)
 #else
@@ -349,6 +346,7 @@ typedef List<HeapObject*, PreallocatedStorage> DebugObjectCache;
   /* A previously allocated buffer of kMinimalBufferSize bytes, or NULL. */    \
   V(byte*, assembler_spare_buffer, NULL)                                       \
   V(FatalErrorCallback, exception_behavior, NULL)                              \
+  V(AllowCodeGenerationFromStringsCallback, allow_code_gen_callback, NULL)     \
   V(v8::Debug::MessageHandler, message_handler, NULL)                          \
   /* To distinguish the function templates, so that we can find them in the */ \
   /* function cache of the global context. */                                  \
@@ -373,6 +371,7 @@ typedef List<HeapObject*, PreallocatedStorage> DebugObjectCache;
   V(unsigned, ast_node_count, 0)                                               \
   /* SafeStackFrameIterator activations count. */                              \
   V(int, safe_stack_iterator_counter, 0)                                       \
+  V(uint64_t, enabled_cpu_features, 0)                                         \
   ISOLATE_PLATFORM_INIT_LIST(V)                                                \
   ISOLATE_LOGGING_INIT_LIST(V)                                                 \
   ISOLATE_DEBUGGER_INIT_LIST(V)
@@ -469,13 +468,6 @@ class Isolate {
     return reinterpret_cast<Isolate*>(Thread::GetThreadLocal(isolate_key_));
   }
 
-  // Usually called by Init(), but can be called early e.g. to allow
-  // testing components that require logging but not the whole
-  // isolate.
-  //
-  // Safe to call more than once.
-  void InitializeLoggingAndCounters();
-
   bool Init(Deserializer* des);
 
   bool IsInitialized() { return state_ == INITIALIZED; }
@@ -496,9 +488,15 @@ class Isolate {
   // Safe to call multiple times.
   static void EnsureDefaultIsolate();
 
+  // Find the PerThread for this particular (isolate, thread) combination
+  // If one does not yet exist, return null.
+  PerIsolateThreadData* FindPerThreadDataForThisThread();
+
+#ifdef ENABLE_DEBUGGER_SUPPORT
   // Get the debugger from the default isolate. Preinitializes the
   // default isolate if needed.
   static Debugger* GetDefaultIsolateDebugger();
+#endif
 
   // Get the stack guard from the default isolate. Preinitializes the
   // default isolate if needed.
@@ -522,11 +520,9 @@ class Isolate {
   // switched to non-legacy behavior).
   static void EnterDefaultIsolate();
 
+  // Debug.
   // Mutex for serializing access to break control structures.
   Mutex* break_access() { return break_access_; }
-
-  // Mutex for serializing access to debugger.
-  Mutex* debugger_access() { return debugger_access_; }
 
   Address get_address_from_id(AddressId id);
 
@@ -688,12 +684,6 @@ class Isolate {
   // Tells whether the current context has experienced an out of memory
   // exception.
   bool is_out_of_memory();
-  bool ignore_out_of_memory() {
-    return thread_local_top_.ignore_out_of_memory_;
-  }
-  void set_ignore_out_of_memory(bool value) {
-    thread_local_top_.ignore_out_of_memory_ = value;
-  }
 
   void PrintCurrentStackTrace(FILE* out);
   void PrintStackTrace(FILE* out, char* thread_data);
@@ -802,24 +792,14 @@ class Isolate {
 #undef GLOBAL_CONTEXT_FIELD_ACCESSOR
 
   Bootstrapper* bootstrapper() { return bootstrapper_; }
-  Counters* counters() {
-    // Call InitializeLoggingAndCounters() if logging is needed before
-    // the isolate is fully initialized.
-    ASSERT(counters_ != NULL);
-    return counters_;
-  }
+  Counters* counters() { return counters_; }
   CodeRange* code_range() { return code_range_; }
   RuntimeProfiler* runtime_profiler() { return runtime_profiler_; }
   CompilationCache* compilation_cache() { return compilation_cache_; }
-  Logger* logger() {
-    // Call InitializeLoggingAndCounters() if logging is needed before
-    // the isolate is fully initialized.
-    ASSERT(logger_ != NULL);
-    return logger_;
-  }
+  Logger* logger() { return logger_; }
   StackGuard* stack_guard() { return &stack_guard_; }
   Heap* heap() { return &heap_; }
-  StatsTable* stats_table();
+  StatsTable* stats_table() { return stats_table_; }
   StubCache* stub_cache() { return stub_cache_; }
   DeoptimizerData* deoptimizer_data() { return deoptimizer_data_; }
   ThreadLocalTop* thread_local_top() { return &thread_local_top_; }
@@ -897,14 +877,6 @@ class Isolate {
 
   RuntimeState* runtime_state() { return &runtime_state_; }
 
-  StringInputBuffer* liveedit_compare_substrings_buf1() {
-    return &liveedit_compare_substrings_buf1_;
-  }
-
-  StringInputBuffer* liveedit_compare_substrings_buf2() {
-    return &liveedit_compare_substrings_buf2_;
-  }
-
   StaticResource<SafeStringInputBuffer>* compiler_safe_string_input_buffer() {
     return &compiler_safe_string_input_buffer_;
   }
@@ -936,15 +908,11 @@ class Isolate {
   void PreallocatedStorageInit(size_t size);
 
 #ifdef ENABLE_DEBUGGER_SUPPORT
-  Debugger* debugger() {
-    if (!NoBarrier_Load(&debugger_initialized_)) InitializeDebugger();
-    return debugger_;
-  }
-  Debug* debug() {
-    if (!NoBarrier_Load(&debugger_initialized_)) InitializeDebugger();
-    return debug_;
-  }
+  Debugger* debugger() { return debugger_; }
+  Debug* debug() { return debug_; }
 #endif
+
+  inline bool DebuggerHasBreakPoints();
 
 #ifdef ENABLE_LOGGING_AND_PROFILING
   ProducerHeapProfile* producer_heap_profile() {
@@ -1026,6 +994,9 @@ class Isolate {
 
   void ResetEagerOptimizingData();
 
+  void SetData(void* data) { embedder_data_ = data; }
+  void* GetData() { return embedder_data_; }
+
  private:
   Isolate();
 
@@ -1079,6 +1050,8 @@ class Isolate {
   static Isolate* default_isolate_;
   static ThreadDataTable* thread_data_table_;
 
+  bool PreInit();
+
   void Deinit();
 
   static void SetIsolateThreadLocals(Isolate* isolate,
@@ -1086,6 +1059,7 @@ class Isolate {
 
   enum State {
     UNINITIALIZED,    // Some components may not have been allocated.
+    PREINITIALIZED,   // Components have been allocated but not initialized.
     INITIALIZED       // All components are fully initialized.
   };
 
@@ -1100,7 +1074,7 @@ class Isolate {
   // If one does not yet exist, allocate a new one.
   PerIsolateThreadData* FindOrAllocatePerThreadDataForThisThread();
 
-  // PreInits and returns a default isolate. Needed when a new thread tries
+// PreInits and returns a default isolate. Needed when a new thread tries
   // to create a Locker for the first time (the lock itself is in the isolate).
   static Isolate* GetDefaultIsolateForLocking();
 
@@ -1129,8 +1103,6 @@ class Isolate {
 
   void PropagatePendingExceptionToExternalTryCatch();
 
-  void InitializeDebugger();
-
   int stack_trace_nesting_level_;
   StringStream* incomplete_message_;
   // The preallocated memory thread singleton.
@@ -1144,8 +1116,6 @@ class Isolate {
   Counters* counters_;
   CodeRange* code_range_;
   Mutex* break_access_;
-  Atomic32 debugger_initialized_;
-  Mutex* debugger_access_;
   Heap heap_;
   Logger* logger_;
   StackGuard stack_guard_;
@@ -1175,8 +1145,6 @@ class Isolate {
   ThreadManager* thread_manager_;
   AstSentinels* ast_sentinels_;
   RuntimeState runtime_state_;
-  StringInputBuffer liveedit_compare_substrings_buf1_;
-  StringInputBuffer liveedit_compare_substrings_buf2_;
   StaticResource<SafeStringInputBuffer> compiler_safe_string_input_buffer_;
   Builtins builtins_;
   StringTracker* string_tracker_;
@@ -1191,6 +1159,7 @@ class Isolate {
   unibrow::Mapping<unibrow::Ecma262Canonicalize> interp_canonicalize_mapping_;
   ZoneObjectList frame_element_constant_list_;
   ZoneObjectList result_constant_list_;
+  void* embedder_data_;
 
 #if defined(V8_TARGET_ARCH_ARM) && !defined(__arm__) || \
     defined(V8_TARGET_ARCH_MIPS) && !defined(__mips__)
@@ -1238,10 +1207,13 @@ class Isolate {
 
   friend class ExecutionAccess;
   friend class IsolateInitializer;
+  friend class ThreadManager;
+  friend class Simulator;
+  friend class StackGuard;
   friend class ThreadId;
-  friend class TestMemoryAllocatorScope;
   friend class v8::Isolate;
   friend class v8::Locker;
+  friend class v8::Unlocker;
 
   DISALLOW_COPY_AND_ASSIGN(Isolate);
 };
@@ -1398,20 +1370,6 @@ inline void Context::mark_out_of_memory() {
   global_context()->set_out_of_memory(HEAP->true_value());
 }
 
-
-// Temporary macro to be used to flag definitions that are indeed static
-// and not per-isolate. (It would be great to be able to grep for [static]!)
-#define RLYSTC static
-
-
-// Temporary macro to be used to flag classes that should be static.
-#define STATIC_CLASS class
-
-
-// Temporary macro to be used to flag classes that are completely converted
-// to be isolate-friendly. Their mix of static/nonstatic methods/fields is
-// correct.
-#define ISOLATED_CLASS class
 
 } }  // namespace v8::internal
 

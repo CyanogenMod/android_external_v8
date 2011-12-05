@@ -28,6 +28,7 @@
 #ifndef V8_DEBUG_H_
 #define V8_DEBUG_H_
 
+#include "allocation.h"
 #include "arguments.h"
 #include "assembler.h"
 #include "debug-agent.h"
@@ -422,7 +423,8 @@ class Debug {
     FRAME_DROPPED_IN_DEBUG_SLOT_CALL,
     // The top JS frame had been calling some C++ function. The return address
     // gets patched automatically.
-    FRAME_DROPPED_IN_DIRECT_CALL
+    FRAME_DROPPED_IN_DIRECT_CALL,
+    FRAME_DROPPED_IN_RETURN_CALL
   };
 
   void FramesHaveBeenDropped(StackFrame::Id new_break_frame_id,
@@ -809,7 +811,7 @@ class Debugger {
   bool IsDebuggerActive();
 
  private:
-  explicit Debugger(Isolate* isolate);
+  Debugger();
 
   void CallEventCallback(v8::DebugEvent event,
                          Handle<Object> exec_state,

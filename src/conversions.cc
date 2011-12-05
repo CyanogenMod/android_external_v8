@@ -254,12 +254,12 @@ static double InternalStringToInt(UnicodeCache* unicode_cache,
   if (*current == '+') {
     // Ignore leading sign; skip following spaces.
     ++current;
-    if (!AdvanceToNonspace(unicode_cache, &current, end)) {
+    if (current == end) {
       return JUNK_STRING_VALUE;
     }
   } else if (*current == '-') {
     ++current;
-    if (!AdvanceToNonspace(unicode_cache, &current, end)) {
+    if (current == end) {
       return JUNK_STRING_VALUE;
     }
     negative = true;
@@ -730,6 +730,15 @@ double StringToDouble(UnicodeCache* unicode_cache,
                       int flags,
                       double empty_string_val) {
   const char* end = str.start() + str.length();
+  return InternalStringToDouble(unicode_cache, str.start(), end, flags,
+                                empty_string_val);
+}
+
+double StringToDouble(UnicodeCache* unicode_cache,
+                      Vector<const uc16> str,
+                      int flags,
+                      double empty_string_val) {
+  const uc16* end = str.start() + str.length();
   return InternalStringToDouble(unicode_cache, str.start(), end, flags,
                                 empty_string_val);
 }

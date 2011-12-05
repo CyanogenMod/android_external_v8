@@ -552,13 +552,21 @@ void Deoptimizer::EntryGenerator::Generate() {
   const int kDoubleRegsSize =
       kDoubleSize * DwVfpRegister::kNumAllocatableRegisters;
 
-  // Save all general purpose registers before messing with them.
-  __ sub(sp, sp, Operand(kDoubleRegsSize));
-  for (int i = 0; i < DwVfpRegister::kNumAllocatableRegisters; ++i) {
-    DwVfpRegister vfp_reg = DwVfpRegister::FromAllocationIndex(i);
-    int offset = i * kDoubleSize;
-    __ vstr(vfp_reg, sp, offset);
+  // Save all VFP registers before messing with them.
+  DwVfpRegister first = DwVfpRegister::FromAllocationIndex(0);
+  DwVfpRegister last =
+      DwVfpRegister::FromAllocationIndex(
+          DwVfpRegister::kNumAllocatableRegisters - 1);
+  ASSERT(last.code() > first.code());
+  ASSERT((last.code() - first.code()) ==
+      (DwVfpRegister::kNumAllocatableRegisters - 1));
+#ifdef DEBUG
+  for (int i = 0; i <= (DwVfpRegister::kNumAllocatableRegisters - 1); i++) {
+    ASSERT((DwVfpRegister::FromAllocationIndex(i).code() <= last.code()) &&
+           (DwVfpRegister::FromAllocationIndex(i).code() >= first.code()));
   }
+#endif
+  __ vstm(db_w, sp, first, last);
 
   // Push all 16 registers (needed to populate FrameDescription::registers_).
   __ stm(db_w, sp, restored_regs  | sp.bit() | lr.bit() | pc.bit());

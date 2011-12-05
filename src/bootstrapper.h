@@ -29,6 +29,8 @@
 #ifndef V8_BOOTSTRAPPER_H_
 #define V8_BOOTSTRAPPER_H_
 
+#include "allocation.h"
+
 namespace v8 {
 namespace internal {
 
@@ -93,6 +95,7 @@ class Bootstrapper {
   // Creates a JavaScript Global Context with initial object graph.
   // The returned value is a global handle casted to V8Environment*.
   Handle<Context> CreateEnvironment(
+      Isolate* isolate,
       Handle<Object> global_object,
       v8::Handle<v8::ObjectTemplate> global_template,
       v8::ExtensionConfiguration* extensions);
@@ -113,7 +116,7 @@ class Bootstrapper {
   bool IsActive() const { return nesting_ != 0; }
 
   // Support for thread preemption.
-  RLYSTC int ArchiveSpacePerThread();
+  static int ArchiveSpacePerThread();
   char* ArchiveState(char* to);
   char* RestoreState(char* from);
   void FreeThreadResources();

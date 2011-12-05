@@ -33,6 +33,7 @@ endif
 LOCAL_SRC_FILES := $(V8_LOCAL_SRC_FILES)
 
 LOCAL_JS_LIBRARY_FILES := $(addprefix $(LOCAL_PATH)/, $(V8_LOCAL_JS_LIBRARY_FILES))
+LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES := $(addprefix $(LOCAL_PATH)/, src/proxy.js)
 
 # Copy js2c.py to intermediates directory and invoke there to avoid generating
 # jsmin.pyc in the source directory
@@ -42,13 +43,22 @@ $(JS2C_PY): $(intermediates)/%.py : $(LOCAL_PATH)/tools/%.py | $(ACP)
 	$(copy-file-to-target)
 
 # Generate libraries.cc
-GEN2 := $(intermediates)/libraries.cc $(intermediates)/libraries-empty.cc
-$(GEN2): SCRIPT := $(intermediates)/js2c.py
-$(GEN2): $(LOCAL_JS_LIBRARY_FILES) $(JS2C_PY)
+GEN3 := $(intermediates)/libraries.cc
+$(GEN3): SCRIPT := $(intermediates)/js2c.py
+$(GEN3): $(LOCAL_JS_LIBRARY_FILES) $(JS2C_PY)
 	@echo "Generating libraries.cc"
 	@mkdir -p $(dir $@)
-	python $(SCRIPT) $(GEN2) CORE $(LOCAL_JS_LIBRARY_FILES)
+	python $(SCRIPT) $(GEN3) CORE $(LOCAL_JS_LIBRARY_FILES)
 LOCAL_GENERATED_SOURCES := $(intermediates)/libraries.cc
+
+# Generate experimental-libraries.cc
+GEN4 := $(intermediates)/experimental-libraries.cc
+$(GEN4): SCRIPT := $(intermediates)/js2c.py
+$(GEN4): $(LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES) $(JS2C_PY)
+	@echo "Generating experimental-libraries.cc"
+	@mkdir -p $(dir $@)
+	python $(SCRIPT) $(GEN4) EXPERIMENTAL $(LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES)
+LOCAL_GENERATED_SOURCES += $(intermediates)/experimental-libraries.cc
 
 LOCAL_CFLAGS := \
 	-Wno-endif-labels \

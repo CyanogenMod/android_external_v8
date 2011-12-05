@@ -406,6 +406,13 @@ bool Object::IsExternalFloatArray() {
 }
 
 
+bool Object::IsExternalDoubleArray() {
+  return Object::IsHeapObject() &&
+      HeapObject::cast(this)->map()->instance_type() ==
+      EXTERNAL_DOUBLE_ARRAY_TYPE;
+}
+
+
 bool MaybeObject::IsFailure() {
   return HAS_FAILURE_TAG(this);
 }
@@ -577,9 +584,15 @@ bool Object::IsStringWrapper() {
 }
 
 
-bool Object::IsProxy() {
+bool Object::IsJSProxy() {
   return Object::IsHeapObject()
-      && HeapObject::cast(this)->map()->instance_type() == PROXY_TYPE;
+      && HeapObject::cast(this)->map()->instance_type() == JS_PROXY_TYPE;
+}
+
+
+bool Object::IsForeign() {
+  return Object::IsHeapObject()
+      && HeapObject::cast(this)->map()->instance_type() == FOREIGN_TYPE;
 }
 
 
@@ -1661,9 +1674,21 @@ Object** FixedArray::data_start() {
 
 
 bool DescriptorArray::IsEmpty() {
-  ASSERT(this->length() > kFirstIndex ||
+  ASSERT(this->IsSmi() ||
+         this->length() > kFirstIndex ||
          this == HEAP->empty_descriptor_array());
-  return length() <= kFirstIndex;
+  return this->IsSmi() || length() <= kFirstIndex;
+}
+
+
+int DescriptorArray::bit_field3_storage() {
+  Object* storage = READ_FIELD(this, kBitField3StorageOffset);
+  return Smi::cast(storage)->value();
+}
+
+void DescriptorArray::set_bit_field3_storage(int value) {
+  ASSERT(!IsEmpty());
+  WRITE_FIELD(this, kBitField3StorageOffset, Smi::FromInt(value));
 }
 
 
@@ -1744,8 +1769,8 @@ Object* DescriptorArray::GetCallbacksObject(int descriptor_number) {
 
 AccessorDescriptor* DescriptorArray::GetCallbacks(int descriptor_number) {
   ASSERT(GetType(descriptor_number) == CALLBACKS);
-  Proxy* p = Proxy::cast(GetCallbacksObject(descriptor_number));
-  return reinterpret_cast<AccessorDescriptor*>(p->proxy());
+  Foreign* p = Foreign::cast(GetCallbacksObject(descriptor_number));
+  return reinterpret_cast<AccessorDescriptor*>(p->address());
 }
 
 
@@ -1891,7 +1916,8 @@ CAST_ACCESSOR(JSBuiltinsObject)
 CAST_ACCESSOR(Code)
 CAST_ACCESSOR(JSArray)
 CAST_ACCESSOR(JSRegExp)
-CAST_ACCESSOR(Proxy)
+CAST_ACCESSOR(JSProxy)
+CAST_ACCESSOR(Foreign)
 CAST_ACCESSOR(ByteArray)
 CAST_ACCESSOR(ExternalArray)
 CAST_ACCESSOR(ExternalByteArray)
@@ -1901,6 +1927,7 @@ CAST_ACCESSOR(ExternalUnsignedShortArray)
 CAST_ACCESSOR(ExternalIntArray)
 CAST_ACCESSOR(ExternalUnsignedIntArray)
 CAST_ACCESSOR(ExternalFloatArray)
+CAST_ACCESSOR(ExternalDoubleArray)
 CAST_ACCESSOR(ExternalPixelArray)
 CAST_ACCESSOR(Struct)
 
@@ -2315,6 +2342,20 @@ void ExternalFloatArray::set(int index, float value) {
 }
 
 
+double ExternalDoubleArray::get(int index) {
+  ASSERT((index >= 0) && (index < this->length()));
+  double* ptr = static_cast<double*>(external_pointer());
+  return ptr[index];
+}
+
+
+void ExternalDoubleArray::set(int index, double value) {
+  ASSERT((index >= 0) && (index < this->length()));
+  double* ptr = static_cast<double*>(external_pointer());
+  ptr[index] = value;
+}
+
+
 int Map::visitor_id() {
   return READ_BYTE_FIELD(this, kVisitorIdOffset);
 }
@@ -2499,14 +2540,14 @@ bool Map::attached_to_shared_function_info() {
 
 void Map::set_is_shared(bool value) {
   if (value) {
-    set_bit_field2(bit_field2() | (1 << kIsShared));
+    set_bit_field3(bit_field3() | (1 << kIsShared));
   } else {
-    set_bit_field2(bit_field2() & ~(1 << kIsShared));
+    set_bit_field3(bit_field3() & ~(1 << kIsShared));
   }
 }
 
 bool Map::is_shared() {
-  return ((1 << kIsShared) & bit_field2()) != 0;
+  return ((1 << kIsShared) & bit_field3()) != 0;
 }
 
 
@@ -2566,7 +2607,6 @@ Code::ExtraICState Code::extra_ic_state() {
 
 
 PropertyType Code::type() {
-  ASSERT(ic_state() == MONOMORPHIC);
   return ExtractTypeFromFlags(flags());
 }
 
@@ -2579,7 +2619,8 @@ int Code::arguments_count() {
 
 int Code::major_key() {
   ASSERT(kind() == STUB ||
-         kind() == TYPE_RECORDING_BINARY_OP_IC ||
+         kind() == UNARY_OP_IC ||
+         kind() == BINARY_OP_IC ||
          kind() == COMPARE_IC);
   return READ_BYTE_FIELD(this, kStubMajorKeyOffset);
 }
@@ -2587,7 +2628,8 @@ int Code::major_key() {
 
 void Code::set_major_key(int major) {
   ASSERT(kind() == STUB ||
-         kind() == TYPE_RECORDING_BINARY_OP_IC ||
+         kind() == UNARY_OP_IC ||
+         kind() == BINARY_OP_IC ||
          kind() == COMPARE_IC);
   ASSERT(0 <= major && major < 256);
   WRITE_BYTE_FIELD(this, kStubMajorKeyOffset, major);
@@ -2683,38 +2725,50 @@ void Code::set_check_type(CheckType value) {
 
 
 ExternalArrayType Code::external_array_type() {
-  ASSERT(is_external_array_load_stub() || is_external_array_store_stub());
+  ASSERT(is_keyed_load_stub() || is_keyed_store_stub());
   byte type = READ_BYTE_FIELD(this, kExternalArrayTypeOffset);
   return static_cast<ExternalArrayType>(type);
 }
 
 
 void Code::set_external_array_type(ExternalArrayType value) {
-  ASSERT(is_external_array_load_stub() || is_external_array_store_stub());
+  ASSERT(is_keyed_load_stub() || is_keyed_store_stub());
   WRITE_BYTE_FIELD(this, kExternalArrayTypeOffset, value);
 }
 
 
-byte Code::type_recording_binary_op_type() {
-  ASSERT(is_type_recording_binary_op_stub());
+byte Code::unary_op_type() {
+  ASSERT(is_unary_op_stub());
+  return READ_BYTE_FIELD(this, kUnaryOpTypeOffset);
+}
+
+
+void Code::set_unary_op_type(byte value) {
+  ASSERT(is_unary_op_stub());
+  WRITE_BYTE_FIELD(this, kUnaryOpTypeOffset, value);
+}
+
+
+byte Code::binary_op_type() {
+  ASSERT(is_binary_op_stub());
   return READ_BYTE_FIELD(this, kBinaryOpTypeOffset);
 }
 
 
-void Code::set_type_recording_binary_op_type(byte value) {
-  ASSERT(is_type_recording_binary_op_stub());
+void Code::set_binary_op_type(byte value) {
+  ASSERT(is_binary_op_stub());
   WRITE_BYTE_FIELD(this, kBinaryOpTypeOffset, value);
 }
 
 
-byte Code::type_recording_binary_op_result_type() {
-  ASSERT(is_type_recording_binary_op_stub());
+byte Code::binary_op_result_type() {
+  ASSERT(is_binary_op_stub());
   return READ_BYTE_FIELD(this, kBinaryOpReturnTypeOffset);
 }
 
 
-void Code::set_type_recording_binary_op_result_type(byte value) {
-  ASSERT(is_type_recording_binary_op_stub());
+void Code::set_binary_op_result_type(byte value) {
+  ASSERT(is_binary_op_stub());
   WRITE_BYTE_FIELD(this, kBinaryOpReturnTypeOffset, value);
 }
 
@@ -2744,11 +2798,10 @@ Code::Flags Code::ComputeFlags(Kind kind,
                                PropertyType type,
                                int argc,
                                InlineCacheHolderFlag holder) {
-  // Extra IC state is only allowed for monomorphic call IC stubs
-  // or for store IC stubs.
+  // Extra IC state is only allowed for call IC stubs or for store IC
+  // stubs.
   ASSERT(extra_ic_state == kNoExtraICState ||
-         (kind == CALL_IC && (ic_state == MONOMORPHIC ||
-                              ic_state == MONOMORPHIC_PROTOTYPE_FAILURE)) ||
+         (kind == CALL_IC) ||
          (kind == STORE_IC) ||
          (kind == KEYED_STORE_IC));
   // Compute the bit mask.
@@ -2926,8 +2979,82 @@ MaybeObject* Map::GetSlowElementsMap() {
 }
 
 
-ACCESSORS(Map, instance_descriptors, DescriptorArray,
-          kInstanceDescriptorsOffset)
+DescriptorArray* Map::instance_descriptors() {
+  Object* object = READ_FIELD(this, kInstanceDescriptorsOrBitField3Offset);
+  if (object->IsSmi()) {
+    return HEAP->empty_descriptor_array();
+  } else {
+    return DescriptorArray::cast(object);
+  }
+}
+
+
+void Map::init_instance_descriptors() {
+  WRITE_FIELD(this, kInstanceDescriptorsOrBitField3Offset, Smi::FromInt(0));
+}
+
+
+void Map::clear_instance_descriptors() {
+  Object* object = READ_FIELD(this,
+                              kInstanceDescriptorsOrBitField3Offset);
+  if (!object->IsSmi()) {
+    WRITE_FIELD(
+        this,
+        kInstanceDescriptorsOrBitField3Offset,
+        Smi::FromInt(DescriptorArray::cast(object)->bit_field3_storage()));
+  }
+}
+
+
+void Map::set_instance_descriptors(DescriptorArray* value,
+                                   WriteBarrierMode mode) {
+  Object* object = READ_FIELD(this,
+                              kInstanceDescriptorsOrBitField3Offset);
+  if (value == isolate()->heap()->empty_descriptor_array()) {
+    clear_instance_descriptors();
+    return;
+  } else {
+    if (object->IsSmi()) {
+      value->set_bit_field3_storage(Smi::cast(object)->value());
+    } else {
+      value->set_bit_field3_storage(
+          DescriptorArray::cast(object)->bit_field3_storage());
+    }
+  }
+  ASSERT(!is_shared());
+  WRITE_FIELD(this, kInstanceDescriptorsOrBitField3Offset, value);
+  CONDITIONAL_WRITE_BARRIER(GetHeap(),
+                            this,
+                            kInstanceDescriptorsOrBitField3Offset,
+                            mode);
+}
+
+
+int Map::bit_field3() {
+  Object* object = READ_FIELD(this,
+                              kInstanceDescriptorsOrBitField3Offset);
+  if (object->IsSmi()) {
+    return Smi::cast(object)->value();
+  } else {
+    return DescriptorArray::cast(object)->bit_field3_storage();
+  }
+}
+
+
+void Map::set_bit_field3(int value) {
+  ASSERT(Smi::IsValid(value));
+  Object* object = READ_FIELD(this,
+                              kInstanceDescriptorsOrBitField3Offset);
+  if (object->IsSmi()) {
+    WRITE_FIELD(this,
+                kInstanceDescriptorsOrBitField3Offset,
+                Smi::FromInt(value));
+  } else {
+    DescriptorArray::cast(object)->set_bit_field3_storage(value);
+  }
+}
+
+
 ACCESSORS(Map, code_cache, Object, kCodeCacheOffset)
 ACCESSORS(Map, prototype_transitions, FixedArray, kPrototypeTransitionsOffset)
 ACCESSORS(Map, constructor, Object, kConstructorOffset)
@@ -3003,7 +3130,7 @@ ACCESSORS(Script, line_offset, Smi, kLineOffsetOffset)
 ACCESSORS(Script, column_offset, Smi, kColumnOffsetOffset)
 ACCESSORS(Script, data, Object, kDataOffset)
 ACCESSORS(Script, context_data, Object, kContextOffset)
-ACCESSORS(Script, wrapper, Proxy, kWrapperOffset)
+ACCESSORS(Script, wrapper, Foreign, kWrapperOffset)
 ACCESSORS(Script, type, Smi, kTypeOffset)
 ACCESSORS(Script, compilation_type, Smi, kCompilationTypeOffset)
 ACCESSORS(Script, line_ends, Object, kLineEndsOffset)
@@ -3178,6 +3305,18 @@ bool SharedFunctionInfo::strict_mode() {
 void SharedFunctionInfo::set_strict_mode(bool value) {
   set_compiler_hints(BooleanBit::set(compiler_hints(),
                                      kStrictModeFunction,
+                                     value));
+}
+
+
+bool SharedFunctionInfo::es5_native() {
+  return BooleanBit::get(compiler_hints(), kES5Native);
+}
+
+
+void SharedFunctionInfo::set_es5_native(bool value) {
+  set_compiler_hints(BooleanBit::set(compiler_hints(),
+                                     kES5Native,
                                      value));
 }
 
@@ -3473,13 +3612,16 @@ void JSBuiltinsObject::set_javascript_builtin_code(Builtins::JavaScript id,
 }
 
 
-Address Proxy::proxy() {
-  return AddressFrom<Address>(READ_INTPTR_FIELD(this, kProxyOffset));
+ACCESSORS(JSProxy, handler, Object, kHandlerOffset)
+
+
+Address Foreign::address() {
+  return AddressFrom<Address>(READ_INTPTR_FIELD(this, kAddressOffset));
 }
 
 
-void Proxy::set_proxy(Address value) {
-  WRITE_INTPTR_FIELD(this, kProxyOffset, OffsetFrom(value));
+void Foreign::set_address(Address value) {
+  WRITE_INTPTR_FIELD(this, kAddressOffset, OffsetFrom(value));
 }
 
 
@@ -3512,6 +3654,8 @@ JSMessageObject* JSMessageObject::cast(Object* obj) {
 INT_ACCESSORS(Code, instruction_size, kInstructionSizeOffset)
 ACCESSORS(Code, relocation_info, ByteArray, kRelocationInfoOffset)
 ACCESSORS(Code, deoptimization_data, FixedArray, kDeoptimizationDataOffset)
+ACCESSORS(Code, next_code_flushing_candidate,
+          Object, kNextCodeFlushingCandidateOffset)
 
 
 byte* Code::instruction_start()  {
@@ -3575,6 +3719,12 @@ JSRegExp::Type JSRegExp::TypeTag() {
 }
 
 
+JSRegExp::Type JSRegExp::TypeTagUnchecked() {
+  Smi* smi = Smi::cast(DataAtUnchecked(kTagIndex));
+  return static_cast<JSRegExp::Type>(smi->value());
+}
+
+
 int JSRegExp::CaptureCount() {
   switch (TypeTag()) {
     case ATOM:
@@ -3610,10 +3760,28 @@ Object* JSRegExp::DataAt(int index) {
 }
 
 
+Object* JSRegExp::DataAtUnchecked(int index) {
+  FixedArray* fa = reinterpret_cast<FixedArray*>(data());
+  int offset = FixedArray::kHeaderSize + index * kPointerSize;
+  return READ_FIELD(fa, offset);
+}
+
+
 void JSRegExp::SetDataAt(int index, Object* value) {
   ASSERT(TypeTag() != NOT_COMPILED);
   ASSERT(index >= kDataIndex);  // Only implementation data can be set this way.
   FixedArray::cast(data())->set(index, value);
+}
+
+
+void JSRegExp::SetDataAtUnchecked(int index, Object* value, Heap* heap) {
+  ASSERT(index >= kDataIndex);  // Only implementation data can be set this way.
+  FixedArray* fa = reinterpret_cast<FixedArray*>(data());
+  if (value->IsSmi()) {
+    fa->set_unchecked(index, Smi::cast(value));
+  } else {
+    fa->set_unchecked(heap, index, value, SKIP_WRITE_BARRIER);
+  }
 }
 
 
@@ -3645,14 +3813,18 @@ JSObject::ElementsKind JSObject::GetElementsKind() {
         return EXTERNAL_INT_ELEMENTS;
       case EXTERNAL_UNSIGNED_INT_ARRAY_TYPE:
         return EXTERNAL_UNSIGNED_INT_ELEMENTS;
+      case EXTERNAL_FLOAT_ARRAY_TYPE:
+        return EXTERNAL_FLOAT_ELEMENTS;
+      case EXTERNAL_DOUBLE_ARRAY_TYPE:
+        return EXTERNAL_DOUBLE_ELEMENTS;
       case EXTERNAL_PIXEL_ARRAY_TYPE:
         return EXTERNAL_PIXEL_ELEMENTS;
       default:
         break;
     }
   }
-  ASSERT(array->map()->instance_type() == EXTERNAL_FLOAT_ARRAY_TYPE);
-  return EXTERNAL_FLOAT_ELEMENTS;
+  UNREACHABLE();
+  return DICTIONARY_ELEMENTS;
 }
 
 
@@ -3693,6 +3865,8 @@ EXTERNAL_ELEMENTS_CHECK(UnsignedInt,
                         EXTERNAL_UNSIGNED_INT_ARRAY_TYPE)
 EXTERNAL_ELEMENTS_CHECK(Float,
                         EXTERNAL_FLOAT_ARRAY_TYPE)
+EXTERNAL_ELEMENTS_CHECK(Double,
+                        EXTERNAL_DOUBLE_ARRAY_TYPE)
 EXTERNAL_ELEMENTS_CHECK(Pixel, EXTERNAL_PIXEL_ARRAY_TYPE)
 
 
@@ -4084,16 +4258,16 @@ int JSObject::BodyDescriptor::SizeOf(Map* map, HeapObject* object) {
 }
 
 
-void Proxy::ProxyIterateBody(ObjectVisitor* v) {
+void Foreign::ForeignIterateBody(ObjectVisitor* v) {
   v->VisitExternalReference(
-      reinterpret_cast<Address *>(FIELD_ADDR(this, kProxyOffset)));
+      reinterpret_cast<Address *>(FIELD_ADDR(this, kAddressOffset)));
 }
 
 
 template<typename StaticVisitor>
-void Proxy::ProxyIterateBody() {
+void Foreign::ForeignIterateBody() {
   StaticVisitor::VisitExternalReference(
-      reinterpret_cast<Address *>(FIELD_ADDR(this, kProxyOffset)));
+      reinterpret_cast<Address *>(FIELD_ADDR(this, kAddressOffset)));
 }
 
 

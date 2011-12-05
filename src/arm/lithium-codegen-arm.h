@@ -51,6 +51,7 @@ class LCodeGen BASE_EMBEDDED {
         current_instruction_(-1),
         instructions_(chunk->instructions()),
         deoptimizations_(4),
+        deopt_jump_table_(4),
         deoptimization_literals_(8),
         inlined_function_count_(0),
         scope_(info->scope()),
@@ -115,6 +116,7 @@ class LCodeGen BASE_EMBEDDED {
 
   // Parallel move support.
   void DoParallelMove(LParallelMove* move);
+  void DoGap(LGap* instr);
 
   // Emit frame translation commands for an environment.
   void WriteTranslation(LEnvironment* environment, Translation* translation);
@@ -158,8 +160,8 @@ class LCodeGen BASE_EMBEDDED {
                        Register temporary,
                        Register temporary2);
 
-  int StackSlotCount() const { return chunk()->spill_slot_count(); }
-  int ParameterCount() const { return scope()->num_parameters(); }
+  int GetStackSlotCount() const { return chunk()->spill_slot_count(); }
+  int GetParameterCount() const { return scope()->num_parameters(); }
 
   void Abort(const char* format, ...);
   void Comment(const char* format, ...);
@@ -171,6 +173,7 @@ class LCodeGen BASE_EMBEDDED {
   bool GeneratePrologue();
   bool GenerateBody();
   bool GenerateDeferredCode();
+  bool GenerateDeoptJumpTable();
   bool GenerateSafepointTable();
 
   enum SafepointMode {
@@ -206,7 +209,8 @@ class LCodeGen BASE_EMBEDDED {
   // to be in edi.
   void CallKnownFunction(Handle<JSFunction> function,
                          int arity,
-                         LInstruction* instr);
+                         LInstruction* instr,
+                         CallKind call_kind);
 
   void LoadHeapObject(Register result, Handle<HeapObject> object);
 
@@ -284,10 +288,18 @@ class LCodeGen BASE_EMBEDDED {
   // Caller should branch on equal condition.
   void EmitIsConstructCall(Register temp1, Register temp2);
 
-  void EmitLoadField(Register result,
-                     Register object,
-                     Handle<Map> type,
-                     Handle<String> name);
+  void EmitLoadFieldOrConstantFunction(Register result,
+                                       Register object,
+                                       Handle<Map> type,
+                                       Handle<String> name);
+
+  struct JumpTableEntry {
+    explicit inline JumpTableEntry(Address entry)
+        : label(),
+          address(entry) { }
+    Label label;
+    Address address;
+  };
 
   LChunk* const chunk_;
   MacroAssembler* const masm_;
@@ -297,6 +309,7 @@ class LCodeGen BASE_EMBEDDED {
   int current_instruction_;
   const ZoneList<LInstruction*>* instructions_;
   ZoneList<LEnvironment*> deoptimizations_;
+  ZoneList<JumpTableEntry> deopt_jump_table_;
   ZoneList<Handle<Object> > deoptimization_literals_;
   int inlined_function_count_;
   Scope* const scope_;

@@ -337,15 +337,6 @@ bool BinaryOperation::ResultOverwriteAllowed() {
 }
 
 
-BinaryOperation::BinaryOperation(Assignment* assignment) {
-  ASSERT(assignment->is_compound());
-  op_ = assignment->binary_op();
-  left_ = assignment->target();
-  right_ = assignment->value();
-  pos_ = assignment->position();
-}
-
-
 // ----------------------------------------------------------------------------
 // Inlining support
 
@@ -413,8 +404,7 @@ bool DebuggerStatement::IsInlineable() const {
 
 
 bool Throw::IsInlineable() const {
-  // TODO(1143): Make functions containing throw inlineable.
-  return false;
+  return exception()->IsInlineable();
 }
 
 
@@ -733,14 +723,15 @@ bool Call::ComputeGlobalTarget(Handle<GlobalObject> global,
 }
 
 
-void Call::RecordTypeFeedback(TypeFeedbackOracle* oracle) {
+void Call::RecordTypeFeedback(TypeFeedbackOracle* oracle,
+                              CallKind call_kind) {
   Property* property = expression()->AsProperty();
   ASSERT(property != NULL);
   // Specialize for the receiver types seen at runtime.
   Literal* key = property->key()->AsLiteral();
   ASSERT(key != NULL && key->handle()->IsString());
   Handle<String> name = Handle<String>::cast(key->handle());
-  receiver_types_ = oracle->CallReceiverTypes(this, name);
+  receiver_types_ = oracle->CallReceiverTypes(this, name, call_kind);
 #ifdef DEBUG
   if (FLAG_enable_slow_asserts) {
     if (receiver_types_ != NULL) {
@@ -1159,6 +1150,7 @@ CaseClause::CaseClause(Expression* label,
       statements_(statements),
       position_(pos),
       compare_type_(NONE),
+      compare_id_(AstNode::GetNextId()),
       entry_id_(AstNode::GetNextId()) {
 }
 

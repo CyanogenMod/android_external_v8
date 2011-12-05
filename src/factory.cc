@@ -111,11 +111,30 @@ Handle<String> Factory::LookupSymbol(Vector<const char> string) {
                      String);
 }
 
+// Symbols are created in the old generation (data space).
+Handle<String> Factory::LookupSymbol(Handle<String> string) {
+  CALL_HEAP_FUNCTION(isolate(),
+                     isolate()->heap()->LookupSymbol(*string),
+                     String);
+}
+
 Handle<String> Factory::LookupAsciiSymbol(Vector<const char> string) {
   CALL_HEAP_FUNCTION(isolate(),
                      isolate()->heap()->LookupAsciiSymbol(string),
                      String);
 }
+
+
+Handle<String> Factory::LookupAsciiSymbol(Handle<SeqAsciiString> string,
+                                          int from,
+                                          int length) {
+  CALL_HEAP_FUNCTION(isolate(),
+                     isolate()->heap()->LookupAsciiSymbol(string,
+                                                          from,
+                                                          length),
+                     String);
+}
+
 
 Handle<String> Factory::LookupTwoByteSymbol(Vector<const uc16> string) {
   CALL_HEAP_FUNCTION(isolate(),
@@ -266,7 +285,7 @@ Handle<Script> Factory::NewScript(Handle<String> source) {
   heap->SetLastScriptId(Smi::FromInt(id));
 
   // Create and initialize script object.
-  Handle<Proxy> wrapper = NewProxy(0, TENURED);
+  Handle<Foreign> wrapper = NewForeign(0, TENURED);
   Handle<Script> script = Handle<Script>::cast(NewStruct(SCRIPT_TYPE));
   script->set_source(*source);
   script->set_name(heap->undefined_value());
@@ -286,15 +305,15 @@ Handle<Script> Factory::NewScript(Handle<String> source) {
 }
 
 
-Handle<Proxy> Factory::NewProxy(Address addr, PretenureFlag pretenure) {
+Handle<Foreign> Factory::NewForeign(Address addr, PretenureFlag pretenure) {
   CALL_HEAP_FUNCTION(isolate(),
-                     isolate()->heap()->AllocateProxy(addr, pretenure),
-                     Proxy);
+                     isolate()->heap()->AllocateForeign(addr, pretenure),
+                     Foreign);
 }
 
 
-Handle<Proxy> Factory::NewProxy(const AccessorDescriptor* desc) {
-  return NewProxy((Address) desc, TENURED);
+Handle<Foreign> Factory::NewForeign(const AccessorDescriptor* desc) {
+  return NewForeign((Address) desc, TENURED);
 }
 
 
@@ -712,7 +731,7 @@ MUST_USE_RESULT static inline MaybeObject* DoCopyInsert(
 
 
 // Allocate the new array.
-Handle<DescriptorArray> Factory::CopyAppendProxyDescriptor(
+Handle<DescriptorArray> Factory::CopyAppendForeignDescriptor(
     Handle<DescriptorArray> array,
     Handle<String> key,
     Handle<Object> value,
@@ -829,6 +848,15 @@ Handle<JSArray> Factory::NewJSArrayWithElements(Handle<FixedArray> elements,
                                         pretenure));
   result->SetContent(*elements);
   return result;
+}
+
+
+Handle<JSProxy> Factory::NewJSProxy(Handle<Object> handler,
+                                    Handle<Object> prototype) {
+  CALL_HEAP_FUNCTION(
+      isolate(),
+      isolate()->heap()->AllocateJSProxy(*handler, *prototype),
+      JSProxy);
 }
 
 
@@ -1161,12 +1189,14 @@ void Factory::SetRegExpIrregexpData(Handle<JSRegExp> regexp,
                                     JSRegExp::Flags flags,
                                     int capture_count) {
   Handle<FixedArray> store = NewFixedArray(JSRegExp::kIrregexpDataSize);
-
+  Smi* uninitialized = Smi::FromInt(JSRegExp::kUninitializedValue);
   store->set(JSRegExp::kTagIndex, Smi::FromInt(type));
   store->set(JSRegExp::kSourceIndex, *source);
   store->set(JSRegExp::kFlagsIndex, Smi::FromInt(flags.value()));
-  store->set(JSRegExp::kIrregexpASCIICodeIndex, HEAP->the_hole_value());
-  store->set(JSRegExp::kIrregexpUC16CodeIndex, HEAP->the_hole_value());
+  store->set(JSRegExp::kIrregexpASCIICodeIndex, uninitialized);
+  store->set(JSRegExp::kIrregexpUC16CodeIndex, uninitialized);
+  store->set(JSRegExp::kIrregexpASCIICodeSavedIndex, uninitialized);
+  store->set(JSRegExp::kIrregexpUC16CodeSavedIndex, uninitialized);
   store->set(JSRegExp::kIrregexpMaxRegisterCountIndex, Smi::FromInt(0));
   store->set(JSRegExp::kIrregexpCaptureCountIndex,
              Smi::FromInt(capture_count));
