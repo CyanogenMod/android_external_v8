@@ -49,7 +49,7 @@ LOCAL_GENERATED_SOURCES += $(V8_GENERATED_LIBRARIES)
 ifeq ($(ENABLE_V8_SNAPSHOT),true)
 SNAP_GEN := $(intermediates)/snapshot.cc
 MKSNAPSHOT := $(HOST_OUT_EXECUTABLES)/mksnapshot
-$(SNAP_GEN): PRIVATE_CUSTOM_TOOL = $(MKSNAPSHOT) $(SNAP_GEN)
+$(SNAP_GEN): PRIVATE_CUSTOM_TOOL = $(MKSNAPSHOT) --logfile $(intermediates)/v8.log $(SNAP_GEN)
 $(SNAP_GEN): $(MKSNAPSHOT)
 	$(transform-generated-source)
 LOCAL_GENERATED_SOURCES += $(SNAP_GEN)
