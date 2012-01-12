@@ -90,6 +90,6 @@ ifeq ($(DEBUG_V8),true)
 	LOCAL_CFLAGS += -DDEBUG -UNDEBUG
 endif
 
-LOCAL_C_INCLUDES += bionic/libc/include $(LOCAL_PATH)/src
+LOCAL_C_INCLUDES := $(LOCAL_PATH)/src
 
 include $(BUILD_STATIC_LIBRARY)
