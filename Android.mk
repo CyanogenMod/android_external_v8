@@ -29,9 +29,11 @@ include $(CLEAR_VARS)
 
 # Build libv8 and v8shell
 ifeq ($(TARGET_ARCH),arm)
+    ifeq ($(ARCH_ARM_HAVE_ARMV7A),true)
     ifneq ($(ARCH_ARM_HAVE_ARMV7A_BUG),true)
     ENABLE_V8_SNAPSHOT = true
     include $(BASE_PATH)/Android.mksnapshot.mk
+    endif
     endif
     include $(BASE_PATH)/Android.libv8.mk
     include $(BASE_PATH)/Android.v8shell.mk
