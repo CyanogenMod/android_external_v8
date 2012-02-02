@@ -18,12 +18,12 @@
 BASE_PATH := $(call my-dir)
 include $(CLEAR_VARS)
 
-ifneq ($(strip $(ARCH_ARM_HAVE_ARMV7A)),true)
-  $(error V8 requires ARM v7)
-endif
-
 # Build libv8 and v8shell
 ifeq ($(TARGET_ARCH),arm)
+    ifneq ($(strip $(ARCH_ARM_HAVE_ARMV7A)),true)
+        $(error V8 requires ARM v7)
+    endif
+
     ENABLE_V8_SNAPSHOT = true
     include $(BASE_PATH)/Android.mksnapshot.mk
     include $(BASE_PATH)/Android.libv8.mk
