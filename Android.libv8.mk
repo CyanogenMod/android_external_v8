@@ -4,6 +4,8 @@ LOCAL_PATH := $(call my-dir)
 # ===================================================
 include $(CLEAR_VARS)
 
+include external/stlport/libstlport.mk
+
 # Set up the target identity
 LOCAL_MODULE := libv8
 LOCAL_MODULE_CLASS := STATIC_LIBRARIES
@@ -79,6 +81,6 @@ ifeq ($(DEBUG_V8),true)
 	LOCAL_CFLAGS += -DDEBUG -UNDEBUG
 endif
 
-LOCAL_C_INCLUDES := $(LOCAL_PATH)/src
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/src
 
 include $(BUILD_STATIC_LIBRARY)

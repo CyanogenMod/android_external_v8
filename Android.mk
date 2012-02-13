@@ -16,7 +16,6 @@
 ##
 
 BASE_PATH := $(call my-dir)
-include $(CLEAR_VARS)
 
 # Two ways to control which JS engine is used:
 # 1. use JS_ENGINE environment variable, value can be either 'jsc' or 'v8'
