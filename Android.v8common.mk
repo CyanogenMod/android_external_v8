@@ -118,6 +118,28 @@ ifeq ($(TARGET_ARCH),arm)
 		src/arm/stub-cache-arm.cc
 endif
 
+ifeq ($(TARGET_ARCH),x86)
+  V8_LOCAL_SRC_FILES += \
+		src/atomicops_internals_x86_gcc.cc \
+		src/ia32/assembler-ia32.cc \
+		src/ia32/builtins-ia32.cc \
+		src/ia32/codegen-ia32.cc \
+		src/ia32/code-stubs-ia32.cc \
+		src/ia32/cpu-ia32.cc \
+		src/ia32/debug-ia32.cc \
+		src/ia32/deoptimizer-ia32.cc \
+		src/ia32/disasm-ia32.cc \
+		src/ia32/frames-ia32.cc \
+		src/ia32/full-codegen-ia32.cc \
+		src/ia32/ic-ia32.cc \
+		src/ia32/lithium-codegen-ia32.cc \
+		src/ia32/lithium-gap-resolver-ia32.cc \
+		src/ia32/lithium-ia32.cc \
+		src/ia32/macro-assembler-ia32.cc \
+		src/ia32/regexp-macro-assembler-ia32.cc \
+		src/ia32/stub-cache-ia32.cc
+endif
+
 # Enable DEBUG option.
 ifeq ($(DEBUG_V8),true)
   V8_LOCAL_SRC_FILES += \
