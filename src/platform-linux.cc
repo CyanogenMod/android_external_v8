@@ -808,7 +808,7 @@ Semaphore* OS::CreateSemaphore(int count) {
 
 #ifdef ENABLE_LOGGING_AND_PROFILING
 
-#if !defined(__GLIBC__) && (defined(__arm__) || defined(__thumb__))
+#if !defined(__GLIBC__) && (defined(__arm__) || defined(__thumb__) || defined(__i386__))
 // Android runs a fairly new Linux kernel, so signal info is there,
 // but the C library doesn't have the structs defined.
 
@@ -830,6 +830,7 @@ typedef struct ucontext {
   __sigset_t uc_sigmask;
 } ucontext_t;
 enum ArmRegisters {R15 = 15, R13 = 13, R11 = 11};
+enum X86Registers {REG_EIP = 14, REG_ESP = 7, REG_EBP = 6};
 
 #endif
 
