@@ -71,7 +71,7 @@ TypeFeedbackOracle::TypeFeedbackOracle(Handle<Code> code,
 
 Handle<Object> TypeFeedbackOracle::GetInfo(unsigned ast_id) {
   int entry = dictionary_->FindEntry(ast_id);
-  return entry != NumberDictionary::kNotFound
+  return entry != UnseededNumberDictionary::kNotFound
       ? Handle<Object>(dictionary_->ValueAt(entry))
       : Handle<Object>::cast(isolate_->factory()->undefined_value());
 }
@@ -268,6 +268,7 @@ TypeInfo TypeFeedbackOracle::CompareType(CompareOperation* expr) {
     case CompareIC::STRINGS:
       return TypeInfo::String();
     case CompareIC::OBJECTS:
+    case CompareIC::KNOWN_OBJECTS:
       // TODO(kasperl): We really need a type for JS objects here.
       return TypeInfo::NonPrimitive();
     case CompareIC::GENERIC:
@@ -284,6 +285,23 @@ bool TypeFeedbackOracle::IsSymbolCompare(CompareOperation* expr) {
   if (!code->is_compare_ic_stub()) return false;
   CompareIC::State state = static_cast<CompareIC::State>(code->compare_state());
   return state == CompareIC::SYMBOLS;
+}
+
+
+Handle<Map> TypeFeedbackOracle::GetCompareMap(CompareOperation* expr) {
+  Handle<Object> object = GetInfo(expr->id());
+  if (!object->IsCode()) return Handle<Map>::null();
+  Handle<Code> code = Handle<Code>::cast(object);
+  if (!code->is_compare_ic_stub()) return Handle<Map>::null();
+  CompareIC::State state = static_cast<CompareIC::State>(code->compare_state());
+  if (state != CompareIC::KNOWN_OBJECTS) {
+    return Handle<Map>::null();
+  }
+  Map* first_map = code->FindFirstMap();
+  ASSERT(first_map != NULL);
+  return CanRetainOtherContext(first_map, *global_context_)
+      ? Handle<Map>::null()
+      : Handle<Map>(first_map);
 }
 
 
@@ -376,6 +394,7 @@ TypeInfo TypeFeedbackOracle::SwitchType(CaseClause* clause) {
     case CompareIC::HEAP_NUMBERS:
       return TypeInfo::Number();
     case CompareIC::OBJECTS:
+    case CompareIC::KNOWN_OBJECTS:
       // TODO(kasperl): We really need a type for JS objects here.
       return TypeInfo::NonPrimitive();
     case CompareIC::GENERIC:
@@ -540,7 +559,7 @@ void TypeFeedbackOracle::CreateDictionary(Handle<Code> code,
                                           ZoneList<RelocInfo>* infos) {
   DisableAssertNoAllocation allocation_allowed;
   byte* old_start = code->instruction_start();
-  dictionary_ = FACTORY->NewNumberDictionary(infos->length());
+  dictionary_ = FACTORY->NewUnseededNumberDictionary(infos->length());
   byte* new_start = code->instruction_start();
   RelocateRelocInfos(infos, old_start, new_start);
 }
@@ -620,7 +639,7 @@ void TypeFeedbackOracle::ProcessRelocInfos(ZoneList<RelocInfo>* infos) {
 
 
 void TypeFeedbackOracle::SetInfo(unsigned ast_id, Object* target) {
-  ASSERT(dictionary_->FindEntry(ast_id) == NumberDictionary::kNotFound);
+  ASSERT(dictionary_->FindEntry(ast_id) == UnseededNumberDictionary::kNotFound);
   MaybeObject* maybe_result = dictionary_->AtNumberPut(ast_id, target);
   USE(maybe_result);
 #ifdef DEBUG

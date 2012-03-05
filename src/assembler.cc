@@ -1,4 +1,4 @@
-// Copyright (c) 2011 Sun Microsystems Inc.
+// Copyright (c) 1994-2006 Sun Microsystems Inc.
 // All Rights Reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -30,25 +30,42 @@
 
 // The original source code covered by the above license above has been
 // modified significantly by Google Inc.
-// Copyright 2011 the V8 project authors. All rights reserved.
+// Copyright 2012 the V8 project authors. All rights reserved.
 
-#include "v8.h"
+#include "assembler.h"
 
-#include "arguments.h"
+#include <math.h>  // For cos, log, pow, sin, tan, etc.
+#include "api.h"
+#include "builtins.h"
+#include "counters.h"
+#include "cpu.h"
+#include "debug.h"
 #include "deoptimizer.h"
 #include "execution.h"
-#include "ic-inl.h"
-#include "incremental-marking.h"
-#include "factory.h"
-#include "runtime.h"
-#include "runtime-profiler.h"
-#include "serialize.h"
-#include "stub-cache.h"
-#include "regexp-stack.h"
-#include "ast.h"
-#include "regexp-macro-assembler.h"
+#include "ic.h"
+#include "isolate.h"
+#include "jsregexp.h"
 #include "platform.h"
-#include "store-buffer.h"
+#include "regexp-macro-assembler.h"
+#include "regexp-stack.h"
+#include "runtime.h"
+#include "serialize.h"
+#include "store-buffer-inl.h"
+#include "stub-cache.h"
+#include "token.h"
+
+#if V8_TARGET_ARCH_IA32
+#include "ia32/assembler-ia32-inl.h"
+#elif V8_TARGET_ARCH_X64
+#include "x64/assembler-x64-inl.h"
+#elif V8_TARGET_ARCH_ARM
+#include "arm/assembler-arm-inl.h"
+#elif V8_TARGET_ARCH_MIPS
+#include "mips/assembler-mips-inl.h"
+#else
+#error "Unknown architecture."
+#endif
+
 // Include native regexp-macro-assembler.
 #ifndef V8_INTERPRETED_REGEXP
 #if V8_TARGET_ARCH_IA32
@@ -1108,17 +1125,9 @@ double power_double_int(double x, int y) {
 
 
 double power_double_double(double x, double y) {
-  int y_int = static_cast<int>(y);
-  if (y == y_int) {
-    return power_double_int(x, y_int);  // Returns 1.0 for exponent 0.
-  }
-  if (!isinf(x)) {
-    if (y == 0.5) return sqrt(x + 0.0);  // -0 must be converted to +0.
-    if (y == -0.5) return 1.0 / sqrt(x + 0.0);
-  }
-  if (isnan(y) || ((x == 1 || x == -1) && isinf(y))) {
-    return OS::nan_value();
-  }
+  // The checks for special cases can be dropped in ia32 because it has already
+  // been done in generated code before bailing out here.
+  if (isnan(y) || ((x == 1 || x == -1) && isinf(y))) return OS::nan_value();
   return pow(x, y);
 }
 

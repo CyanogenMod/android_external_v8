@@ -1187,6 +1187,44 @@ TEST(TestInternalWeakListsTraverseWithGC) {
 }
 
 
+TEST(TestSizeOfObjects) {
+  v8::V8::Initialize();
+
+  // Get initial heap size after several full GCs, which will stabilize
+  // the heap size and return with sweeping finished completely.
+  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+  CHECK(HEAP->old_pointer_space()->IsSweepingComplete());
+  int initial_size = static_cast<int>(HEAP->SizeOfObjects());
+
+  {
+    // Allocate objects on several different old-space pages so that
+    // lazy sweeping kicks in for subsequent GC runs.
+    AlwaysAllocateScope always_allocate;
+    int filler_size = static_cast<int>(FixedArray::SizeFor(8192));
+    for (int i = 1; i <= 100; i++) {
+      HEAP->AllocateFixedArray(8192, TENURED)->ToObjectChecked();
+      CHECK_EQ(initial_size + i * filler_size,
+               static_cast<int>(HEAP->SizeOfObjects()));
+    }
+  }
+
+  // The heap size should go back to initial size after a full GC, even
+  // though sweeping didn't finish yet.
+  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+  CHECK(!HEAP->old_pointer_space()->IsSweepingComplete());
+  CHECK_EQ(initial_size, static_cast<int>(HEAP->SizeOfObjects()));
+
+  // Advancing the sweeper step-wise should not change the heap size.
+  while (!HEAP->old_pointer_space()->IsSweepingComplete()) {
+    HEAP->old_pointer_space()->AdvanceSweeper(KB);
+    CHECK_EQ(initial_size, static_cast<int>(HEAP->SizeOfObjects()));
+  }
+}
+
+
 TEST(TestSizeOfObjectsVsHeapIteratorPrecision) {
   InitializeVM();
   HEAP->EnsureHeapIsIterable();
@@ -1288,6 +1326,35 @@ TEST(CollectingAllAvailableGarbageShrinksNewSpace) {
   HEAP->CollectAllAvailableGarbage();
   new_capacity = new_space->Capacity();
   CHECK(old_capacity == new_capacity);
+}
+
+// This just checks the contract of the IdleNotification() function,
+// and does not verify that it does reasonable work.
+TEST(IdleNotificationAdvancesIncrementalMarking) {
+  if (!FLAG_incremental_marking || !FLAG_incremental_marking_steps) return;
+  InitializeVM();
+  v8::HandleScope scope;
+  const char* source = "function binom(n, m) {"
+                       "  var C = [[1]];"
+                       "  for (var i = 1; i <= n; ++i) {"
+                       "    C[i] = [1];"
+                       "    for (var j = 1; j < i; ++j) {"
+                       "      C[i][j] = C[i-1][j-1] + C[i-1][j];"
+                       "    }"
+                       "    C[i][i] = 1;"
+                       "  }"
+                       "  return C[n][m];"
+                       "};"
+                       "binom(1000, 500)";
+  {
+    AlwaysAllocateScope aa_scope;
+    CompileRun(source);
+  }
+  intptr_t old_size = HEAP->SizeOfObjects();
+  bool no_idle_work = v8::V8::IdleNotification(900);
+  while (!v8::V8::IdleNotification(900)) ;
+  intptr_t new_size = HEAP->SizeOfObjects();
+  CHECK(no_idle_work || new_size < old_size);
 }
 
 
@@ -1450,12 +1517,12 @@ TEST(LeakGlobalContextViaMapProto) {
 
 
 TEST(InstanceOfStubWriteBarrier) {
-  if (!i::FLAG_crankshaft) return;
   i::FLAG_allow_natives_syntax = true;
 #ifdef DEBUG
   i::FLAG_verify_heap = true;
 #endif
   InitializeVM();
+  if (!i::V8::UseCrankshaft()) return;
   v8::HandleScope outer_scope;
 
   {
@@ -1504,4 +1571,58 @@ TEST(InstanceOfStubWriteBarrier) {
 
   HEAP->incremental_marking()->set_should_hurry(true);
   HEAP->CollectGarbage(OLD_POINTER_SPACE);
+}
+
+
+TEST(PrototypeTransitionClearing) {
+  InitializeVM();
+  v8::HandleScope scope;
+
+  CompileRun(
+      "var base = {};"
+      "var live = [];"
+      "for (var i = 0; i < 10; i++) {"
+      "  var object = {};"
+      "  var prototype = {};"
+      "  object.__proto__ = prototype;"
+      "  if (i >= 3) live.push(object, prototype);"
+      "}");
+
+  Handle<JSObject> baseObject =
+      v8::Utils::OpenHandle(
+          *v8::Handle<v8::Object>::Cast(
+              v8::Context::GetCurrent()->Global()->Get(v8_str("base"))));
+
+  // Verify that only dead prototype transitions are cleared.
+  CHECK_EQ(10, baseObject->map()->NumberOfProtoTransitions());
+  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+  CHECK_EQ(10 - 3, baseObject->map()->NumberOfProtoTransitions());
+
+  // Verify that prototype transitions array was compacted.
+  FixedArray* trans = baseObject->map()->prototype_transitions();
+  for (int i = 0; i < 10 - 3; i++) {
+    int j = Map::kProtoTransitionHeaderSize +
+        i * Map::kProtoTransitionElementsPerEntry;
+    CHECK(trans->get(j + Map::kProtoTransitionMapOffset)->IsMap());
+    CHECK(trans->get(j + Map::kProtoTransitionPrototypeOffset)->IsJSObject());
+  }
+
+  // Make sure next prototype is placed on an old-space evacuation candidate.
+  Handle<JSObject> prototype;
+  PagedSpace* space = HEAP->old_pointer_space();
+  do {
+    prototype = FACTORY->NewJSArray(32 * KB, TENURED);
+  } while (space->FirstPage() == space->LastPage() ||
+      !space->LastPage()->Contains(prototype->address()));
+
+  // Add a prototype on an evacuation candidate and verify that transition
+  // clearing correctly records slots in prototype transition array.
+  i::FLAG_always_compact = true;
+  Handle<Map> map(baseObject->map());
+  CHECK(!space->LastPage()->Contains(map->prototype_transitions()->address()));
+  CHECK(space->LastPage()->Contains(prototype->address()));
+  baseObject->SetPrototype(*prototype, false)->ToObjectChecked();
+  CHECK(map->GetPrototypeTransition(*prototype)->IsMap());
+  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+  CHECK(map->GetPrototypeTransition(*prototype)->IsMap());
 }

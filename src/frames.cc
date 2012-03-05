@@ -1,4 +1,4 @@
-// Copyright 2011 the V8 project authors. All rights reserved.
+// Copyright 2012 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -485,7 +485,7 @@ Code* ExitFrame::unchecked_code() const {
 
 
 void ExitFrame::ComputeCallerState(State* state) const {
-  // Setup the caller state.
+  // Set up the caller state.
   state->sp = caller_sp();
   state->fp = Memory::Address_at(fp() + ExitFrameConstants::kCallerFPOffset);
   state->pc_address
@@ -723,12 +723,17 @@ void JavaScriptFrame::PrintTop(FILE* file,
       JavaScriptFrame* frame = it.frame();
       if (frame->IsConstructor()) PrintF(file, "new ");
       // function name
-      Object* fun = frame->function();
-      if (fun->IsJSFunction()) {
-        SharedFunctionInfo* shared = JSFunction::cast(fun)->shared();
-        shared->DebugName()->ShortPrint(file);
+      Object* maybe_fun = frame->function();
+      if (maybe_fun->IsJSFunction()) {
+        JSFunction* fun = JSFunction::cast(maybe_fun);
+        fun->PrintName();
+        Code* js_code = frame->unchecked_code();
+        Address pc = frame->pc();
+        int code_offset =
+            static_cast<int>(pc - js_code->instruction_start());
+        PrintF("+%d", code_offset);
+        SharedFunctionInfo* shared = fun->shared();
         if (print_line_number) {
-          Address pc = frame->pc();
           Code* code = Code::cast(
               v8::internal::Isolate::Current()->heap()->FindCodeObject(pc));
           int source_pos = code->SourcePosition(pc);
@@ -751,7 +756,7 @@ void JavaScriptFrame::PrintTop(FILE* file,
           }
         }
       } else {
-        fun->ShortPrint(file);
+        PrintF("<unknown>");
       }
 
       if (print_args) {
@@ -808,17 +813,18 @@ void OptimizedFrame::Summarize(List<FrameSummary>* frames) {
                          data->TranslationIndex(deopt_index)->value());
   Translation::Opcode opcode = static_cast<Translation::Opcode>(it.Next());
   ASSERT(opcode == Translation::BEGIN);
-  int frame_count = it.Next();
+  it.Next();  // Drop frame count.
+  int jsframe_count = it.Next();
 
   // We create the summary in reverse order because the frames
   // in the deoptimization translation are ordered bottom-to-top.
-  int i = frame_count;
+  int i = jsframe_count;
   while (i > 0) {
     opcode = static_cast<Translation::Opcode>(it.Next());
-    if (opcode == Translation::FRAME) {
+    if (opcode == Translation::JS_FRAME) {
       // We don't inline constructor calls, so only the first, outermost
       // frame can be a constructor frame in case of inlining.
-      bool is_constructor = (i == frame_count) && IsConstructor();
+      bool is_constructor = (i == jsframe_count) && IsConstructor();
 
       i--;
       int ast_id = it.Next();
@@ -913,8 +919,9 @@ int OptimizedFrame::GetInlineCount() {
   Translation::Opcode opcode = static_cast<Translation::Opcode>(it.Next());
   ASSERT(opcode == Translation::BEGIN);
   USE(opcode);
-  int frame_count = it.Next();
-  return frame_count;
+  it.Next();  // Drop frame count.
+  int jsframe_count = it.Next();
+  return jsframe_count;
 }
 
 
@@ -929,14 +936,15 @@ void OptimizedFrame::GetFunctions(List<JSFunction*>* functions) {
                          data->TranslationIndex(deopt_index)->value());
   Translation::Opcode opcode = static_cast<Translation::Opcode>(it.Next());
   ASSERT(opcode == Translation::BEGIN);
-  int frame_count = it.Next();
+  it.Next();  // Drop frame count.
+  int jsframe_count = it.Next();
 
   // We insert the frames in reverse order because the frames
   // in the deoptimization translation are ordered bottom-to-top.
-  while (frame_count > 0) {
+  while (jsframe_count > 0) {
     opcode = static_cast<Translation::Opcode>(it.Next());
-    if (opcode == Translation::FRAME) {
-      frame_count--;
+    if (opcode == Translation::JS_FRAME) {
+      jsframe_count--;
       it.Next();  // Skip ast id.
       int function_id = it.Next();
       it.Next();  // Skip height.
@@ -1298,7 +1306,8 @@ InnerPointerToCodeCache::InnerPointerToCodeCacheEntry*
   isolate_->counters()->pc_to_code()->Increment();
   ASSERT(IsPowerOf2(kInnerPointerToCodeCacheSize));
   uint32_t hash = ComputeIntegerHash(
-      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(inner_pointer)));
+      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(inner_pointer)),
+      v8::internal::kZeroHashSeed);
   uint32_t index = hash & (kInnerPointerToCodeCacheSize - 1);
   InnerPointerToCodeCacheEntry* entry = cache(index);
   if (entry->inner_pointer == inner_pointer) {

@@ -64,6 +64,8 @@ class IncrementalMarking {
 
   inline bool IsMarkingIncomplete() { return state() == MARKING; }
 
+  inline bool IsComplete() { return state() == COMPLETE; }
+
   bool WorthActivating();
 
   void Start();
@@ -102,6 +104,7 @@ class IncrementalMarking {
   void OldSpaceStep(intptr_t allocated) {
     Step(allocated * kFastMarking / kInitialAllocationMarkingFactor);
   }
+
   void Step(intptr_t allocated);
 
   inline void RestartIfNotMarking() {

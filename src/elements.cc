@@ -133,6 +133,22 @@ class ElementsAccessorBase : public ElementsAccessor {
                                     JSObject* obj,
                                     Object* length);
 
+  virtual MaybeObject* SetCapacityAndLength(JSArray* array,
+                                            int capacity,
+                                            int length) {
+    return ElementsAccessorSubclass::SetFastElementsCapacityAndLength(
+        array,
+        capacity,
+        length);
+  }
+
+  static MaybeObject* SetFastElementsCapacityAndLength(JSObject* obj,
+                                                       int capacity,
+                                                       int length) {
+    UNIMPLEMENTED();
+    return obj;
+  }
+
   virtual MaybeObject* Delete(JSObject* obj,
                               uint32_t key,
                               JSReceiver::DeleteMode mode) = 0;
@@ -371,11 +387,6 @@ class FastObjectElementsAccessor
     return heap->true_value();
   }
 
- protected:
-  friend class FastElementsAccessor<FastObjectElementsAccessor,
-                                    FixedArray,
-                                    kPointerSize>;
-
   static MaybeObject* SetFastElementsCapacityAndLength(JSObject* obj,
                                                        uint32_t capacity,
                                                        uint32_t length) {
@@ -387,6 +398,11 @@ class FastObjectElementsAccessor
                                                  length,
                                                  set_capacity_mode);
   }
+
+ protected:
+  friend class FastElementsAccessor<FastObjectElementsAccessor,
+                                    FixedArray,
+                                    kPointerSize>;
 
   virtual MaybeObject* Delete(JSObject* obj,
                               uint32_t key,
@@ -400,18 +416,18 @@ class FastDoubleElementsAccessor
     : public FastElementsAccessor<FastDoubleElementsAccessor,
                                   FixedDoubleArray,
                                   kDoubleSize> {
+  static MaybeObject* SetFastElementsCapacityAndLength(JSObject* obj,
+                                                       uint32_t capacity,
+                                                       uint32_t length) {
+    return obj->SetFastDoubleElementsCapacityAndLength(capacity, length);
+  }
+
  protected:
   friend class ElementsAccessorBase<FastDoubleElementsAccessor,
                                     FixedDoubleArray>;
   friend class FastElementsAccessor<FastDoubleElementsAccessor,
                                     FixedDoubleArray,
                                     kDoubleSize>;
-
-  static MaybeObject* SetFastElementsCapacityAndLength(JSObject* obj,
-                                                       uint32_t capacity,
-                                                       uint32_t length) {
-    return obj->SetFastDoubleElementsCapacityAndLength(capacity, length);
-  }
 
   virtual MaybeObject* Delete(JSObject* obj,
                               uint32_t key,
@@ -527,11 +543,11 @@ class PixelElementsAccessor
 
 class DictionaryElementsAccessor
     : public ElementsAccessorBase<DictionaryElementsAccessor,
-                                  NumberDictionary> {
+                                  SeededNumberDictionary> {
  public:
   // Adjusts the length of the dictionary backing store and returns the new
   // length according to ES5 section 15.4.5.2 behavior.
-  static MaybeObject* SetLengthWithoutNormalize(NumberDictionary* dict,
+  static MaybeObject* SetLengthWithoutNormalize(SeededNumberDictionary* dict,
                                                 JSArray* array,
                                                 Object* length_object,
                                                 uint32_t length) {
@@ -597,9 +613,10 @@ class DictionaryElementsAccessor
     if (is_arguments) {
       backing_store = FixedArray::cast(backing_store->get(1));
     }
-    NumberDictionary* dictionary = NumberDictionary::cast(backing_store);
+    SeededNumberDictionary* dictionary =
+        SeededNumberDictionary::cast(backing_store);
     int entry = dictionary->FindEntry(key);
-    if (entry != NumberDictionary::kNotFound) {
+    if (entry != SeededNumberDictionary::kNotFound) {
       Object* result = dictionary->DeleteProperty(entry, mode);
       if (result == heap->true_value()) {
         MaybeObject* maybe_elements = dictionary->Shrink(key);
@@ -632,7 +649,7 @@ class DictionaryElementsAccessor
 
  protected:
   friend class ElementsAccessorBase<DictionaryElementsAccessor,
-                                    NumberDictionary>;
+                                    SeededNumberDictionary>;
 
   virtual MaybeObject* Delete(JSObject* obj,
                               uint32_t key,
@@ -640,12 +657,12 @@ class DictionaryElementsAccessor
     return DeleteCommon(obj, key, mode);
   }
 
-  static MaybeObject* GetImpl(NumberDictionary* backing_store,
+  static MaybeObject* GetImpl(SeededNumberDictionary* backing_store,
                               uint32_t key,
                               JSObject* obj,
                               Object* receiver) {
     int entry = backing_store->FindEntry(key);
-    if (entry != NumberDictionary::kNotFound) {
+    if (entry != SeededNumberDictionary::kNotFound) {
       Object* element = backing_store->ValueAt(entry);
       PropertyDetails details = backing_store->DetailsAt(entry);
       if (details.type() == CALLBACKS) {
@@ -660,7 +677,7 @@ class DictionaryElementsAccessor
     return obj->GetHeap()->the_hole_value();
   }
 
-  static uint32_t GetKeyForIndexImpl(NumberDictionary* dict,
+  static uint32_t GetKeyForIndexImpl(SeededNumberDictionary* dict,
                                      uint32_t index) {
     Object* key = dict->KeyAt(index);
     return Smi::cast(key)->value();
@@ -873,7 +890,7 @@ MaybeObject* ElementsAccessorBase<ElementsAccessorSubclass, BackingStoreClass>::
   if (length->IsNumber()) {
     uint32_t value;
     if (length->ToArrayIndex(&value)) {
-      NumberDictionary* dictionary;
+      SeededNumberDictionary* dictionary;
       MaybeObject* maybe_object = array->NormalizeElements();
       if (!maybe_object->To(&dictionary)) return maybe_object;
       Object* new_length;

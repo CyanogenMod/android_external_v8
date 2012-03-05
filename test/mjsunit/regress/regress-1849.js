@@ -25,30 +25,15 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef V8_EXTENSIONS_EXPERIMENTAL_I18N_EXTENSION_H_
-#define V8_EXTENSIONS_EXPERIMENTAL_I18N_EXTENSION_H_
+// See: http://code.google.com/p/v8/issues/detail?id=1878
 
-#include "include/v8.h"
+// Flags: --allow-natives-syntax
 
-namespace v8 {
-namespace internal {
-
-
-class I18NExtension : public v8::Extension {
- public:
-  I18NExtension();
-
-  virtual v8::Handle<v8::FunctionTemplate> GetNativeFunction(
-      v8::Handle<v8::String> name);
-
-  // V8 code prefers Register, while Chrome and WebKit use get kind of methods.
-  static void Register();
-  static I18NExtension* get();
-
- private:
-  static I18NExtension* extension_;
-};
-
-} }  // namespace v8::internal
-
-#endif  // V8_EXTENSIONS_EXPERIMENTAL_I18N_EXTENSION_H_
+var count = 1e5;
+var arr = new Array(count);
+assertFalse(%HasFastDoubleElements(arr));
+for (var i = 0; i < count; i++) {
+  arr[i] = 0;
+}
+assertFalse(%HasFastDoubleElements(arr));
+assertTrue(%HasFastSmiOnlyElements(arr));

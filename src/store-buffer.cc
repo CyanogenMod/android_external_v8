@@ -41,6 +41,7 @@ StoreBuffer::StoreBuffer(Heap* heap)
       old_start_(NULL),
       old_limit_(NULL),
       old_top_(NULL),
+      old_reserved_limit_(NULL),
       old_buffer_is_sorted_(false),
       old_buffer_is_filtered_(false),
       during_gc_(false),
@@ -54,16 +55,31 @@ StoreBuffer::StoreBuffer(Heap* heap)
 }
 
 
-void StoreBuffer::Setup() {
+void StoreBuffer::SetUp() {
   virtual_memory_ = new VirtualMemory(kStoreBufferSize * 3);
   uintptr_t start_as_int =
       reinterpret_cast<uintptr_t>(virtual_memory_->address());
   start_ =
       reinterpret_cast<Address*>(RoundUp(start_as_int, kStoreBufferSize * 2));
-  limit_ = start_ + (kStoreBufferSize / sizeof(*start_));
+  limit_ = start_ + (kStoreBufferSize / kPointerSize);
 
-  old_top_ = old_start_ = new Address[kOldStoreBufferLength];
-  old_limit_ = old_start_ + kOldStoreBufferLength;
+  old_virtual_memory_ =
+      new VirtualMemory(kOldStoreBufferLength * kPointerSize);
+  old_top_ = old_start_ =
+      reinterpret_cast<Address*>(old_virtual_memory_->address());
+  // Don't know the alignment requirements of the OS, but it is certainly not
+  // less than 0xfff.
+  ASSERT((reinterpret_cast<uintptr_t>(old_start_) & 0xfff) == 0);
+  int initial_length = static_cast<int>(OS::CommitPageSize() / kPointerSize);
+  ASSERT(initial_length > 0);
+  ASSERT(initial_length <= kOldStoreBufferLength);
+  old_limit_ = old_start_ + initial_length;
+  old_reserved_limit_ = old_start_ + kOldStoreBufferLength;
+
+  CHECK(old_virtual_memory_->Commit(
+            reinterpret_cast<void*>(old_start_),
+            (old_limit_ - old_start_) * kPointerSize,
+            false));
 
   ASSERT(reinterpret_cast<Address>(start_) >= virtual_memory_->address());
   ASSERT(reinterpret_cast<Address>(limit_) >= virtual_memory_->address());
@@ -77,9 +93,9 @@ void StoreBuffer::Setup() {
   ASSERT((reinterpret_cast<uintptr_t>(limit_ - 1) & kStoreBufferOverflowBit) ==
          0);
 
-  virtual_memory_->Commit(reinterpret_cast<Address>(start_),
-                          kStoreBufferSize,
-                          false);  // Not executable.
+  CHECK(virtual_memory_->Commit(reinterpret_cast<Address>(start_),
+                                kStoreBufferSize,
+                                false));  // Not executable.
   heap_->public_set_store_buffer_top(start_);
 
   hash_set_1_ = new uintptr_t[kHashSetLength];
@@ -92,10 +108,10 @@ void StoreBuffer::Setup() {
 
 void StoreBuffer::TearDown() {
   delete virtual_memory_;
+  delete old_virtual_memory_;
   delete[] hash_set_1_;
   delete[] hash_set_2_;
-  delete[] old_start_;
-  old_start_ = old_top_ = old_limit_ = NULL;
+  old_start_ = old_top_ = old_limit_ = old_reserved_limit_ = NULL;
   start_ = limit_ = NULL;
   heap_->public_set_store_buffer_top(start_);
 }
@@ -151,7 +167,18 @@ void StoreBuffer::Uniq() {
 }
 
 
-void StoreBuffer::HandleFullness() {
+void StoreBuffer::EnsureSpace(intptr_t space_needed) {
+  while (old_limit_ - old_top_ < space_needed &&
+         old_limit_ < old_reserved_limit_) {
+    size_t grow = old_limit_ - old_start_;  // Double size.
+    CHECK(old_virtual_memory_->Commit(reinterpret_cast<void*>(old_limit_),
+                                      grow * kPointerSize,
+                                      false));
+    old_limit_ += grow;
+  }
+
+  if (old_limit_ - old_top_ >= space_needed) return;
+
   if (old_buffer_is_filtered_) return;
   ASSERT(may_move_store_buffer_entries_);
   Compact();
@@ -644,9 +671,7 @@ void StoreBuffer::Compact() {
   // the worst case (compaction doesn't eliminate any pointers).
   ASSERT(top <= limit_);
   heap_->public_set_store_buffer_top(start_);
-  if (top - start_ > old_limit_ - old_top_) {
-    HandleFullness();
-  }
+  EnsureSpace(top - start_);
   ASSERT(may_move_store_buffer_entries_);
   // Goes through the addresses in the store buffer attempting to remove
   // duplicates.  In the interest of speed this is a lossy operation.  Some
@@ -663,9 +688,9 @@ void StoreBuffer::Compact() {
     int hash1 =
         ((int_addr ^ (int_addr >> kHashSetLengthLog2)) & (kHashSetLength - 1));
     if (hash_set_1_[hash1] == int_addr) continue;
-    int hash2 =
-        ((int_addr - (int_addr >> kHashSetLengthLog2)) & (kHashSetLength - 1));
+    uintptr_t hash2 = (int_addr - (int_addr >> kHashSetLengthLog2));
     hash2 ^= hash2 >> (kHashSetLengthLog2 * 2);
+    hash2 &= (kHashSetLength - 1);
     if (hash_set_2_[hash2] == int_addr) continue;
     if (hash_set_1_[hash1] == 0) {
       hash_set_1_[hash1] = int_addr;
@@ -688,9 +713,7 @@ void StoreBuffer::Compact() {
 
 
 void StoreBuffer::CheckForFullBuffer() {
-  if (old_limit_ - old_top_ < kStoreBufferSize * 2) {
-    HandleFullness();
-  }
+  EnsureSpace(kStoreBufferSize * 2);
 }
 
 } }  // namespace v8::internal

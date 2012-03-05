@@ -1,4 +1,4 @@
-// Copyright 2011 the V8 project authors. All rights reserved.
+// Copyright 2012 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,44 +25,38 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef V8_EXTENSIONS_EXPERIMENTAL_COLLATOR_H
-#define V8_EXTENSIONS_EXPERIMENTAL_COLLATOR_H_
+// Flags: --allow-natives-syntax
 
-#include "include/v8.h"
+// Test inlining at call sites with mismatched arity.
 
-#include "unicode/uversion.h"
-
-namespace U_ICU_NAMESPACE {
-class Collator;
-class UnicodeString;
+function f(a) {
+  return a.x;
 }
 
-namespace v8 {
-namespace internal {
+function g(a, b) {
+  return a.x;
+}
 
-class Collator {
- public:
-  static v8::Handle<v8::Value> JSCollator(const v8::Arguments& args);
+function h1(a, b) {
+  return f(a, a) * g(b);
+}
 
-  // Helper methods for various bindings.
+function h2(a, b) {
+  return f(a, a) * g(b);
+}
 
-  // Unpacks collator object from corresponding JavaScript object.
-  static icu::Collator* UnpackCollator(v8::Handle<v8::Object> obj);
 
-  // Release memory we allocated for the Collator once the JS object that
-  // holds the pointer gets garbage collected.
-  static void DeleteCollator(v8::Persistent<v8::Value> object, void* param);
+var o = {x: 2};
 
-  // Compare two strings and returns -1, 0 and 1 depending on
-  // whether string1 is smaller than, equal to or larger than string2.
-  static v8::Handle<v8::Value> CollatorCompare(const v8::Arguments& args);
+assertEquals(4, h1(o, o));
+assertEquals(4, h1(o, o));
+assertEquals(4, h2(o, o));
+assertEquals(4, h2(o, o));
+%OptimizeFunctionOnNextCall(h1);
+%OptimizeFunctionOnNextCall(h2);
+assertEquals(4, h1(o, o));
+assertEquals(4, h2(o, o));
 
- private:
-  Collator() {}
-
-  static v8::Persistent<v8::FunctionTemplate> collator_template_;
-};
-
-} }  // namespace v8::internal
-
-#endif  // V8_EXTENSIONS_EXPERIMENTAL_COLLATOR
+var u = {y:0, x:1};
+assertEquals(2, h1(u, o));
+assertEquals(2, h2(o, u));

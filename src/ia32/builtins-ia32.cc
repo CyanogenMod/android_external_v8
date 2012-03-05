@@ -1,4 +1,4 @@
-// Copyright 2011 the V8 project authors. All rights reserved.
+// Copyright 2012 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -333,7 +333,7 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
     __ push(ebx);
     __ push(ebx);
 
-    // Setup pointer to last argument.
+    // Set up pointer to last argument.
     __ lea(ebx, Operand(ebp, StandardFrameConstants::kCallerSPOffset));
 
     // Copy arguments and receiver to the expression stack.
@@ -537,7 +537,7 @@ static void Generate_NotifyDeoptimizedHelper(MacroAssembler* masm,
   {
     FrameScope scope(masm, StackFrame::INTERNAL);
 
-    // Pass the function and deoptimization type to the runtime system.
+    // Pass deoptimization type to the runtime system.
     __ push(Immediate(Smi::FromInt(static_cast<int>(type))));
     __ CallRuntime(Runtime::kNotifyDeoptimized, 1);
 
@@ -1238,37 +1238,42 @@ static void ArrayNativeCode(MacroAssembler* masm,
                   false,
                   &prepare_generic_code_call);
   __ IncrementCounter(counters->array_function_native(), 1);
-  __ mov(eax, ebx);
-  __ pop(ebx);
-  if (construct_call) {
-    __ pop(edi);
-  }
-  __ push(eax);
-  // eax: JSArray
+  __ push(ebx);
+  __ mov(ebx, Operand(esp, kPointerSize));
   // ebx: argc
   // edx: elements_array_end (untagged)
   // esp[0]: JSArray
-  // esp[4]: return address
-  // esp[8]: last argument
+  // esp[4]: argc
+  // esp[8]: constructor (only if construct_call)
+  // esp[12]: return address
+  // esp[16]: last argument
 
   // Location of the last argument
-  __ lea(edi, Operand(esp, 2 * kPointerSize));
+  int last_arg_offset = (construct_call ? 4 : 3) * kPointerSize;
+  __ lea(edi, Operand(esp, last_arg_offset));
 
   // Location of the first array element (Parameter fill_with_holes to
-  // AllocateJSArrayis false, so the FixedArray is returned in ecx).
+  // AllocateJSArray is false, so the FixedArray is returned in ecx).
   __ lea(edx, Operand(ecx, FixedArray::kHeaderSize - kHeapObjectTag));
+
+  Label has_non_smi_element;
 
   // ebx: argc
   // edx: location of the first array element
   // edi: location of the last argument
   // esp[0]: JSArray
-  // esp[4]: return address
-  // esp[8]: last argument
+  // esp[4]: argc
+  // esp[8]: constructor (only if construct_call)
+  // esp[12]: return address
+  // esp[16]: last argument
   Label loop, entry;
   __ mov(ecx, ebx);
   __ jmp(&entry);
   __ bind(&loop);
   __ mov(eax, Operand(edi, ecx, times_pointer_size, 0));
+  if (FLAG_smi_only_arrays) {
+    __ JumpIfNotSmi(eax, &has_non_smi_element);
+  }
   __ mov(Operand(edx, 0), eax);
   __ add(edx, Immediate(kPointerSize));
   __ bind(&entry);
@@ -1278,13 +1283,21 @@ static void ArrayNativeCode(MacroAssembler* masm,
   // Remove caller arguments from the stack and return.
   // ebx: argc
   // esp[0]: JSArray
-  // esp[4]: return address
-  // esp[8]: last argument
+  // esp[4]: argc
+  // esp[8]: constructor (only if construct_call)
+  // esp[12]: return address
+  // esp[16]: last argument
+  __ mov(ecx, Operand(esp, last_arg_offset - kPointerSize));
   __ pop(eax);
-  __ pop(ecx);
-  __ lea(esp, Operand(esp, ebx, times_pointer_size, 1 * kPointerSize));
-  __ push(ecx);
-  __ ret(0);
+  __ pop(ebx);
+  __ lea(esp, Operand(esp, ebx, times_pointer_size,
+                      last_arg_offset - kPointerSize));
+  __ jmp(ecx);
+
+  __ bind(&has_non_smi_element);
+  // Throw away the array that's only been partially constructed.
+  __ pop(eax);
+  __ UndoAllocationInNewSpace(eax);
 
   // Restore argc and constructor before running the generic code.
   __ bind(&prepare_generic_code_call);
@@ -1293,6 +1306,40 @@ static void ArrayNativeCode(MacroAssembler* masm,
     __ pop(edi);
   }
   __ jmp(call_generic_code);
+}
+
+
+void Builtins::Generate_InternalArrayCode(MacroAssembler* masm) {
+  // ----------- S t a t e -------------
+  //  -- eax : argc
+  //  -- esp[0] : return address
+  //  -- esp[4] : last argument
+  // -----------------------------------
+  Label generic_array_code;
+
+  // Get the InternalArray function.
+  __ LoadGlobalFunction(Context::INTERNAL_ARRAY_FUNCTION_INDEX, edi);
+
+  if (FLAG_debug_code) {
+    // Initial map for the builtin InternalArray function shoud be a map.
+    __ mov(ebx, FieldOperand(edi, JSFunction::kPrototypeOrInitialMapOffset));
+    // Will both indicate a NULL and a Smi.
+    __ test(ebx, Immediate(kSmiTagMask));
+    __ Assert(not_zero, "Unexpected initial map for InternalArray function");
+    __ CmpObjectType(ebx, MAP_TYPE, ecx);
+    __ Assert(equal, "Unexpected initial map for InternalArray function");
+  }
+
+  // Run the native code for the InternalArray function called as a normal
+  // function.
+  ArrayNativeCode(masm, false, &generic_array_code);
+
+  // Jump to the generic array code in case the specialized code cannot handle
+  // the construction.
+  __ bind(&generic_array_code);
+  Handle<Code> array_code =
+      masm->isolate()->builtins()->InternalArrayCodeGeneric();
+  __ jmp(array_code, RelocInfo::CODE_TARGET);
 }
 
 
@@ -1597,6 +1644,7 @@ void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {
   __ mov(edi, Operand(ebp, JavaScriptFrameConstants::kFunctionOffset));
   __ call(edx);
 
+  masm->isolate()->heap()->SetArgumentsAdaptorDeoptPCOffset(masm->pc_offset());
   // Leave frame and return.
   LeaveArgumentsAdaptorFrame(masm);
   __ ret(0);

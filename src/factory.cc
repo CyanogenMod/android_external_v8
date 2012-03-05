@@ -77,11 +77,21 @@ Handle<StringDictionary> Factory::NewStringDictionary(int at_least_space_for) {
 }
 
 
-Handle<NumberDictionary> Factory::NewNumberDictionary(int at_least_space_for) {
+Handle<SeededNumberDictionary> Factory::NewSeededNumberDictionary(
+    int at_least_space_for) {
   ASSERT(0 <= at_least_space_for);
   CALL_HEAP_FUNCTION(isolate(),
-                     NumberDictionary::Allocate(at_least_space_for),
-                     NumberDictionary);
+                     SeededNumberDictionary::Allocate(at_least_space_for),
+                     SeededNumberDictionary);
+}
+
+
+Handle<UnseededNumberDictionary> Factory::NewUnseededNumberDictionary(
+    int at_least_space_for) {
+  ASSERT(0 <= at_least_space_for);
+  CALL_HEAP_FUNCTION(isolate(),
+                     UnseededNumberDictionary::Allocate(at_least_space_for),
+                     UnseededNumberDictionary);
 }
 
 
@@ -128,6 +138,13 @@ Handle<DeoptimizationOutputData> Factory::NewDeoptimizationOutputData(
                      DeoptimizationOutputData::Allocate(deopt_entry_count,
                                                         pretenure),
                      DeoptimizationOutputData);
+}
+
+
+Handle<AccessorPair> Factory::NewAccessorPair() {
+  CALL_HEAP_FUNCTION(isolate(),
+                     isolate()->heap()->AllocateAccessorPair(),
+                     AccessorPair);
 }
 
 
@@ -698,7 +715,7 @@ Handle<JSFunction> Factory::NewFunction(Handle<String> name,
   // Allocate the function
   Handle<JSFunction> function = NewFunction(name, the_hole_value());
 
-  // Setup the code pointer in both the shared function info and in
+  // Set up the code pointer in both the shared function info and in
   // the function itself.
   function->shared()->set_code(*code);
   function->set_code(*code);
@@ -729,7 +746,7 @@ Handle<JSFunction> Factory::NewFunctionWithPrototype(Handle<String> name,
   // Allocate the function.
   Handle<JSFunction> function = NewFunction(name, prototype);
 
-  // Setup the code pointer in both the shared function info and in
+  // Set up the code pointer in both the shared function info and in
   // the function itself.
   function->shared()->set_code(*code);
   function->set_code(*code);
@@ -751,7 +768,10 @@ Handle<JSFunction> Factory::NewFunctionWithPrototype(Handle<String> name,
   // property that refers to the function.
   SetPrototypeProperty(function, prototype);
   // Currently safe because it is only invoked from Genesis.
-  SetLocalPropertyNoThrow(prototype, constructor_symbol(), function, DONT_ENUM);
+  CHECK_NOT_EMPTY_HANDLE(isolate(),
+                         JSObject::SetLocalPropertyIgnoreAttributes(
+                             prototype, constructor_symbol(),
+                             function, DONT_ENUM));
   return function;
 }
 
@@ -926,28 +946,48 @@ Handle<JSArray> Factory::NewJSArray(int capacity,
 }
 
 
-Handle<JSArray> Factory::NewJSArrayWithElements(Handle<FixedArray> elements,
+Handle<JSArray> Factory::NewJSArrayWithElements(Handle<FixedArrayBase> elements,
                                                 PretenureFlag pretenure) {
   Handle<JSArray> result =
       Handle<JSArray>::cast(NewJSObject(isolate()->array_function(),
                                         pretenure));
+  result->set_length(Smi::FromInt(0));
   SetContent(result, elements);
   return result;
 }
 
 
+void Factory::SetElementsCapacityAndLength(Handle<JSArray> array,
+                                           int capacity,
+                                           int length) {
+  ElementsAccessor* accessor = array->GetElementsAccessor();
+  CALL_HEAP_FUNCTION_VOID(
+      isolate(),
+      accessor->SetCapacityAndLength(*array, capacity, length));
+}
+
+
 void Factory::SetContent(Handle<JSArray> array,
-                         Handle<FixedArray> elements) {
+                         Handle<FixedArrayBase> elements) {
   CALL_HEAP_FUNCTION_VOID(
       isolate(),
       array->SetContent(*elements));
 }
 
 
-void Factory::EnsureCanContainNonSmiElements(Handle<JSArray> array) {
+void Factory::EnsureCanContainHeapObjectElements(Handle<JSArray> array) {
   CALL_HEAP_FUNCTION_VOID(
       isolate(),
-      array->EnsureCanContainNonSmiElements());
+      array->EnsureCanContainHeapObjectElements());
+}
+
+
+void Factory::EnsureCanContainElements(Handle<JSArray> array,
+                                       Handle<FixedArrayBase> elements,
+                                       EnsureElementsMode mode) {
+  CALL_HEAP_FUNCTION_VOID(
+      isolate(),
+      array->EnsureCanContainElements(*elements, mode));
 }
 
 
@@ -1041,13 +1081,23 @@ Handle<String> Factory::Uint32ToString(uint32_t value) {
 }
 
 
-Handle<NumberDictionary> Factory::DictionaryAtNumberPut(
-    Handle<NumberDictionary> dictionary,
+Handle<SeededNumberDictionary> Factory::DictionaryAtNumberPut(
+    Handle<SeededNumberDictionary> dictionary,
     uint32_t key,
     Handle<Object> value) {
   CALL_HEAP_FUNCTION(isolate(),
                      dictionary->AtNumberPut(key, *value),
-                     NumberDictionary);
+                     SeededNumberDictionary);
+}
+
+
+Handle<UnseededNumberDictionary> Factory::DictionaryAtNumberPut(
+    Handle<UnseededNumberDictionary> dictionary,
+    uint32_t key,
+    Handle<Object> value) {
+  CALL_HEAP_FUNCTION(isolate(),
+                     dictionary->AtNumberPut(key, *value),
+                     UnseededNumberDictionary);
 }
 
 

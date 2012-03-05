@@ -1,4 +1,4 @@
-# Copyright 2011 the V8 project authors. All rights reserved.
+# Copyright 2012 the V8 project authors. All rights reserved.
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are
 # met:
@@ -221,6 +221,9 @@
         {
           'target_name': 'v8_base',
           'type': '<(library)',
+          'variables': {
+            'optimize': 'max',
+          },
           'include_dirs+': [
             '../../src',
           ],
@@ -681,7 +684,22 @@
                 ],
               }
             ],
+            ['OS=="netbsd"', {
+                'link_settings': {
+                  'libraries': [
+                    '-L/usr/pkg/lib -Wl,-R/usr/pkg/lib -lexecinfo',
+                ]},
+                'sources': [
+                  '../../src/platform-openbsd.cc',
+                  '../../src/platform-posix.cc'
+                ],
+              }
+            ],
             ['OS=="solaris"', {
+                'link_settings': {
+                  'libraries': [
+                    '-lsocket -lnsl',
+                ]},
                 'sources': [
                   '../../src/platform-solaris.cc',
                   '../../src/platform-posix.cc',

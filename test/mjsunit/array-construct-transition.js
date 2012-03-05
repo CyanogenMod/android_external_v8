@@ -25,63 +25,15 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "src/extensions/experimental/i18n-utils.h"
+// Flags: --allow-natives-syntax --smi-only-arrays
 
-#include <string.h>
+support_smi_only_arrays = %HasFastSmiOnlyElements([1,2,3,4,5,6,7,8,9,10]);
 
-#include "unicode/unistr.h"
-
-namespace v8 {
-namespace internal {
-
-// static
-void I18NUtils::StrNCopy(char* dest, int length, const char* src) {
-  if (!dest || !src) return;
-
-  strncpy(dest, src, length);
-  dest[length - 1] = '\0';
+if (support_smi_only_arrays) {
+  var a = new Array(0, 1, 2);
+  assertTrue(%HasFastSmiOnlyElements(a));
+  var b = new Array(0.5, 1.2, 2.3);
+  assertTrue(%HasFastDoubleElements(b));
+  var c = new Array(0.5, 1.2, new Object());
+  assertTrue(%HasFastElements(c));
 }
-
-// static
-bool I18NUtils::ExtractStringSetting(const v8::Handle<v8::Object>& settings,
-                                     const char* setting,
-                                     icu::UnicodeString* result) {
-  if (!setting || !result) return false;
-
-  v8::HandleScope handle_scope;
-  v8::TryCatch try_catch;
-  v8::Handle<v8::Value> value = settings->Get(v8::String::New(setting));
-  if (try_catch.HasCaught()) {
-    return false;
-  }
-  // No need to check if |value| is empty because it's taken care of
-  // by TryCatch above.
-  if (!value->IsUndefined() && !value->IsNull() && value->IsString()) {
-    v8::String::Utf8Value utf8_value(value);
-    if (*utf8_value == NULL) return false;
-    result->setTo(icu::UnicodeString::fromUTF8(*utf8_value));
-    return true;
-  }
-  return false;
-}
-
-// static
-void I18NUtils::AsciiToUChar(const char* source,
-                             int32_t source_length,
-                             UChar* target,
-                             int32_t target_length) {
-  int32_t length =
-      source_length < target_length ? source_length : target_length;
-
-  if (length <= 0) {
-    return;
-  }
-
-  for (int32_t i = 0; i < length - 1; ++i) {
-    target[i] = static_cast<UChar>(source[i]);
-  }
-
-  target[length - 1] = 0x0u;
-}
-
-} }  // namespace v8::internal

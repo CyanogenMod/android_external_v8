@@ -1186,8 +1186,8 @@ void* Parser::ParseSourceElements(ZoneList<Statement*>* processor,
 
     if (directive_prologue) {
       // A shot at a directive.
-      ExpressionStatement *e_stat;
-      Literal *literal;
+      ExpressionStatement* e_stat;
+      Literal* literal;
       // Still processing directive prologue?
       if ((e_stat = stat->AsExpressionStatement()) != NULL &&
           (literal = e_stat->expression()->AsLiteral()) != NULL &&
@@ -1562,7 +1562,7 @@ Statement* Parser::ParseNativeDeclaration(bool* ok) {
 
   // TODO(1240846): It's weird that native function declarations are
   // introduced dynamically when we meet their declarations, whereas
-  // other functions are setup when entering the surrounding scope.
+  // other functions are set up when entering the surrounding scope.
   SharedFunctionInfoLiteral* lit =
       new(zone()) SharedFunctionInfoLiteral(isolate(), shared);
   VariableProxy* var = Declare(name, VAR, NULL, true, CHECK_OK);
@@ -2695,6 +2695,7 @@ Expression* Parser::ParseAssignmentExpression(bool accept_IN, bool* ok) {
     // Assignment to eval or arguments is disallowed in strict mode.
     CheckStrictModeLValue(expression, "strict_lhs_assignment", CHECK_OK);
   }
+  MarkAsLValue(expression);
 
   Token::Value op = Next();  // Get assignment operator.
   int pos = scanner().location().beg_pos;
@@ -2928,6 +2929,7 @@ Expression* Parser::ParseUnaryExpression(bool* ok) {
       // Prefix expression operand in strict mode may not be eval or arguments.
       CheckStrictModeLValue(expression, "strict_lhs_prefix", CHECK_OK);
     }
+    MarkAsLValue(expression);
 
     int position = scanner().location().beg_pos;
     return new(zone()) CountOperation(isolate(),
@@ -2963,6 +2965,7 @@ Expression* Parser::ParsePostfixExpression(bool* ok) {
       // Postfix expression operand in strict mode may not be eval or arguments.
       CheckStrictModeLValue(expression, "strict_lhs_prefix", CHECK_OK);
     }
+    MarkAsLValue(expression);
 
     Token::Value next = Next();
     int position = scanner().location().beg_pos;
@@ -3389,6 +3392,7 @@ Expression* Parser::ParseArrayLiteral(bool* ok) {
       isolate()->factory()->NewFixedArray(values->length(), TENURED);
   Handle<FixedDoubleArray> double_literals;
   ElementsKind elements_kind = FAST_SMI_ONLY_ELEMENTS;
+  bool has_only_undefined_values = true;
 
   // Fill in the literals.
   bool is_simple = true;
@@ -3412,6 +3416,7 @@ Expression* Parser::ParseArrayLiteral(bool* ok) {
       // FAST_DOUBLE_ELEMENTS and FAST_ELEMENTS as necessary.  Always remember
       // the tagged value, no matter what the ElementsKind is in case we
       // ultimately end up in FAST_ELEMENTS.
+      has_only_undefined_values = false;
       object_literals->set(i, *boilerplate_value);
       if (elements_kind == FAST_SMI_ONLY_ELEMENTS) {
         // Smi only elements. Notice if a transition to FAST_DOUBLE_ELEMENTS or
@@ -3448,6 +3453,13 @@ Expression* Parser::ParseArrayLiteral(bool* ok) {
         }
       }
     }
+  }
+
+  // Very small array literals that don't have a concrete hint about their type
+  // from a constant value should default to the slow case to avoid lots of
+  // elements transitions on really small objects.
+  if (has_only_undefined_values && values->length() <= 2) {
+    elements_kind = FAST_ELEMENTS;
   }
 
   // Simple and shallow arrays can be lazily copied, we transform the
@@ -3595,7 +3607,7 @@ void ObjectLiteralPropertyChecker::CheckProperty(
 
   ASSERT(property != NULL);
 
-  Literal *lit = property->key();
+  Literal* lit = property->key();
   Handle<Object> handle = lit->handle();
 
   uint32_t hash;
@@ -3745,7 +3757,7 @@ ObjectLiteral::Property* Parser::ParseObjectLiteralGetSet(bool is_getter,
                              RelocInfo::kNoPosition,
                              FunctionLiteral::ANONYMOUS_EXPRESSION,
                              CHECK_OK);
-    // Allow any number of parameters for compatiabilty with JSC.
+    // Allow any number of parameters for compatibilty with JSC.
     // Specification only allows zero parameters for get and one for set.
     ObjectLiteral::Property* property =
         new(zone()) ObjectLiteral::Property(is_getter, value);
@@ -4490,6 +4502,15 @@ Handle<String> Parser::ParseIdentifierName(bool* ok) {
     return Handle<String>();
   }
   return GetSymbol(ok);
+}
+
+
+void Parser::MarkAsLValue(Expression* expression) {
+  VariableProxy* proxy = expression != NULL
+      ? expression->AsVariableProxy()
+      : NULL;
+
+  if (proxy != NULL) proxy->MarkAsLValue();
 }
 
 

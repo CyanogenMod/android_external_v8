@@ -1,4 +1,4 @@
-// Copyright 2011 the V8 project authors. All rights reserved.
+// Copyright 2012 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -223,6 +223,7 @@ class CaseClause;
 class CompareOperation;
 class CompilationInfo;
 class CountOperation;
+class Expression;
 class Property;
 class SmallMapList;
 class UnaryOperation;
@@ -277,6 +278,7 @@ class TypeFeedbackOracle BASE_EMBEDDED {
   TypeInfo BinaryType(BinaryOperation* expr);
   TypeInfo CompareType(CompareOperation* expr);
   bool IsSymbolCompare(CompareOperation* expr);
+  Handle<Map> GetCompareMap(CompareOperation* expr);
   TypeInfo SwitchType(CaseClause* clause);
   TypeInfo IncrementType(CountOperation* expr);
 
@@ -302,7 +304,7 @@ class TypeFeedbackOracle BASE_EMBEDDED {
 
   Handle<Context> global_context_;
   Isolate* isolate_;
-  Handle<NumberDictionary> dictionary_;
+  Handle<UnseededNumberDictionary> dictionary_;
 
   DISALLOW_COPY_AND_ASSIGN(TypeFeedbackOracle);
 };

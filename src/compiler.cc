@@ -398,7 +398,7 @@ static Handle<SharedFunctionInfo> MakeFunctionInfo(CompilationInfo* info) {
   FunctionLiteral* lit = info->function();
   LiveEditFunctionTracker live_edit_tracker(isolate, lit);
   if (!MakeCode(info)) {
-    isolate->StackOverflow();
+    if (!isolate->has_pending_exception()) isolate->StackOverflow();
     return Handle<SharedFunctionInfo>::null();
   }
 
@@ -628,7 +628,7 @@ bool Compiler::CompileLazy(CompilationInfo* info) {
         // scope info.  Please note, that the order of the shared function
         // info initialization is important since set_scope_info might
         // trigger a GC, causing the ASSERT below to be invalid if the code
-        // was flushed. By settting the code object last we avoid this.
+        // was flushed. By setting the code object last we avoid this.
         Handle<ScopeInfo> scope_info = ScopeInfo::Create(info->scope());
         shared->set_scope_info(*scope_info);
         shared->set_code(*code);

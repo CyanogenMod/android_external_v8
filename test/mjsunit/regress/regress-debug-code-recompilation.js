@@ -1,4 +1,4 @@
-// Copyright 2011 the V8 project authors. All rights reserved.
+// Copyright 2012 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,36 +25,23 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef V8_EXTENSIONS_EXPERIMENTAL_I18N_LOCALE_H_
-#define V8_EXTENSIONS_EXPERIMENTAL_I18N_LOCALE_H_
+// Flags: --allow-natives-syntax --hydrogen-filter=Debug.setBreakPoint --expose-debug-as debug
 
-#include "include/v8.h"
+Debug = debug.Debug
 
-namespace v8 {
-namespace internal {
+function f() {a=1;b=2};
+function g() {
+  a=1;
+  b=2;
+}
 
-class I18NLocale {
- public:
-  I18NLocale() {}
-
-  // Implementations of window.Locale methods.
-  static v8::Handle<v8::Value> JSLocale(const v8::Arguments& args);
-
-  // Infers region id given the locale id, or uses user specified region id.
-  // Result is canonicalized.
-  // Returns status of ICU operation (maximizing locale or get region call).
-  static bool GetBestMatchForRegionID(
-      const char* locale_id, v8::Handle<v8::Value> regions, char* result);
-
- private:
-  // Key name for localeID parameter.
-  static const char* const kLocaleID;
-  // Key name for regionID parameter.
-  static const char* const kRegionID;
-  // Key name for the icuLocaleID result.
-  static const char* const kICULocaleID;
-};
-
-} }  // namespace v8::internal
-
-#endif  // V8_EXTENSIONS_EXPERIMENTAL_I18N_LOCALE_H_
+bp = Debug.setBreakPoint(f, 0, 0);
+Debug.clearBreakPoint(bp);
+%OptimizeFunctionOnNextCall(Debug.setBreakPoint);
+bp = Debug.setBreakPoint(f, 0, 0);
+Debug.clearBreakPoint(bp);
+bp = Debug.setBreakPoint(f, 0, 0);
+Debug.clearBreakPoint(bp);
+%OptimizeFunctionOnNextCall(Debug.setBreakPoint);
+bp = Debug.setBreakPoint(f, 0, 0);
+Debug.clearBreakPoint(bp);

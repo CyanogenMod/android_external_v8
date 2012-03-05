@@ -1,4 +1,4 @@
-// Copyright 2011 the V8 project authors. All rights reserved.
+// Copyright 2012 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -337,7 +337,7 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
     __ push(rbx);
     __ push(rbx);
 
-    // Setup pointer to last argument.
+    // Set up pointer to last argument.
     __ lea(rbx, Operand(rbp, StandardFrameConstants::kCallerSPOffset));
 
     // Copy arguments and receiver to the expression stack.
@@ -1198,8 +1198,9 @@ static void AllocateJSArray(MacroAssembler* masm,
 // Both registers are preserved by this code so no need to differentiate between
 // a construct call and a normal call.
 static void ArrayNativeCode(MacroAssembler* masm,
-                            Label *call_generic_code) {
-  Label argc_one_or_more, argc_two_or_more, empty_array, not_empty_array;
+                            Label* call_generic_code) {
+  Label argc_one_or_more, argc_two_or_more, empty_array, not_empty_array,
+      has_non_smi_element;
 
   // Check for array construction with zero arguments.
   __ testq(rax, rax);
@@ -1305,6 +1306,9 @@ static void ArrayNativeCode(MacroAssembler* masm,
   __ jmp(&entry);
   __ bind(&loop);
   __ movq(kScratchRegister, Operand(r9, rcx, times_pointer_size, 0));
+  if (FLAG_smi_only_arrays) {
+    __ JumpIfNotSmi(kScratchRegister, &has_non_smi_element);
+  }
   __ movq(Operand(rdx, 0), kScratchRegister);
   __ addq(rdx, Immediate(kPointerSize));
   __ bind(&entry);
@@ -1321,6 +1325,45 @@ static void ArrayNativeCode(MacroAssembler* masm,
   __ push(rcx);
   __ movq(rax, rbx);
   __ ret(0);
+
+  __ bind(&has_non_smi_element);
+  __ UndoAllocationInNewSpace(rbx);
+  __ jmp(call_generic_code);
+}
+
+
+void Builtins::Generate_InternalArrayCode(MacroAssembler* masm) {
+  // ----------- S t a t e -------------
+  //  -- rax : argc
+  //  -- rsp[0] : return address
+  //  -- rsp[8] : last argument
+  // -----------------------------------
+  Label generic_array_code;
+
+  // Get the InternalArray function.
+  __ LoadGlobalFunction(Context::INTERNAL_ARRAY_FUNCTION_INDEX, rdi);
+
+  if (FLAG_debug_code) {
+    // Initial map for the builtin InternalArray functions should be maps.
+    __ movq(rbx, FieldOperand(rdi, JSFunction::kPrototypeOrInitialMapOffset));
+    // Will both indicate a NULL and a Smi.
+    STATIC_ASSERT(kSmiTag == 0);
+    Condition not_smi = NegateCondition(masm->CheckSmi(rbx));
+    __ Check(not_smi, "Unexpected initial map for InternalArray function");
+    __ CmpObjectType(rbx, MAP_TYPE, rcx);
+    __ Check(equal, "Unexpected initial map for InternalArray function");
+  }
+
+  // Run the native code for the InternalArray function called as a normal
+  // function.
+  ArrayNativeCode(masm, &generic_array_code);
+
+  // Jump to the generic array code in case the specialized code cannot handle
+  // the construction.
+  __ bind(&generic_array_code);
+  Handle<Code> array_code =
+      masm->isolate()->builtins()->InternalArrayCodeGeneric();
+  __ Jump(array_code, RelocInfo::CODE_TARGET);
 }
 
 
@@ -1504,6 +1547,7 @@ void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {
   __ bind(&invoke);
   __ call(rdx);
 
+  masm->isolate()->heap()->SetArgumentsAdaptorDeoptPCOffset(masm->pc_offset());
   // Leave frame and return.
   LeaveArgumentsAdaptorFrame(masm);
   __ ret(0);

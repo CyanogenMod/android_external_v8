@@ -59,7 +59,7 @@ function test() {
   } catch (ex) { }
   assertEquals("1", charat_short.charAt(1));
 
-  // Test regexp.
+  // Test regexp and short substring.
   var re = /(A|B)/;
   var rere = /(T.{1,2}B)/;
   var ascii = "ABCDEFGHIJKLMNOPQRST";
@@ -81,7 +81,34 @@ function test() {
     assertEquals(["A", "A"], re.exec(twobyte));
     assertEquals(["B", "B"], re.exec(twobyte_slice));
     assertEquals(["T_AB", "T_AB"], rere.exec(twobyte_cons));
+    assertEquals("DEFG", ascii_slice.substr(2, 4));
+    assertEquals("DEFG", twobyte_slice.substr(2, 4));
+    assertEquals("DEFG", ascii_cons.substr(3, 4));
+    assertEquals("DEFG", twobyte_cons.substr(4, 4));
   }
+
+  // Test adding external strings
+  var short_ascii = "E=";
+  var long_ascii = "MCsquared";
+  var short_twobyte = "E\u1234";
+  var long_twobyte = "MCsquare\u1234";
+  try {  // String can only be externalized once
+    externalizeString(short_ascii, false);
+    externalizeString(long_ascii, false);
+    externalizeString(short_twobyte, true);
+    externalizeString(long_twobyte, true);
+    assertTrue(isAsciiString(short_asii) && isAsciiString(long_ascii));
+    assertFalse(isAsciiString(short_twobyte) || isAsciiString(long_twobyte));
+  } catch (ex) { }
+  assertEquals("E=MCsquared", short_ascii + long_ascii);
+  assertTrue(isAsciiString(short_ascii + long_ascii));
+  assertEquals("MCsquaredE=", long_ascii + short_ascii);
+  assertEquals("E\u1234MCsquare\u1234", short_twobyte + long_twobyte);
+  assertFalse(isAsciiString(short_twobyte + long_twobyte));
+  assertEquals("E=MCsquared", "E=" + long_ascii);
+  assertEquals("E\u1234MCsquared", short_twobyte + "MCsquared");
+  assertEquals("E\u1234MCsquared", short_twobyte + long_ascii);
+  assertFalse(isAsciiString(short_twobyte + long_ascii));
 }
 
 // Run the test many times to ensure IC-s don't break things.

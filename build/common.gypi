@@ -1,4 +1,4 @@
-# Copyright 2011 the V8 project authors. All rights reserved.
+# Copyright 2012 the V8 project authors. All rights reserved.
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are
 # met:
@@ -72,6 +72,9 @@
 
     # Enable profiling support. Only required on Windows.
     'v8_enable_prof%': 0,
+
+    # Some versions of GCC 4.5 seem to need -fno-strict-aliasing.
+    'v8_no_strict_aliasing%': 0,
 
     # Chrome needs this definition unconditionally. For standalone V8 builds,
     # it's handled in build/standalone.gypi.
@@ -208,6 +211,11 @@
           'COMPRESS_STARTUP_DATA_BZ2',
         ],
       }],
+      ['OS=="win"', {
+        'defines': [
+          'WIN32',
+        ],
+      }],
       ['OS=="win" and v8_enable_prof==1', {
         'msvs_settings': {
           'VCLinkerTool': {
@@ -215,18 +223,22 @@
           },
         },
       }],
-      ['OS=="linux" or OS=="freebsd" or OS=="openbsd" or OS=="solaris"', {
+      ['OS=="linux" or OS=="freebsd" or OS=="openbsd" or OS=="solaris" \
+         or OS=="netbsd"', {
         'conditions': [
           [ 'target_arch=="ia32"', {
             'cflags': [ '-m32' ],
             'ldflags': [ '-m32' ],
           }],
-        ],
+          [ 'v8_no_strict_aliasing==1', {
+            'cflags': [ '-fno-strict-aliasing' ],
+          }],
+        ],  # conditions
       }],
       ['OS=="solaris"', {
         'defines': [ '__C99FEATURES__=1' ],  # isinf() etc.
       }],
-    ],
+    ],  # conditions
     'configurations': {
       'Debug': {
         'defines': [
@@ -259,15 +271,19 @@
           ['OS=="freebsd" or OS=="openbsd"', {
             'cflags': [ '-I/usr/local/include' ],
           }],
-          ['OS=="linux" or OS=="freebsd" or OS=="openbsd"', {
+          ['OS=="netbsd"', {
+            'cflags': [ '-I/usr/pkg/include' ],
+          }],
+          ['OS=="linux" or OS=="freebsd" or OS=="openbsd" or OS=="netbsd"', {
             'cflags': [ '-Wall', '<(werror)', '-W', '-Wno-unused-parameter',
                         '-Wnon-virtual-dtor', '-Woverloaded-virtual' ],
           }],
         ],
-      },
+      },  # Debug
       'Release': {
         'conditions': [
-          ['OS=="linux" or OS=="freebsd" or OS=="openbsd"', {
+          ['OS=="linux" or OS=="freebsd" or OS=="openbsd" or OS=="netbsd" \
+            or OS=="android"', {
             'cflags!': [
               '-O2',
               '-Os',
@@ -279,7 +295,7 @@
               '-O3',
             ],
             'conditions': [
-              [ 'gcc_version==44', {
+              [ 'gcc_version==44 and clang==0', {
                 'cflags': [
                   # Avoid crashes with gcc 4.4 in the v8 test suite.
                   '-fno-tree-vrp',
@@ -289,6 +305,9 @@
           }],
           ['OS=="freebsd" or OS=="openbsd"', {
             'cflags': [ '-I/usr/local/include' ],
+          }],
+          ['OS=="netbsd"', {
+            'cflags': [ '-I/usr/pkg/include' ],
           }],
           ['OS=="mac"', {
             'xcode_settings': {
@@ -300,7 +319,7 @@
               # is specified explicitly.
               'GCC_STRICT_ALIASING': 'YES',
             },
-          }],
+          }],  # OS=="mac"
           ['OS=="win"', {
             'msvs_configuration_attributes': {
               'OutputDirectory': '<(DEPTH)\\build\\$(ConfigurationName)',
@@ -335,9 +354,9 @@
                 # 'StackReserveSize': '297152',
               },
             },
-          }],
-        ],
-      },
-    },
-  },
+          }],  # OS=="win"
+        ],  # conditions
+      },  # Release
+    },  # configurations
+  },  # target_defaults
 }

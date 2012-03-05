@@ -109,7 +109,7 @@ class Socket;
 class OS {
  public:
   // Initializes the platform OS support. Called once at VM startup.
-  static void Setup();
+  static void SetUp();
 
   // Returns the accumulated user time for thread. This routine
   // can be used for profiling. The implementation should
@@ -172,6 +172,10 @@ class OS {
                         bool is_executable);
   static void Free(void* address, const size_t size);
 
+  // This is the granularity at which the ProtectCode(...) call can set page
+  // permissions.
+  static intptr_t CommitPageSize();
+
   // Mark code segments non-writable.
   static void ProtectCode(void* address, const size_t size);
 
@@ -183,8 +187,6 @@ class OS {
 
   // Get the Alignment guaranteed by Allocate().
   static size_t AllocateAlignment();
-
-  static intptr_t CommitPageSize();
 
   // Returns an indication of whether a pointer is in a space that
   // has been allocated by Allocate().  This method may conservatively
@@ -413,16 +415,22 @@ class Thread {
     LOCAL_STORAGE_KEY_MAX_VALUE = kMaxInt
   };
 
-  struct Options {
-    Options() : name("v8:<unknown>"), stack_size(0) {}
+  class Options {
+   public:
+    Options() : name_("v8:<unknown>"), stack_size_(0) {}
+    Options(const char* name, int stack_size = 0)
+        : name_(name), stack_size_(stack_size) {}
 
-    const char* name;
-    int stack_size;
+    const char* name() const { return name_; }
+    int stack_size() const { return stack_size_; }
+
+   private:
+    const char* name_;
+    int stack_size_;
   };
 
   // Create new thread.
   explicit Thread(const Options& options);
-  explicit Thread(const char* name);
   virtual ~Thread();
 
   // Start new thread by calling the Run() method in the new thread.
@@ -478,7 +486,7 @@ class Thread {
   PlatformData* data() { return data_; }
 
  private:
-  void set_name(const char *name);
+  void set_name(const char* name);
 
   PlatformData* data_;
 
@@ -554,7 +562,7 @@ class Semaphore {
   virtual void Wait() = 0;
 
   // Suspends the calling thread until the counter is non zero or the timeout
-  // time has passsed. If timeout happens the return value is false and the
+  // time has passed. If timeout happens the return value is false and the
   // counter is unchanged. Otherwise the semaphore counter is decremented and
   // true is returned. The timeout value is specified in microseconds.
   virtual bool Wait(int timeout) = 0;
@@ -594,7 +602,7 @@ class Socket {
 
   virtual bool IsValid() const = 0;
 
-  static bool Setup();
+  static bool SetUp();
   static int LastError();
   static uint16_t HToN(uint16_t value);
   static uint16_t NToH(uint16_t value);

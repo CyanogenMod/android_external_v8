@@ -1,4 +1,4 @@
-// Copyright 2011 the V8 project authors. All rights reserved.
+// Copyright 2012 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -93,6 +93,9 @@ class LCodeGen BASE_EMBEDDED {
   // Returns a MemOperand pointing to the high word of a DoubleStackSlot.
   MemOperand ToHighMemOperand(LOperand* op) const;
 
+  bool IsInteger32(LConstantOperand* op) const;
+  Handle<Object> ToHandle(LConstantOperand* op) const;
+
   // Try to generate code for the entire chunk, but it may fail if the
   // chunk contains constructs we cannot handle. Returns true if the
   // code generation attempt succeeded.
@@ -115,6 +118,9 @@ class LCodeGen BASE_EMBEDDED {
   void DoDeferredStringCharFromCode(LStringCharFromCode* instr);
   void DoDeferredInstanceOfKnownGlobal(LInstanceOfKnownGlobal* instr,
                                        Label* map_check);
+
+  void DoCheckMapCommon(Register reg, Register scratch, Handle<Map> map,
+                        CompareMapMode mode, LEnvironment* env);
 
   // Parallel move support.
   void DoParallelMove(LParallelMove* move);
@@ -267,6 +273,7 @@ class LCodeGen BASE_EMBEDDED {
   void EmitNumberUntagD(Register input,
                         DoubleRegister result,
                         bool deoptimize_on_undefined,
+                        bool deoptimize_on_minus_zero,
                         LEnvironment* env);
 
   // Emits optimized code for typeof x == "y".  Modifies input register.
@@ -405,7 +412,7 @@ class LDeferredCode: public ZoneObject {
   virtual void Generate() = 0;
   virtual LInstruction* instr() = 0;
 
-  void SetExit(Label *exit) { external_exit_ = exit; }
+  void SetExit(Label* exit) { external_exit_ = exit; }
   Label* entry() { return &entry_; }
   Label* exit() { return external_exit_ != NULL ? external_exit_ : &exit_; }
   int instruction_index() const { return instruction_index_; }

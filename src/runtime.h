@@ -197,6 +197,7 @@ namespace internal {
   F(StringLocaleCompare, 2, 1) \
   F(SubString, 3, 1) \
   F(StringReplaceRegExpWithString, 4, 1) \
+  F(StringReplaceOneCharWithString, 3, 1) \
   F(StringMatch, 3, 1) \
   F(StringTrim, 3, 1) \
   F(StringToArray, 2, 1) \
@@ -341,7 +342,6 @@ namespace internal {
   /* Debugging */ \
   F(DebugPrint, 1, 1) \
   F(DebugTrace, 0, 1) \
-  F(TraceElementsKindTransition, 5, 1) \
   F(TraceEnter, 0, 1) \
   F(TraceExit, 1, 1) \
   F(Abort, 2, 1) \
@@ -630,6 +630,13 @@ class Runtime : public AllStatic {
   // Get the intrinsic function with the given FunctionId.
   static const Function* FunctionForId(FunctionId id);
 
+  static Handle<String> StringReplaceOneCharWithString(Isolate* isolate,
+                                                       Handle<String> subject,
+                                                       Handle<String> search,
+                                                       Handle<String> replace,
+                                                       bool* found,
+                                                       int recursion_limit);
+
   // General-purpose helper functions for runtime system.
   static int StringMatch(Isolate* isolate,
                          Handle<String> sub,
@@ -679,6 +686,12 @@ class Runtime : public AllStatic {
 
   // Helper functions used stubs.
   static void PerformGC(Object* result);
+
+  // Used in runtime.cc and hydrogen's VisitArrayLiteral.
+  static Handle<Object> CreateArrayLiteralBoilerplate(
+      Isolate* isolate,
+      Handle<FixedArray> literals,
+      Handle<FixedArray> elements);
 };
 
 

@@ -1,4 +1,4 @@
-// Copyright 2011 the V8 project authors. All rights reserved.
+// Copyright 2012 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -237,10 +237,21 @@ class MacroAssembler: public Assembler {
   void StoreToSafepointRegisterSlot(Register dst, Immediate src);
   void LoadFromSafepointRegisterSlot(Register dst, Register src);
 
+  void LoadHeapObject(Register result, Handle<HeapObject> object);
+  void PushHeapObject(Handle<HeapObject> object);
+
+  void LoadObject(Register result, Handle<Object> object) {
+    if (object->IsHeapObject()) {
+      LoadHeapObject(result, Handle<HeapObject>::cast(object));
+    } else {
+      Set(result, Immediate(object));
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // JavaScript invokes
 
-  // Setup call kind marking in ecx. The method takes ecx as an
+  // Set up call kind marking in ecx. The method takes ecx as an
   // explicit first parameter to make the code more readable at the
   // call sites.
   void SetCallKind(Register dst, CallKind kind);
@@ -305,8 +316,9 @@ class MacroAssembler: public Assembler {
   void SafeSet(Register dst, const Immediate& x);
   void SafePush(const Immediate& x);
 
-  // Compare a register against a known root, e.g. undefined, null, true, ...
+  // Compare against a known root, e.g. undefined, null, true, ...
   void CompareRoot(Register with, Heap::RootListIndex index);
+  void CompareRoot(const Operand& with, Heap::RootListIndex index);
 
   // Compare object type for heap object.
   // Incoming register is heap_object and outgoing register is map.
@@ -344,13 +356,24 @@ class MacroAssembler: public Assembler {
                                    Label* fail,
                                    bool specialize_for_processor);
 
+  // Compare an object's map with the specified map and its transitioned
+  // elements maps if mode is ALLOW_ELEMENT_TRANSITION_MAPS. FLAGS are set with
+  // result of map compare. If multiple map compares are required, the compare
+  // sequences branches to early_success.
+  void CompareMap(Register obj,
+                  Handle<Map> map,
+                  Label* early_success,
+                  CompareMapMode mode = REQUIRE_EXACT_MAP);
+
   // Check if the map of an object is equal to a specified map and branch to
   // label if not. Skip the smi check if not required (object is known to be a
-  // heap object)
+  // heap object). If mode is ALLOW_ELEMENT_TRANSITION_MAPS, then also match
+  // against maps that are ElementsKind transition maps of the specified map.
   void CheckMap(Register obj,
                 Handle<Map> map,
                 Label* fail,
-                SmiCheckType smi_check_type);
+                SmiCheckType smi_check_type,
+                CompareMapMode mode = REQUIRE_EXACT_MAP);
 
   // Check if the map of an object is equal to a specified map and branch to a
   // specified target if equal. Skip the smi check if not required (object is
@@ -474,6 +497,7 @@ class MacroAssembler: public Assembler {
                               Register scratch,
                               Label* miss);
 
+  void GetNumberHash(Register r0, Register scratch);
 
   void LoadFromNumberDictionary(Label* miss,
                                 Register elements,
@@ -718,10 +742,8 @@ class MacroAssembler: public Assembler {
   // Move if the registers are not identical.
   void Move(Register target, Register source);
 
-  void Move(Register target, Handle<Object> value);
-
   // Push a handle value.
-  void Push(Handle<Object> handle) { push(handle); }
+  void Push(Handle<Object> handle) { push(Immediate(handle)); }
 
   Handle<Object> CodeObject() {
     ASSERT(!code_object_.is_null());
@@ -769,7 +791,7 @@ class MacroAssembler: public Assembler {
   // ---------------------------------------------------------------------------
   // String utilities.
 
-  // Check whether the instance type represents a flat ascii string. Jump to the
+  // Check whether the instance type represents a flat ASCII string. Jump to the
   // label if not. If the instance type can be scratched specify same register
   // for both instance type and scratch.
   void JumpIfInstanceTypeIsNotSequentialAscii(Register instance_type,
@@ -805,6 +827,7 @@ class MacroAssembler: public Assembler {
                       Handle<Code> code_constant,
                       const Operand& code_operand,
                       Label* done,
+                      bool* definitely_mismatches,
                       InvokeFlag flag,
                       Label::Distance done_distance,
                       const CallWrapper& call_wrapper = NullCallWrapper(),

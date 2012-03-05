@@ -106,7 +106,7 @@ class JumpPatchSite BASE_EMBEDDED {
 // formal parameter count expected by the function.
 //
 // The live registers are:
-//   o edi: the JS function object being called (ie, ourselves)
+//   o edi: the JS function object being called (i.e. ourselves)
 //   o esi: our context
 //   o ebp: our caller's frame pointer
 //   o esp: stack pointer (pointing to return address)
@@ -227,7 +227,7 @@ void FullCodeGenerator::Generate(CompilationInfo* info) {
            Operand(ebp, StandardFrameConstants::kCallerSPOffset + offset));
     __ push(edx);
     __ SafePush(Immediate(Smi::FromInt(num_parameters)));
-    // Arguments to ArgumentsAccessStub and/or New...:
+    // Arguments to ArgumentsAccessStub:
     //   function, receiver address, parameter count.
     // The stub will rewrite receiver and parameter count if the previous
     // stack frame was an arguments adapter frame.
@@ -967,7 +967,7 @@ void FullCodeGenerator::VisitForInStatement(ForInStatement* stmt) {
   __ mov(ecx, FieldOperand(ecx, DescriptorArray::kEnumerationIndexOffset));
   __ mov(edx, FieldOperand(ecx, DescriptorArray::kEnumCacheBridgeCacheOffset));
 
-  // Setup the four remaining stack slots.
+  // Set up the four remaining stack slots.
   __ push(eax);  // Map.
   __ push(edx);  // Enumeration cache.
   __ mov(eax, FieldOperand(edx, FixedArray::kLengthOffset));
@@ -2883,7 +2883,7 @@ void FullCodeGenerator::EmitMathPow(CallRuntime* expr) {
   VisitForStackValue(args->at(1));
 
   if (CpuFeatures::IsSupported(SSE2)) {
-    MathPowStub stub;
+    MathPowStub stub(MathPowStub::ON_STACK);
     __ CallStub(&stub);
   } else {
     __ CallRuntime(Runtime::kMath_pow, 2);
@@ -3571,7 +3571,7 @@ void FullCodeGenerator::EmitFastAsciiArrayJoin(CallRuntime* expr) {
 
   // One-character separator case
   __ bind(&one_char_separator);
-  // Replace separator with its ascii character value.
+  // Replace separator with its ASCII character value.
   __ mov_b(scratch, FieldOperand(string, SeqAsciiString::kHeaderSize));
   __ mov_b(separator_operand, scratch);
 
@@ -3787,7 +3787,7 @@ void FullCodeGenerator::VisitUnaryOperation(UnaryOperation* expr) {
         if (context()->IsAccumulatorValue()) {
           __ mov(eax, isolate()->factory()->true_value());
         } else {
-          __ push(isolate()->factory()->true_value());
+          __ Push(isolate()->factory()->true_value());
         }
         __ jmp(&done, Label::kNear);
         __ bind(&materialize_false);
@@ -3795,7 +3795,7 @@ void FullCodeGenerator::VisitUnaryOperation(UnaryOperation* expr) {
         if (context()->IsAccumulatorValue()) {
           __ mov(eax, isolate()->factory()->false_value());
         } else {
-          __ push(isolate()->factory()->false_value());
+          __ Push(isolate()->factory()->false_value());
         }
         __ bind(&done);
       }

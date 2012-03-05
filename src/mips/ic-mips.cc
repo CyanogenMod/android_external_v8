@@ -868,22 +868,26 @@ void KeyedStoreIC::GenerateNonStrictArguments(MacroAssembler* masm) {
   //  -- lr     : return address
   // -----------------------------------
   Label slow, notin;
+  // Store address is returned in register (of MemOperand) mapped_location.
   MemOperand mapped_location =
       GenerateMappedArgumentsLookup(masm, a2, a1, a3, t0, t1, &notin, &slow);
   __ sw(a0, mapped_location);
-  __ Addu(t2, a3, t1);
   __ mov(t5, a0);
-  __ RecordWrite(a3, t2, t5, kRAHasNotBeenSaved, kDontSaveFPRegs);
+  ASSERT_EQ(mapped_location.offset(), 0);
+  __ RecordWrite(a3, mapped_location.rm(), t5,
+                 kRAHasNotBeenSaved, kDontSaveFPRegs);
   __ Ret(USE_DELAY_SLOT);
   __ mov(v0, a0);  // (In delay slot) return the value stored in v0.
   __ bind(&notin);
   // The unmapped lookup expects that the parameter map is in a3.
+  // Store address is returned in register (of MemOperand) unmapped_location.
   MemOperand unmapped_location =
       GenerateUnmappedArgumentsLookup(masm, a1, a3, t0, &slow);
   __ sw(a0, unmapped_location);
-  __ Addu(t2, a3, t0);
   __ mov(t5, a0);
-  __ RecordWrite(a3, t2, t5, kRAHasNotBeenSaved, kDontSaveFPRegs);
+  ASSERT_EQ(unmapped_location.offset(), 0);
+  __ RecordWrite(a3, unmapped_location.rm(), t5,
+                 kRAHasNotBeenSaved, kDontSaveFPRegs);
   __ Ret(USE_DELAY_SLOT);
   __ mov(v0, a0);  // (In delay slot) return the value stored in v0.
   __ bind(&slow);
@@ -1029,19 +1033,32 @@ void KeyedLoadIC::GenerateGeneric(MacroAssembler* masm) {
   __ lw(t0, FieldMemOperand(a0, String::kHashFieldOffset));
   __ sra(at, t0, String::kHashShift);
   __ xor_(a3, a3, at);
-  __ And(a3, a3, Operand(KeyedLookupCache::kCapacityMask));
+  int mask = KeyedLookupCache::kCapacityMask & KeyedLookupCache::kHashMask;
+  __ And(a3, a3, Operand(mask));
 
   // Load the key (consisting of map and symbol) from the cache and
   // check for match.
+  Label load_in_object_property;
+  static const int kEntriesPerBucket = KeyedLookupCache::kEntriesPerBucket;
+  Label hit_on_nth_entry[kEntriesPerBucket];
   ExternalReference cache_keys =
       ExternalReference::keyed_lookup_cache_keys(isolate);
   __ li(t0, Operand(cache_keys));
   __ sll(at, a3, kPointerSizeLog2 + 1);
   __ addu(t0, t0, at);
-  __ lw(t1, MemOperand(t0));  // Move t0 to symbol.
-  __ Addu(t0, t0, Operand(kPointerSize));
+
+  for (int i = 0; i < kEntriesPerBucket - 1; i++) {
+    Label try_next_entry;
+    __ lw(t1, MemOperand(t0, kPointerSize * i * 2));
+    __ Branch(&try_next_entry, ne, a2, Operand(t1));
+    __ lw(t1, MemOperand(t0, kPointerSize * (i * 2 + 1)));
+    __ Branch(&hit_on_nth_entry[i], eq, a0, Operand(t1));
+    __ bind(&try_next_entry);
+  }
+
+  __ lw(t1, MemOperand(t0, kPointerSize * (kEntriesPerBucket - 1) * 2));
   __ Branch(&slow, ne, a2, Operand(t1));
-  __ lw(t1, MemOperand(t0));
+  __ lw(t1, MemOperand(t0, kPointerSize * ((kEntriesPerBucket - 1) * 2 + 1)));
   __ Branch(&slow, ne, a0, Operand(t1));
 
   // Get field offset.
@@ -1051,15 +1068,24 @@ void KeyedLoadIC::GenerateGeneric(MacroAssembler* masm) {
   // a3     : lookup cache index
   ExternalReference cache_field_offsets =
       ExternalReference::keyed_lookup_cache_field_offsets(isolate);
-  __ li(t0, Operand(cache_field_offsets));
-  __ sll(at, a3, kPointerSizeLog2);
-  __ addu(at, t0, at);
-  __ lw(t1, MemOperand(at));
-  __ lbu(t2, FieldMemOperand(a2, Map::kInObjectPropertiesOffset));
-  __ Subu(t1, t1, t2);
-  __ Branch(&property_array_property, ge, t1, Operand(zero_reg));
+
+  // Hit on nth entry.
+  for (int i = kEntriesPerBucket - 1; i >= 0; i--) {
+    __ bind(&hit_on_nth_entry[i]);
+    __ li(t0, Operand(cache_field_offsets));
+    __ sll(at, a3, kPointerSizeLog2);
+    __ addu(at, t0, at);
+    __ lw(t1, MemOperand(at, kPointerSize * i));
+    __ lbu(t2, FieldMemOperand(a2, Map::kInObjectPropertiesOffset));
+    __ Subu(t1, t1, t2);
+    __ Branch(&property_array_property, ge, t1, Operand(zero_reg));
+    if (i != 0) {
+      __ Branch(&load_in_object_property);
+    }
+  }
 
   // Load in-object property.
+  __ bind(&load_in_object_property);
   __ lbu(t2, FieldMemOperand(a2, Map::kInstanceSizeOffset));
   __ addu(t2, t2, t1);  // Index from start of object.
   __ Subu(a1, a1, Operand(kHeapObjectTag));  // Remove the heap tag.
@@ -1470,11 +1496,10 @@ void StoreIC::GenerateArrayLength(MacroAssembler* masm) {
   //  -- ra    : return address
   // -----------------------------------
   //
-  // This accepts as a receiver anything JSObject::SetElementsLength accepts
-  // (currently anything except for external and pixel arrays which means
-  // anything with elements of FixedArray type.), but currently is restricted
-  // to JSArray.
-  // Value must be a number, but only smis are accepted as the most common case.
+  // This accepts as a receiver anything JSArray::SetElementsLength accepts
+  // (currently anything except for external arrays which means anything with
+  // elements of FixedArray type).  Value must be a number, but only smis are
+  // accepted as the most common case.
 
   Label miss;
 
@@ -1495,6 +1520,10 @@ void StoreIC::GenerateArrayLength(MacroAssembler* masm) {
   __ lw(scratch, FieldMemOperand(receiver, JSArray::kElementsOffset));
   __ GetObjectType(scratch, scratch, scratch);
   __ Branch(&miss, ne, scratch, Operand(FIXED_ARRAY_TYPE));
+
+  // Check that the array has fast properties, otherwise the length
+  // property might have been redefined.
+  // TODO(mstarzinger): Port this check to MIPS.
 
   // Check that value is a smi.
   __ JumpIfNotSmi(value, &miss);
@@ -1587,6 +1616,9 @@ void CompareIC::UpdateCaches(Handle<Object> x, Handle<Object> y) {
     rewritten = stub.GetCode();
   } else {
     ICCompareStub stub(op_, state);
+    if (state == KNOWN_OBJECTS) {
+      stub.set_known_map(Handle<Map>(Handle<JSObject>::cast(x)->map()));
+    }
     rewritten = stub.GetCode();
   }
   set_target(*rewritten);

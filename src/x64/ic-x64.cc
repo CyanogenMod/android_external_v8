@@ -462,30 +462,58 @@ void KeyedLoadIC::GenerateGeneric(MacroAssembler* masm) {
   __ movl(rdi, FieldOperand(rax, String::kHashFieldOffset));
   __ shr(rdi, Immediate(String::kHashShift));
   __ xor_(rcx, rdi);
-  __ and_(rcx, Immediate(KeyedLookupCache::kCapacityMask));
+  int mask = (KeyedLookupCache::kCapacityMask & KeyedLookupCache::kHashMask);
+  __ and_(rcx, Immediate(mask));
 
   // Load the key (consisting of map and symbol) from the cache and
   // check for match.
+  Label load_in_object_property;
+  static const int kEntriesPerBucket = KeyedLookupCache::kEntriesPerBucket;
+  Label hit_on_nth_entry[kEntriesPerBucket];
   ExternalReference cache_keys
       = ExternalReference::keyed_lookup_cache_keys(masm->isolate());
-  __ movq(rdi, rcx);
-  __ shl(rdi, Immediate(kPointerSizeLog2 + 1));
-  __ LoadAddress(kScratchRegister, cache_keys);
-  __ cmpq(rbx, Operand(kScratchRegister, rdi, times_1, 0));
+
+  for (int i = 0; i < kEntriesPerBucket - 1; i++) {
+    Label try_next_entry;
+    __ movq(rdi, rcx);
+    __ shl(rdi, Immediate(kPointerSizeLog2 + 1));
+    __ LoadAddress(kScratchRegister, cache_keys);
+    int off = kPointerSize * i * 2;
+    __ cmpq(rbx, Operand(kScratchRegister, rdi, times_1, off));
+    __ j(not_equal, &try_next_entry);
+    __ cmpq(rax, Operand(kScratchRegister, rdi, times_1, off + kPointerSize));
+    __ j(equal, &hit_on_nth_entry[i]);
+    __ bind(&try_next_entry);
+  }
+
+  int off = kPointerSize * (kEntriesPerBucket - 1) * 2;
+  __ cmpq(rbx, Operand(kScratchRegister, rdi, times_1, off));
   __ j(not_equal, &slow);
-  __ cmpq(rax, Operand(kScratchRegister, rdi, times_1, kPointerSize));
+  __ cmpq(rax, Operand(kScratchRegister, rdi, times_1, off + kPointerSize));
   __ j(not_equal, &slow);
 
   // Get field offset, which is a 32-bit integer.
   ExternalReference cache_field_offsets
       = ExternalReference::keyed_lookup_cache_field_offsets(masm->isolate());
-  __ LoadAddress(kScratchRegister, cache_field_offsets);
-  __ movl(rdi, Operand(kScratchRegister, rcx, times_4, 0));
-  __ movzxbq(rcx, FieldOperand(rbx, Map::kInObjectPropertiesOffset));
-  __ subq(rdi, rcx);
-  __ j(above_equal, &property_array_property);
+
+  // Hit on nth entry.
+  for (int i = kEntriesPerBucket - 1; i >= 0; i--) {
+    __ bind(&hit_on_nth_entry[i]);
+    if (i != 0) {
+      __ addl(rcx, Immediate(i));
+    }
+    __ LoadAddress(kScratchRegister, cache_field_offsets);
+    __ movl(rdi, Operand(kScratchRegister, rcx, times_4, 0));
+    __ movzxbq(rcx, FieldOperand(rbx, Map::kInObjectPropertiesOffset));
+    __ subq(rdi, rcx);
+    __ j(above_equal, &property_array_property);
+    if (i != 0) {
+      __ jmp(&load_in_object_property);
+    }
+  }
 
   // Load in-object property.
+  __ bind(&load_in_object_property);
   __ movzxbq(rcx, FieldOperand(rbx, Map::kInstanceSizeOffset));
   __ addq(rcx, rdi);
   __ movq(rax, FieldOperand(rdx, rcx, times_pointer_size, 0));
@@ -1397,11 +1425,10 @@ void StoreIC::GenerateArrayLength(MacroAssembler* masm) {
   //  -- rsp[0] : return address
   // -----------------------------------
   //
-  // This accepts as a receiver anything JSObject::SetElementsLength accepts
-  // (currently anything except for external and pixel arrays which means
-  // anything with elements of FixedArray type.), but currently is restricted
-  // to JSArray.
-  // Value must be a number, but only smis are accepted as the most common case.
+  // This accepts as a receiver anything JSArray::SetElementsLength accepts
+  // (currently anything except for external arrays which means anything with
+  // elements of FixedArray type).  Value must be a number, but only smis are
+  // accepted as the most common case.
 
   Label miss;
 
@@ -1422,6 +1449,13 @@ void StoreIC::GenerateArrayLength(MacroAssembler* masm) {
   __ movq(scratch, FieldOperand(receiver, JSArray::kElementsOffset));
   __ CmpObjectType(scratch, FIXED_ARRAY_TYPE, scratch);
   __ j(not_equal, &miss);
+
+  // Check that the array has fast properties, otherwise the length
+  // property might have been redefined.
+  __ movq(scratch, FieldOperand(receiver, JSArray::kPropertiesOffset));
+  __ CompareRoot(FieldOperand(scratch, FixedArray::kMapOffset),
+                 Heap::kHashTableMapRootIndex);
+  __ j(equal, &miss);
 
   // Check that value is a smi.
   __ JumpIfNotSmi(value, &miss);
@@ -1641,6 +1675,9 @@ void CompareIC::UpdateCaches(Handle<Object> x, Handle<Object> y) {
     rewritten = stub.GetCode();
   } else {
     ICCompareStub stub(op_, state);
+    if (state == KNOWN_OBJECTS) {
+      stub.set_known_map(Handle<Map>(Handle<JSObject>::cast(x)->map()));
+    }
     rewritten = stub.GetCode();
   }
   set_target(*rewritten);

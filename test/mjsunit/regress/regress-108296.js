@@ -25,47 +25,28 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef V8_EXTENSIONS_EXPERIMENTAL_NUMBER_FORMAT_H_
-#define V8_EXTENSIONS_EXPERIMENTAL_NUMBER_FORMAT_H_
+// Flags: --allow-natives-syntax
 
-#include "include/v8.h"
+// This test checks that young immediates embedded into code objects
+// are referenced through a cell.
 
-#include "unicode/uversion.h"
-
-namespace U_ICU_NAMESPACE {
-class DecimalFormat;
+function f (k, a, b) {
+  // Create control flow for a.foo.  Control flow resolution will
+  // be generated as a part of a gap move. Gap move operate on immediates as
+  // a.foo is a CONSTANT_FUNCTION.
+  var x = k ? a.foo : a.foo;
+  return x.prototype;
 }
 
-namespace v8 {
-namespace internal {
+var a = { };
 
-class NumberFormat {
- public:
-  // 3-letter ISO 4217 currency code plus \0.
-  static const int kCurrencyCodeLength;
+// Make sure that foo is a CONSTANT_FUNCTION but not be pretenured.
+a.foo = (function () { return function () {}; })();
 
-  static v8::Handle<v8::Value> JSNumberFormat(const v8::Arguments& args);
-
-  // Helper methods for various bindings.
-
-  // Unpacks date format object from corresponding JavaScript object.
-  static icu::DecimalFormat* UnpackNumberFormat(
-      v8::Handle<v8::Object> obj);
-
-  // Release memory we allocated for the NumberFormat once the JS object that
-  // holds the pointer gets garbage collected.
-  static void DeleteNumberFormat(v8::Persistent<v8::Value> object,
-                                 void* param);
-
-  // Formats number and returns corresponding string.
-  static v8::Handle<v8::Value> Format(const v8::Arguments& args);
-
- private:
-  NumberFormat();
-
-  static v8::Persistent<v8::FunctionTemplate> number_format_template_;
-};
-
-} }  // namespace v8::internal
-
-#endif  // V8_EXTENSIONS_EXPERIMENTAL_NUMBER_FORMAT_H_
+// Ensure that both branches of ternary operator have monomorphic type feedback.
+f(true, a, a);
+f(true, a, a);
+f(false, a, a);
+f(false, a, a);
+%OptimizeFunctionOnNextCall(f);
+f(true, a, a);
