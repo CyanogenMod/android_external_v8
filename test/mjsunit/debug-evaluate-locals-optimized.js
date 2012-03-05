@@ -50,12 +50,10 @@ function listener(event, exec_state, event_data, data) {
           var expected_y = (i + 1) * 2 + 2;
 
           // All frames except the bottom one has normal variables a and b.
-          var a = ('a' === frame.localName(0)) ? 0 : 1;
-          var b = 1 - a;
-          assertEquals('a', frame.localName(a));
-          assertEquals('b', frame.localName(b));
-          assertEquals(expected_a, frame.localValue(a).value());
-          assertEquals(expected_b, frame.localValue(b).value());
+          assertEquals('a', frame.localName(0));
+          assertEquals('b', frame.localName(1));
+          assertEquals(expected_a, frame.localValue(0).value());
+          assertEquals(expected_b, frame.localValue(1).value());
 
           // All frames except the bottom one has arguments variables x and y.
           assertEquals('x', frame.argumentName(0));
@@ -121,7 +119,7 @@ function listener(event, exec_state, event_data, data) {
       listenerComplete = true;
     }
   } catch (e) {
-    exception = e.stack;
+    exception = e
   };
 };
 

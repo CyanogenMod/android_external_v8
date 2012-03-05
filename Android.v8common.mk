@@ -48,6 +48,7 @@ V8_LOCAL_SRC_FILES := \
 	src/hydrogen.cc \
 	src/hydrogen-instructions.cc \
 	src/ic.cc \
+	src/incremental-marking.cc \
 	src/interpreter-irregexp.cc \
 	src/isolate.cc \
 	src/jsregexp.cc \
@@ -79,6 +80,7 @@ V8_LOCAL_SRC_FILES := \
 	src/serialize.cc \
 	src/snapshot-common.cc \
 	src/spaces.cc \
+	src/store-buffer.cc \
 	src/string-search.cc \
 	src/string-stream.cc \
 	src/strtod.cc \
@@ -175,6 +177,6 @@ V8_LOCAL_JS_LIBRARY_FILES += \
 	src/macros.py
 
 V8_LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES := \
-	src/proxy.js \
-	src/weakmap.js
+	src/collection.js \
+	src/proxy.js
 

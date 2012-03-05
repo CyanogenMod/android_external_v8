@@ -1,4 +1,4 @@
-// Copyright 2010 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -74,6 +74,8 @@ class StringsStorage {
   inline const char* GetFunctionName(const char* name);
 
  private:
+  static const int kMaxNameSize = 1024;
+
   INLINE(static bool StringsMatch(void* key1, void* key2)) {
     return strcmp(reinterpret_cast<char*>(key1),
                   reinterpret_cast<char*>(key2)) == 0;
@@ -257,7 +259,7 @@ class CodeMap {
     typedef Address Key;
     typedef CodeEntryInfo Value;
     static const Key kNoKey;
-    static const Value kNoValue;
+    static const Value NoValue() { return CodeEntryInfo(NULL, 0); }
     static int Compare(const Key& a, const Key& b) {
       return a < b ? -1 : (a > b ? 1 : 0);
     }
@@ -550,7 +552,10 @@ class HeapEntry BASE_EMBEDDED {
   Vector<HeapGraphEdge*> retainers() {
     return Vector<HeapGraphEdge*>(retainers_arr(), retainers_count_); }
   HeapEntry* dominator() { return dominator_; }
-  void set_dominator(HeapEntry* entry) { dominator_ = entry; }
+  void set_dominator(HeapEntry* entry) {
+    ASSERT(entry != NULL);
+    dominator_ = entry;
+  }
 
   void clear_paint() { painted_ = kUnpainted; }
   bool painted_reachable() { return painted_ == kPainted; }
@@ -735,8 +740,7 @@ class HeapObjectsMap {
 
   static uint32_t AddressHash(Address addr) {
     return ComputeIntegerHash(
-        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(addr)),
-        v8::internal::kZeroHashSeed);
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(addr)));
   }
 
   bool initial_fill_mode_;
@@ -837,8 +841,7 @@ class HeapEntriesMap {
 
   static uint32_t Hash(HeapThing thing) {
     return ComputeIntegerHash(
-        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(thing)),
-        v8::internal::kZeroHashSeed);
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(thing)));
   }
   static bool HeapThingsMatch(HeapThing key1, HeapThing key2) {
     return key1 == key2;
@@ -922,7 +925,7 @@ class V8HeapExplorer : public HeapEntriesAllocator {
   virtual HeapEntry* AllocateEntry(
       HeapThing ptr, int children_count, int retainers_count);
   void AddRootEntries(SnapshotFillerInterface* filler);
-  int EstimateObjectsCount();
+  int EstimateObjectsCount(HeapIterator* iterator);
   bool IterateAndExtractReferences(SnapshotFillerInterface* filler);
   void TagGlobalObjects();
 
@@ -970,6 +973,7 @@ class V8HeapExplorer : public HeapEntriesAllocator {
                             HeapEntry* parent,
                             String* reference_name,
                             Object* child,
+                            const char* name_format_string = NULL,
                             int field_offset = -1);
   void SetPropertyShortcutReference(HeapObject* parent_obj,
                                     HeapEntry* parent,
@@ -1020,8 +1024,7 @@ class NativeObjectsExplorer : public HeapEntriesAllocator {
   void VisitSubtreeWrapper(Object** p, uint16_t class_id);
 
   static uint32_t InfoHash(v8::RetainedObjectInfo* info) {
-    return ComputeIntegerHash(static_cast<uint32_t>(info->GetHash()),
-                              v8::internal::kZeroHashSeed);
+    return ComputeIntegerHash(static_cast<uint32_t>(info->GetHash()));
   }
   static bool RetainedInfosMatch(void* key1, void* key2) {
     return key1 == key2 ||
@@ -1099,8 +1102,7 @@ class HeapSnapshotJSONSerializer {
 
   INLINE(static uint32_t ObjectHash(const void* key)) {
     return ComputeIntegerHash(
-        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(key)),
-        v8::internal::kZeroHashSeed);
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(key)));
   }
 
   void EnumerateNodes();
