@@ -47,7 +47,7 @@ $(GEN2): SCRIPT := $(intermediates)/js2c.py
 $(GEN2): $(LOCAL_JS_LIBRARY_FILES) $(JS2C_PY)
 	@echo "Generating libraries.cc"
 	@mkdir -p $(dir $@)
-	python $(SCRIPT) $(GEN2) CORE $(LOCAL_JS_LIBRARY_FILES)
+	python2 $(SCRIPT) $(GEN2) CORE $(LOCAL_JS_LIBRARY_FILES)
 LOCAL_GENERATED_SOURCES := $(intermediates)/libraries.cc
 
 LOCAL_CFLAGS := \
