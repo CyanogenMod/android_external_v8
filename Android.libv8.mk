@@ -40,7 +40,7 @@ $(GEN1): SCRIPT := $(intermediates)/js2c.py
 $(GEN1): $(LOCAL_JS_LIBRARY_FILES) $(JS2C_PY)
 	@echo "Generating libraries.cc"
 	@mkdir -p $(dir $@)
-	python $(SCRIPT) $(GEN1) CORE $(LOCAL_JS_LIBRARY_FILES)
+	python2 $(SCRIPT) $(GEN1) CORE $(LOCAL_JS_LIBRARY_FILES)
 V8_GENERATED_LIBRARIES := $(intermediates)/libraries.cc
 
 LOCAL_GENERATED_SOURCES += $(V8_GENERATED_LIBRARIES)
