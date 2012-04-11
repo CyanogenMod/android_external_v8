@@ -29,6 +29,7 @@
 #define V8_TYPE_INFO_H_
 
 #include "allocation.h"
+#include "ast.h"
 #include "globals.h"
 #include "zone-inl.h"
 
@@ -219,6 +220,7 @@ enum StringStubFeedback {
 class Assignment;
 class BinaryOperation;
 class Call;
+class CallNew;
 class CaseClause;
 class CompareOperation;
 class CompilationInfo;
@@ -227,6 +229,7 @@ class Expression;
 class Property;
 class SmallMapList;
 class UnaryOperation;
+class ForInStatement;
 
 
 class TypeFeedbackOracle BASE_EMBEDDED {
@@ -236,10 +239,15 @@ class TypeFeedbackOracle BASE_EMBEDDED {
                      Isolate* isolate);
 
   bool LoadIsMonomorphicNormal(Property* expr);
+  bool LoadIsUninitialized(Property* expr);
   bool LoadIsMegamorphicWithTypeInfo(Property* expr);
   bool StoreIsMonomorphicNormal(Expression* expr);
   bool StoreIsMegamorphicWithTypeInfo(Expression* expr);
   bool CallIsMonomorphic(Call* expr);
+  bool CallNewIsMonomorphic(CallNew* expr);
+  bool ObjectLiteralStoreIsMonomorphic(ObjectLiteral::Property* prop);
+
+  bool IsForInFastCase(ForInStatement* expr);
 
   Handle<Map> LoadMonomorphicReceiverType(Property* expr);
   Handle<Map> StoreMonomorphicReceiverType(Expression* expr);
@@ -265,6 +273,9 @@ class TypeFeedbackOracle BASE_EMBEDDED {
   Handle<JSObject> GetPrototypeForPrimitiveCheck(CheckType check);
 
   Handle<JSFunction> GetCallTarget(Call* expr);
+  Handle<JSFunction> GetCallNewTarget(CallNew* expr);
+
+  Handle<Map> GetObjectLiteralStoreMap(ObjectLiteral::Property* prop);
 
   bool LoadIsBuiltin(Property* expr, Builtins::Name id);
 
@@ -297,6 +308,7 @@ class TypeFeedbackOracle BASE_EMBEDDED {
                           byte* old_start,
                           byte* new_start);
   void ProcessRelocInfos(ZoneList<RelocInfo>* infos);
+  void ProcessTypeFeedbackCells(Handle<Code> code);
 
   // Returns an element from the backing store. Returns undefined if
   // there is no information.

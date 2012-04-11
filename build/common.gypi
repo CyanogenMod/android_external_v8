@@ -62,6 +62,9 @@
     # Similar to the ARM hard float ABI but on MIPS.
     'v8_use_mips_abi_hardfloat%': 'true',
 
+    # Default arch variant for MIPS.
+    'mips_arch_variant%': 'mips32r2',
+
     'v8_enable_debugger_support%': 1,
 
     'v8_enable_disassembler%': 0,
@@ -84,6 +87,11 @@
     'host_os%': '<(OS)',
     'v8_use_liveobjectlist%': 'false',
     'werror%': '-Werror',
+
+    # With post mortem support enabled, metadata is embedded into libv8 that
+    # describes various parameters of the VM for use by debuggers. See
+    # tools/gen-postmortem-metadata.py for details.
+    'v8_postmortem_support%': 'false',
 
     # For a shared library build, results in "libv8-<(soname_version).so".
     'soname_version%': '',
@@ -164,6 +172,31 @@
               'V8_TARGET_ARCH_MIPS',
             ],
             'conditions': [
+              [ 'target_arch=="mips"', {
+                'target_conditions': [
+                  ['_toolset=="target"', {
+                    'cflags': ['-EL'],
+                    'ldflags': ['-EL'],
+                    'conditions': [
+                      [ 'v8_use_mips_abi_hardfloat=="true"', {
+                        'cflags': ['-mhard-float'],
+                        'ldflags': ['-mhard-float'],
+                      }, {
+                        'cflags': ['-msoft-float'],
+                        'ldflags': ['-msoft-float'],
+                      }],
+                      ['mips_arch_variant=="mips32r2"', {
+                        'cflags': ['-mips32r2', '-Wa,-mips32r2'],
+                      }],
+                      ['mips_arch_variant=="loongson"', {
+                        'cflags': ['-mips3', '-Wa,-mips3'],
+                      }, {
+                        'cflags': ['-mips32', '-Wa,-mips32'],
+                      }],
+                    ],
+                  }],
+                ],
+              }],
               [ 'v8_can_use_fpu_instructions=="true"', {
                 'defines': [
                   'CAN_USE_FPU_INSTRUCTIONS',
@@ -178,6 +211,12 @@
                 'defines': [
                   '__mips_soft_float=1'
                 ],
+              }],
+              ['mips_arch_variant=="mips32r2"', {
+                'defines': ['_MIPS_ARCH_MIPS32R2',],
+              }],
+              ['mips_arch_variant=="loongson"', {
+                'defines': ['_MIPS_ARCH_LOONGSON',],
               }],
               # The MIPS assembler assumes the host is 32 bits,
               # so force building 32-bit host tools.

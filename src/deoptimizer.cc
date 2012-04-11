@@ -170,8 +170,16 @@ DeoptimizedFrameInfo* Deoptimizer::DebuggerInspectableFrame(
       deoptimizer->output_[frame_index - 1]->GetFrameType() ==
       StackFrame::ARGUMENTS_ADAPTOR;
 
-  DeoptimizedFrameInfo* info =
-      new DeoptimizedFrameInfo(deoptimizer, frame_index, has_arguments_adaptor);
+  int construct_offset = has_arguments_adaptor ? 2 : 1;
+  bool has_construct_stub =
+      frame_index >= construct_offset &&
+      deoptimizer->output_[frame_index - construct_offset]->GetFrameType() ==
+      StackFrame::CONSTRUCT;
+
+  DeoptimizedFrameInfo* info = new DeoptimizedFrameInfo(deoptimizer,
+                                                        frame_index,
+                                                        has_arguments_adaptor,
+                                                        has_construct_stub);
   isolate->deoptimizer_data()->deoptimized_frame_info_ = info;
 
   // Get the "simulated" top and size for the requested frame.
@@ -350,8 +358,6 @@ Deoptimizer::Deoptimizer(Isolate* isolate,
       output_count_(0),
       jsframe_count_(0),
       output_(NULL),
-      frame_alignment_marker_(isolate->heap()->frame_alignment_marker()),
-      has_alignment_padding_(0),
       deferred_heap_numbers_(0) {
   if (FLAG_trace_deopt && type != OSR) {
     if (type == DEBUGGER) {
@@ -570,6 +576,9 @@ void Deoptimizer::DoComputeOutputFrames() {
       case Translation::ARGUMENTS_ADAPTOR_FRAME:
         DoComputeArgumentsAdaptorFrame(&iterator, i);
         break;
+      case Translation::CONSTRUCT_STUB_FRAME:
+        DoComputeConstructStubFrame(&iterator, i);
+        break;
       default:
         UNREACHABLE();
         break;
@@ -686,6 +695,7 @@ void Deoptimizer::DoTranslateCommand(TranslationIterator* iterator,
     case Translation::BEGIN:
     case Translation::JS_FRAME:
     case Translation::ARGUMENTS_ADAPTOR_FRAME:
+    case Translation::CONSTRUCT_STUB_FRAME:
     case Translation::DUPLICATE:
       UNREACHABLE();
       return;
@@ -835,7 +845,6 @@ void Deoptimizer::DoTranslateCommand(TranslationIterator* iterator,
     case Translation::ARGUMENTS_OBJECT: {
       // Use the arguments marker value as a sentinel and fill in the arguments
       // object after the deoptimized frame is built.
-      ASSERT(frame_index == 0);  // Only supported for first frame.
       if (FLAG_trace_deopt) {
         PrintF("    0x%08" V8PRIxPTR ": [top + %d] <- ",
                output_[frame_index]->GetTop() + output_offset,
@@ -873,6 +882,7 @@ bool Deoptimizer::DoOsrTranslateCommand(TranslationIterator* iterator,
     case Translation::BEGIN:
     case Translation::JS_FRAME:
     case Translation::ARGUMENTS_ADAPTOR_FRAME:
+    case Translation::CONSTRUCT_STUB_FRAME:
     case Translation::DUPLICATE:
       UNREACHABLE();  // Malformed input.
        return false;
@@ -1206,7 +1216,8 @@ FrameDescription::FrameDescription(uint32_t frame_size,
       function_(function),
       top_(kZapUint32),
       pc_(kZapUint32),
-      fp_(kZapUint32) {
+      fp_(kZapUint32),
+      context_(kZapUint32) {
   // Zap all the registers.
   for (int r = 0; r < Register::kNumRegisters; r++) {
     SetRegister(r, kZapUint32);
@@ -1320,6 +1331,13 @@ Handle<ByteArray> TranslationBuffer::CreateByteArray() {
 }
 
 
+void Translation::BeginConstructStubFrame(int literal_id, unsigned height) {
+  buffer_->Add(CONSTRUCT_STUB_FRAME);
+  buffer_->Add(literal_id);
+  buffer_->Add(height);
+}
+
+
 void Translation::BeginArgumentsAdaptorFrame(int literal_id, unsigned height) {
   buffer_->Add(ARGUMENTS_ADAPTOR_FRAME);
   buffer_->Add(literal_id);
@@ -1402,6 +1420,7 @@ int Translation::NumberOfOperandsFor(Opcode opcode) {
       return 1;
     case BEGIN:
     case ARGUMENTS_ADAPTOR_FRAME:
+    case CONSTRUCT_STUB_FRAME:
       return 2;
     case JS_FRAME:
       return 3;
@@ -1421,6 +1440,8 @@ const char* Translation::StringFor(Opcode opcode) {
       return "JS_FRAME";
     case ARGUMENTS_ADAPTOR_FRAME:
       return "ARGUMENTS_ADAPTOR_FRAME";
+    case CONSTRUCT_STUB_FRAME:
+      return "CONSTRUCT_STUB_FRAME";
     case REGISTER:
       return "REGISTER";
     case INT32_REGISTER:
@@ -1476,6 +1497,7 @@ SlotRef SlotRef::ComputeSlotForNextArgument(TranslationIterator* iterator,
     case Translation::BEGIN:
     case Translation::JS_FRAME:
     case Translation::ARGUMENTS_ADAPTOR_FRAME:
+    case Translation::CONSTRUCT_STUB_FRAME:
       // Peeled off before getting here.
       break;
 
@@ -1598,12 +1620,20 @@ Vector<SlotRef> SlotRef::ComputeSlotMappingForArguments(
 
 #ifdef ENABLE_DEBUGGER_SUPPORT
 
-DeoptimizedFrameInfo::DeoptimizedFrameInfo(
-    Deoptimizer* deoptimizer, int frame_index, bool has_arguments_adaptor) {
+DeoptimizedFrameInfo::DeoptimizedFrameInfo(Deoptimizer* deoptimizer,
+                                           int frame_index,
+                                           bool has_arguments_adaptor,
+                                           bool has_construct_stub) {
   FrameDescription* output_frame = deoptimizer->output_[frame_index];
-  SetFunction(output_frame->GetFunction());
+  function_ = output_frame->GetFunction();
+  has_construct_stub_ = has_construct_stub;
   expression_count_ = output_frame->GetExpressionCount();
   expression_stack_ = new Object*[expression_count_];
+  // Get the source position using the unoptimized code.
+  Address pc = reinterpret_cast<Address>(output_frame->GetPc());
+  Code* code = Code::cast(Isolate::Current()->heap()->FindCodeObject(pc));
+  source_position_ = code->SourcePosition(pc);
+
   for (int i = 0; i < expression_count_; i++) {
     SetExpression(i, output_frame->GetExpression(i));
   }
@@ -1625,6 +1655,7 @@ DeoptimizedFrameInfo::~DeoptimizedFrameInfo() {
   delete[] expression_stack_;
   delete[] parameters_;
 }
+
 
 void DeoptimizedFrameInfo::Iterate(ObjectVisitor* v) {
   v->VisitPointer(BitCast<Object**>(&function_));

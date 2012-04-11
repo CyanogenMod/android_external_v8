@@ -374,7 +374,7 @@ class SlotsBuffer {
   static const int kNumberOfElements = 1021;
 
  private:
-  static const int kChainLengthThreshold = 6;
+  static const int kChainLengthThreshold = 15;
 
   intptr_t idx_;
   intptr_t chain_length_;
@@ -420,13 +420,8 @@ class MarkCompactCollector {
   // Pointer to member function, used in IterateLiveObjects.
   typedef int (MarkCompactCollector::*LiveObjectCallback)(HeapObject* obj);
 
-  // Set the global force_compaction flag, it must be called before Prepare
-  // to take effect.
+  // Set the global flags, it must be called before Prepare to take effect.
   inline void SetFlags(int flags);
-
-  inline bool PreciseSweepingRequired() {
-    return sweep_precisely_;
-  }
 
   static void Initialize();
 
@@ -441,7 +436,12 @@ class MarkCompactCollector {
   // Performs a global garbage collection.
   void CollectGarbage();
 
-  bool StartCompaction();
+  enum CompactionMode {
+    INCREMENTAL_COMPACTION,
+    NON_INCREMENTAL_COMPACTION
+  };
+
+  bool StartCompaction(CompactionMode mode);
 
   void AbortCompaction();
 
@@ -572,6 +572,10 @@ class MarkCompactCollector {
   // heap.
   bool sweep_precisely_;
 
+  bool reduce_memory_footprint_;
+
+  bool abort_incremental_marking_;
+
   // True if we are collecting slots to perform evacuation from evacuation
   // candidates.
   bool compacting_;
@@ -633,9 +637,6 @@ class MarkCompactCollector {
 
   // Marks the object black.  This is for non-incremental marking.
   INLINE(void SetMark(HeapObject* obj, MarkBit mark_bit));
-
-  // Clears the cache of ICs related to this map.
-  INLINE(void ClearCacheOnMap(Map* map));
 
   void ProcessNewlyMarkedObject(HeapObject* obj);
 

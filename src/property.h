@@ -1,4 +1,4 @@
-// Copyright 2011 the V8 project authors. All rights reserved.
+// Copyright 2012 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -49,11 +49,8 @@ class Descriptor BASE_EMBEDDED {
 
   MUST_USE_RESULT MaybeObject* KeyToSymbol() {
     if (!StringShape(key_).IsSymbol()) {
-      Object* result;
-      { MaybeObject* maybe_result = HEAP->LookupSymbol(key_);
-        if (!maybe_result->ToObject(&result)) return maybe_result;
-      }
-      key_ = String::cast(result);
+      MaybeObject* maybe_result = HEAP->LookupSymbol(key_);
+      if (!maybe_result->To(&key_)) return maybe_result;
     }
     return key_;
   }
@@ -70,6 +67,8 @@ class Descriptor BASE_EMBEDDED {
     ASSERT(PropertyDetails::IsValidIndex(index));
     details_ = PropertyDetails(details_.attributes(), details_.type(), index);
   }
+
+  bool ContainsTransition();
 
  private:
   String* key_;
@@ -160,6 +159,35 @@ class CallbacksDescriptor:  public Descriptor {
                       int index = 0)
       : Descriptor(key, foreign, attributes, CALLBACKS, index) {}
 };
+
+
+template <class T>
+bool IsPropertyDescriptor(T* desc) {
+  switch (desc->type()) {
+    case NORMAL:
+    case FIELD:
+    case CONSTANT_FUNCTION:
+    case HANDLER:
+    case INTERCEPTOR:
+      return true;
+    case CALLBACKS: {
+      Object* callback_object = desc->GetCallbackObject();
+      // Non-JavaScript (i.e. native) accessors are always a property, otherwise
+      // either the getter or the setter must be an accessor. Put another way:
+      // If we only see map transitions and holes in a pair, this is not a
+      // property.
+      return (!callback_object->IsAccessorPair() ||
+              AccessorPair::cast(callback_object)->ContainsAccessor());
+    }
+    case MAP_TRANSITION:
+    case ELEMENTS_TRANSITION:
+    case CONSTANT_TRANSITION:
+    case NULL_DESCRIPTOR:
+      return false;
+  }
+  UNREACHABLE();  // keep the compiler happy
+  return false;
+}
 
 
 class LookupResult BASE_EMBEDDED {
@@ -259,10 +287,9 @@ class LookupResult BASE_EMBEDDED {
   bool IsFound() { return lookup_type_ != NOT_FOUND; }
   bool IsHandler() { return lookup_type_ == HANDLER_TYPE; }
 
-  // Is the result is a property excluding transitions and the null
-  // descriptor?
+  // Is the result is a property excluding transitions and the null descriptor?
   bool IsProperty() {
-    return IsFound() && GetPropertyDetails().IsProperty();
+    return IsFound() && IsPropertyDescriptor(this);
   }
 
   bool IsCacheable() { return cacheable_; }
@@ -290,7 +317,9 @@ class LookupResult BASE_EMBEDDED {
 
   Map* GetTransitionMap() {
     ASSERT(lookup_type_ == DESCRIPTOR_TYPE);
-    ASSERT(IsTransitionType(type()));
+    ASSERT(type() == MAP_TRANSITION ||
+           type() == ELEMENTS_TRANSITION ||
+           type() == CONSTANT_TRANSITION);
     return Map::cast(GetValue());
   }
 

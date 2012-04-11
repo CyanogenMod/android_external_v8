@@ -39,7 +39,9 @@
 #include "small-pointer-list.h"
 #include "smart-array-pointer.h"
 #include "token.h"
+#include "utils.h"
 #include "variables.h"
+#include "interface.h"
 #include "zone-inl.h"
 
 namespace v8 {
@@ -57,6 +59,19 @@ namespace internal {
 // ----------------------------------------------------------------------------
 // Nodes of the abstract syntax tree. Only concrete classes are
 // enumerated here.
+
+#define DECLARATION_NODE_LIST(V)                \
+  V(VariableDeclaration)                        \
+  V(FunctionDeclaration)                        \
+  V(ModuleDeclaration)                          \
+  V(ImportDeclaration)                          \
+  V(ExportDeclaration)                          \
+
+#define MODULE_NODE_LIST(V)                     \
+  V(ModuleLiteral)                              \
+  V(ModuleVariable)                             \
+  V(ModulePath)                                 \
+  V(ModuleUrl)
 
 #define STATEMENT_NODE_LIST(V)                  \
   V(Block)                                      \
@@ -98,12 +113,17 @@ namespace internal {
   V(ThisFunction)
 
 #define AST_NODE_LIST(V)                        \
-  V(Declaration)                                \
+  DECLARATION_NODE_LIST(V)                      \
+  MODULE_NODE_LIST(V)                           \
   STATEMENT_NODE_LIST(V)                        \
   EXPRESSION_NODE_LIST(V)
 
 // Forward declarations
+class AstConstructionVisitor;
+template<class> class AstNodeFactory;
 class AstVisitor;
+class Declaration;
+class Module;
 class BreakableStatement;
 class Expression;
 class IterationStatement;
@@ -136,6 +156,35 @@ typedef ZoneList<Handle<String> > ZoneStringList;
 typedef ZoneList<Handle<Object> > ZoneObjectList;
 
 
+#define DECLARE_NODE_TYPE(type)                                         \
+  virtual void Accept(AstVisitor* v);                                   \
+  virtual AstNode::Type node_type() const { return AstNode::k##type; }
+
+
+enum AstPropertiesFlag {
+  kDontInline,
+  kDontOptimize,
+  kDontSelfOptimize,
+  kDontSoftInline
+};
+
+
+class AstProperties BASE_EMBEDDED {
+ public:
+  class Flags : public EnumSet<AstPropertiesFlag, int> {};
+
+  AstProperties() : node_count_(0) { }
+
+  Flags* flags() { return &flags_; }
+  int node_count() { return node_count_; }
+  void add_node_count(int count) { node_count_ += count; }
+
+ private:
+  Flags flags_;
+  int node_count_;
+};
+
+
 class AstNode: public ZoneObject {
  public:
 #define DECLARE_TYPE_ENUM(type) k##type,
@@ -152,14 +201,11 @@ class AstNode: public ZoneObject {
   // that emit code (function declarations).
   static const int kDeclarationsId = 3;
 
-  // Override ZoneObject's new to count allocated AST nodes.
   void* operator new(size_t size, Zone* zone) {
-    Isolate* isolate = zone->isolate();
-    isolate->set_ast_node_count(isolate->ast_node_count() + 1);
     return zone->New(static_cast<int>(size));
   }
 
-  AstNode() {}
+  AstNode() { }
 
   virtual ~AstNode() { }
 
@@ -173,6 +219,7 @@ class AstNode: public ZoneObject {
   AST_NODE_LIST(DECLARE_NODE_FUNCTIONS)
 #undef DECLARE_NODE_FUNCTIONS
 
+  virtual Declaration* AsDeclaration() { return NULL; }
   virtual Statement* AsStatement() { return NULL; }
   virtual Expression* AsExpression() { return NULL; }
   virtual TargetCollector* AsTargetCollector() { return NULL; }
@@ -180,19 +227,13 @@ class AstNode: public ZoneObject {
   virtual IterationStatement* AsIterationStatement() { return NULL; }
   virtual MaterializedLiteral* AsMaterializedLiteral() { return NULL; }
 
-  // True if the node is simple enough for us to inline calls containing it.
-  virtual bool IsInlineable() const = 0;
-
-  static int Count() { return Isolate::Current()->ast_node_count(); }
-  static void ResetIds() { Isolate::Current()->set_ast_node_id(0); }
-
  protected:
-  static unsigned GetNextId(Isolate* isolate) {
+  static int GetNextId(Isolate* isolate) {
     return ReserveIdRange(isolate, 1);
   }
 
-  static unsigned ReserveIdRange(Isolate* isolate, int n) {
-    unsigned tmp = isolate->ast_node_id();
+  static int ReserveIdRange(Isolate* isolate, int n) {
+    int tmp = isolate->ast_node_id();
     isolate->set_ast_node_id(tmp + n);
     return tmp;
   }
@@ -204,11 +245,6 @@ class AstNode: public ZoneObject {
 
   friend class CaseClause;  // Generates AST IDs.
 };
-
-
-#define DECLARE_NODE_TYPE(type)                                         \
-  virtual void Accept(AstVisitor* v);                                   \
-  virtual AstNode::Type node_type() const { return AstNode::k##type; }  \
 
 
 class Statement: public AstNode {
@@ -271,10 +307,6 @@ class Expression: public AstNode {
     kTest
   };
 
-  explicit Expression(Isolate* isolate)
-      : id_(GetNextId(isolate)),
-        test_id_(GetNextId(isolate)) {}
-
   virtual int position() const {
     UNREACHABLE();
     return 0;
@@ -325,9 +357,14 @@ class Expression: public AstNode {
   unsigned id() const { return id_; }
   unsigned test_id() const { return test_id_; }
 
+ protected:
+  explicit Expression(Isolate* isolate)
+      : id_(GetNextId(isolate)),
+        test_id_(GetNextId(isolate)) {}
+
  private:
-  unsigned id_;
-  unsigned test_id_;
+  int id_;
+  int test_id_;
 };
 
 
@@ -376,6 +413,19 @@ class BreakableStatement: public Statement {
 
 class Block: public BreakableStatement {
  public:
+  DECLARE_NODE_TYPE(Block)
+
+  void AddStatement(Statement* statement) { statements_.Add(statement); }
+
+  ZoneList<Statement*>* statements() { return &statements_; }
+  bool is_initializer_block() const { return is_initializer_block_; }
+
+  Scope* block_scope() const { return block_scope_; }
+  void set_block_scope(Scope* block_scope) { block_scope_ = block_scope; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
   Block(Isolate* isolate,
         ZoneStringList* labels,
         int capacity,
@@ -386,19 +436,6 @@ class Block: public BreakableStatement {
         block_scope_(NULL) {
   }
 
-
-  DECLARE_NODE_TYPE(Block)
-
-  virtual bool IsInlineable() const;
-
-  void AddStatement(Statement* statement) { statements_.Add(statement); }
-
-  ZoneList<Statement*>* statements() { return &statements_; }
-  bool is_initializer_block() const { return is_initializer_block_; }
-
-  Scope* block_scope() const { return block_scope_; }
-  void set_block_scope(Scope* block_scope) { block_scope_ = block_scope; }
-
  private:
   ZoneList<Statement*> statements_;
   bool is_initializer_block_;
@@ -408,37 +445,233 @@ class Block: public BreakableStatement {
 
 class Declaration: public AstNode {
  public:
+  VariableProxy* proxy() const { return proxy_; }
+  VariableMode mode() const { return mode_; }
+  Scope* scope() const { return scope_; }
+  virtual InitializationFlag initialization() const = 0;
+  virtual bool IsInlineable() const;
+
+  virtual Declaration* AsDeclaration() { return this; }
+
+ protected:
   Declaration(VariableProxy* proxy,
               VariableMode mode,
-              FunctionLiteral* fun,
               Scope* scope)
       : proxy_(proxy),
         mode_(mode),
-        fun_(fun),
         scope_(scope) {
     ASSERT(mode == VAR ||
            mode == CONST ||
            mode == CONST_HARMONY ||
            mode == LET);
-    // At the moment there are no "const functions"'s in JavaScript...
-    ASSERT(fun == NULL || mode == VAR || mode == LET);
   }
-
-  DECLARE_NODE_TYPE(Declaration)
-
-  VariableProxy* proxy() const { return proxy_; }
-  VariableMode mode() const { return mode_; }
-  FunctionLiteral* fun() const { return fun_; }  // may be NULL
-  virtual bool IsInlineable() const;
-  Scope* scope() const { return scope_; }
 
  private:
   VariableProxy* proxy_;
   VariableMode mode_;
-  FunctionLiteral* fun_;
 
   // Nested scope from which the declaration originated.
   Scope* scope_;
+};
+
+
+class VariableDeclaration: public Declaration {
+ public:
+  DECLARE_NODE_TYPE(VariableDeclaration)
+
+  virtual InitializationFlag initialization() const {
+    return mode() == VAR ? kCreatedInitialized : kNeedsInitialization;
+  }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  VariableDeclaration(VariableProxy* proxy,
+                      VariableMode mode,
+                      Scope* scope)
+      : Declaration(proxy, mode, scope) {
+  }
+};
+
+
+class FunctionDeclaration: public Declaration {
+ public:
+  DECLARE_NODE_TYPE(FunctionDeclaration)
+
+  FunctionLiteral* fun() const { return fun_; }
+  virtual InitializationFlag initialization() const {
+    return kCreatedInitialized;
+  }
+  virtual bool IsInlineable() const;
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  FunctionDeclaration(VariableProxy* proxy,
+                      VariableMode mode,
+                      FunctionLiteral* fun,
+                      Scope* scope)
+      : Declaration(proxy, mode, scope),
+        fun_(fun) {
+    // At the moment there are no "const functions" in JavaScript...
+    ASSERT(mode == VAR || mode == LET);
+    ASSERT(fun != NULL);
+  }
+
+ private:
+  FunctionLiteral* fun_;
+};
+
+
+class ModuleDeclaration: public Declaration {
+ public:
+  DECLARE_NODE_TYPE(ModuleDeclaration)
+
+  Module* module() const { return module_; }
+  virtual InitializationFlag initialization() const {
+    return kCreatedInitialized;
+  }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  ModuleDeclaration(VariableProxy* proxy,
+                    Module* module,
+                    Scope* scope)
+      : Declaration(proxy, LET, scope),
+        module_(module) {
+  }
+
+ private:
+  Module* module_;
+};
+
+
+class ImportDeclaration: public Declaration {
+ public:
+  DECLARE_NODE_TYPE(ImportDeclaration)
+
+  Module* module() const { return module_; }
+  virtual InitializationFlag initialization() const {
+    return kCreatedInitialized;
+  }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  ImportDeclaration(VariableProxy* proxy,
+                    Module* module,
+                    Scope* scope)
+      : Declaration(proxy, LET, scope),
+        module_(module) {
+  }
+
+ private:
+  Module* module_;
+};
+
+
+class ExportDeclaration: public Declaration {
+ public:
+  DECLARE_NODE_TYPE(ExportDeclaration)
+
+  virtual InitializationFlag initialization() const {
+    return kCreatedInitialized;
+  }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  ExportDeclaration(VariableProxy* proxy,
+                    Scope* scope)
+      : Declaration(proxy, LET, scope) {
+  }
+};
+
+
+class Module: public AstNode {
+ public:
+  Interface* interface() const { return interface_; }
+
+ protected:
+  Module() : interface_(Interface::NewModule()) {}
+  explicit Module(Interface* interface) : interface_(interface) {}
+
+ private:
+  Interface* interface_;
+};
+
+
+class ModuleLiteral: public Module {
+ public:
+  DECLARE_NODE_TYPE(ModuleLiteral)
+
+  Block* body() const { return body_; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  ModuleLiteral(Block* body, Interface* interface)
+      : Module(interface),
+        body_(body) {
+  }
+
+ private:
+  Block* body_;
+};
+
+
+class ModuleVariable: public Module {
+ public:
+  DECLARE_NODE_TYPE(ModuleVariable)
+
+  VariableProxy* proxy() const { return proxy_; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  inline explicit ModuleVariable(VariableProxy* proxy);
+
+ private:
+  VariableProxy* proxy_;
+};
+
+
+class ModulePath: public Module {
+ public:
+  DECLARE_NODE_TYPE(ModulePath)
+
+  Module* module() const { return module_; }
+  Handle<String> name() const { return name_; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  ModulePath(Module* module, Handle<String> name)
+      : module_(module),
+        name_(name) {
+  }
+
+ private:
+  Module* module_;
+  Handle<String> name_;
+};
+
+
+class ModuleUrl: public Module {
+ public:
+  DECLARE_NODE_TYPE(ModuleUrl)
+
+  Handle<String> url() const { return url_; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  explicit ModuleUrl(Handle<String> url) : url_(url) {
+  }
+
+ private:
+  Handle<String> url_;
 };
 
 
@@ -477,14 +710,6 @@ class IterationStatement: public BreakableStatement {
 
 class DoWhileStatement: public IterationStatement {
  public:
-  DoWhileStatement(Isolate* isolate, ZoneStringList* labels)
-      : IterationStatement(isolate, labels),
-        cond_(NULL),
-        condition_position_(-1),
-        continue_id_(GetNextId(isolate)),
-        back_edge_id_(GetNextId(isolate)) {
-  }
-
   DECLARE_NODE_TYPE(DoWhileStatement)
 
   void Initialize(Expression* cond, Statement* body) {
@@ -504,7 +729,16 @@ class DoWhileStatement: public IterationStatement {
   virtual int StackCheckId() const { return back_edge_id_; }
   int BackEdgeId() const { return back_edge_id_; }
 
-  virtual bool IsInlineable() const;
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  DoWhileStatement(Isolate* isolate, ZoneStringList* labels)
+      : IterationStatement(isolate, labels),
+        cond_(NULL),
+        condition_position_(-1),
+        continue_id_(GetNextId(isolate)),
+        back_edge_id_(GetNextId(isolate)) {
+  }
 
  private:
   Expression* cond_;
@@ -516,13 +750,6 @@ class DoWhileStatement: public IterationStatement {
 
 class WhileStatement: public IterationStatement {
  public:
-  WhileStatement(Isolate* isolate, ZoneStringList* labels)
-      : IterationStatement(isolate, labels),
-        cond_(NULL),
-        may_have_function_literal_(true),
-        body_id_(GetNextId(isolate)) {
-  }
-
   DECLARE_NODE_TYPE(WhileStatement)
 
   void Initialize(Expression* cond, Statement* body) {
@@ -537,12 +764,21 @@ class WhileStatement: public IterationStatement {
   void set_may_have_function_literal(bool value) {
     may_have_function_literal_ = value;
   }
-  virtual bool IsInlineable() const;
 
   // Bailout support.
   virtual int ContinueId() const { return EntryId(); }
   virtual int StackCheckId() const { return body_id_; }
   int BodyId() const { return body_id_; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  WhileStatement(Isolate* isolate, ZoneStringList* labels)
+      : IterationStatement(isolate, labels),
+        cond_(NULL),
+        may_have_function_literal_(true),
+        body_id_(GetNextId(isolate)) {
+  }
 
  private:
   Expression* cond_;
@@ -554,17 +790,6 @@ class WhileStatement: public IterationStatement {
 
 class ForStatement: public IterationStatement {
  public:
-  ForStatement(Isolate* isolate, ZoneStringList* labels)
-      : IterationStatement(isolate, labels),
-        init_(NULL),
-        cond_(NULL),
-        next_(NULL),
-        may_have_function_literal_(true),
-        loop_variable_(NULL),
-        continue_id_(GetNextId(isolate)),
-        body_id_(GetNextId(isolate)) {
-  }
-
   DECLARE_NODE_TYPE(ForStatement)
 
   void Initialize(Statement* init,
@@ -596,7 +821,20 @@ class ForStatement: public IterationStatement {
   bool is_fast_smi_loop() { return loop_variable_ != NULL; }
   Variable* loop_variable() { return loop_variable_; }
   void set_loop_variable(Variable* var) { loop_variable_ = var; }
-  virtual bool IsInlineable() const;
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  ForStatement(Isolate* isolate, ZoneStringList* labels)
+      : IterationStatement(isolate, labels),
+        init_(NULL),
+        cond_(NULL),
+        next_(NULL),
+        may_have_function_literal_(true),
+        loop_variable_(NULL),
+        continue_id_(GetNextId(isolate)),
+        body_id_(GetNextId(isolate)) {
+  }
 
  private:
   Statement* init_;
@@ -612,13 +850,6 @@ class ForStatement: public IterationStatement {
 
 class ForInStatement: public IterationStatement {
  public:
-  ForInStatement(Isolate* isolate, ZoneStringList* labels)
-      : IterationStatement(isolate, labels),
-        each_(NULL),
-        enumerable_(NULL),
-        assignment_id_(GetNextId(isolate)) {
-  }
-
   DECLARE_NODE_TYPE(ForInStatement)
 
   void Initialize(Expression* each, Expression* enumerable, Statement* body) {
@@ -629,31 +860,43 @@ class ForInStatement: public IterationStatement {
 
   Expression* each() const { return each_; }
   Expression* enumerable() const { return enumerable_; }
-  virtual bool IsInlineable() const;
 
-  // Bailout support.
-  int AssignmentId() const { return assignment_id_; }
   virtual int ContinueId() const { return EntryId(); }
-  virtual int StackCheckId() const { return EntryId(); }
+  virtual int StackCheckId() const { return body_id_; }
+  int BodyId() const { return body_id_; }
+  int PrepareId() const { return prepare_id_; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  ForInStatement(Isolate* isolate, ZoneStringList* labels)
+      : IterationStatement(isolate, labels),
+        each_(NULL),
+        enumerable_(NULL),
+        body_id_(GetNextId(isolate)),
+        prepare_id_(GetNextId(isolate)) {
+  }
 
  private:
   Expression* each_;
   Expression* enumerable_;
-  int assignment_id_;
+  int body_id_;
+  int prepare_id_;
 };
 
 
 class ExpressionStatement: public Statement {
  public:
-  explicit ExpressionStatement(Expression* expression)
-      : expression_(expression) { }
-
   DECLARE_NODE_TYPE(ExpressionStatement)
-
-  virtual bool IsInlineable() const;
 
   void set_expression(Expression* e) { expression_ = e; }
   Expression* expression() const { return expression_; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  explicit ExpressionStatement(Expression* expression)
+      : expression_(expression) { }
 
  private:
   Expression* expression_;
@@ -662,13 +905,15 @@ class ExpressionStatement: public Statement {
 
 class ContinueStatement: public Statement {
  public:
-  explicit ContinueStatement(IterationStatement* target)
-      : target_(target) { }
-
   DECLARE_NODE_TYPE(ContinueStatement)
 
   IterationStatement* target() const { return target_; }
-  virtual bool IsInlineable() const;
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  explicit ContinueStatement(IterationStatement* target)
+      : target_(target) { }
 
  private:
   IterationStatement* target_;
@@ -677,13 +922,15 @@ class ContinueStatement: public Statement {
 
 class BreakStatement: public Statement {
  public:
-  explicit BreakStatement(BreakableStatement* target)
-      : target_(target) { }
-
   DECLARE_NODE_TYPE(BreakStatement)
 
   BreakableStatement* target() const { return target_; }
-  virtual bool IsInlineable() const;
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  explicit BreakStatement(BreakableStatement* target)
+      : target_(target) { }
 
  private:
   BreakableStatement* target_;
@@ -692,13 +939,15 @@ class BreakStatement: public Statement {
 
 class ReturnStatement: public Statement {
  public:
-  explicit ReturnStatement(Expression* expression)
-      : expression_(expression) { }
-
   DECLARE_NODE_TYPE(ReturnStatement)
 
   Expression* expression() const { return expression_; }
-  virtual bool IsInlineable() const;
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  explicit ReturnStatement(Expression* expression)
+      : expression_(expression) { }
 
  private:
   Expression* expression_;
@@ -707,15 +956,17 @@ class ReturnStatement: public Statement {
 
 class WithStatement: public Statement {
  public:
-  WithStatement(Expression* expression, Statement* statement)
-      : expression_(expression), statement_(statement) { }
-
   DECLARE_NODE_TYPE(WithStatement)
 
   Expression* expression() const { return expression_; }
   Statement* statement() const { return statement_; }
 
-  virtual bool IsInlineable() const;
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  WithStatement(Expression* expression, Statement* statement)
+      : expression_(expression),
+        statement_(statement) { }
 
  private:
   Expression* expression_;
@@ -771,13 +1022,6 @@ class CaseClause: public ZoneObject {
 
 class SwitchStatement: public BreakableStatement {
  public:
-  SwitchStatement(Isolate* isolate, ZoneStringList* labels)
-      : BreakableStatement(isolate, labels, TARGET_FOR_ANONYMOUS),
-        tag_(NULL),
-        cases_(NULL) {
-  }
-
-
   DECLARE_NODE_TYPE(SwitchStatement)
 
   void Initialize(Expression* tag, ZoneList<CaseClause*>* cases) {
@@ -787,7 +1031,14 @@ class SwitchStatement: public BreakableStatement {
 
   Expression* tag() const { return tag_; }
   ZoneList<CaseClause*>* cases() const { return cases_; }
-  virtual bool IsInlineable() const;
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  SwitchStatement(Isolate* isolate, ZoneStringList* labels)
+      : BreakableStatement(isolate, labels, TARGET_FOR_ANONYMOUS),
+        tag_(NULL),
+        cases_(NULL) { }
 
  private:
   Expression* tag_;
@@ -802,21 +1053,7 @@ class SwitchStatement: public BreakableStatement {
 // given if-statement has a then- or an else-part containing code.
 class IfStatement: public Statement {
  public:
-  IfStatement(Isolate* isolate,
-              Expression* condition,
-              Statement* then_statement,
-              Statement* else_statement)
-      : condition_(condition),
-        then_statement_(then_statement),
-        else_statement_(else_statement),
-        if_id_(GetNextId(isolate)),
-        then_id_(GetNextId(isolate)),
-        else_id_(GetNextId(isolate)) {
-  }
-
   DECLARE_NODE_TYPE(IfStatement)
-
-  virtual bool IsInlineable() const;
 
   bool HasThenStatement() const { return !then_statement()->IsEmpty(); }
   bool HasElseStatement() const { return !else_statement()->IsEmpty(); }
@@ -828,6 +1065,21 @@ class IfStatement: public Statement {
   int IfId() const { return if_id_; }
   int ThenId() const { return then_id_; }
   int ElseId() const { return else_id_; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  IfStatement(Isolate* isolate,
+              Expression* condition,
+              Statement* then_statement,
+              Statement* else_statement)
+      : condition_(condition),
+        then_statement_(then_statement),
+        else_statement_(else_statement),
+        if_id_(GetNextId(isolate)),
+        then_id_(GetNextId(isolate)),
+        else_id_(GetNextId(isolate)) {
+  }
 
  private:
   Expression* condition_;
@@ -843,7 +1095,7 @@ class IfStatement: public Statement {
 // stack in the compiler; this should probably be reworked.
 class TargetCollector: public AstNode {
  public:
-  TargetCollector(): targets_(0) { }
+  TargetCollector() : targets_(0) { }
 
   // Adds a jump target to the collector. The collector stores a pointer not
   // a copy of the target to make binding work, so make sure not to pass in
@@ -855,7 +1107,6 @@ class TargetCollector: public AstNode {
   virtual TargetCollector* AsTargetCollector() { return this; }
 
   ZoneList<Label*>* targets() { return &targets_; }
-  virtual bool IsInlineable() const;
 
  private:
   ZoneList<Label*> targets_;
@@ -864,12 +1115,6 @@ class TargetCollector: public AstNode {
 
 class TryStatement: public Statement {
  public:
-  explicit TryStatement(int index, Block* try_block)
-      : index_(index),
-        try_block_(try_block),
-        escaping_targets_(NULL) {
-  }
-
   void set_escaping_targets(ZoneList<Label*>* targets) {
     escaping_targets_ = targets;
   }
@@ -877,7 +1122,12 @@ class TryStatement: public Statement {
   int index() const { return index_; }
   Block* try_block() const { return try_block_; }
   ZoneList<Label*>* escaping_targets() const { return escaping_targets_; }
-  virtual bool IsInlineable() const;
+
+ protected:
+  TryStatement(int index, Block* try_block)
+      : index_(index),
+        try_block_(try_block),
+        escaping_targets_(NULL) { }
 
  private:
   // Unique (per-function) index of this handler.  This is not an AST ID.
@@ -890,6 +1140,15 @@ class TryStatement: public Statement {
 
 class TryCatchStatement: public TryStatement {
  public:
+  DECLARE_NODE_TYPE(TryCatchStatement)
+
+  Scope* scope() { return scope_; }
+  Variable* variable() { return variable_; }
+  Block* catch_block() const { return catch_block_; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
   TryCatchStatement(int index,
                     Block* try_block,
                     Scope* scope,
@@ -901,13 +1160,6 @@ class TryCatchStatement: public TryStatement {
         catch_block_(catch_block) {
   }
 
-  DECLARE_NODE_TYPE(TryCatchStatement)
-
-  Scope* scope() { return scope_; }
-  Variable* variable() { return variable_; }
-  Block* catch_block() const { return catch_block_; }
-  virtual bool IsInlineable() const;
-
  private:
   Scope* scope_;
   Variable* variable_;
@@ -917,14 +1169,16 @@ class TryCatchStatement: public TryStatement {
 
 class TryFinallyStatement: public TryStatement {
  public:
-  TryFinallyStatement(int index, Block* try_block, Block* finally_block)
-      : TryStatement(index, try_block),
-        finally_block_(finally_block) { }
-
   DECLARE_NODE_TYPE(TryFinallyStatement)
 
   Block* finally_block() const { return finally_block_; }
-  virtual bool IsInlineable() const;
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  TryFinallyStatement(int index, Block* try_block, Block* finally_block)
+      : TryStatement(index, try_block),
+        finally_block_(finally_block) { }
 
  private:
   Block* finally_block_;
@@ -934,7 +1188,11 @@ class TryFinallyStatement: public TryStatement {
 class DebuggerStatement: public Statement {
  public:
   DECLARE_NODE_TYPE(DebuggerStatement)
-  virtual bool IsInlineable() const;
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  DebuggerStatement() {}
 };
 
 
@@ -942,21 +1200,16 @@ class EmptyStatement: public Statement {
  public:
   DECLARE_NODE_TYPE(EmptyStatement)
 
-  virtual bool IsInlineable() const;
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  EmptyStatement() {}
 };
 
 
 class Literal: public Expression {
  public:
-  Literal(Isolate* isolate, Handle<Object> handle)
-      : Expression(isolate), handle_(handle) { }
-
   DECLARE_NODE_TYPE(Literal)
-
-  // Check if this literal is identical to the other literal.
-  bool IsIdenticalTo(const Literal* other) const {
-    return handle_.is_identical_to(other->handle_);
-  }
 
   virtual bool IsPropertyName() {
     if (handle_->IsSymbol()) {
@@ -989,9 +1242,27 @@ class Literal: public Expression {
   }
 
   Handle<Object> handle() const { return handle_; }
-  virtual bool IsInlineable() const;
+
+  // Support for using Literal as a HashMap key. NOTE: Currently, this works
+  // only for string and number literals!
+  uint32_t Hash() { return ToString()->Hash(); }
+
+  static bool Match(void* literal1, void* literal2) {
+    Handle<String> s1 = static_cast<Literal*>(literal1)->ToString();
+    Handle<String> s2 = static_cast<Literal*>(literal2)->ToString();
+    return s1->Equals(*s2);
+  }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  Literal(Isolate* isolate, Handle<Object> handle)
+      : Expression(isolate),
+        handle_(handle) { }
 
  private:
+  Handle<String> ToString();
+
   Handle<Object> handle_;
 };
 
@@ -999,15 +1270,6 @@ class Literal: public Expression {
 // Base class for literals that needs space in the corresponding JSFunction.
 class MaterializedLiteral: public Expression {
  public:
-  MaterializedLiteral(Isolate* isolate,
-                      int literal_index,
-                      bool is_simple,
-                      int depth)
-      : Expression(isolate),
-        literal_index_(literal_index),
-        is_simple_(is_simple),
-        depth_(depth) {}
-
   virtual MaterializedLiteral* AsMaterializedLiteral() { return this; }
 
   int literal_index() { return literal_index_; }
@@ -1017,7 +1279,16 @@ class MaterializedLiteral: public Expression {
   bool is_simple() const { return is_simple_; }
 
   int depth() const { return depth_; }
-  virtual bool IsInlineable() const;
+
+ protected:
+  MaterializedLiteral(Isolate* isolate,
+                      int literal_index,
+                      bool is_simple,
+                      int depth)
+      : Expression(isolate),
+        literal_index_(literal_index),
+        is_simple_(is_simple),
+        depth_(depth) {}
 
  private:
   int literal_index_;
@@ -1043,38 +1314,35 @@ class ObjectLiteral: public MaterializedLiteral {
       PROTOTYPE              // Property is __proto__.
     };
 
-    Property(Literal* key, Expression* value);
-    Property(bool is_getter, FunctionLiteral* value);
+    Property(Literal* key, Expression* value, Isolate* isolate);
 
     Literal* key() { return key_; }
     Expression* value() { return value_; }
     Kind kind() { return kind_; }
+
+    // Type feedback information.
+    void RecordTypeFeedback(TypeFeedbackOracle* oracle);
+    bool IsMonomorphic() { return !receiver_type_.is_null(); }
+    Handle<Map> GetReceiverType() { return receiver_type_; }
 
     bool IsCompileTimeValue();
 
     void set_emit_store(bool emit_store);
     bool emit_store();
 
+   protected:
+    template<class> friend class AstNodeFactory;
+
+    Property(bool is_getter, FunctionLiteral* value);
+    void set_key(Literal* key) { key_ = key; }
+
    private:
     Literal* key_;
     Expression* value_;
     Kind kind_;
     bool emit_store_;
+    Handle<Map> receiver_type_;
   };
-
-  ObjectLiteral(Isolate* isolate,
-                Handle<FixedArray> constant_properties,
-                ZoneList<Property*>* properties,
-                int literal_index,
-                bool is_simple,
-                bool fast_elements,
-                int depth,
-                bool has_function)
-      : MaterializedLiteral(isolate, literal_index, is_simple, depth),
-        constant_properties_(constant_properties),
-        properties_(properties),
-        fast_elements_(fast_elements),
-        has_function_(has_function) {}
 
   DECLARE_NODE_TYPE(ObjectLiteral)
 
@@ -1098,6 +1366,29 @@ class ObjectLiteral: public MaterializedLiteral {
     kHasFunction = 1 << 1
   };
 
+  struct Accessors: public ZoneObject {
+    Accessors() : getter(NULL), setter(NULL) { }
+    Expression* getter;
+    Expression* setter;
+  };
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  ObjectLiteral(Isolate* isolate,
+                Handle<FixedArray> constant_properties,
+                ZoneList<Property*>* properties,
+                int literal_index,
+                bool is_simple,
+                bool fast_elements,
+                int depth,
+                bool has_function)
+      : MaterializedLiteral(isolate, literal_index, is_simple, depth),
+        constant_properties_(constant_properties),
+        properties_(properties),
+        fast_elements_(fast_elements),
+        has_function_(has_function) {}
+
  private:
   Handle<FixedArray> constant_properties_;
   ZoneList<Property*>* properties_;
@@ -1109,6 +1400,14 @@ class ObjectLiteral: public MaterializedLiteral {
 // Node for capturing a regexp literal.
 class RegExpLiteral: public MaterializedLiteral {
  public:
+  DECLARE_NODE_TYPE(RegExpLiteral)
+
+  Handle<String> pattern() const { return pattern_; }
+  Handle<String> flags() const { return flags_; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
   RegExpLiteral(Isolate* isolate,
                 Handle<String> pattern,
                 Handle<String> flags,
@@ -1116,11 +1415,6 @@ class RegExpLiteral: public MaterializedLiteral {
       : MaterializedLiteral(isolate, literal_index, false, 1),
         pattern_(pattern),
         flags_(flags) {}
-
-  DECLARE_NODE_TYPE(RegExpLiteral)
-
-  Handle<String> pattern() const { return pattern_; }
-  Handle<String> flags() const { return flags_; }
 
  private:
   Handle<String> pattern_;
@@ -1131,6 +1425,17 @@ class RegExpLiteral: public MaterializedLiteral {
 // for minimizing the work when constructing it at runtime.
 class ArrayLiteral: public MaterializedLiteral {
  public:
+  DECLARE_NODE_TYPE(ArrayLiteral)
+
+  Handle<FixedArray> constant_elements() const { return constant_elements_; }
+  ZoneList<Expression*>* values() const { return values_; }
+
+  // Return an AST id for an element that is used in simulate instructions.
+  int GetIdForElement(int i) { return first_element_id_ + i; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
   ArrayLiteral(Isolate* isolate,
                Handle<FixedArray> constant_elements,
                ZoneList<Expression*>* values,
@@ -1142,14 +1447,6 @@ class ArrayLiteral: public MaterializedLiteral {
         values_(values),
         first_element_id_(ReserveIdRange(isolate, values->length())) {}
 
-  DECLARE_NODE_TYPE(ArrayLiteral)
-
-  Handle<FixedArray> constant_elements() const { return constant_elements_; }
-  ZoneList<Expression*>* values() const { return values_; }
-
-  // Return an AST id for an element that is used in simulate instructions.
-  int GetIdForElement(int i) { return first_element_id_ + i; }
-
  private:
   Handle<FixedArray> constant_elements_;
   ZoneList<Expression*>* values_;
@@ -1159,20 +1456,11 @@ class ArrayLiteral: public MaterializedLiteral {
 
 class VariableProxy: public Expression {
  public:
-  VariableProxy(Isolate* isolate, Variable* var);
-
-  VariableProxy(Isolate* isolate,
-                Handle<String> name,
-                bool is_this,
-                int position = RelocInfo::kNoPosition);
-
   DECLARE_NODE_TYPE(VariableProxy)
 
   virtual bool IsValidLeftHandSide() {
     return var_ == NULL ? true : var_->IsValidLeftHandSide();
   }
-
-  virtual bool IsInlineable() const;
 
   bool IsVariable(Handle<String> n) {
     return !is_this() && name().is_identical_to(n);
@@ -1188,6 +1476,8 @@ class VariableProxy: public Expression {
   Variable* var() const { return var_; }
   bool is_this() const { return is_this_; }
   int position() const { return position_; }
+  Interface* interface() const { return interface_; }
+
 
   void MarkAsTrivial() { is_trivial_ = true; }
   void MarkAsLValue() { is_lvalue_ = true; }
@@ -1196,6 +1486,16 @@ class VariableProxy: public Expression {
   void BindTo(Variable* var);
 
  protected:
+  template<class> friend class AstNodeFactory;
+
+  VariableProxy(Isolate* isolate, Variable* var);
+
+  VariableProxy(Isolate* isolate,
+                Handle<String> name,
+                bool is_this,
+                int position,
+                Interface* interface);
+
   Handle<String> name_;
   Variable* var_;  // resolved variable, or NULL
   bool is_this_;
@@ -1204,29 +1504,15 @@ class VariableProxy: public Expression {
   // or with a increment/decrement operator.
   bool is_lvalue_;
   int position_;
+  Interface* interface_;
 };
 
 
 class Property: public Expression {
  public:
-  Property(Isolate* isolate,
-           Expression* obj,
-           Expression* key,
-           int pos)
-      : Expression(isolate),
-        obj_(obj),
-        key_(key),
-        pos_(pos),
-        is_monomorphic_(false),
-        is_array_length_(false),
-        is_string_length_(false),
-        is_string_access_(false),
-        is_function_prototype_(false) { }
-
   DECLARE_NODE_TYPE(Property)
 
   virtual bool IsValidLeftHandSide() { return true; }
-  virtual bool IsInlineable() const;
 
   Expression* obj() const { return obj_; }
   Expression* key() const { return key_; }
@@ -1241,6 +1527,25 @@ class Property: public Expression {
   virtual bool IsMonomorphic() { return is_monomorphic_; }
   virtual SmallMapList* GetReceiverTypes() { return &receiver_types_; }
   bool IsArrayLength() { return is_array_length_; }
+  bool IsUninitialized() { return is_uninitialized_; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  Property(Isolate* isolate,
+           Expression* obj,
+           Expression* key,
+           int pos)
+      : Expression(isolate),
+        obj_(obj),
+        key_(key),
+        pos_(pos),
+        is_monomorphic_(false),
+        is_uninitialized_(false),
+        is_array_length_(false),
+        is_string_length_(false),
+        is_string_access_(false),
+        is_function_prototype_(false) { }
 
  private:
   Expression* obj_;
@@ -1249,6 +1554,7 @@ class Property: public Expression {
 
   SmallMapList receiver_types_;
   bool is_monomorphic_ : 1;
+  bool is_uninitialized_ : 1;
   bool is_array_length_ : 1;
   bool is_string_length_ : 1;
   bool is_string_access_ : 1;
@@ -1258,22 +1564,7 @@ class Property: public Expression {
 
 class Call: public Expression {
  public:
-  Call(Isolate* isolate,
-       Expression* expression,
-       ZoneList<Expression*>* arguments,
-       int pos)
-      : Expression(isolate),
-        expression_(expression),
-        arguments_(arguments),
-        pos_(pos),
-        is_monomorphic_(false),
-        check_type_(RECEIVER_MAP_CHECK),
-        return_id_(GetNextId(isolate)) {
-  }
-
   DECLARE_NODE_TYPE(Call)
-
-  virtual bool IsInlineable() const;
 
   Expression* expression() const { return expression_; }
   ZoneList<Expression*>* arguments() const { return arguments_; }
@@ -1299,6 +1590,21 @@ class Call: public Expression {
   bool return_is_recorded_;
 #endif
 
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  Call(Isolate* isolate,
+       Expression* expression,
+       ZoneList<Expression*>* arguments,
+       int pos)
+      : Expression(isolate),
+        expression_(expression),
+        arguments_(arguments),
+        pos_(pos),
+        is_monomorphic_(false),
+        check_type_(RECEIVER_MAP_CHECK),
+        return_id_(GetNextId(isolate)) { }
+
  private:
   Expression* expression_;
   ZoneList<Expression*>* arguments_;
@@ -1317,6 +1623,22 @@ class Call: public Expression {
 
 class CallNew: public Expression {
  public:
+  DECLARE_NODE_TYPE(CallNew)
+
+  Expression* expression() const { return expression_; }
+  ZoneList<Expression*>* arguments() const { return arguments_; }
+  virtual int position() const { return pos_; }
+
+  void RecordTypeFeedback(TypeFeedbackOracle* oracle);
+  virtual bool IsMonomorphic() { return is_monomorphic_; }
+  Handle<JSFunction> target() { return target_; }
+
+  // Bailout support.
+  int ReturnId() const { return return_id_; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
   CallNew(Isolate* isolate,
           Expression* expression,
           ZoneList<Expression*>* arguments,
@@ -1324,20 +1646,19 @@ class CallNew: public Expression {
       : Expression(isolate),
         expression_(expression),
         arguments_(arguments),
-        pos_(pos) { }
-
-  DECLARE_NODE_TYPE(CallNew)
-
-  virtual bool IsInlineable() const;
-
-  Expression* expression() const { return expression_; }
-  ZoneList<Expression*>* arguments() const { return arguments_; }
-  virtual int position() const { return pos_; }
+        pos_(pos),
+        is_monomorphic_(false),
+        return_id_(GetNextId(isolate)) { }
 
  private:
   Expression* expression_;
   ZoneList<Expression*>* arguments_;
   int pos_;
+
+  bool is_monomorphic_;
+  Handle<JSFunction> target_;
+
+  int return_id_;
 };
 
 
@@ -1347,6 +1668,16 @@ class CallNew: public Expression {
 // implemented in JavaScript (see "v8natives.js").
 class CallRuntime: public Expression {
  public:
+  DECLARE_NODE_TYPE(CallRuntime)
+
+  Handle<String> name() const { return name_; }
+  const Runtime::Function* function() const { return function_; }
+  ZoneList<Expression*>* arguments() const { return arguments_; }
+  bool is_jsruntime() const { return function_ == NULL; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
   CallRuntime(Isolate* isolate,
               Handle<String> name,
               const Runtime::Function* function,
@@ -1355,15 +1686,6 @@ class CallRuntime: public Expression {
         name_(name),
         function_(function),
         arguments_(arguments) { }
-
-  DECLARE_NODE_TYPE(CallRuntime)
-
-  virtual bool IsInlineable() const;
-
-  Handle<String> name() const { return name_; }
-  const Runtime::Function* function() const { return function_; }
-  ZoneList<Expression*>* arguments() const { return arguments_; }
-  bool is_jsruntime() const { return function_ == NULL; }
 
  private:
   Handle<String> name_;
@@ -1374,6 +1696,20 @@ class CallRuntime: public Expression {
 
 class UnaryOperation: public Expression {
  public:
+  DECLARE_NODE_TYPE(UnaryOperation)
+
+  virtual bool ResultOverwriteAllowed();
+
+  Token::Value op() const { return op_; }
+  Expression* expression() const { return expression_; }
+  virtual int position() const { return pos_; }
+
+  int MaterializeTrueId() { return materialize_true_id_; }
+  int MaterializeFalseId() { return materialize_false_id_; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
   UnaryOperation(Isolate* isolate,
                  Token::Value op,
                  Expression* expression,
@@ -1391,19 +1727,6 @@ class UnaryOperation: public Expression {
     }
   }
 
-  DECLARE_NODE_TYPE(UnaryOperation)
-
-  virtual bool IsInlineable() const;
-
-  virtual bool ResultOverwriteAllowed();
-
-  Token::Value op() const { return op_; }
-  Expression* expression() const { return expression_; }
-  virtual int position() const { return pos_; }
-
-  int MaterializeTrueId() { return materialize_true_id_; }
-  int MaterializeFalseId() { return materialize_false_id_; }
-
  private:
   Token::Value op_;
   Expression* expression_;
@@ -1418,21 +1741,7 @@ class UnaryOperation: public Expression {
 
 class BinaryOperation: public Expression {
  public:
-  BinaryOperation(Isolate* isolate,
-                  Token::Value op,
-                  Expression* left,
-                  Expression* right,
-                  int pos)
-      : Expression(isolate), op_(op), left_(left), right_(right), pos_(pos) {
-    ASSERT(Token::IsBinaryOp(op));
-    right_id_ = (op == Token::AND || op == Token::OR)
-        ? static_cast<int>(GetNextId(isolate))
-        : AstNode::kNoNumber;
-  }
-
   DECLARE_NODE_TYPE(BinaryOperation)
-
-  virtual bool IsInlineable() const;
 
   virtual bool ResultOverwriteAllowed();
 
@@ -1443,6 +1752,21 @@ class BinaryOperation: public Expression {
 
   // Bailout support.
   int RightId() const { return right_id_; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  BinaryOperation(Isolate* isolate,
+                  Token::Value op,
+                  Expression* left,
+                  Expression* right,
+                  int pos)
+      : Expression(isolate), op_(op), left_(left), right_(right), pos_(pos) {
+    ASSERT(Token::IsBinaryOp(op));
+    right_id_ = (op == Token::AND || op == Token::OR)
+        ? GetNextId(isolate)
+        : AstNode::kNoNumber;
+  }
 
  private:
   Token::Value op_;
@@ -1457,19 +1781,6 @@ class BinaryOperation: public Expression {
 
 class CountOperation: public Expression {
  public:
-  CountOperation(Isolate* isolate,
-                 Token::Value op,
-                 bool is_prefix,
-                 Expression* expr,
-                 int pos)
-      : Expression(isolate),
-        op_(op),
-        is_prefix_(is_prefix),
-        expression_(expr),
-        pos_(pos),
-        assignment_id_(GetNextId(isolate)),
-        count_id_(GetNextId(isolate)) {}
-
   DECLARE_NODE_TYPE(CountOperation)
 
   bool is_prefix() const { return is_prefix_; }
@@ -1485,8 +1796,6 @@ class CountOperation: public Expression {
 
   virtual void MarkAsStatement() { is_prefix_ = true; }
 
-  virtual bool IsInlineable() const;
-
   void RecordTypeFeedback(TypeFeedbackOracle* oracle);
   virtual bool IsMonomorphic() { return is_monomorphic_; }
   virtual SmallMapList* GetReceiverTypes() { return &receiver_types_; }
@@ -1494,6 +1803,22 @@ class CountOperation: public Expression {
   // Bailout support.
   int AssignmentId() const { return assignment_id_; }
   int CountId() const { return count_id_; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  CountOperation(Isolate* isolate,
+                 Token::Value op,
+                 bool is_prefix,
+                 Expression* expr,
+                 int pos)
+      : Expression(isolate),
+        op_(op),
+        is_prefix_(is_prefix),
+        expression_(expr),
+        pos_(pos),
+        assignment_id_(GetNextId(isolate)),
+        count_id_(GetNextId(isolate)) {}
 
  private:
   Token::Value op_;
@@ -1509,6 +1834,26 @@ class CountOperation: public Expression {
 
 class CompareOperation: public Expression {
  public:
+  DECLARE_NODE_TYPE(CompareOperation)
+
+  Token::Value op() const { return op_; }
+  Expression* left() const { return left_; }
+  Expression* right() const { return right_; }
+  virtual int position() const { return pos_; }
+
+  // Type feedback information.
+  void RecordTypeFeedback(TypeFeedbackOracle* oracle);
+  bool IsSmiCompare() { return compare_type_ == SMI_ONLY; }
+  bool IsObjectCompare() { return compare_type_ == OBJECT_ONLY; }
+
+  // Match special cases.
+  bool IsLiteralCompareTypeof(Expression** expr, Handle<String>* check);
+  bool IsLiteralCompareUndefined(Expression** expr);
+  bool IsLiteralCompareNull(Expression** expr);
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
   CompareOperation(Isolate* isolate,
                    Token::Value op,
                    Expression* left,
@@ -1523,25 +1868,6 @@ class CompareOperation: public Expression {
     ASSERT(Token::IsCompareOp(op));
   }
 
-  DECLARE_NODE_TYPE(CompareOperation)
-
-  Token::Value op() const { return op_; }
-  Expression* left() const { return left_; }
-  Expression* right() const { return right_; }
-  virtual int position() const { return pos_; }
-
-  virtual bool IsInlineable() const;
-
-  // Type feedback information.
-  void RecordTypeFeedback(TypeFeedbackOracle* oracle);
-  bool IsSmiCompare() { return compare_type_ == SMI_ONLY; }
-  bool IsObjectCompare() { return compare_type_ == OBJECT_ONLY; }
-
-  // Match special cases.
-  bool IsLiteralCompareTypeof(Expression** expr, Handle<String>* check);
-  bool IsLiteralCompareUndefined(Expression** expr);
-  bool IsLiteralCompareNull(Expression** expr);
-
  private:
   Token::Value op_;
   Expression* left_;
@@ -1555,6 +1881,21 @@ class CompareOperation: public Expression {
 
 class Conditional: public Expression {
  public:
+  DECLARE_NODE_TYPE(Conditional)
+
+  Expression* condition() const { return condition_; }
+  Expression* then_expression() const { return then_expression_; }
+  Expression* else_expression() const { return else_expression_; }
+
+  int then_expression_position() const { return then_expression_position_; }
+  int else_expression_position() const { return else_expression_position_; }
+
+  int ThenId() const { return then_id_; }
+  int ElseId() const { return else_id_; }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
   Conditional(Isolate* isolate,
               Expression* condition,
               Expression* then_expression,
@@ -1568,22 +1909,7 @@ class Conditional: public Expression {
         then_expression_position_(then_expression_position),
         else_expression_position_(else_expression_position),
         then_id_(GetNextId(isolate)),
-        else_id_(GetNextId(isolate)) {
-  }
-
-  DECLARE_NODE_TYPE(Conditional)
-
-  virtual bool IsInlineable() const;
-
-  Expression* condition() const { return condition_; }
-  Expression* then_expression() const { return then_expression_; }
-  Expression* else_expression() const { return else_expression_; }
-
-  int then_expression_position() const { return then_expression_position_; }
-  int else_expression_position() const { return else_expression_position_; }
-
-  int ThenId() const { return then_id_; }
-  int ElseId() const { return else_id_; }
+        else_id_(GetNextId(isolate)) { }
 
  private:
   Expression* condition_;
@@ -1598,15 +1924,7 @@ class Conditional: public Expression {
 
 class Assignment: public Expression {
  public:
-  Assignment(Isolate* isolate,
-             Token::Value op,
-             Expression* target,
-             Expression* value,
-             int pos);
-
   DECLARE_NODE_TYPE(Assignment)
-
-  virtual bool IsInlineable() const;
 
   Assignment* AsSimpleAssignment() { return !is_compound() ? this : NULL; }
 
@@ -1639,6 +1957,25 @@ class Assignment: public Expression {
   int CompoundLoadId() const { return compound_load_id_; }
   int AssignmentId() const { return assignment_id_; }
 
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  Assignment(Isolate* isolate,
+             Token::Value op,
+             Expression* target,
+             Expression* value,
+             int pos);
+
+  template<class Visitor>
+  void Init(Isolate* isolate, AstNodeFactory<Visitor>* factory) {
+    ASSERT(Token::IsAssignmentOp(op_));
+    if (is_compound()) {
+      binary_operation_ =
+          factory->NewBinaryOperation(binary_op(), target_, value_, pos_ + 1);
+      compound_load_id_ = GetNextId(isolate);
+    }
+  }
+
  private:
   Token::Value op_;
   Expression* target_;
@@ -1658,14 +1995,16 @@ class Assignment: public Expression {
 
 class Throw: public Expression {
  public:
-  Throw(Isolate* isolate, Expression* exception, int pos)
-      : Expression(isolate), exception_(exception), pos_(pos) {}
-
   DECLARE_NODE_TYPE(Throw)
 
   Expression* exception() const { return exception_; }
   virtual int position() const { return pos_; }
-  virtual bool IsInlineable() const;
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  Throw(Isolate* isolate, Expression* exception, int pos)
+      : Expression(isolate), exception_(exception), pos_(pos) {}
 
  private:
   Expression* exception_;
@@ -1681,37 +2020,15 @@ class FunctionLiteral: public Expression {
     DECLARATION
   };
 
-  FunctionLiteral(Isolate* isolate,
-                  Handle<String> name,
-                  Scope* scope,
-                  ZoneList<Statement*>* body,
-                  int materialized_literal_count,
-                  int expected_property_count,
-                  int handler_count,
-                  bool has_only_simple_this_property_assignments,
-                  Handle<FixedArray> this_property_assignments,
-                  int parameter_count,
-                  Type type,
-                  bool has_duplicate_parameters)
-      : Expression(isolate),
-        name_(name),
-        scope_(scope),
-        body_(body),
-        this_property_assignments_(this_property_assignments),
-        inferred_name_(isolate->factory()->empty_string()),
-        materialized_literal_count_(materialized_literal_count),
-        expected_property_count_(expected_property_count),
-        handler_count_(handler_count),
-        parameter_count_(parameter_count),
-        function_token_position_(RelocInfo::kNoPosition) {
-    bitfield_ =
-        HasOnlySimpleThisPropertyAssignments::encode(
-            has_only_simple_this_property_assignments) |
-        IsExpression::encode(type != DECLARATION) |
-        IsAnonymous::encode(type == ANONYMOUS_EXPRESSION) |
-        Pretenure::encode(false) |
-        HasDuplicateParameters::encode(has_duplicate_parameters);
-  }
+  enum ParameterFlag {
+    kNoDuplicateParameters = 0,
+    kHasDuplicateParameters = 1
+  };
+
+  enum IsFunctionFlag {
+    kGlobalOrEval,
+    kIsFunction
+  };
 
   DECLARE_NODE_TYPE(FunctionLiteral)
 
@@ -1722,6 +2039,7 @@ class FunctionLiteral: public Expression {
   int function_token_position() const { return function_token_position_; }
   int start_position() const;
   int end_position() const;
+  int SourceSize() const { return end_position() - start_position(); }
   bool is_expression() const { return IsExpression::decode(bitfield_); }
   bool is_anonymous() const { return IsAnonymous::decode(bitfield_); }
   bool is_classic_mode() const { return language_mode() == CLASSIC_MODE; }
@@ -1752,10 +2070,54 @@ class FunctionLiteral: public Expression {
 
   bool pretenure() { return Pretenure::decode(bitfield_); }
   void set_pretenure() { bitfield_ |= Pretenure::encode(true); }
-  virtual bool IsInlineable() const;
 
   bool has_duplicate_parameters() {
     return HasDuplicateParameters::decode(bitfield_);
+  }
+
+  bool is_function() { return IsFunction::decode(bitfield_) == kIsFunction; }
+
+  int ast_node_count() { return ast_properties_.node_count(); }
+  AstProperties::Flags* flags() { return ast_properties_.flags(); }
+  void set_ast_properties(AstProperties* ast_properties) {
+    ast_properties_ = *ast_properties;
+  }
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  FunctionLiteral(Isolate* isolate,
+                  Handle<String> name,
+                  Scope* scope,
+                  ZoneList<Statement*>* body,
+                  int materialized_literal_count,
+                  int expected_property_count,
+                  int handler_count,
+                  bool has_only_simple_this_property_assignments,
+                  Handle<FixedArray> this_property_assignments,
+                  int parameter_count,
+                  Type type,
+                  ParameterFlag has_duplicate_parameters,
+                  IsFunctionFlag is_function)
+      : Expression(isolate),
+        name_(name),
+        scope_(scope),
+        body_(body),
+        this_property_assignments_(this_property_assignments),
+        inferred_name_(isolate->factory()->empty_string()),
+        materialized_literal_count_(materialized_literal_count),
+        expected_property_count_(expected_property_count),
+        handler_count_(handler_count),
+        parameter_count_(parameter_count),
+        function_token_position_(RelocInfo::kNoPosition) {
+    bitfield_ =
+        HasOnlySimpleThisPropertyAssignments::encode(
+            has_only_simple_this_property_assignments) |
+        IsExpression::encode(type != DECLARATION) |
+        IsAnonymous::encode(type == ANONYMOUS_EXPRESSION) |
+        Pretenure::encode(false) |
+        HasDuplicateParameters::encode(has_duplicate_parameters) |
+        IsFunction::encode(is_function);
   }
 
  private:
@@ -1764,6 +2126,7 @@ class FunctionLiteral: public Expression {
   ZoneList<Statement*>* body_;
   Handle<FixedArray> this_property_assignments_;
   Handle<String> inferred_name_;
+  AstProperties ast_properties_;
 
   int materialized_literal_count_;
   int expected_property_count_;
@@ -1776,23 +2139,27 @@ class FunctionLiteral: public Expression {
   class IsExpression: public BitField<bool, 1, 1> {};
   class IsAnonymous: public BitField<bool, 2, 1> {};
   class Pretenure: public BitField<bool, 3, 1> {};
-  class HasDuplicateParameters: public BitField<bool, 4, 1> {};
+  class HasDuplicateParameters: public BitField<ParameterFlag, 4, 1> {};
+  class IsFunction: public BitField<IsFunctionFlag, 5, 1> {};
 };
 
 
 class SharedFunctionInfoLiteral: public Expression {
  public:
-  SharedFunctionInfoLiteral(
-      Isolate* isolate,
-      Handle<SharedFunctionInfo> shared_function_info)
-      : Expression(isolate), shared_function_info_(shared_function_info) { }
-
   DECLARE_NODE_TYPE(SharedFunctionInfoLiteral)
 
   Handle<SharedFunctionInfo> shared_function_info() const {
     return shared_function_info_;
   }
-  virtual bool IsInlineable() const;
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  SharedFunctionInfoLiteral(
+      Isolate* isolate,
+      Handle<SharedFunctionInfo> shared_function_info)
+      : Expression(isolate),
+        shared_function_info_(shared_function_info) { }
 
  private:
   Handle<SharedFunctionInfo> shared_function_info_;
@@ -1801,10 +2168,15 @@ class SharedFunctionInfoLiteral: public Expression {
 
 class ThisFunction: public Expression {
  public:
-  explicit ThisFunction(Isolate* isolate) : Expression(isolate) {}
   DECLARE_NODE_TYPE(ThisFunction)
-  virtual bool IsInlineable() const;
+
+ protected:
+  template<class> friend class AstNodeFactory;
+
+  explicit ThisFunction(Isolate* isolate): Expression(isolate) {}
 };
+
+#undef DECLARE_NODE_TYPE
 
 
 // ----------------------------------------------------------------------------
@@ -2166,6 +2538,15 @@ class RegExpEmpty: public RegExpTree {
 
 
 // ----------------------------------------------------------------------------
+// Out-of-line inline constructors (to side-step cyclic dependencies).
+
+inline ModuleVariable::ModuleVariable(VariableProxy* proxy)
+    : Module(proxy->interface()),
+      proxy_(proxy) {
+}
+
+
+// ----------------------------------------------------------------------------
 // Basic visitor
 // - leaf node visitors are abstract.
 
@@ -2204,6 +2585,397 @@ class AstVisitor BASE_EMBEDDED {
  private:
   Isolate* isolate_;
   bool stack_overflow_;
+};
+
+
+// ----------------------------------------------------------------------------
+// Construction time visitor.
+
+class AstConstructionVisitor BASE_EMBEDDED {
+ public:
+  AstConstructionVisitor() { }
+
+  AstProperties* ast_properties() { return &properties_; }
+
+ private:
+  template<class> friend class AstNodeFactory;
+
+  // Node visitors.
+#define DEF_VISIT(type) \
+  void Visit##type(type* node);
+  AST_NODE_LIST(DEF_VISIT)
+#undef DEF_VISIT
+
+  void increase_node_count() { properties_.add_node_count(1); }
+  void add_flag(AstPropertiesFlag flag) { properties_.flags()->Add(flag); }
+
+  AstProperties properties_;
+};
+
+
+class AstNullVisitor BASE_EMBEDDED {
+ public:
+  // Node visitors.
+#define DEF_VISIT(type) \
+  void Visit##type(type* node) {}
+  AST_NODE_LIST(DEF_VISIT)
+#undef DEF_VISIT
+};
+
+
+
+// ----------------------------------------------------------------------------
+// AstNode factory
+
+template<class Visitor>
+class AstNodeFactory BASE_EMBEDDED {
+ public:
+  explicit AstNodeFactory(Isolate* isolate)
+      : isolate_(isolate),
+        zone_(isolate_->zone()) { }
+
+  Visitor* visitor() { return &visitor_; }
+
+#define VISIT_AND_RETURN(NodeType, node) \
+  visitor_.Visit##NodeType((node)); \
+  return node;
+
+  VariableDeclaration* NewVariableDeclaration(VariableProxy* proxy,
+                                              VariableMode mode,
+                                              Scope* scope) {
+    VariableDeclaration* decl =
+        new(zone_) VariableDeclaration(proxy, mode, scope);
+    VISIT_AND_RETURN(VariableDeclaration, decl)
+  }
+
+  FunctionDeclaration* NewFunctionDeclaration(VariableProxy* proxy,
+                                              VariableMode mode,
+                                              FunctionLiteral* fun,
+                                              Scope* scope) {
+    FunctionDeclaration* decl =
+        new(zone_) FunctionDeclaration(proxy, mode, fun, scope);
+    VISIT_AND_RETURN(FunctionDeclaration, decl)
+  }
+
+  ModuleDeclaration* NewModuleDeclaration(VariableProxy* proxy,
+                                          Module* module,
+                                          Scope* scope) {
+    ModuleDeclaration* decl =
+        new(zone_) ModuleDeclaration(proxy, module, scope);
+    VISIT_AND_RETURN(ModuleDeclaration, decl)
+  }
+
+  ImportDeclaration* NewImportDeclaration(VariableProxy* proxy,
+                                          Module* module,
+                                          Scope* scope) {
+    ImportDeclaration* decl =
+        new(zone_) ImportDeclaration(proxy, module, scope);
+    VISIT_AND_RETURN(ImportDeclaration, decl)
+  }
+
+  ExportDeclaration* NewExportDeclaration(VariableProxy* proxy,
+                                          Scope* scope) {
+    ExportDeclaration* decl =
+        new(zone_) ExportDeclaration(proxy, scope);
+    VISIT_AND_RETURN(ExportDeclaration, decl)
+  }
+
+  ModuleLiteral* NewModuleLiteral(Block* body, Interface* interface) {
+    ModuleLiteral* module = new(zone_) ModuleLiteral(body, interface);
+    VISIT_AND_RETURN(ModuleLiteral, module)
+  }
+
+  ModuleVariable* NewModuleVariable(VariableProxy* proxy) {
+    ModuleVariable* module = new(zone_) ModuleVariable(proxy);
+    VISIT_AND_RETURN(ModuleVariable, module)
+  }
+
+  ModulePath* NewModulePath(Module* origin, Handle<String> name) {
+    ModulePath* module = new(zone_) ModulePath(origin, name);
+    VISIT_AND_RETURN(ModulePath, module)
+  }
+
+  ModuleUrl* NewModuleUrl(Handle<String> url) {
+    ModuleUrl* module = new(zone_) ModuleUrl(url);
+    VISIT_AND_RETURN(ModuleUrl, module)
+  }
+
+  Block* NewBlock(ZoneStringList* labels,
+                  int capacity,
+                  bool is_initializer_block) {
+    Block* block = new(zone_) Block(
+        isolate_, labels, capacity, is_initializer_block);
+    VISIT_AND_RETURN(Block, block)
+  }
+
+#define STATEMENT_WITH_LABELS(NodeType) \
+  NodeType* New##NodeType(ZoneStringList* labels) { \
+    NodeType* stmt = new(zone_) NodeType(isolate_, labels); \
+    VISIT_AND_RETURN(NodeType, stmt); \
+  }
+  STATEMENT_WITH_LABELS(DoWhileStatement)
+  STATEMENT_WITH_LABELS(WhileStatement)
+  STATEMENT_WITH_LABELS(ForStatement)
+  STATEMENT_WITH_LABELS(ForInStatement)
+  STATEMENT_WITH_LABELS(SwitchStatement)
+#undef STATEMENT_WITH_LABELS
+
+  ExpressionStatement* NewExpressionStatement(Expression* expression) {
+    ExpressionStatement* stmt = new(zone_) ExpressionStatement(expression);
+    VISIT_AND_RETURN(ExpressionStatement, stmt)
+  }
+
+  ContinueStatement* NewContinueStatement(IterationStatement* target) {
+    ContinueStatement* stmt = new(zone_) ContinueStatement(target);
+    VISIT_AND_RETURN(ContinueStatement, stmt)
+  }
+
+  BreakStatement* NewBreakStatement(BreakableStatement* target) {
+    BreakStatement* stmt = new(zone_) BreakStatement(target);
+    VISIT_AND_RETURN(BreakStatement, stmt)
+  }
+
+  ReturnStatement* NewReturnStatement(Expression* expression) {
+    ReturnStatement* stmt = new(zone_) ReturnStatement(expression);
+    VISIT_AND_RETURN(ReturnStatement, stmt)
+  }
+
+  WithStatement* NewWithStatement(Expression* expression,
+                                  Statement* statement) {
+    WithStatement* stmt = new(zone_) WithStatement(expression, statement);
+    VISIT_AND_RETURN(WithStatement, stmt)
+  }
+
+  IfStatement* NewIfStatement(Expression* condition,
+                              Statement* then_statement,
+                              Statement* else_statement) {
+    IfStatement* stmt = new(zone_) IfStatement(
+        isolate_, condition, then_statement, else_statement);
+    VISIT_AND_RETURN(IfStatement, stmt)
+  }
+
+  TryCatchStatement* NewTryCatchStatement(int index,
+                                          Block* try_block,
+                                          Scope* scope,
+                                          Variable* variable,
+                                          Block* catch_block) {
+    TryCatchStatement* stmt = new(zone_) TryCatchStatement(
+        index, try_block, scope, variable, catch_block);
+    VISIT_AND_RETURN(TryCatchStatement, stmt)
+  }
+
+  TryFinallyStatement* NewTryFinallyStatement(int index,
+                                              Block* try_block,
+                                              Block* finally_block) {
+    TryFinallyStatement* stmt =
+        new(zone_) TryFinallyStatement(index, try_block, finally_block);
+    VISIT_AND_RETURN(TryFinallyStatement, stmt)
+  }
+
+  DebuggerStatement* NewDebuggerStatement() {
+    DebuggerStatement* stmt = new(zone_) DebuggerStatement();
+    VISIT_AND_RETURN(DebuggerStatement, stmt)
+  }
+
+  EmptyStatement* NewEmptyStatement() {
+    return new(zone_) EmptyStatement();
+  }
+
+  Literal* NewLiteral(Handle<Object> handle) {
+    Literal* lit = new(zone_) Literal(isolate_, handle);
+    VISIT_AND_RETURN(Literal, lit)
+  }
+
+  Literal* NewNumberLiteral(double number) {
+    return NewLiteral(isolate_->factory()->NewNumber(number, TENURED));
+  }
+
+  ObjectLiteral* NewObjectLiteral(
+      Handle<FixedArray> constant_properties,
+      ZoneList<ObjectLiteral::Property*>* properties,
+      int literal_index,
+      bool is_simple,
+      bool fast_elements,
+      int depth,
+      bool has_function) {
+    ObjectLiteral* lit = new(zone_) ObjectLiteral(
+        isolate_, constant_properties, properties, literal_index,
+        is_simple, fast_elements, depth, has_function);
+    VISIT_AND_RETURN(ObjectLiteral, lit)
+  }
+
+  ObjectLiteral::Property* NewObjectLiteralProperty(bool is_getter,
+                                                    FunctionLiteral* value) {
+    ObjectLiteral::Property* prop =
+        new(zone_) ObjectLiteral::Property(is_getter, value);
+    prop->set_key(NewLiteral(value->name()));
+    return prop;  // Not an AST node, will not be visited.
+  }
+
+  RegExpLiteral* NewRegExpLiteral(Handle<String> pattern,
+                                  Handle<String> flags,
+                                  int literal_index) {
+    RegExpLiteral* lit =
+        new(zone_) RegExpLiteral(isolate_, pattern, flags, literal_index);
+    VISIT_AND_RETURN(RegExpLiteral, lit);
+  }
+
+  ArrayLiteral* NewArrayLiteral(Handle<FixedArray> constant_elements,
+                                ZoneList<Expression*>* values,
+                                int literal_index,
+                                bool is_simple,
+                                int depth) {
+    ArrayLiteral* lit = new(zone_) ArrayLiteral(
+        isolate_, constant_elements, values, literal_index, is_simple, depth);
+    VISIT_AND_RETURN(ArrayLiteral, lit)
+  }
+
+  VariableProxy* NewVariableProxy(Variable* var) {
+    VariableProxy* proxy = new(zone_) VariableProxy(isolate_, var);
+    VISIT_AND_RETURN(VariableProxy, proxy)
+  }
+
+  VariableProxy* NewVariableProxy(Handle<String> name,
+                                  bool is_this,
+                                  int position = RelocInfo::kNoPosition,
+                                  Interface* interface =
+                                      Interface::NewValue()) {
+    VariableProxy* proxy =
+        new(zone_) VariableProxy(isolate_, name, is_this, position, interface);
+    VISIT_AND_RETURN(VariableProxy, proxy)
+  }
+
+  Property* NewProperty(Expression* obj, Expression* key, int pos) {
+    Property* prop = new(zone_) Property(isolate_, obj, key, pos);
+    VISIT_AND_RETURN(Property, prop)
+  }
+
+  Call* NewCall(Expression* expression,
+                ZoneList<Expression*>* arguments,
+                int pos) {
+    Call* call = new(zone_) Call(isolate_, expression, arguments, pos);
+    VISIT_AND_RETURN(Call, call)
+  }
+
+  CallNew* NewCallNew(Expression* expression,
+                      ZoneList<Expression*>* arguments,
+                      int pos) {
+    CallNew* call = new(zone_) CallNew(isolate_, expression, arguments, pos);
+    VISIT_AND_RETURN(CallNew, call)
+  }
+
+  CallRuntime* NewCallRuntime(Handle<String> name,
+                              const Runtime::Function* function,
+                              ZoneList<Expression*>* arguments) {
+    CallRuntime* call =
+        new(zone_) CallRuntime(isolate_, name, function, arguments);
+    VISIT_AND_RETURN(CallRuntime, call)
+  }
+
+  UnaryOperation* NewUnaryOperation(Token::Value op,
+                                    Expression* expression,
+                                    int pos) {
+    UnaryOperation* node =
+        new(zone_) UnaryOperation(isolate_, op, expression, pos);
+    VISIT_AND_RETURN(UnaryOperation, node)
+  }
+
+  BinaryOperation* NewBinaryOperation(Token::Value op,
+                                      Expression* left,
+                                      Expression* right,
+                                      int pos) {
+    BinaryOperation* node =
+        new(zone_) BinaryOperation(isolate_, op, left, right, pos);
+    VISIT_AND_RETURN(BinaryOperation, node)
+  }
+
+  CountOperation* NewCountOperation(Token::Value op,
+                                    bool is_prefix,
+                                    Expression* expr,
+                                    int pos) {
+    CountOperation* node =
+        new(zone_) CountOperation(isolate_, op, is_prefix, expr, pos);
+    VISIT_AND_RETURN(CountOperation, node)
+  }
+
+  CompareOperation* NewCompareOperation(Token::Value op,
+                                        Expression* left,
+                                        Expression* right,
+                                        int pos) {
+    CompareOperation* node =
+        new(zone_) CompareOperation(isolate_, op, left, right, pos);
+    VISIT_AND_RETURN(CompareOperation, node)
+  }
+
+  Conditional* NewConditional(Expression* condition,
+                              Expression* then_expression,
+                              Expression* else_expression,
+                              int then_expression_position,
+                              int else_expression_position) {
+    Conditional* cond = new(zone_) Conditional(
+        isolate_, condition, then_expression, else_expression,
+        then_expression_position, else_expression_position);
+    VISIT_AND_RETURN(Conditional, cond)
+  }
+
+  Assignment* NewAssignment(Token::Value op,
+                            Expression* target,
+                            Expression* value,
+                            int pos) {
+    Assignment* assign =
+        new(zone_) Assignment(isolate_, op, target, value, pos);
+    assign->Init(isolate_, this);
+    VISIT_AND_RETURN(Assignment, assign)
+  }
+
+  Throw* NewThrow(Expression* exception, int pos) {
+    Throw* t = new(zone_) Throw(isolate_, exception, pos);
+    VISIT_AND_RETURN(Throw, t)
+  }
+
+  FunctionLiteral* NewFunctionLiteral(
+      Handle<String> name,
+      Scope* scope,
+      ZoneList<Statement*>* body,
+      int materialized_literal_count,
+      int expected_property_count,
+      int handler_count,
+      bool has_only_simple_this_property_assignments,
+      Handle<FixedArray> this_property_assignments,
+      int parameter_count,
+      FunctionLiteral::ParameterFlag has_duplicate_parameters,
+      FunctionLiteral::Type type,
+      FunctionLiteral::IsFunctionFlag is_function) {
+    FunctionLiteral* lit = new(zone_) FunctionLiteral(
+        isolate_, name, scope, body,
+        materialized_literal_count, expected_property_count, handler_count,
+        has_only_simple_this_property_assignments, this_property_assignments,
+        parameter_count, type, has_duplicate_parameters, is_function);
+    // Top-level literal doesn't count for the AST's properties.
+    if (is_function == FunctionLiteral::kIsFunction) {
+      visitor_.VisitFunctionLiteral(lit);
+    }
+    return lit;
+  }
+
+  SharedFunctionInfoLiteral* NewSharedFunctionInfoLiteral(
+      Handle<SharedFunctionInfo> shared_function_info) {
+    SharedFunctionInfoLiteral* lit =
+        new(zone_) SharedFunctionInfoLiteral(isolate_, shared_function_info);
+    VISIT_AND_RETURN(SharedFunctionInfoLiteral, lit)
+  }
+
+  ThisFunction* NewThisFunction() {
+    ThisFunction* fun = new(zone_) ThisFunction(isolate_);
+    VISIT_AND_RETURN(ThisFunction, fun)
+  }
+
+#undef VISIT_AND_RETURN
+
+ private:
+  Isolate* isolate_;
+  Zone* zone_;
+  Visitor visitor_;
 };
 
 

@@ -76,7 +76,8 @@ VariableProxy::VariableProxy(Isolate* isolate, Variable* var)
       is_this_(var->is_this()),
       is_trivial_(false),
       is_lvalue_(false),
-      position_(RelocInfo::kNoPosition) {
+      position_(RelocInfo::kNoPosition),
+      interface_(var->interface()) {
   BindTo(var);
 }
 
@@ -84,14 +85,16 @@ VariableProxy::VariableProxy(Isolate* isolate, Variable* var)
 VariableProxy::VariableProxy(Isolate* isolate,
                              Handle<String> name,
                              bool is_this,
-                             int position)
+                             int position,
+                             Interface* interface)
     : Expression(isolate),
       name_(name),
       var_(NULL),
       is_this_(is_this),
       is_trivial_(false),
       is_lvalue_(false),
-      position_(position) {
+      position_(position),
+      interface_(interface) {
   // Names must be canonicalized for fast equality checks.
   ASSERT(name->IsSymbol());
 }
@@ -126,18 +129,7 @@ Assignment::Assignment(Isolate* isolate,
       assignment_id_(GetNextId(isolate)),
       block_start_(false),
       block_end_(false),
-      is_monomorphic_(false) {
-  ASSERT(Token::IsAssignmentOp(op));
-  if (is_compound()) {
-    binary_operation_ =
-        new(isolate->zone()) BinaryOperation(isolate,
-                                             binary_op(),
-                                             target,
-                                             value,
-                                             pos + 1);
-    compound_load_id_ = GetNextId(isolate);
-  }
-}
+      is_monomorphic_(false) { }
 
 
 Token::Value Assignment::binary_op() const {
@@ -179,12 +171,15 @@ LanguageMode FunctionLiteral::language_mode() const {
 }
 
 
-ObjectLiteral::Property::Property(Literal* key, Expression* value) {
+ObjectLiteral::Property::Property(Literal* key,
+                                  Expression* value,
+                                  Isolate* isolate) {
   emit_store_ = true;
   key_ = key;
   value_ = value;
   Object* k = *key->handle();
-  if (k->IsSymbol() && HEAP->Proto_symbol()->Equals(String::cast(k))) {
+  if (k->IsSymbol() &&
+      isolate->heap()->Proto_symbol()->Equals(String::cast(k))) {
     kind_ = PROTOTYPE;
   } else if (value_->AsMaterializedLiteral() != NULL) {
     kind_ = MATERIALIZED_LITERAL;
@@ -197,9 +192,7 @@ ObjectLiteral::Property::Property(Literal* key, Expression* value) {
 
 
 ObjectLiteral::Property::Property(bool is_getter, FunctionLiteral* value) {
-  Isolate* isolate = Isolate::Current();
   emit_store_ = true;
-  key_ = new(isolate->zone()) Literal(isolate, value->name());
   value_ = value;
   kind_ = is_getter ? GETTER : SETTER;
 }
@@ -250,55 +243,21 @@ bool IsEqualNumber(void* first, void* second) {
 
 
 void ObjectLiteral::CalculateEmitStore() {
-  HashMap properties(&IsEqualString);
-  HashMap elements(&IsEqualNumber);
-  for (int i = this->properties()->length() - 1; i >= 0; i--) {
-    ObjectLiteral::Property* property = this->properties()->at(i);
+  ZoneHashMap table(Literal::Match);
+  for (int i = properties()->length() - 1; i >= 0; i--) {
+    ObjectLiteral::Property* property = properties()->at(i);
     Literal* literal = property->key();
-    Handle<Object> handle = literal->handle();
-
-    if (handle->IsNull()) {
-      continue;
-    }
-
-    uint32_t hash;
-    HashMap* table;
-    void* key;
-    Factory* factory = Isolate::Current()->factory();
-    if (handle->IsSymbol()) {
-      Handle<String> name(String::cast(*handle));
-      if (name->AsArrayIndex(&hash)) {
-        Handle<Object> key_handle = factory->NewNumberFromUint(hash);
-        key = key_handle.location();
-        table = &elements;
-      } else {
-        key = name.location();
-        hash = name->Hash();
-        table = &properties;
-      }
-    } else if (handle->ToArrayIndex(&hash)) {
-      key = handle.location();
-      table = &elements;
-    } else {
-      ASSERT(handle->IsNumber());
-      double num = handle->Number();
-      char arr[100];
-      Vector<char> buffer(arr, ARRAY_SIZE(arr));
-      const char* str = DoubleToCString(num, buffer);
-      Handle<String> name = factory->NewStringFromAscii(CStrVector(str));
-      key = name.location();
-      hash = name->Hash();
-      table = &properties;
-    }
+    if (literal->handle()->IsNull()) continue;
+    uint32_t hash = literal->Hash();
     // If the key of a computed property is in the table, do not emit
     // a store for the property later.
-    if (property->kind() == ObjectLiteral::Property::COMPUTED) {
-      if (table->Lookup(key, hash, false) != NULL) {
-        property->set_emit_store(false);
-      }
+    if (property->kind() == ObjectLiteral::Property::COMPUTED &&
+        table.Lookup(literal, hash, false) != NULL) {
+      property->set_emit_store(false);
+    } else {
+      // Add key to the table.
+      table.Lookup(literal, hash, true);
     }
-    // Add key to the table.
-    table->Lookup(key, hash, true);
   }
 }
 
@@ -427,224 +386,11 @@ bool CompareOperation::IsLiteralCompareNull(Expression** expr) {
 // Inlining support
 
 bool Declaration::IsInlineable() const {
-  return proxy()->var()->IsStackAllocated() && fun() == NULL;
+  return proxy()->var()->IsStackAllocated();
 }
 
-
-bool TargetCollector::IsInlineable() const {
-  UNREACHABLE();
+bool FunctionDeclaration::IsInlineable() const {
   return false;
-}
-
-
-bool ForInStatement::IsInlineable() const {
-  return false;
-}
-
-
-bool WithStatement::IsInlineable() const {
-  return false;
-}
-
-
-bool SwitchStatement::IsInlineable() const {
-  return false;
-}
-
-
-bool TryStatement::IsInlineable() const {
-  return false;
-}
-
-
-bool TryCatchStatement::IsInlineable() const {
-  return false;
-}
-
-
-bool TryFinallyStatement::IsInlineable() const {
-  return false;
-}
-
-
-bool DebuggerStatement::IsInlineable() const {
-  return false;
-}
-
-
-bool Throw::IsInlineable() const {
-  return exception()->IsInlineable();
-}
-
-
-bool MaterializedLiteral::IsInlineable() const {
-  // TODO(1322): Allow materialized literals.
-  return false;
-}
-
-
-bool FunctionLiteral::IsInlineable() const {
-  // TODO(1322): Allow materialized literals.
-  return false;
-}
-
-
-bool ThisFunction::IsInlineable() const {
-  return true;
-}
-
-
-bool SharedFunctionInfoLiteral::IsInlineable() const {
-  return false;
-}
-
-
-bool ForStatement::IsInlineable() const {
-  return (init() == NULL || init()->IsInlineable())
-      && (cond() == NULL || cond()->IsInlineable())
-      && (next() == NULL || next()->IsInlineable())
-      && body()->IsInlineable();
-}
-
-
-bool WhileStatement::IsInlineable() const {
-  return cond()->IsInlineable()
-      && body()->IsInlineable();
-}
-
-
-bool DoWhileStatement::IsInlineable() const {
-  return cond()->IsInlineable()
-      && body()->IsInlineable();
-}
-
-
-bool ContinueStatement::IsInlineable() const {
-  return true;
-}
-
-
-bool BreakStatement::IsInlineable() const {
-  return true;
-}
-
-
-bool EmptyStatement::IsInlineable() const {
-  return true;
-}
-
-
-bool Literal::IsInlineable() const {
-  return true;
-}
-
-
-bool Block::IsInlineable() const {
-  const int count = statements_.length();
-  for (int i = 0; i < count; ++i) {
-    if (!statements_[i]->IsInlineable()) return false;
-  }
-  return true;
-}
-
-
-bool ExpressionStatement::IsInlineable() const {
-  return expression()->IsInlineable();
-}
-
-
-bool IfStatement::IsInlineable() const {
-  return condition()->IsInlineable()
-      && then_statement()->IsInlineable()
-      && else_statement()->IsInlineable();
-}
-
-
-bool ReturnStatement::IsInlineable() const {
-  return expression()->IsInlineable();
-}
-
-
-bool Conditional::IsInlineable() const {
-  return condition()->IsInlineable() && then_expression()->IsInlineable() &&
-      else_expression()->IsInlineable();
-}
-
-
-bool VariableProxy::IsInlineable() const {
-  return var()->IsUnallocated()
-      || var()->IsStackAllocated()
-      || var()->IsContextSlot();
-}
-
-
-bool Assignment::IsInlineable() const {
-  return target()->IsInlineable() && value()->IsInlineable();
-}
-
-
-bool Property::IsInlineable() const {
-  return obj()->IsInlineable() && key()->IsInlineable();
-}
-
-
-bool Call::IsInlineable() const {
-  if (!expression()->IsInlineable()) return false;
-  const int count = arguments()->length();
-  for (int i = 0; i < count; ++i) {
-    if (!arguments()->at(i)->IsInlineable()) return false;
-  }
-  return true;
-}
-
-
-bool CallNew::IsInlineable() const {
-  if (!expression()->IsInlineable()) return false;
-  const int count = arguments()->length();
-  for (int i = 0; i < count; ++i) {
-    if (!arguments()->at(i)->IsInlineable()) return false;
-  }
-  return true;
-}
-
-
-bool CallRuntime::IsInlineable() const {
-  // Don't try to inline JS runtime calls because we don't (currently) even
-  // optimize them.
-  if (is_jsruntime()) return false;
-  // Don't inline the %_ArgumentsLength or %_Arguments because their
-  // implementation will not work.  There is no stack frame to get them
-  // from.
-  if (function()->intrinsic_type == Runtime::INLINE &&
-      (name()->IsEqualTo(CStrVector("_ArgumentsLength")) ||
-       name()->IsEqualTo(CStrVector("_Arguments")))) {
-    return false;
-  }
-  const int count = arguments()->length();
-  for (int i = 0; i < count; ++i) {
-    if (!arguments()->at(i)->IsInlineable()) return false;
-  }
-  return true;
-}
-
-
-bool UnaryOperation::IsInlineable() const {
-  return expression()->IsInlineable();
-}
-
-
-bool BinaryOperation::IsInlineable() const {
-  return left()->IsInlineable() && right()->IsInlineable();
-}
-
-
-bool CompareOperation::IsInlineable() const {
-  return left()->IsInlineable() && right()->IsInlineable();
-}
-
-
-bool CountOperation::IsInlineable() const {
-  return expression()->IsInlineable();
 }
 
 
@@ -653,6 +399,9 @@ bool CountOperation::IsInlineable() const {
 
 void Property::RecordTypeFeedback(TypeFeedbackOracle* oracle) {
   // Record type feedback from the oracle in the AST.
+  is_uninitialized_ = oracle->LoadIsUninitialized(this);
+  if (is_uninitialized_) return;
+
   is_monomorphic_ = oracle->LoadIsMonomorphicNormal(this);
   receiver_types_.Clear();
   if (key()->IsPropertyName()) {
@@ -730,33 +479,46 @@ void CaseClause::RecordTypeFeedback(TypeFeedbackOracle* oracle) {
 
 
 bool Call::ComputeTarget(Handle<Map> type, Handle<String> name) {
-  // If there is an interceptor, we can't compute the target for
-  // a direct call.
+  // If there is an interceptor, we can't compute the target for a direct call.
   if (type->has_named_interceptor()) return false;
 
   if (check_type_ == RECEIVER_MAP_CHECK) {
-    // For primitive checks the holder is set up to point to the
-    // corresponding prototype object, i.e. one step of the algorithm
-    // below has been already performed.
-    // For non-primitive checks we clear it to allow computing targets
-    // for polymorphic calls.
+    // For primitive checks the holder is set up to point to the corresponding
+    // prototype object, i.e. one step of the algorithm below has been already
+    // performed. For non-primitive checks we clear it to allow computing
+    // targets for polymorphic calls.
     holder_ = Handle<JSObject>::null();
   }
+  LookupResult lookup(type->GetIsolate());
   while (true) {
-    LookupResult lookup(type->GetIsolate());
     type->LookupInDescriptors(NULL, *name, &lookup);
-    // If the function wasn't found directly in the map, we start
-    // looking upwards through the prototype chain.
-    if ((!lookup.IsFound() || IsTransitionType(lookup.type()))
-        && type->prototype()->IsJSObject()) {
-      holder_ = Handle<JSObject>(JSObject::cast(type->prototype()));
-      type = Handle<Map>(holder()->map());
-    } else if (lookup.IsFound() && lookup.type() == CONSTANT_FUNCTION) {
-      target_ = Handle<JSFunction>(lookup.GetConstantFunctionFromMap(*type));
-      return true;
-    } else {
-      return false;
+    if (lookup.IsFound()) {
+      switch (lookup.type()) {
+        case CONSTANT_FUNCTION:
+          // We surely know the target for a constant function.
+          target_ =
+              Handle<JSFunction>(lookup.GetConstantFunctionFromMap(*type));
+          return true;
+        case NORMAL:
+        case FIELD:
+        case CALLBACKS:
+        case HANDLER:
+        case INTERCEPTOR:
+          // We don't know the target.
+          return false;
+        case MAP_TRANSITION:
+        case ELEMENTS_TRANSITION:
+        case CONSTANT_TRANSITION:
+        case NULL_DESCRIPTOR:
+          // Perhaps something interesting is up in the prototype chain...
+          break;
+      }
     }
+    // If we reach the end of the prototype chain, we don't know the target.
+    if (!type->prototype()->IsJSObject()) return false;
+    // Go up the prototype chain, recording where we are currently.
+    holder_ = Handle<JSObject>(JSObject::cast(type->prototype()));
+    type = Handle<Map>(holder()->map());
   }
 }
 
@@ -823,6 +585,14 @@ void Call::RecordTypeFeedback(TypeFeedbackOracle* oracle,
 }
 
 
+void CallNew::RecordTypeFeedback(TypeFeedbackOracle* oracle) {
+  is_monomorphic_ = oracle->CallNewIsMonomorphic(this);
+  if (is_monomorphic_) {
+    target_ = oracle->GetCallNewTarget(this);
+  }
+}
+
+
 void CompareOperation::RecordTypeFeedback(TypeFeedbackOracle* oracle) {
   TypeInfo info = oracle->CompareType(this);
   if (info.IsSmi()) {
@@ -832,6 +602,13 @@ void CompareOperation::RecordTypeFeedback(TypeFeedbackOracle* oracle) {
   } else {
     ASSERT(compare_type_ == NONE);
   }
+}
+
+
+void ObjectLiteral::Property::RecordTypeFeedback(TypeFeedbackOracle* oracle) {
+  receiver_type_ = oracle->ObjectLiteralStoreIsMonomorphic(this)
+      ? oracle->GetObjectLiteralStoreMap(this)
+      : Handle<Map>::null();
 }
 
 
@@ -1214,5 +991,173 @@ CaseClause::CaseClause(Isolate* isolate,
       compare_id_(AstNode::GetNextId(isolate)),
       entry_id_(AstNode::GetNextId(isolate)) {
 }
+
+
+#define INCREASE_NODE_COUNT(NodeType) \
+  void AstConstructionVisitor::Visit##NodeType(NodeType* node) { \
+    increase_node_count(); \
+  }
+
+INCREASE_NODE_COUNT(VariableDeclaration)
+INCREASE_NODE_COUNT(FunctionDeclaration)
+INCREASE_NODE_COUNT(ModuleDeclaration)
+INCREASE_NODE_COUNT(ImportDeclaration)
+INCREASE_NODE_COUNT(ExportDeclaration)
+INCREASE_NODE_COUNT(ModuleLiteral)
+INCREASE_NODE_COUNT(ModuleVariable)
+INCREASE_NODE_COUNT(ModulePath)
+INCREASE_NODE_COUNT(ModuleUrl)
+INCREASE_NODE_COUNT(Block)
+INCREASE_NODE_COUNT(ExpressionStatement)
+INCREASE_NODE_COUNT(EmptyStatement)
+INCREASE_NODE_COUNT(IfStatement)
+INCREASE_NODE_COUNT(ContinueStatement)
+INCREASE_NODE_COUNT(BreakStatement)
+INCREASE_NODE_COUNT(ReturnStatement)
+INCREASE_NODE_COUNT(Conditional)
+INCREASE_NODE_COUNT(Literal)
+INCREASE_NODE_COUNT(ObjectLiteral)
+INCREASE_NODE_COUNT(Assignment)
+INCREASE_NODE_COUNT(Throw)
+INCREASE_NODE_COUNT(Property)
+INCREASE_NODE_COUNT(UnaryOperation)
+INCREASE_NODE_COUNT(CountOperation)
+INCREASE_NODE_COUNT(BinaryOperation)
+INCREASE_NODE_COUNT(CompareOperation)
+INCREASE_NODE_COUNT(ThisFunction)
+INCREASE_NODE_COUNT(Call)
+INCREASE_NODE_COUNT(CallNew)
+
+#undef INCREASE_NODE_COUNT
+
+
+void AstConstructionVisitor::VisitWithStatement(WithStatement* node) {
+  increase_node_count();
+  add_flag(kDontOptimize);
+  add_flag(kDontInline);
+}
+
+
+void AstConstructionVisitor::VisitSwitchStatement(SwitchStatement* node) {
+  increase_node_count();
+  add_flag(kDontInline);
+}
+
+
+void AstConstructionVisitor::VisitDoWhileStatement(DoWhileStatement* node) {
+  increase_node_count();
+  add_flag(kDontSelfOptimize);
+}
+
+
+void AstConstructionVisitor::VisitWhileStatement(WhileStatement* node) {
+  increase_node_count();
+  add_flag(kDontSelfOptimize);
+}
+
+
+void AstConstructionVisitor::VisitForStatement(ForStatement* node) {
+  increase_node_count();
+  add_flag(kDontSelfOptimize);
+}
+
+
+void AstConstructionVisitor::VisitForInStatement(ForInStatement* node) {
+  increase_node_count();
+  add_flag(kDontSelfOptimize);
+}
+
+
+void AstConstructionVisitor::VisitTryCatchStatement(TryCatchStatement* node) {
+  increase_node_count();
+  add_flag(kDontOptimize);
+  add_flag(kDontInline);
+}
+
+
+void AstConstructionVisitor::VisitTryFinallyStatement(
+    TryFinallyStatement* node) {
+  increase_node_count();
+  add_flag(kDontOptimize);
+  add_flag(kDontInline);
+}
+
+
+void AstConstructionVisitor::VisitDebuggerStatement(DebuggerStatement* node) {
+  increase_node_count();
+  add_flag(kDontOptimize);
+  add_flag(kDontInline);
+}
+
+
+void AstConstructionVisitor::VisitFunctionLiteral(FunctionLiteral* node) {
+  increase_node_count();
+  add_flag(kDontInline);
+}
+
+
+void AstConstructionVisitor::VisitSharedFunctionInfoLiteral(
+    SharedFunctionInfoLiteral* node) {
+  increase_node_count();
+  add_flag(kDontOptimize);
+  add_flag(kDontInline);
+}
+
+
+void AstConstructionVisitor::VisitVariableProxy(VariableProxy* node) {
+  increase_node_count();
+  // In theory, we'd have to add:
+  // if(node->var()->IsLookupSlot()) { add_flag(kDontInline); }
+  // However, node->var() is usually not bound yet at VariableProxy creation
+  // time, and LOOKUP variables only result from constructs that cannot
+  // be inlined anyway.
+}
+
+
+void AstConstructionVisitor::VisitRegExpLiteral(RegExpLiteral* node) {
+  increase_node_count();
+  add_flag(kDontInline);  // TODO(1322): Allow materialized literals.
+}
+
+
+void AstConstructionVisitor::VisitArrayLiteral(ArrayLiteral* node) {
+  increase_node_count();
+  add_flag(kDontInline);  // TODO(1322): Allow materialized literals.
+}
+
+
+void AstConstructionVisitor::VisitCallRuntime(CallRuntime* node) {
+  increase_node_count();
+  if (node->is_jsruntime()) {
+    // Don't try to inline JS runtime calls because we don't (currently) even
+    // optimize them.
+    add_flag(kDontInline);
+  } else if (node->function()->intrinsic_type == Runtime::INLINE &&
+      (node->name()->IsEqualTo(CStrVector("_ArgumentsLength")) ||
+       node->name()->IsEqualTo(CStrVector("_Arguments")))) {
+    // Don't inline the %_ArgumentsLength or %_Arguments because their
+    // implementation will not work.  There is no stack frame to get them
+    // from.
+    add_flag(kDontInline);
+  }
+}
+
+
+Handle<String> Literal::ToString() {
+  if (handle_->IsString()) return Handle<String>::cast(handle_);
+  ASSERT(handle_->IsNumber());
+  char arr[100];
+  Vector<char> buffer(arr, ARRAY_SIZE(arr));
+  const char* str;
+  if (handle_->IsSmi()) {
+    // Optimization only, the heap number case would subsume this.
+    OS::SNPrintF(buffer, "%d", Smi::cast(*handle_)->value());
+    str = arr;
+  } else {
+    str = DoubleToCString(handle_->Number(), buffer);
+  }
+  return FACTORY->NewStringFromAscii(CStrVector(str));
+}
+
 
 } }  // namespace v8::internal

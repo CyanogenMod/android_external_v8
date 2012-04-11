@@ -61,7 +61,6 @@ class LOperand: public ZoneObject {
   bool IsUnallocated() const { return kind() == UNALLOCATED; }
   bool IsIgnored() const { return kind() == INVALID; }
   bool Equals(LOperand* other) const { return value_ == other->value_; }
-  int VirtualRegister();
 
   void PrintTo(StringStream* stream);
   void ConvertTo(Kind kind, int index) {
@@ -69,6 +68,10 @@ class LOperand: public ZoneObject {
     value_ |= index << kKindFieldWidth;
     ASSERT(this->index() == index);
   }
+
+  // Calls SetUpCache() for each subclass. Don't forget to update this method
+  // if you add a new LOperand subclass.
+  static void SetUpCaches();
 
  protected:
   static const int kKindFieldWidth = 3;
@@ -169,7 +172,7 @@ class LUnallocated: public LOperand {
     return static_cast<int>(value_) >> kFixedIndexShift;
   }
 
-  unsigned virtual_register() const {
+  int virtual_register() const {
     return VirtualRegisterField::decode(value_);
   }
 
@@ -265,7 +268,7 @@ class LConstantOperand: public LOperand {
 
  private:
   static const int kNumCachedOperands = 128;
-  static LConstantOperand cache[];
+  static LConstantOperand* cache;
 
   LConstantOperand() : LOperand() { }
   explicit LConstantOperand(int index) : LOperand(CONSTANT_OPERAND, index) { }
@@ -300,7 +303,7 @@ class LStackSlot: public LOperand {
 
  private:
   static const int kNumCachedOperands = 128;
-  static LStackSlot cache[];
+  static LStackSlot* cache;
 
   LStackSlot() : LOperand() { }
   explicit LStackSlot(int index) : LOperand(STACK_SLOT, index) { }
@@ -324,7 +327,7 @@ class LDoubleStackSlot: public LOperand {
 
  private:
   static const int kNumCachedOperands = 128;
-  static LDoubleStackSlot cache[];
+  static LDoubleStackSlot* cache;
 
   LDoubleStackSlot() : LOperand() { }
   explicit LDoubleStackSlot(int index) : LOperand(DOUBLE_STACK_SLOT, index) { }
@@ -348,7 +351,7 @@ class LRegister: public LOperand {
 
  private:
   static const int kNumCachedOperands = 16;
-  static LRegister cache[];
+  static LRegister* cache;
 
   LRegister() : LOperand() { }
   explicit LRegister(int index) : LOperand(REGISTER, index) { }
@@ -372,7 +375,7 @@ class LDoubleRegister: public LOperand {
 
  private:
   static const int kNumCachedOperands = 16;
-  static LDoubleRegister cache[];
+  static LDoubleRegister* cache;
 
   LDoubleRegister() : LOperand() { }
   explicit LDoubleRegister(int index) : LOperand(DOUBLE_REGISTER, index) { }
@@ -439,14 +442,14 @@ class LPointerMap: public ZoneObject {
 class LEnvironment: public ZoneObject {
  public:
   LEnvironment(Handle<JSFunction> closure,
-               bool is_arguments_adaptor,
+               FrameType frame_type,
                int ast_id,
                int parameter_count,
                int argument_count,
                int value_count,
                LEnvironment* outer)
       : closure_(closure),
-        is_arguments_adaptor_(is_arguments_adaptor),
+        frame_type_(frame_type),
         arguments_stack_height_(argument_count),
         deoptimization_index_(Safepoint::kNoDeoptimizationIndex),
         translation_index_(-1),
@@ -454,13 +457,13 @@ class LEnvironment: public ZoneObject {
         parameter_count_(parameter_count),
         pc_offset_(-1),
         values_(value_count),
-        representations_(value_count),
+        is_tagged_(value_count, closure->GetHeap()->isolate()->zone()),
         spilled_registers_(NULL),
         spilled_double_registers_(NULL),
-        outer_(outer) {
-  }
+        outer_(outer) { }
 
   Handle<JSFunction> closure() const { return closure_; }
+  FrameType frame_type() const { return frame_type_; }
   int arguments_stack_height() const { return arguments_stack_height_; }
   int deoptimization_index() const { return deoptimization_index_; }
   int translation_index() const { return translation_index_; }
@@ -476,11 +479,13 @@ class LEnvironment: public ZoneObject {
 
   void AddValue(LOperand* operand, Representation representation) {
     values_.Add(operand);
-    representations_.Add(representation);
+    if (representation.IsTagged()) {
+      is_tagged_.Add(values_.length() - 1);
+    }
   }
 
   bool HasTaggedValueAt(int index) const {
-    return representations_[index].IsTagged();
+    return is_tagged_.Contains(index);
   }
 
   void Register(int deoptimization_index,
@@ -503,11 +508,9 @@ class LEnvironment: public ZoneObject {
 
   void PrintTo(StringStream* stream);
 
-  bool is_arguments_adaptor() const { return is_arguments_adaptor_; }
-
  private:
   Handle<JSFunction> closure_;
-  bool is_arguments_adaptor_;
+  FrameType frame_type_;
   int arguments_stack_height_;
   int deoptimization_index_;
   int translation_index_;
@@ -515,7 +518,7 @@ class LEnvironment: public ZoneObject {
   int parameter_count_;
   int pc_offset_;
   ZoneList<LOperand*> values_;
-  ZoneList<Representation> representations_;
+  BitVector is_tagged_;
 
   // Allocation index indexed arrays of spill slot operands for registers
   // that are also in spill slots at an OSR entry.  NULL for environments

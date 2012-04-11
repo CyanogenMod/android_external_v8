@@ -29,6 +29,7 @@
 #define V8_SPACES_H_
 
 #include "allocation.h"
+#include "hashmap.h"
 #include "list.h"
 #include "log.h"
 
@@ -504,6 +505,11 @@ class MemoryChunk {
 
   void set_size(size_t size) {
     size_ = size;
+  }
+
+  void SetArea(Address area_start, Address area_end) {
+    area_start_ = area_start;
+    area_end_ = area_end;
   }
 
   Executability executable() {
@@ -1597,50 +1603,8 @@ class PagedSpace : public Space {
   Page* FirstPage() { return anchor_.next_page(); }
   Page* LastPage() { return anchor_.prev_page(); }
 
-  // Returns zero for pages that have so little fragmentation that it is not
-  // worth defragmenting them.  Otherwise a positive integer that gives an
-  // estimate of fragmentation on an arbitrary scale.
-  int Fragmentation(Page* p) {
-    FreeList::SizeStats sizes;
-    free_list_.CountFreeListItems(p, &sizes);
-
-    intptr_t ratio;
-    intptr_t ratio_threshold;
-    if (identity() == CODE_SPACE) {
-      ratio = (sizes.medium_size_ * 10 + sizes.large_size_ * 2) * 100 /
-          AreaSize();
-      ratio_threshold = 10;
-    } else {
-      ratio = (sizes.small_size_ * 5 + sizes.medium_size_) * 100 /
-          AreaSize();
-      ratio_threshold = 15;
-    }
-
-    if (FLAG_trace_fragmentation) {
-      PrintF("%p [%d]: %d (%.2f%%) %d (%.2f%%) %d (%.2f%%) %d (%.2f%%) %s\n",
-             reinterpret_cast<void*>(p),
-             identity(),
-             static_cast<int>(sizes.small_size_),
-             static_cast<double>(sizes.small_size_ * 100) /
-                 AreaSize(),
-             static_cast<int>(sizes.medium_size_),
-             static_cast<double>(sizes.medium_size_ * 100) /
-                 AreaSize(),
-             static_cast<int>(sizes.large_size_),
-             static_cast<double>(sizes.large_size_ * 100) /
-                 AreaSize(),
-             static_cast<int>(sizes.huge_size_),
-             static_cast<double>(sizes.huge_size_ * 100) /
-                 AreaSize(),
-             (ratio > ratio_threshold) ? "[fragmented]" : "");
-    }
-
-    if (FLAG_always_compact && sizes.Total() != AreaSize()) {
-      return 1;
-    }
-    if (ratio <= ratio_threshold) return 0;  // Not fragmented.
-
-    return static_cast<int>(ratio - ratio_threshold);
+  void CountFreeListItems(Page* p, FreeList::SizeStats* sizes) {
+    free_list_.CountFreeListItems(p, sizes);
   }
 
   void EvictEvacuationCandidatesFromFreeLists();
@@ -2423,12 +2387,9 @@ class FixedSpace : public PagedSpace {
 class MapSpace : public FixedSpace {
  public:
   // Creates a map space object with a maximum capacity.
-  MapSpace(Heap* heap,
-           intptr_t max_capacity,
-           int max_map_space_pages,
-           AllocationSpace id)
+  MapSpace(Heap* heap, intptr_t max_capacity, AllocationSpace id)
       : FixedSpace(heap, max_capacity, id, Map::kSize, "map"),
-        max_map_space_pages_(max_map_space_pages) {
+        max_map_space_pages_(kMaxMapPageIndex - 1) {
   }
 
   // Given an index, returns the page address.
@@ -2539,9 +2500,9 @@ class LargeObjectSpace : public Space {
   // space, may be slow.
   MaybeObject* FindObject(Address a);
 
-  // Finds a large object page containing the given pc, returns NULL
+  // Finds a large object page containing the given address, returns NULL
   // if such a page doesn't exist.
-  LargePage* FindPageContainingPc(Address pc);
+  LargePage* FindPage(Address a);
 
   // Frees unmarked objects.
   void FreeUnmarkedObjects();
@@ -2576,6 +2537,8 @@ class LargeObjectSpace : public Space {
   intptr_t size_;  // allocated bytes
   int page_count_;  // number of chunks
   intptr_t objects_size_;  // size of objects
+  // Map MemoryChunk::kAlignment-aligned chunks to large pages covering them
+  HashMap chunk_map_;
 
   friend class LargeObjectIterator;
 
