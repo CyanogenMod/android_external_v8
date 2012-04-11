@@ -25,14 +25,11 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-"use strict";
-
 String.prototype.startsWith = function (str) {
-  if (str.length > this.length) {
+  if (str.length > this.length)
     return false;
-  }
   return this.substr(0, str.length) == str;
-};
+}
 
 function log10(num) {
   return Math.log(num)/Math.log(10);
@@ -55,9 +52,8 @@ function GetCompletions(global, last, full) {
   for (var i = 0; i < parts.length; i++) {
     var part = parts[i];
     var next = current[part];
-    if (!next) {
+    if (!next)
       return [];
-    }
     current = next;
   }
   var result = [];
@@ -67,9 +63,8 @@ function GetCompletions(global, last, full) {
     var properties = mirror.properties();
     for (var i = 0; i < properties.length; i++) {
       var name = properties[i].name();
-      if (typeof name === 'string' && name.startsWith(last)) {
+      if (typeof name === 'string' && name.startsWith(last))
         result.push(name);
-      }
     }
     current = ToInspectableObject(current.__proto__);
   }
@@ -78,7 +73,7 @@ function GetCompletions(global, last, full) {
 
 
 // Global object holding debugger related constants and state.
-var Debug = {};
+const Debug = {};
 
 
 // Debug events which can occour in the V8 JavaScript engine. These originate
@@ -113,24 +108,22 @@ Debug.ScopeType = { Global: 0,
 
 
 // Current debug state.
-var kNoFrame = -1;
+const kNoFrame = -1;
 Debug.State = {
   currentFrame: kNoFrame,
   displaySourceStartLine: -1,
   displaySourceEndLine: -1,
   currentSourceLine: -1
-};
+}
 var trace_compile = false;  // Tracing all compile events?
 var trace_debug_json = false; // Tracing all debug json packets?
-var last_cmd = '';
+var last_cmd_line = '';
 //var lol_is_enabled;  // Set to true in d8.cc if LIVE_OBJECT_LIST is defined.
 var lol_next_dump_index = 0;
-var kDefaultLolLinesToPrintAtATime = 10;
-var kMaxLolLinesToPrintAtATime = 1000;
+const kDefaultLolLinesToPrintAtATime = 10;
+const kMaxLolLinesToPrintAtATime = 1000;
 var repeat_cmd_line = '';
 var is_running = true;
-// Global variable used to store whether a handle was requested.
-var lookup_handle = null;
 
 // Copied from debug-delay.js.  This is needed below:
 function ScriptTypeFlag(type) {
@@ -157,7 +150,7 @@ function DebugMessageDetails(message) {
 }
 
 function DebugEventDetails(response) {
-  var details = {text:'', running:false};
+  details = {text:'', running:false}
 
   // Get the running state.
   details.running = response.running();
@@ -224,7 +217,7 @@ function DebugEventDetails(response) {
 
     case 'afterCompile':
       if (trace_compile) {
-        result = 'Source ' + body.script.name + ' compiled:\n';
+        result = 'Source ' + body.script.name + ' compiled:\n'
         var source = body.script.source;
         if (!(source[source.length - 1] == '\n')) {
           result += source;
@@ -244,7 +237,7 @@ function DebugEventDetails(response) {
   }
 
   return details;
-}
+};
 
 
 function SourceInfo(body) {
@@ -286,7 +279,7 @@ function SourceUnderline(source_text, position) {
 
   // Return the source line text with the underline beneath.
   return source_text + '\n' + underline;
-}
+};
 
 
 // Converts a text command to a JSON request.
@@ -296,7 +289,7 @@ function DebugCommandToJSONRequest(cmd_line) {
     print("sending: '" + result + "'");
   }
   return result;
-}
+};
 
 
 function DebugRequest(cmd_line) {
@@ -521,7 +514,7 @@ function DebugRequest(cmd_line) {
 
 DebugRequest.prototype.JSONRequest = function() {
   return this.request_;
-};
+}
 
 
 function RequestPacket(command) {
@@ -543,14 +536,14 @@ RequestPacket.prototype.toJSONProtocol = function() {
     json += ',"arguments":';
     // Encode the arguments part.
     if (this.arguments.toJSONProtocol) {
-      json += this.arguments.toJSONProtocol();
+      json += this.arguments.toJSONProtocol()
     } else {
       json += SimpleObjectToJSON_(this.arguments);
     }
   }
   json += '}';
   return json;
-};
+}
 
 
 DebugRequest.prototype.createRequest = function(command) {
@@ -590,6 +583,7 @@ DebugRequest.prototype.createLOLRequest = function(command,
 
 // Create a JSON request for the evaluation command.
 DebugRequest.prototype.makeEvaluateJSONRequest_ = function(expression) {
+  // Global varaible used to store whether a handle was requested.
   lookup_handle = null;
 
   if (lol_is_enabled) {
@@ -1316,7 +1310,7 @@ DebugRequest.prototype.lolMakeListRequest =
   }
 
   return request;
-};
+}
 
 
 function extractObjId(args) {
@@ -1505,7 +1499,7 @@ DebugRequest.prototype.traceCommand_ = function(args) {
   } else {
     throw new Error('Invalid trace arguments.');
   }
-};
+}
 
 // Handle the help command.
 DebugRequest.prototype.helpCommand_ = function(args) {
@@ -1614,7 +1608,7 @@ DebugRequest.prototype.helpCommand_ = function(args) {
   print('');
   print('disconnect|exit|quit       - disconnects and quits the debugger');
   print('help                       - prints this help information');
-};
+}
 
 
 function formatHandleReference_(value) {
@@ -1629,7 +1623,7 @@ function formatHandleReference_(value) {
 function formatObject_(value, include_properties) {
   var result = '';
   result += formatHandleReference_(value);
-  result += ', type: object';
+  result += ', type: object'
   result += ', constructor ';
   var ctor = value.constructorFunctionValue();
   result += formatHandleReference_(ctor);
@@ -1949,7 +1943,7 @@ function roundNumber(num, length) {
 
 // Convert a JSON response to text for display in a text based debugger.
 function DebugResponseDetails(response) {
-  var details = { text: '', running: false };
+  details = {text:'', running:false}
 
   try {
     if (!response.success()) {
@@ -2314,7 +2308,7 @@ function DebugResponseDetails(response) {
   }
 
   return details;
-}
+};
 
 
 /**
@@ -2340,7 +2334,7 @@ function ProtocolPackage(json) {
  */
 ProtocolPackage.prototype.type = function() {
   return this.packet_.type;
-};
+}
 
 
 /**
@@ -2349,7 +2343,7 @@ ProtocolPackage.prototype.type = function() {
  */
 ProtocolPackage.prototype.event = function() {
   return this.packet_.event;
-};
+}
 
 
 /**
@@ -2358,7 +2352,7 @@ ProtocolPackage.prototype.event = function() {
  */
 ProtocolPackage.prototype.requestSeq = function() {
   return this.packet_.request_seq;
-};
+}
 
 
 /**
@@ -2367,27 +2361,27 @@ ProtocolPackage.prototype.requestSeq = function() {
  */
 ProtocolPackage.prototype.running = function() {
   return this.packet_.running ? true : false;
-};
+}
 
 
 ProtocolPackage.prototype.success = function() {
   return this.packet_.success ? true : false;
-};
+}
 
 
 ProtocolPackage.prototype.message = function() {
   return this.packet_.message;
-};
+}
 
 
 ProtocolPackage.prototype.command = function() {
   return this.packet_.command;
-};
+}
 
 
 ProtocolPackage.prototype.body = function() {
   return this.packet_.body;
-};
+}
 
 
 ProtocolPackage.prototype.bodyValue = function(index) {
@@ -2396,12 +2390,12 @@ ProtocolPackage.prototype.bodyValue = function(index) {
   } else {
     return new ProtocolValue(this.packet_.body, this);
   }
-};
+}
 
 
 ProtocolPackage.prototype.body = function() {
   return this.packet_.body;
-};
+}
 
 
 ProtocolPackage.prototype.lookup = function(handle) {
@@ -2411,12 +2405,12 @@ ProtocolPackage.prototype.lookup = function(handle) {
   } else {
     return new ProtocolReference(handle);
   }
-};
+}
 
 
 ProtocolPackage.prototype.raw_json = function() {
   return this.raw_json_;
-};
+}
 
 
 function ProtocolValue(value, packet) {
@@ -2431,7 +2425,7 @@ function ProtocolValue(value, packet) {
  */
 ProtocolValue.prototype.type = function() {
   return this.value_.type;
-};
+}
 
 
 /**
@@ -2440,7 +2434,7 @@ ProtocolValue.prototype.type = function() {
  */
 ProtocolValue.prototype.field = function(name) {
   return this.value_[name];
-};
+}
 
 
 /**
@@ -2450,7 +2444,7 @@ ProtocolValue.prototype.field = function(name) {
 ProtocolValue.prototype.isPrimitive = function() {
   return this.isUndefined() || this.isNull() || this.isBoolean() ||
          this.isNumber() || this.isString();
-};
+}
 
 
 /**
@@ -2459,7 +2453,7 @@ ProtocolValue.prototype.isPrimitive = function() {
  */
 ProtocolValue.prototype.handle = function() {
   return this.value_.handle;
-};
+}
 
 
 /**
@@ -2468,7 +2462,7 @@ ProtocolValue.prototype.handle = function() {
  */
 ProtocolValue.prototype.isUndefined = function() {
   return this.value_.type == 'undefined';
-};
+}
 
 
 /**
@@ -2477,7 +2471,7 @@ ProtocolValue.prototype.isUndefined = function() {
  */
 ProtocolValue.prototype.isNull = function() {
   return this.value_.type == 'null';
-};
+}
 
 
 /**
@@ -2486,7 +2480,7 @@ ProtocolValue.prototype.isNull = function() {
  */
 ProtocolValue.prototype.isBoolean = function() {
   return this.value_.type == 'boolean';
-};
+}
 
 
 /**
@@ -2495,7 +2489,7 @@ ProtocolValue.prototype.isBoolean = function() {
  */
 ProtocolValue.prototype.isNumber = function() {
   return this.value_.type == 'number';
-};
+}
 
 
 /**
@@ -2504,7 +2498,7 @@ ProtocolValue.prototype.isNumber = function() {
  */
 ProtocolValue.prototype.isString = function() {
   return this.value_.type == 'string';
-};
+}
 
 
 /**
@@ -2514,7 +2508,7 @@ ProtocolValue.prototype.isString = function() {
 ProtocolValue.prototype.isObject = function() {
   return this.value_.type == 'object' || this.value_.type == 'function' ||
          this.value_.type == 'error' || this.value_.type == 'regexp';
-};
+}
 
 
 /**
@@ -2524,7 +2518,7 @@ ProtocolValue.prototype.isObject = function() {
 ProtocolValue.prototype.constructorFunctionValue = function() {
   var ctor = this.value_.constructorFunction;
   return this.packet_.lookup(ctor.ref);
-};
+}
 
 
 /**
@@ -2534,7 +2528,7 @@ ProtocolValue.prototype.constructorFunctionValue = function() {
 ProtocolValue.prototype.protoObjectValue = function() {
   var proto = this.value_.protoObject;
   return this.packet_.lookup(proto.ref);
-};
+}
 
 
 /**
@@ -2543,7 +2537,7 @@ ProtocolValue.prototype.protoObjectValue = function() {
  */
 ProtocolValue.prototype.propertyCount = function() {
   return this.value_.properties ? this.value_.properties.length : 0;
-};
+}
 
 
 /**
@@ -2553,7 +2547,7 @@ ProtocolValue.prototype.propertyCount = function() {
 ProtocolValue.prototype.propertyName = function(index) {
   var property = this.value_.properties[index];
   return property.name;
-};
+}
 
 
 /**
@@ -2568,7 +2562,7 @@ ProtocolValue.prototype.propertyIndex = function(name) {
     }
   }
   return null;
-};
+}
 
 
 /**
@@ -2578,7 +2572,7 @@ ProtocolValue.prototype.propertyIndex = function(name) {
 ProtocolValue.prototype.propertyValue = function(index) {
   var property = this.value_.properties[index];
   return this.packet_.lookup(property.ref);
-};
+}
 
 
 /**
@@ -2587,12 +2581,12 @@ ProtocolValue.prototype.propertyValue = function(index) {
  */
 ProtocolValue.prototype.value = function() {
   return this.value_.value;
-};
+}
 
 
 ProtocolValue.prototype.valueString = function() {
   return this.value_.text;
-};
+}
 
 
 function ProtocolReference(handle) {
@@ -2602,7 +2596,7 @@ function ProtocolReference(handle) {
 
 ProtocolReference.prototype.handle = function() {
   return this.handle_;
-};
+}
 
 
 function MakeJSONPair_(name, value) {
@@ -2632,7 +2626,7 @@ function NumberToJSON_(value) {
 
 // Mapping of some control characters to avoid the \uXXXX syntax for most
 // commonly used control cahracters.
-var ctrlCharMap_ = {
+const ctrlCharMap_ = {
   '\b': '\\b',
   '\t': '\\t',
   '\n': '\\n',
@@ -2644,12 +2638,12 @@ var ctrlCharMap_ = {
 
 
 // Regular expression testing for ", \ and control characters (0x00 - 0x1F).
-var ctrlCharTest_ = new RegExp('["\\\\\x00-\x1F]');
+const ctrlCharTest_ = new RegExp('["\\\\\x00-\x1F]');
 
 
 // Regular expression matching ", \ and control characters (0x00 - 0x1F)
 // globally.
-var ctrlCharMatch_ = new RegExp('["\\\\\x00-\x1F]', 'g');
+const ctrlCharMatch_ = new RegExp('["\\\\\x00-\x1F]', 'g');
 
 
 /**
@@ -2673,7 +2667,7 @@ function StringToJSON_(value) {
         // Convert control character to unicode escape sequence.
         return '\\u00' +
           '0' + // TODO %NumberToRadixString(Math.floor(mapped / 16), 16) +
-          '0'; // TODO %NumberToRadixString(mapped % 16, 16)
+          '0' // TODO %NumberToRadixString(mapped % 16, 16);
       })
     + '"';
   }
@@ -2691,12 +2685,12 @@ function StringToJSON_(value) {
  * @return {string} JSON formatted Date value
  */
 function DateToISO8601_(value) {
-  var f = function(n) {
+  function f(n) {
     return n < 10 ? '0' + n : n;
-  };
-  var g = function(n) {
+  }
+  function g(n) {
     return n < 10 ? '00' + n : n < 100 ? '0' + n : n;
-  };
+  }
   return builtins.GetUTCFullYearFrom(value)         + '-' +
           f(builtins.GetUTCMonthFrom(value) + 1)    + '-' +
           f(builtins.GetUTCDateFrom(value))         + 'T' +
@@ -2744,7 +2738,7 @@ function SimpleObjectToJSON_(object) {
           if (property_value === null) {
             property_value_json = 'null';
           } else if (typeof property_value.toJSONProtocol == 'function') {
-            property_value_json = property_value.toJSONProtocol(true);
+            property_value_json = property_value.toJSONProtocol(true)
           } else if (property_value.constructor.name == 'Array'){
             property_value_json = SimpleArrayToJSON_(property_value);
           } else {
@@ -2795,7 +2789,7 @@ function SimpleArrayToJSON_(array) {
     }
     var elem = array[i];
     if (elem.toJSONProtocol) {
-      json += elem.toJSONProtocol(true);
+      json += elem.toJSONProtocol(true)
     } else if (typeof(elem) === 'object')  {
       json += SimpleObjectToJSON_(elem);
     } else if (typeof(elem) === 'boolean')  {

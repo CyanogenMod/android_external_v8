@@ -1,4 +1,4 @@
-// Copyright 2012 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -116,13 +116,14 @@ class CounterMap {
 #endif  // V8_SHARED
 
 
+#ifndef V8_SHARED
 class LineEditor {
  public:
   enum Type { DUMB = 0, READLINE = 1 };
   LineEditor(Type type, const char* name);
   virtual ~LineEditor() { }
 
-  virtual Handle<String> Prompt(const char* prompt) = 0;
+  virtual i::SmartArrayPointer<char> Prompt(const char* prompt) = 0;
   virtual bool Open() { return true; }
   virtual bool Close() { return true; }
   virtual void AddHistory(const char* str) { }
@@ -135,6 +136,7 @@ class LineEditor {
   LineEditor* next_;
   static LineEditor* first_;
 };
+#endif  // V8_SHARED
 
 
 class SourceGroup {
@@ -192,27 +194,6 @@ class SourceGroup {
   const char** argv_;
   int begin_offset_;
   int end_offset_;
-};
-
-
-class BinaryResource : public v8::String::ExternalAsciiStringResource {
- public:
-  BinaryResource(const char* string, int length)
-      : data_(string),
-        length_(length) { }
-
-  ~BinaryResource() {
-    delete[] data_;
-    data_ = NULL;
-    length_ = 0;
-  }
-
-  virtual const char* data() const { return data_; }
-  virtual size_t length() const { return length_; }
-
- private:
-  const char* data_;
-  size_t length_;
 };
 
 
@@ -287,13 +268,12 @@ class Shell : public i::AllStatic {
                                size_t buckets);
   static void AddHistogramSample(void* histogram, int sample);
   static void MapCounters(const char* name);
+#endif  // V8_SHARED
 
 #ifdef ENABLE_DEBUGGER_SUPPORT
   static Handle<Object> DebugMessageDetails(Handle<String> message);
   static Handle<Value> DebugCommandToJSONRequest(Handle<String> command);
-  static void DispatchDebugMessages();
-#endif  // ENABLE_DEBUGGER_SUPPORT
-#endif  // V8_SHARED
+#endif
 
 #ifdef WIN32
 #undef Yield
@@ -307,13 +287,8 @@ class Shell : public i::AllStatic {
   static Handle<Value> EnableProfiler(const Arguments& args);
   static Handle<Value> DisableProfiler(const Arguments& args);
   static Handle<Value> Read(const Arguments& args);
-  static Handle<Value> ReadBinary(const Arguments& args);
-  static Handle<String> ReadFromStdin();
-  static Handle<Value> ReadLine(const Arguments& args) {
-    return ReadFromStdin();
-  }
+  static Handle<Value> ReadLine(const Arguments& args);
   static Handle<Value> Load(const Arguments& args);
-  static Handle<Value> ArrayBuffer(const Arguments& args);
   static Handle<Value> Int8Array(const Arguments& args);
   static Handle<Value> Uint8Array(const Arguments& args);
   static Handle<Value> Int16Array(const Arguments& args);
@@ -359,8 +334,11 @@ class Shell : public i::AllStatic {
   static Handle<Value> RemoveDirectory(const Arguments& args);
 
   static void AddOSMethods(Handle<ObjectTemplate> os_template);
-
+#ifndef V8_SHARED
+  static const char* kHistoryFileName;
+  static const int kMaxHistoryEntries;
   static LineEditor* console;
+#endif  // V8_SHARED
   static const char* kPrompt;
   static ShellOptions options;
 

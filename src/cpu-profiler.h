@@ -1,4 +1,4 @@
-// Copyright 2012 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -41,6 +41,7 @@ class CodeEntry;
 class CodeMap;
 class CpuProfile;
 class CpuProfilesCollection;
+class HashMap;
 class ProfileGenerator;
 class TokenEnumerator;
 
@@ -203,7 +204,7 @@ namespace internal {
 // TODO(isolates): isolatify this class.
 class CpuProfiler {
  public:
-  static void SetUp();
+  static void Setup();
   static void TearDown();
 
   static void StartProfiling(const char* title);
@@ -229,11 +230,11 @@ class CpuProfiler {
                               Code* code, String* name);
   static void CodeCreateEvent(Logger::LogEventsAndTags tag,
                               Code* code,
-                              SharedFunctionInfo* shared,
+                              SharedFunctionInfo *shared,
                               String* name);
   static void CodeCreateEvent(Logger::LogEventsAndTags tag,
                               Code* code,
-                              SharedFunctionInfo* shared,
+                              SharedFunctionInfo *shared,
                               String* source, int line);
   static void CodeCreateEvent(Logger::LogEventsAndTags tag,
                               Code* code, int args_count);

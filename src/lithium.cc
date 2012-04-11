@@ -36,7 +36,6 @@ void LOperand::PrintTo(StringStream* stream) {
   LUnallocated* unalloc = NULL;
   switch (kind()) {
     case INVALID:
-      stream->Add("(0)");
       break;
     case UNALLOCATED:
       unalloc = LUnallocated::cast(this);
@@ -71,6 +70,9 @@ void LOperand::PrintTo(StringStream* stream) {
         case LUnallocated::ANY:
           stream->Add("(-)");
           break;
+        case LUnallocated::IGNORE:
+          stream->Add("(0)");
+          break;
       }
       break;
     case CONSTANT_OPERAND:
@@ -94,31 +96,12 @@ void LOperand::PrintTo(StringStream* stream) {
   }
 }
 
-#define DEFINE_OPERAND_CACHE(name, type)                      \
-  name* name::cache = NULL;                                   \
-  void name::SetUpCache() {                                   \
-    if (cache) return;                                        \
-    cache = new name[kNumCachedOperands];                     \
-    for (int i = 0; i < kNumCachedOperands; i++) {            \
-      cache[i].ConvertTo(type, i);                            \
-    }                                                         \
-  }                                                           \
 
-DEFINE_OPERAND_CACHE(LConstantOperand, CONSTANT_OPERAND)
-DEFINE_OPERAND_CACHE(LStackSlot,       STACK_SLOT)
-DEFINE_OPERAND_CACHE(LDoubleStackSlot, DOUBLE_STACK_SLOT)
-DEFINE_OPERAND_CACHE(LRegister,        REGISTER)
-DEFINE_OPERAND_CACHE(LDoubleRegister,  DOUBLE_REGISTER)
-
-#undef DEFINE_OPERAND_CACHE
-
-void LOperand::SetUpCaches() {
-  LConstantOperand::SetUpCache();
-  LStackSlot::SetUpCache();
-  LDoubleStackSlot::SetUpCache();
-  LRegister::SetUpCache();
-  LDoubleRegister::SetUpCache();
+int LOperand::VirtualRegister() {
+  LUnallocated* unalloc = LUnallocated::cast(this);
+  return unalloc->virtual_register();
 }
+
 
 bool LParallelMove::IsRedundant() const {
   for (int i = 0; i < move_operands_.length(); ++i) {
@@ -173,27 +156,6 @@ void LPointerMap::RecordPointer(LOperand* op) {
 }
 
 
-void LPointerMap::RemovePointer(LOperand* op) {
-  // Do not record arguments as pointers.
-  if (op->IsStackSlot() && op->index() < 0) return;
-  ASSERT(!op->IsDoubleRegister() && !op->IsDoubleStackSlot());
-  for (int i = 0; i < pointer_operands_.length(); ++i) {
-    if (pointer_operands_[i]->Equals(op)) {
-      pointer_operands_.Remove(i);
-      --i;
-    }
-  }
-}
-
-
-void LPointerMap::RecordUntagged(LOperand* op) {
-  // Do not record arguments as pointers.
-  if (op->IsStackSlot() && op->index() < 0) return;
-  ASSERT(!op->IsDoubleRegister() && !op->IsDoubleStackSlot());
-  untagged_operands_.Add(op);
-}
-
-
 void LPointerMap::PrintTo(StringStream* stream) {
   stream->Add("{");
   for (int i = 0; i < pointer_operands_.length(); ++i) {
@@ -220,7 +182,6 @@ int ElementsKindToShiftSize(ElementsKind elements_kind) {
     case EXTERNAL_DOUBLE_ELEMENTS:
     case FAST_DOUBLE_ELEMENTS:
       return 3;
-    case FAST_SMI_ONLY_ELEMENTS:
     case FAST_ELEMENTS:
     case DICTIONARY_ELEMENTS:
     case NON_STRICT_ARGUMENTS_ELEMENTS:

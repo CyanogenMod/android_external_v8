@@ -168,7 +168,12 @@ outer_eval_conversion3(return_this, 'object');
 outer_eval_conversion3(strict_eval, 'undefined');
 outer_eval_conversion3(non_strict_eval, 'object');
 
-outer_eval_conversion3(eval, 'undefined');
+// TODO(ager): I'm not sure this is in accordance with the spec. At
+// the moment, any call to eval where eval is not bound in the global
+// context is treated as an indirect call to eval which means that the
+// global context is used and the global object is passed as the
+// receiver.
+outer_eval_conversion3(eval, 'object');
 
 function test_constant_function() {
   var o = { f: function() { "use strict"; return this; } };

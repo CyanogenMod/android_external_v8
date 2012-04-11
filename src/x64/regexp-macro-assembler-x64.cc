@@ -193,7 +193,7 @@ void RegExpMacroAssemblerX64::CheckCharacterGT(uc16 limit, Label* on_greater) {
 void RegExpMacroAssemblerX64::CheckAtStart(Label* on_at_start) {
   Label not_at_start;
   // Did we start the match at the start of the string at all?
-  __ cmpl(Operand(rbp, kStartIndex), Immediate(0));
+  __ cmpb(Operand(rbp, kStartIndex), Immediate(0));
   BranchOrBacktrack(not_equal, &not_at_start);
   // If we did, are we still at the start of the input?
   __ lea(rax, Operand(rsi, rdi, times_1, 0));
@@ -205,7 +205,7 @@ void RegExpMacroAssemblerX64::CheckAtStart(Label* on_at_start) {
 
 void RegExpMacroAssemblerX64::CheckNotAtStart(Label* on_not_at_start) {
   // Did we start the match at the start of the string at all?
-  __ cmpl(Operand(rbp, kStartIndex), Immediate(0));
+  __ cmpb(Operand(rbp, kStartIndex), Immediate(0));
   BranchOrBacktrack(not_equal, on_not_at_start);
   // If we did, are we still at the start of the input?
   __ lea(rax, Operand(rsi, rdi, times_1, 0));
@@ -226,7 +226,7 @@ void RegExpMacroAssemblerX64::CheckCharacters(Vector<const uc16> str,
                                               bool check_end_of_string) {
 #ifdef DEBUG
   // If input is ASCII, don't even bother calling here if the string to
-  // match contains a non-ASCII character.
+  // match contains a non-ascii character.
   if (mode_ == ASCII) {
     ASSERT(String::IsAscii(str.start(), str.length()));
   }
@@ -431,14 +431,9 @@ void RegExpMacroAssemblerX64::CheckNotBackReferenceIgnoreCase(
     // Isolate.
     __ LoadAddress(rcx, ExternalReference::isolate_address());
 #endif
-
-    { // NOLINT: Can't find a way to open this scope without confusing the
-      // linter.
-      AllowExternalCallThatCantCauseGC scope(&masm_);
-      ExternalReference compare =
-          ExternalReference::re_case_insensitive_compare_uc16(masm_.isolate());
-      __ CallCFunction(compare, num_arguments);
-    }
+    ExternalReference compare =
+        ExternalReference::re_case_insensitive_compare_uc16(masm_.isolate());
+    __ CallCFunction(compare, num_arguments);
 
     // Restore original values before reacting on result value.
     __ Move(code_object_pointer(), masm_.CodeObject());
@@ -564,7 +559,7 @@ void RegExpMacroAssemblerX64::CheckNotCharacterAfterMinusAnd(
     uc16 minus,
     uc16 mask,
     Label* on_not_equal) {
-  ASSERT(minus < String::kMaxUtf16CodeUnit);
+  ASSERT(minus < String::kMaxUC16CharCode);
   __ lea(rax, Operand(current_character(), -minus));
   __ and_(rax, Immediate(mask));
   __ cmpl(rax, Immediate(c));
@@ -711,12 +706,7 @@ Handle<HeapObject> RegExpMacroAssemblerX64::GetCode(Handle<String> source) {
   // registers we need.
   // Entry code:
   __ bind(&entry_label_);
-
-  // Tell the system that we have a stack frame.  Because the type is MANUAL, no
-  // is generated.
-  FrameScope scope(&masm_, StackFrame::MANUAL);
-
-  // Actually emit code to start a new stack frame.
+  // Start new stack frame.
   __ push(rbp);
   __ movq(rbp, rsp);
   // Save parameters and callee-save registers. Order here should correspond
@@ -1192,7 +1182,7 @@ int RegExpMacroAssemblerX64::CheckStackGuardState(Address* return_address,
   ASSERT(*return_address <=
       re_code->instruction_start() + re_code->instruction_size());
 
-  MaybeObject* result = Execution::HandleStackGuardInterrupt(isolate);
+  MaybeObject* result = Execution::HandleStackGuardInterrupt();
 
   if (*code_handle != re_code) {  // Return address no longer valid
     intptr_t delta = code_handle->address() - re_code->address();
@@ -1248,11 +1238,6 @@ int RegExpMacroAssemblerX64::CheckStackGuardState(Address* return_address,
     frame_entry<const String*>(re_frame, kInputString) = *subject;
     frame_entry<const byte*>(re_frame, kInputStart) = new_address;
     frame_entry<const byte*>(re_frame, kInputEnd) = new_address + byte_length;
-  } else if (frame_entry<const String*>(re_frame, kInputString) != *subject) {
-    // Subject string might have been a ConsString that underwent
-    // short-circuiting during GC. That will not change start_address but
-    // will change pointer inside the subject handle.
-    frame_entry<const String*>(re_frame, kInputString) = *subject;
   }
 
   return 0;

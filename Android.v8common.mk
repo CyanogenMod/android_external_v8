@@ -6,7 +6,6 @@ V8_LOCAL_SRC_FILES := \
 	src/api.cc \
 	src/assembler.cc \
 	src/ast.cc \
-	src/atomicops_internals_x86_gcc.cc \
 	src/bignum.cc \
 	src/bignum-dtoa.cc \
 	src/bootstrapper.cc \
@@ -23,7 +22,6 @@ V8_LOCAL_SRC_FILES := \
 	src/counters.cc \
 	src/cpu-profiler.cc \
 	src/data-flow.cc \
-	src/date.cc \
 	src/dateparser.cc \
 	src/debug.cc \
 	src/debug-agent.cc \
@@ -44,13 +42,12 @@ V8_LOCAL_SRC_FILES := \
 	src/func-name-inferrer.cc \
 	src/global-handles.cc \
 	src/handles.cc \
+	src/hashmap.cc \
 	src/heap.cc \
 	src/heap-profiler.cc \
 	src/hydrogen.cc \
 	src/hydrogen-instructions.cc \
 	src/ic.cc \
-	src/incremental-marking.cc \
-	src/interface.cc \
 	src/interpreter-irregexp.cc \
 	src/isolate.cc \
 	src/jsregexp.cc \
@@ -63,7 +60,6 @@ V8_LOCAL_SRC_FILES := \
 	src/messages.cc \
 	src/objects.cc \
 	src/objects-visiting.cc \
-	src/once.cc \
 	src/parser.cc \
 	src/preparse-data.cc \
 	src/preparser.cc \
@@ -83,7 +79,6 @@ V8_LOCAL_SRC_FILES := \
 	src/serialize.cc \
 	src/snapshot-common.cc \
 	src/spaces.cc \
-	src/store-buffer.cc \
 	src/string-search.cc \
 	src/string-stream.cc \
 	src/strtod.cc \
@@ -180,6 +175,6 @@ V8_LOCAL_JS_LIBRARY_FILES += \
 	src/macros.py
 
 V8_LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES := \
-	src/collection.js \
-	src/proxy.js
+	src/proxy.js \
+	src/weakmap.js
 

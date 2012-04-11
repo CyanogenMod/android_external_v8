@@ -1,4 +1,4 @@
-// Copyright 2012 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -28,7 +28,6 @@
 #ifndef V8_PREPARSER_H
 #define V8_PREPARSER_H
 
-#include "hashmap.h"
 #include "token.h"
 #include "scanner.h"
 
@@ -65,7 +64,7 @@ class DuplicateFinder {
         map_(&Match) { }
 
   int AddAsciiSymbol(i::Vector<const char> key, int value);
-  int AddUtf16Symbol(i::Vector<const uint16_t> key, int value);
+  int AddUC16Symbol(i::Vector<const uint16_t> key, int value);
   // Add a a number literal by converting it (if necessary)
   // to the string that ToString(ToNumber(literal)) would generate.
   // and then adding that string with AddAsciiSymbol.
@@ -111,53 +110,18 @@ class PreParser {
     kPreParseSuccess
   };
 
-
-  PreParser(i::Scanner* scanner,
-            i::ParserRecorder* log,
-            uintptr_t stack_limit,
-            bool allow_lazy,
-            bool allow_natives_syntax,
-            bool allow_modules)
-      : scanner_(scanner),
-        log_(log),
-        scope_(NULL),
-        stack_limit_(stack_limit),
-        strict_mode_violation_location_(i::Scanner::Location::invalid()),
-        strict_mode_violation_type_(NULL),
-        stack_overflow_(false),
-        allow_lazy_(allow_lazy),
-        allow_modules_(allow_modules),
-        allow_natives_syntax_(allow_natives_syntax),
-        parenthesized_function_(false),
-        harmony_scoping_(scanner->HarmonyScoping()) { }
-
   ~PreParser() {}
 
   // Pre-parse the program from the character stream; returns true on
   // success (even if parsing failed, the pre-parse data successfully
   // captured the syntax error), and false if a stack-overflow happened
   // during parsing.
-  static PreParseResult PreParseProgram(i::Scanner* scanner,
+  static PreParseResult PreParseProgram(i::JavaScriptScanner* scanner,
                                         i::ParserRecorder* log,
-                                        int flags,
+                                        bool allow_lazy,
                                         uintptr_t stack_limit) {
-    bool allow_lazy = (flags & i::kAllowLazy) != 0;
-    bool allow_natives_syntax = (flags & i::kAllowNativesSyntax) != 0;
-    bool allow_modules = (flags & i::kAllowModules) != 0;
-    return PreParser(scanner, log, stack_limit, allow_lazy,
-                     allow_natives_syntax, allow_modules).PreParse();
+    return PreParser(scanner, log, stack_limit, allow_lazy).PreParse();
   }
-
-  // Parses a single function literal, from the opening parentheses before
-  // parameters to the closing brace after the body.
-  // Returns a FunctionEntry describing the body of the funciton in enough
-  // detail that it can be lazily compiled.
-  // The scanner is expected to have matched the "function" keyword and
-  // parameters, and have consumed the initial '{'.
-  // At return, unless an error occured, the scanner is positioned before the
-  // the final '}'.
-  PreParseResult PreParseLazyFunction(i::LanguageMode mode,
-                                      i::ParserRecorder* log);
 
  private:
   // Used to detect duplicates in object literals. Each of the values
@@ -213,12 +177,6 @@ class PreParser {
     kSourceElement,
     kStatement,
     kForStatement
-  };
-
-  // If a list of variable declarations includes any initializers.
-  enum VariableDeclarationProperties {
-    kHasInitializers,
-    kHasNoInitializers
   };
 
   class Expression;
@@ -450,8 +408,7 @@ class PreParser {
           materialized_literal_count_(0),
           expected_properties_(0),
           with_nesting_count_(0),
-          language_mode_(
-              (prev_ != NULL) ? prev_->language_mode() : i::CLASSIC_MODE) {
+          strict_((prev_ != NULL) && prev_->is_strict()) {
       *variable = this;
     }
     ~Scope() { *variable_ = prev_; }
@@ -461,15 +418,8 @@ class PreParser {
     int expected_properties() { return expected_properties_; }
     int materialized_literal_count() { return materialized_literal_count_; }
     bool IsInsideWith() { return with_nesting_count_ != 0; }
-    bool is_classic_mode() {
-      return language_mode_ == i::CLASSIC_MODE;
-    }
-    i::LanguageMode language_mode() {
-      return language_mode_;
-    }
-    void set_language_mode(i::LanguageMode language_mode) {
-      language_mode_ = language_mode;
-    }
+    bool is_strict() { return strict_; }
+    void set_strict() { strict_ = true; }
     void EnterWith() { with_nesting_count_++; }
     void LeaveWith() { with_nesting_count_--; }
 
@@ -480,8 +430,24 @@ class PreParser {
     int materialized_literal_count_;
     int expected_properties_;
     int with_nesting_count_;
-    i::LanguageMode language_mode_;
+    bool strict_;
   };
+
+  // Private constructor only used in PreParseProgram.
+  PreParser(i::JavaScriptScanner* scanner,
+            i::ParserRecorder* log,
+            uintptr_t stack_limit,
+            bool allow_lazy)
+      : scanner_(scanner),
+        log_(log),
+        scope_(NULL),
+        stack_limit_(stack_limit),
+        strict_mode_violation_location_(i::Scanner::Location::invalid()),
+        strict_mode_violation_type_(NULL),
+        stack_overflow_(false),
+        allow_lazy_(true),
+        parenthesized_function_(false),
+        harmony_block_scoping_(scanner->HarmonyBlockScoping()) { }
 
   // Preparse the program. Only called in PreParseProgram after creating
   // the instance.
@@ -493,7 +459,7 @@ class PreParser {
     if (stack_overflow_) return kPreParseStackOverflow;
     if (!ok) {
       ReportUnexpectedToken(scanner_->current_token());
-    } else if (!scope_->is_classic_mode()) {
+    } else if (scope_->is_strict()) {
       CheckOctalLiteral(start_position, scanner_->location().end_pos, &ok);
     }
     return kPreParseSuccess;
@@ -527,7 +493,6 @@ class PreParser {
   Statement ParseVariableStatement(VariableDeclarationContext var_context,
                                    bool* ok);
   Statement ParseVariableDeclarations(VariableDeclarationContext var_context,
-                                      VariableDeclarationProperties* decl_props,
                                       int* num_decl,
                                       bool* ok);
   Statement ParseExpressionOrLabelledStatement(bool* ok);
@@ -562,7 +527,6 @@ class PreParser {
 
   Arguments ParseArguments(bool* ok);
   Expression ParseFunctionLiteral(bool* ok);
-  void ParseLazyFunctionLiteralBody(bool* ok);
 
   Identifier ParseIdentifier(bool* ok);
   Identifier ParseIdentifierName(bool* ok);
@@ -598,19 +562,11 @@ class PreParser {
 
   bool peek_any_identifier();
 
-  void set_language_mode(i::LanguageMode language_mode) {
-    scope_->set_language_mode(language_mode);
+  void set_strict_mode() {
+    scope_->set_strict();
   }
 
-  bool is_classic_mode() {
-    return scope_->language_mode() == i::CLASSIC_MODE;
-  }
-
-  bool is_extended_mode() {
-    return scope_->language_mode() == i::EXTENDED_MODE;
-  }
-
-  i::LanguageMode language_mode() { return scope_->language_mode(); }
+  bool strict_mode() { return scope_->is_strict(); }
 
   void Consume(i::Token::Value token) { Next(); }
 
@@ -634,7 +590,7 @@ class PreParser {
 
   void SetStrictModeViolation(i::Scanner::Location,
                               const char* type,
-                              bool* ok);
+                              bool *ok);
 
   void CheckDelayedStrictModeViolation(int beg_pos, int end_pos, bool* ok);
 
@@ -643,7 +599,7 @@ class PreParser {
                                      Identifier identifier,
                                      bool* ok);
 
-  i::Scanner* scanner_;
+  i::JavaScriptScanner* scanner_;
   i::ParserRecorder* log_;
   Scope* scope_;
   uintptr_t stack_limit_;
@@ -651,10 +607,8 @@ class PreParser {
   const char* strict_mode_violation_type_;
   bool stack_overflow_;
   bool allow_lazy_;
-  bool allow_modules_;
-  bool allow_natives_syntax_;
   bool parenthesized_function_;
-  bool harmony_scoping_;
+  bool harmony_block_scoping_;
 };
 } }  // v8::preparser
 

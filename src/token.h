@@ -1,4 +1,4 @@
-// Copyright 2012 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -73,7 +73,6 @@ namespace internal {
   T(INIT_VAR, "=init_var", 2)  /* AST-use only. */                      \
   T(INIT_LET, "=init_let", 2)  /* AST-use only. */                      \
   T(INIT_CONST, "=init_const", 2)  /* AST-use only. */                  \
-  T(INIT_CONST_HARMONY, "=init_const_harmony", 2)  /* AST-use only. */  \
   T(ASSIGN, "=", 2)                                                     \
   T(ASSIGN_BIT_OR, "|=", 2)                                             \
   T(ASSIGN_BIT_XOR, "^=", 2)                                            \
@@ -170,8 +169,6 @@ namespace internal {
   T(FUTURE_RESERVED_WORD, NULL, 0)                                      \
   T(FUTURE_STRICT_RESERVED_WORD, NULL, 0)                               \
   K(CONST, "const", 0)                                                  \
-  K(EXPORT, "export", 0)                                                \
-  K(IMPORT, "import", 0)                                                \
   K(LET, "let", 0)                                                      \
                                                                         \
   /* Illegal token - not able to scan. */                               \
@@ -215,12 +212,8 @@ class Token {
     return EQ <= op && op <= IN;
   }
 
-  static bool IsOrderedRelationalCompareOp(Value op) {
+  static bool IsOrderedCompareOp(Value op) {
     return op == LT || op == LTE || op == GT || op == GTE;
-  }
-
-  static bool IsEqualityOp(Value op) {
-    return op == EQ || op == EQ_STRICT;
   }
 
   static Value NegateCompareOp(Value op) {

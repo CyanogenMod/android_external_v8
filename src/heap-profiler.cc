@@ -51,7 +51,7 @@ void HeapProfiler::ResetSnapshots() {
 }
 
 
-void HeapProfiler::SetUp() {
+void HeapProfiler::Setup() {
   Isolate* isolate = Isolate::Current();
   if (isolate->heap_profiler() == NULL) {
     isolate->set_heap_profiler(new HeapProfiler());
@@ -114,6 +114,7 @@ HeapSnapshot* HeapProfiler::TakeSnapshotImpl(const char* name,
   bool generation_completed = true;
   switch (s_type) {
     case HeapSnapshot::kFull: {
+      HEAP->CollectAllGarbage(true);
       HeapSnapshotGenerator generator(result, control);
       generation_completed = generator.GenerateSnapshot();
       break;

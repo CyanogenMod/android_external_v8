@@ -72,7 +72,7 @@ uint32_t get_fcsr_condition_bit(uint32_t cc) {
 // code.
 class MipsDebugger {
  public:
-  explicit MipsDebugger(Simulator* sim) : sim_(sim) { }
+  explicit MipsDebugger(Simulator* sim);
   ~MipsDebugger();
 
   void Stop(Instruction* instr);
@@ -104,6 +104,10 @@ class MipsDebugger {
   void UndoBreakpoints();
   void RedoBreakpoints();
 };
+
+MipsDebugger::MipsDebugger(Simulator* sim) {
+  sim_ = sim;
+}
 
 
 MipsDebugger::~MipsDebugger() {
@@ -387,13 +391,6 @@ void MipsDebugger::Debug() {
     if (line == NULL) {
       break;
     } else {
-      char* last_input = sim_->last_debugger_input();
-      if (strcmp(line, "\n") == 0 && last_input != NULL) {
-        line = last_input;
-      } else {
-        // Ownership is transferred to sim_;
-        sim_->set_last_debugger_input(line);
-      }
       // Use sscanf to parse the individual parts of the command line. At the
       // moment no command expects more than two parameters.
       int argc = SScanF(line,
@@ -760,6 +757,7 @@ void MipsDebugger::Debug() {
         PrintF("Unknown command: %s\n", cmd);
       }
     }
+    DeleteArray(line);
   }
 
   // Add all the breakpoints back to stop execution and enter the debugger
@@ -790,12 +788,6 @@ static bool AllOnOnePage(uintptr_t start, int size) {
   intptr_t start_page = (start & ~CachePage::kPageMask);
   intptr_t end_page = ((start + size) & ~CachePage::kPageMask);
   return start_page == end_page;
-}
-
-
-void Simulator::set_last_debugger_input(char* input) {
-  DeleteArray(last_debugger_input_);
-  last_debugger_input_ = input;
 }
 
 
@@ -888,7 +880,7 @@ Simulator::Simulator(Isolate* isolate) : isolate_(isolate) {
     isolate_->set_simulator_i_cache(i_cache_);
   }
   Initialize(isolate);
-  // Set up simulator support first. Some of this information is needed to
+  // Setup simulator support first. Some of this information is needed to
   // setup the architecture state.
   stack_ = reinterpret_cast<char*>(malloc(stack_size_));
   pc_modified_ = false;
@@ -897,7 +889,7 @@ Simulator::Simulator(Isolate* isolate) : isolate_(isolate) {
   break_pc_ = NULL;
   break_instr_ = 0;
 
-  // Set up architecture state.
+  // Setup architecture state.
   // All registers are initialized to zero to start with.
   for (int i = 0; i < kNumSimuRegisters; i++) {
     registers_[i] = 0;
@@ -919,8 +911,6 @@ Simulator::Simulator(Isolate* isolate) : isolate_(isolate) {
   for (int i = 0; i < kNumExceptions; i++) {
     exceptions[i] = 0;
   }
-
-  last_debugger_input_ = NULL;
 }
 
 
@@ -1369,9 +1359,9 @@ void Simulator::WriteB(int32_t addr, int8_t value) {
 
 // Returns the limit of the stack area to enable checking for stack overflows.
 uintptr_t Simulator::StackLimit() const {
-  // Leave a safety margin of 1024 bytes to prevent overrunning the stack when
+  // Leave a safety margin of 256 bytes to prevent overrunning the stack when
   // pushing values.
-  return reinterpret_cast<uintptr_t>(stack_) + 1024;
+  return reinterpret_cast<uintptr_t>(stack_) + 256;
 }
 
 
@@ -1944,7 +1934,7 @@ void Simulator::DecodeTypeRegister(Instruction* instr) {
   // Next pc
   int32_t next_pc = 0;
 
-  // Set up the variables if needed before executing the instruction.
+  // Setup the variables if needed before executing the instruction.
   ConfigureTypeRegister(instr,
                         alu_out,
                         i64hilo,
@@ -2291,7 +2281,7 @@ void Simulator::DecodeTypeRegister(Instruction* instr) {
 }
 
 
-// Type 2: instructions using a 16 bytes immediate. (e.g. addi, beq).
+// Type 2: instructions using a 16 bytes immediate. (eg: addi, beq).
 void Simulator::DecodeTypeImmediate(Instruction* instr) {
   // Instruction fields.
   Opcode   op     = instr->OpcodeFieldRaw();
@@ -2614,7 +2604,7 @@ void Simulator::DecodeTypeImmediate(Instruction* instr) {
 }
 
 
-// Type 3: instructions using a 26 bytes immediate. (e.g. j, jal).
+// Type 3: instructions using a 26 bytes immediate. (eg: j, jal).
 void Simulator::DecodeTypeJump(Instruction* instr) {
   // Get current pc.
   int32_t current_pc = get_pc();
@@ -2711,7 +2701,7 @@ void Simulator::Execute() {
 int32_t Simulator::Call(byte* entry, int argument_count, ...) {
   va_list parameters;
   va_start(parameters, argument_count);
-  // Set up arguments.
+  // Setup arguments.
 
   // First four arguments passed in registers.
   ASSERT(argument_count >= 4);
@@ -2758,7 +2748,7 @@ int32_t Simulator::Call(byte* entry, int argument_count, ...) {
   int32_t sp_val = get_register(sp);
   int32_t fp_val = get_register(fp);
 
-  // Set up the callee-saved registers with a known value. To be able to check
+  // Setup the callee-saved registers with a known value. To be able to check
   // that they are preserved properly across JS execution.
   int32_t callee_saved_value = icount_;
   set_register(s0, callee_saved_value);

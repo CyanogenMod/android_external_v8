@@ -44,7 +44,6 @@ enum BuiltinExtraArguments {
                                                                     \
   V(EmptyFunction, NO_EXTRA_ARGUMENTS)                              \
                                                                     \
-  V(InternalArrayCodeGeneric, NO_EXTRA_ARGUMENTS)                   \
   V(ArrayCodeGeneric, NO_EXTRA_ARGUMENTS)                           \
                                                                     \
   V(ArrayPush, NO_EXTRA_ARGUMENTS)                                  \
@@ -66,6 +65,8 @@ enum BuiltinExtraArguments {
 // Define list of builtins implemented in assembly.
 #define BUILTIN_LIST_A(V)                                               \
   V(ArgumentsAdaptorTrampoline,     BUILTIN, UNINITIALIZED,             \
+                                    Code::kNoExtraICState)              \
+  V(JSConstructCall,                BUILTIN, UNINITIALIZED,             \
                                     Code::kNoExtraICState)              \
   V(JSConstructStubCountdown,       BUILTIN, UNINITIALIZED,             \
                                     Code::kNoExtraICState)              \
@@ -166,10 +167,6 @@ enum BuiltinExtraArguments {
                                     kStrictMode)                        \
   V(KeyedStoreIC_NonStrictArguments, KEYED_STORE_IC, MEGAMORPHIC,       \
                                      Code::kNoExtraICState)             \
-  V(TransitionElementsSmiToDouble,  BUILTIN, UNINITIALIZED,             \
-                                    Code::kNoExtraICState)              \
-  V(TransitionElementsDoubleToObject, BUILTIN, UNINITIALIZED,           \
-                                      Code::kNoExtraICState)            \
                                                                         \
   /* Uses KeyedLoadIC_Initialize; must be after in list. */             \
   V(FunctionCall,                   BUILTIN, UNINITIALIZED,             \
@@ -177,8 +174,6 @@ enum BuiltinExtraArguments {
   V(FunctionApply,                  BUILTIN, UNINITIALIZED,             \
                                     Code::kNoExtraICState)              \
                                                                         \
-  V(InternalArrayCode,              BUILTIN, UNINITIALIZED,             \
-                                    Code::kNoExtraICState)              \
   V(ArrayCode,                      BUILTIN, UNINITIALIZED,             \
                                     Code::kNoExtraICState)              \
   V(ArrayConstructCode,             BUILTIN, UNINITIALIZED,             \
@@ -193,31 +188,27 @@ enum BuiltinExtraArguments {
 
 #ifdef ENABLE_DEBUGGER_SUPPORT
 // Define list of builtins used by the debugger implemented in assembly.
-#define BUILTIN_LIST_DEBUG_A(V)                                 \
-  V(Return_DebugBreak,                         BUILTIN, DEBUG_BREAK,          \
-                                               Code::kNoExtraICState)         \
-  V(CallFunctionStub_DebugBreak,               BUILTIN, DEBUG_BREAK,          \
-                                               Code::kNoExtraICState)         \
-  V(CallFunctionStub_Recording_DebugBreak,     BUILTIN, DEBUG_BREAK,          \
-                                               Code::kNoExtraICState)         \
-  V(CallConstructStub_DebugBreak,              BUILTIN, DEBUG_BREAK,          \
-                                               Code::kNoExtraICState)         \
-  V(CallConstructStub_Recording_DebugBreak,    BUILTIN, DEBUG_BREAK,          \
-                                               Code::kNoExtraICState)         \
-  V(LoadIC_DebugBreak,                         LOAD_IC, DEBUG_BREAK,          \
-                                               Code::kNoExtraICState)         \
-  V(KeyedLoadIC_DebugBreak,                    KEYED_LOAD_IC, DEBUG_BREAK,    \
-                                               Code::kNoExtraICState)         \
-  V(StoreIC_DebugBreak,                        STORE_IC, DEBUG_BREAK,         \
-                                               Code::kNoExtraICState)         \
-  V(KeyedStoreIC_DebugBreak,                   KEYED_STORE_IC, DEBUG_BREAK,   \
-                                               Code::kNoExtraICState)         \
-  V(Slot_DebugBreak,                           BUILTIN, DEBUG_BREAK,          \
-                                               Code::kNoExtraICState)         \
-  V(PlainReturn_LiveEdit,                      BUILTIN, DEBUG_BREAK,          \
-                                               Code::kNoExtraICState)         \
-  V(FrameDropper_LiveEdit,                     BUILTIN, DEBUG_BREAK,          \
-                                               Code::kNoExtraICState)
+#define BUILTIN_LIST_DEBUG_A(V)                                \
+  V(Return_DebugBreak,          BUILTIN, DEBUG_BREAK,          \
+                                Code::kNoExtraICState)         \
+  V(ConstructCall_DebugBreak,   BUILTIN, DEBUG_BREAK,          \
+                                Code::kNoExtraICState)         \
+  V(StubNoRegisters_DebugBreak, BUILTIN, DEBUG_BREAK,          \
+                                Code::kNoExtraICState)         \
+  V(LoadIC_DebugBreak,          LOAD_IC, DEBUG_BREAK,          \
+                                Code::kNoExtraICState)         \
+  V(KeyedLoadIC_DebugBreak,     KEYED_LOAD_IC, DEBUG_BREAK,    \
+                                Code::kNoExtraICState)         \
+  V(StoreIC_DebugBreak,         STORE_IC, DEBUG_BREAK,         \
+                                Code::kNoExtraICState)         \
+  V(KeyedStoreIC_DebugBreak,    KEYED_STORE_IC, DEBUG_BREAK,   \
+                                Code::kNoExtraICState)         \
+  V(Slot_DebugBreak,            BUILTIN, DEBUG_BREAK,          \
+                                Code::kNoExtraICState)         \
+  V(PlainReturn_LiveEdit,       BUILTIN, DEBUG_BREAK,          \
+                                Code::kNoExtraICState)         \
+  V(FrameDropper_LiveEdit,      BUILTIN, DEBUG_BREAK,          \
+                                Code::kNoExtraICState)
 #else
 #define BUILTIN_LIST_DEBUG_A(V)
 #endif
@@ -243,6 +234,7 @@ enum BuiltinExtraArguments {
   V(DELETE, 2)                           \
   V(IN, 1)                               \
   V(INSTANCE_OF, 1)                      \
+  V(GET_KEYS, 0)                         \
   V(FILTER_KEY, 1)                       \
   V(CALL_NON_FUNCTION, 0)                \
   V(CALL_NON_FUNCTION_AS_CONSTRUCTOR, 0) \
@@ -267,7 +259,7 @@ class Builtins {
 
   // Generate all builtin code objects. Should be called once during
   // isolate initialization.
-  void SetUp(bool create_heap_objects);
+  void Setup(bool create_heap_objects);
   void TearDown();
 
   // Garbage collection support.
@@ -348,6 +340,7 @@ class Builtins {
   static void Generate_Adaptor(MacroAssembler* masm,
                                CFunctionId id,
                                BuiltinExtraArguments extra_args);
+  static void Generate_JSConstructCall(MacroAssembler* masm);
   static void Generate_JSConstructStubCountdown(MacroAssembler* masm);
   static void Generate_JSConstructStubGeneric(MacroAssembler* masm);
   static void Generate_JSConstructStubApi(MacroAssembler* masm);
@@ -363,7 +356,6 @@ class Builtins {
   static void Generate_FunctionCall(MacroAssembler* masm);
   static void Generate_FunctionApply(MacroAssembler* masm);
 
-  static void Generate_InternalArrayCode(MacroAssembler* masm);
   static void Generate_ArrayCode(MacroAssembler* masm);
   static void Generate_ArrayConstructCode(MacroAssembler* masm);
 

@@ -1,4 +1,4 @@
-// Copyright 2011 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -47,9 +47,9 @@ enum DtoaMode {
 // The maximal length of digits a double can have in base 10.
 // Note that DoubleToAscii null-terminates its input. So the given buffer should
 // be at least kBase10MaximalLength + 1 characters long.
-const int kBase10MaximalLength = 17;
+static const int kBase10MaximalLength = 17;
 
-// Converts the given double 'v' to ASCII.
+// Converts the given double 'v' to ascii.
 // The result should be interpreted as buffer * 10^(point-length).
 //
 // The output depends on the given mode:

@@ -1,4 +1,4 @@
-# Copyright 2012 the V8 project authors. All rights reserved.
+# Copyright 2011 the V8 project authors. All rights reserved.
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are
 # met:
@@ -33,7 +33,6 @@ import os
 from os.path import join, dirname, abspath
 from types import DictType, StringTypes
 root_dir = dirname(File('SConstruct').rfile().abspath)
-src_dir = join(root_dir, 'src')
 sys.path.insert(0, join(root_dir, 'tools'))
 import js2c, utils
 
@@ -54,7 +53,7 @@ GCC_DTOA_EXTRA_CCFLAGS = []
 
 LIBRARY_FLAGS = {
   'all': {
-    'CPPPATH': [src_dir],
+    'CPPPATH': [join(root_dir, 'src')],
     'regexp:interpreted': {
       'CPPDEFINES': ['V8_INTERPRETED_REGEXP']
     },
@@ -112,13 +111,13 @@ LIBRARY_FLAGS = {
       }
     },
     'os:freebsd': {
-      'CPPPATH' : [src_dir, '/usr/local/include'],
+      'CPPPATH' : ['/usr/local/include'],
       'LIBPATH' : ['/usr/local/lib'],
       'CCFLAGS':      ['-ansi'],
       'LIBS': ['execinfo']
     },
     'os:openbsd': {
-      'CPPPATH' : [src_dir, '/usr/local/include'],
+      'CPPPATH' : ['/usr/local/include'],
       'LIBPATH' : ['/usr/local/lib'],
       'CCFLAGS':      ['-ansi'],
     },
@@ -126,13 +125,9 @@ LIBRARY_FLAGS = {
       # On Solaris, to get isinf, INFINITY, fpclassify and other macros one
       # needs to define __C99FEATURES__.
       'CPPDEFINES': ['__C99FEATURES__'],
-      'CPPPATH' : [src_dir, '/usr/local/include'],
+      'CPPPATH' : ['/usr/local/include'],
       'LIBPATH' : ['/usr/local/lib'],
       'CCFLAGS':      ['-ansi'],
-    },
-    'os:netbsd': {
-      'CPPPATH' : [src_dir, '/usr/pkg/include'],
-      'LIBPATH' : ['/usr/pkg/lib'],
     },
     'os:win32': {
       'CCFLAGS':      ['-DWIN32'],
@@ -185,9 +180,6 @@ LIBRARY_FLAGS = {
       'mips_arch_variant:mips32r2': {
         'CPPDEFINES':    ['_MIPS_ARCH_MIPS32R2']
       },
-      'mips_arch_variant:loongson': {
-        'CPPDEFINES':    ['_MIPS_ARCH_LOONGSON']
-      },
       'simulator:none': {
         'CCFLAGS':      ['-EL'],
         'LINKFLAGS':    ['-EL'],
@@ -196,9 +188,6 @@ LIBRARY_FLAGS = {
         },
         'mips_arch_variant:mips32r1': {
           'CCFLAGS':      ['-mips32', '-Wa,-mips32']
-        },
-        'mips_arch_variant:loongson': {
-          'CCFLAGS':      ['-march=mips3', '-Wa,-march=mips3']
         },
         'library:static': {
           'LINKFLAGS':    ['-static', '-static-libgcc']
@@ -218,12 +207,9 @@ LIBRARY_FLAGS = {
       'LINKFLAGS':    ['-m32'],
       'mipsabi:softfloat': {
         'CPPDEFINES':    ['__mips_soft_float=1'],
-        'fpu:on': {
-          'CPPDEFINES' : ['CAN_USE_FPU_INSTRUCTIONS']
-        }
       },
       'mipsabi:hardfloat': {
-        'CPPDEFINES':    ['__mips_hard_float=1', 'CAN_USE_FPU_INSTRUCTIONS'],
+        'CPPDEFINES':    ['__mips_hard_float=1'],
       }
     },
     'arch:x64': {
@@ -305,16 +291,10 @@ V8_EXTRA_FLAGS = {
                        '-Werror',
                        '-W',
                        '-Wno-unused-parameter',
-                       '-Woverloaded-virtual',
                        '-Wnon-virtual-dtor']
     },
     'os:win32': {
-      'WARNINGFLAGS': ['-pedantic',
-                       '-Wno-long-long',
-                       '-Wno-pedantic-ms-format'],
-      'library:shared': {
-        'LIBS': ['winmm', 'ws2_32']
-      }
+      'WARNINGFLAGS': ['-pedantic', '-Wno-long-long']
     },
     'os:linux': {
       'WARNINGFLAGS': ['-pedantic'],
@@ -384,9 +364,6 @@ MKSNAPSHOT_EXTRA_FLAGS = {
     'os:win32': {
       'LIBS': ['winmm', 'ws2_32'],
     },
-    'os:netbsd': {
-      'LIBS': ['execinfo', 'pthread']
-    },
     'compress_startup_data:bz2': {
       'os:linux': {
         'LIBS': ['bz2']
@@ -419,7 +396,7 @@ DTOA_EXTRA_FLAGS = {
 
 CCTEST_EXTRA_FLAGS = {
   'all': {
-    'CPPPATH': [src_dir],
+    'CPPPATH': [join(root_dir, 'src')],
     'library:shared': {
       'CPPDEFINES': ['USING_V8_SHARED']
     },
@@ -451,9 +428,6 @@ CCTEST_EXTRA_FLAGS = {
     'os:win32': {
       'LIBS': ['winmm', 'ws2_32']
     },
-    'os:netbsd': {
-      'LIBS':         ['execinfo', 'pthread']
-    },
     'arch:arm': {
       'LINKFLAGS':   ARM_LINK_FLAGS
     },
@@ -476,7 +450,7 @@ CCTEST_EXTRA_FLAGS = {
 
 SAMPLE_FLAGS = {
   'all': {
-    'CPPPATH': [join(root_dir, 'include')],
+    'CPPPATH': [join(abspath('.'), 'include')],
     'library:shared': {
       'CPPDEFINES': ['USING_V8_SHARED']
     },
@@ -512,10 +486,6 @@ SAMPLE_FLAGS = {
     },
     'os:win32': {
       'LIBS':         ['winmm', 'ws2_32']
-    },
-    'os:netbsd': {
-      'LIBPATH' :     ['/usr/pkg/lib'],
-      'LIBS':         ['execinfo', 'pthread']
     },
     'arch:arm': {
       'LINKFLAGS':   ARM_LINK_FLAGS,
@@ -554,9 +524,6 @@ SAMPLE_FLAGS = {
       'mips_arch_variant:mips32r2': {
         'CPPDEFINES':    ['_MIPS_ARCH_MIPS32R2']
       },
-      'mips_arch_variant:loongson': {
-        'CPPDEFINES':    ['_MIPS_ARCH_LOONGSON']
-      },
       'simulator:none': {
         'CCFLAGS':      ['-EL'],
         'LINKFLAGS':    ['-EL'],
@@ -565,9 +532,6 @@ SAMPLE_FLAGS = {
         },
         'mips_arch_variant:mips32r1': {
           'CCFLAGS':      ['-mips32', '-Wa,-mips32']
-        },
-        'mips_arch_variant:loongson': {
-          'CCFLAGS':      ['-march=mips3', '-Wa,-march=mips3']
         },
         'library:static': {
           'LINKFLAGS':    ['-static', '-static-libgcc']
@@ -578,10 +542,7 @@ SAMPLE_FLAGS = {
         },
         'mipsabi:hardfloat': {
           'CCFLAGS':      ['-mhard-float'],
-          'LINKFLAGS':    ['-mhard-float'],
-          'fpu:on': {
-            'CPPDEFINES' : ['CAN_USE_FPU_INSTRUCTIONS']
-          }
+          'LINKFLAGS':    ['-mhard-float']
         }
       }
     },
@@ -668,7 +629,7 @@ SAMPLE_FLAGS = {
 
 PREPARSER_FLAGS = {
   'all': {
-    'CPPPATH': [join(root_dir, 'include'), src_dir],
+    'CPPPATH': [join(abspath('.'), 'include'), join(abspath('.'), 'src')],
     'library:shared': {
       'CPPDEFINES': ['USING_V8_SHARED']
     },
@@ -715,9 +676,6 @@ PREPARSER_FLAGS = {
       'mips_arch_variant:mips32r2': {
         'CPPDEFINES':    ['_MIPS_ARCH_MIPS32R2']
       },
-      'mips_arch_variant:loongson': {
-        'CPPDEFINES':    ['_MIPS_ARCH_LOONGSON']
-      },
       'simulator:none': {
         'CCFLAGS':      ['-EL'],
         'LINKFLAGS':    ['-EL'],
@@ -726,9 +684,6 @@ PREPARSER_FLAGS = {
         },
         'mips_arch_variant:mips32r1': {
           'CCFLAGS':      ['-mips32', '-Wa,-mips32']
-        },
-        'mips_arch_variant:loongson': {
-          'CCFLAGS':      ['-march=mips3', '-Wa,-march=mips3']
         },
         'library:static': {
           'LINKFLAGS':    ['-static', '-static-libgcc']
@@ -863,9 +818,6 @@ D8_FLAGS = {
     'os:win32': {
       'LIBS': ['winmm', 'ws2_32'],
     },
-    'os:netbsd': {
-      'LIBS': ['pthread'],
-    },
     'arch:arm': {
       'LINKFLAGS':   ARM_LINK_FLAGS
     },
@@ -999,7 +951,7 @@ PLATFORM_OPTIONS = {
     'help': 'the architecture to build for'
   },
   'os': {
-    'values': ['freebsd', 'linux', 'macos', 'win32', 'openbsd', 'solaris', 'cygwin', 'netbsd'],
+    'values': ['freebsd', 'linux', 'macos', 'win32', 'openbsd', 'solaris', 'cygwin'],
     'guess': GuessOS,
     'help': 'the os to build for'
   },
@@ -1138,7 +1090,7 @@ SIMPLE_OPTIONS = {
     'help': 'generate calling conventiont according to selected mips ABI'
   },
   'mips_arch_variant': {
-    'values': ['mips32r2', 'mips32r1', 'loongson'],
+    'values': ['mips32r2', 'mips32r1'],
     'default': 'mips32r2',
     'help': 'mips variant'
   },
@@ -1151,11 +1103,6 @@ SIMPLE_OPTIONS = {
     'values': ['on', 'off'],
     'default': 'on',
     'help': 'use vfp3 instructions when building the snapshot [Arm only]'
-  },
-  'fpu': {
-    'values': ['on', 'off'],
-    'default': 'on',
-    'help': 'use fpu instructions when building the snapshot [MIPS only]'
   },
 
 }

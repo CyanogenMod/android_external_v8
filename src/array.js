@@ -27,7 +27,7 @@
 
 // This file relies on the fact that the following declarations have been made
 // in runtime.js:
-// var $Array = global.Array;
+// const $Array = global.Array;
 
 // -------------------------------------------------------------------
 
@@ -201,14 +201,17 @@ function ConvertToString(x) {
 
 
 function ConvertToLocaleString(e) {
-  if (IS_NULL_OR_UNDEFINED(e)) {
+  if (e == null) {
     return '';
   } else {
-    // According to ES5, section 15.4.4.3, the toLocaleString conversion
-    // must throw a TypeError if ToObject(e).toLocaleString isn't
-    // callable.
+    // e_obj's toLocaleString might be overwritten, check if it is a function.
+    // Call ToString if toLocaleString is not a function.
+    // See issue 877615.
     var e_obj = ToObject(e);
-    return %ToString(e_obj.toLocaleString());
+    if (IS_SPEC_FUNCTION(e_obj.toLocaleString))
+      return ToString(e_obj.toLocaleString());
+    else
+      return ToString(e);
   }
 }
 
@@ -328,9 +331,8 @@ function SimpleSlice(array, start_i, del_count, len, deleted_elements) {
     // would be the appropriate test.  We follow KJS in consulting the
     // prototype.
     var current = array[index];
-    if (!IS_UNDEFINED(current) || index in array) {
+    if (!IS_UNDEFINED(current) || index in array)
       deleted_elements[i] = current;
-    }
   }
 }
 
@@ -379,31 +381,18 @@ function SimpleMove(array, start_i, del_count, len, num_additional_args) {
 
 
 function ArrayToString() {
-  var array;
-  var func;
-  if (IS_ARRAY(this)) {
-    func = this.join;
-    if (func === ArrayJoin) {
-      return Join(this, this.length, ',', ConvertToString);
-    }
-    array = this;
-  } else {
-    array = ToObject(this);
-    func = array.join;
+  if (!IS_ARRAY(this)) {
+    throw new $TypeError('Array.prototype.toString is not generic');
   }
-  if (!IS_SPEC_FUNCTION(func)) {
-    return %_CallFunction(array, ObjectToString);
-  }
-  return %_CallFunction(array, func);
+  return Join(this, this.length, ',', ConvertToString);
 }
 
 
 function ArrayToLocaleString() {
-  var array = ToObject(this);
-  var arrayLen = array.length;
-  var len = TO_UINT32(arrayLen);
-  if (len === 0) return "";
-  return Join(array, len, ',', ConvertToLocaleString);
+  if (!IS_ARRAY(this)) {
+    throw new $TypeError('Array.prototype.toString is not generic');
+  }
+  return Join(this, this.length, ',', ConvertToLocaleString);
 }
 
 
@@ -496,12 +485,12 @@ function SparseReverse(array, len) {
 
     if (j_complement <= i) {
       high = j;
-      while (keys[--high_counter] == j) { }
+      while (keys[--high_counter] == j);
       low = j_complement;
     }
     if (j_complement >= i) {
       low = i;
-      while (keys[++low_counter] == i) { }
+      while (keys[++low_counter] == i);
       high = len - i - 1;
     }
 
@@ -577,11 +566,10 @@ function ArrayShift() {
 
   var first = this[0];
 
-  if (IS_ARRAY(this)) {
+  if (IS_ARRAY(this))
     SmartMove(this, 0, 1, len, 0);
-  } else {
+  else
     SimpleMove(this, 0, 1, len, 0);
-  }
 
   this.length = len - 1;
 
@@ -598,11 +586,10 @@ function ArrayUnshift(arg1) {  // length == 1
   var len = TO_UINT32(this.length);
   var num_arguments = %_ArgumentsLength();
 
-  if (IS_ARRAY(this)) {
+  if (IS_ARRAY(this))
     SmartMove(this, 0, 0, len, num_arguments);
-  } else {
+  else
     SimpleMove(this, 0, 0, len, num_arguments);
-  }
 
   for (var i = 0; i < num_arguments; i++) {
     this[i] = %_Arguments(i);
@@ -757,7 +744,7 @@ function ArraySort(comparefn) {
   }
   var receiver = %GetDefaultReceiver(comparefn);
 
-  var InsertionSort = function InsertionSort(a, from, to) {
+  function InsertionSort(a, from, to) {
     for (var i = from + 1; i < to; i++) {
       var element = a[i];
       for (var j = i - 1; j >= from; j--) {
@@ -771,9 +758,9 @@ function ArraySort(comparefn) {
       }
       a[j + 1] = element;
     }
-  };
+  }
 
-  var QuickSort = function QuickSort(a, from, to) {
+  function QuickSort(a, from, to) {
     // Insertion sort is faster for short arrays.
     if (to - from <= 10) {
       InsertionSort(a, from, to);
@@ -841,12 +828,12 @@ function ArraySort(comparefn) {
     }
     QuickSort(a, from, low_end);
     QuickSort(a, high_start, to);
-  };
+  }
 
   // Copy elements in the range 0..length from obj's prototype chain
   // to obj itself, if obj has holes. Return one more than the maximal index
   // of a prototype property.
-  var CopyFromPrototype = function CopyFromPrototype(obj, length) {
+  function CopyFromPrototype(obj, length) {
     var max = 0;
     for (var proto = obj.__proto__; proto; proto = proto.__proto__) {
       var indices = %GetArrayKeys(proto, length);
@@ -873,12 +860,12 @@ function ArraySort(comparefn) {
       }
     }
     return max;
-  };
+  }
 
   // Set a value of "undefined" on all indices in the range from..to
   // where a prototype of obj has an element. I.e., shadow all prototype
   // elements in that range.
-  var ShadowPrototypeElements = function(obj, from, to) {
+  function ShadowPrototypeElements(obj, from, to) {
     for (var proto = obj.__proto__; proto; proto = proto.__proto__) {
       var indices = %GetArrayKeys(proto, to);
       if (indices.length > 0) {
@@ -901,9 +888,9 @@ function ArraySort(comparefn) {
         }
       }
     }
-  };
+  }
 
-  var SafeRemoveArrayHoles = function SafeRemoveArrayHoles(obj) {
+  function SafeRemoveArrayHoles(obj) {
     // Copy defined elements from the end to fill in all holes and undefineds
     // in the beginning of the array.  Write undefineds and holes at the end
     // after loop is finished.
@@ -958,7 +945,7 @@ function ArraySort(comparefn) {
 
     // Return the number of defined elements.
     return first_undefined;
-  };
+  }
 
   var length = TO_UINT32(this.length);
   if (length < 2) return this;
@@ -1006,32 +993,25 @@ function ArrayFilter(f, receiver) {
                         ["Array.prototype.filter"]);
   }
 
-  // Pull out the length so that modifications to the length in the
-  // loop will not affect the looping and side effects are visible.
-  var array = ToObject(this);
-  var length = ToUint32(array.length);
-
   if (!IS_SPEC_FUNCTION(f)) {
     throw MakeTypeError('called_non_callable', [ f ]);
   }
   if (IS_NULL_OR_UNDEFINED(receiver)) {
     receiver = %GetDefaultReceiver(f) || receiver;
-  } else if (!IS_SPEC_OBJECT(receiver)) {
-    receiver = ToObject(receiver);
   }
-
-  var result = new $Array();
-  var accumulator = new InternalArray();
-  var accumulator_length = 0;
+  // Pull out the length so that modifications to the length in the
+  // loop will not affect the looping.
+  var length = ToUint32(this.length);
+  var result = [];
+  var result_length = 0;
   for (var i = 0; i < length; i++) {
-    if (i in array) {
-      var element = array[i];
-      if (%_CallFunction(receiver, element, i, array, f)) {
-        accumulator[accumulator_length++] = element;
+    var current = this[i];
+    if (!IS_UNDEFINED(current) || i in this) {
+      if (%_CallFunction(receiver, current, i, this, f)) {
+        result[result_length++] = current;
       }
     }
   }
-  %MoveArrayContents(accumulator, result);
   return result;
 }
 
@@ -1042,24 +1022,19 @@ function ArrayForEach(f, receiver) {
                         ["Array.prototype.forEach"]);
   }
 
-  // Pull out the length so that modifications to the length in the
-  // loop will not affect the looping and side effects are visible.
-  var array = ToObject(this);
-  var length = TO_UINT32(array.length);
-
   if (!IS_SPEC_FUNCTION(f)) {
     throw MakeTypeError('called_non_callable', [ f ]);
   }
   if (IS_NULL_OR_UNDEFINED(receiver)) {
     receiver = %GetDefaultReceiver(f) || receiver;
-  } else if (!IS_SPEC_OBJECT(receiver)) {
-    receiver = ToObject(receiver);
   }
-
+  // Pull out the length so that modifications to the length in the
+  // loop will not affect the looping.
+  var length =  TO_UINT32(this.length);
   for (var i = 0; i < length; i++) {
-    if (i in array) {
-      var element = array[i];
-      %_CallFunction(receiver, element, i, array, f);
+    var current = this[i];
+    if (!IS_UNDEFINED(current) || i in this) {
+      %_CallFunction(receiver, current, i, this, f);
     }
   }
 }
@@ -1073,24 +1048,19 @@ function ArraySome(f, receiver) {
                         ["Array.prototype.some"]);
   }
 
-  // Pull out the length so that modifications to the length in the
-  // loop will not affect the looping and side effects are visible.
-  var array = ToObject(this);
-  var length = TO_UINT32(array.length);
-
   if (!IS_SPEC_FUNCTION(f)) {
     throw MakeTypeError('called_non_callable', [ f ]);
   }
   if (IS_NULL_OR_UNDEFINED(receiver)) {
     receiver = %GetDefaultReceiver(f) || receiver;
-  } else if (!IS_SPEC_OBJECT(receiver)) {
-    receiver = ToObject(receiver);
   }
-
+  // Pull out the length so that modifications to the length in the
+  // loop will not affect the looping.
+  var length = TO_UINT32(this.length);
   for (var i = 0; i < length; i++) {
-    if (i in array) {
-      var element = array[i];
-      if (%_CallFunction(receiver, element, i, array, f)) return true;
+    var current = this[i];
+    if (!IS_UNDEFINED(current) || i in this) {
+      if (%_CallFunction(receiver, current, i, this, f)) return true;
     }
   }
   return false;
@@ -1103,24 +1073,19 @@ function ArrayEvery(f, receiver) {
                         ["Array.prototype.every"]);
   }
 
-  // Pull out the length so that modifications to the length in the
-  // loop will not affect the looping and side effects are visible.
-  var array = ToObject(this);
-  var length = TO_UINT32(array.length);
-
   if (!IS_SPEC_FUNCTION(f)) {
     throw MakeTypeError('called_non_callable', [ f ]);
   }
   if (IS_NULL_OR_UNDEFINED(receiver)) {
     receiver = %GetDefaultReceiver(f) || receiver;
-  } else if (!IS_SPEC_OBJECT(receiver)) {
-    receiver = ToObject(receiver);
   }
-
+  // Pull out the length so that modifications to the length in the
+  // loop will not affect the looping.
+  var length = TO_UINT32(this.length);
   for (var i = 0; i < length; i++) {
-    if (i in array) {
-      var element = array[i];
-      if (!%_CallFunction(receiver, element, i, array, f)) return false;
+    var current = this[i];
+    if (!IS_UNDEFINED(current) || i in this) {
+      if (!%_CallFunction(receiver, current, i, this, f)) return false;
     }
   }
   return true;
@@ -1132,26 +1097,21 @@ function ArrayMap(f, receiver) {
                         ["Array.prototype.map"]);
   }
 
-  // Pull out the length so that modifications to the length in the
-  // loop will not affect the looping and side effects are visible.
-  var array = ToObject(this);
-  var length = TO_UINT32(array.length);
-
   if (!IS_SPEC_FUNCTION(f)) {
     throw MakeTypeError('called_non_callable', [ f ]);
   }
   if (IS_NULL_OR_UNDEFINED(receiver)) {
     receiver = %GetDefaultReceiver(f) || receiver;
-  } else if (!IS_SPEC_OBJECT(receiver)) {
-    receiver = ToObject(receiver);
   }
-
+  // Pull out the length so that modifications to the length in the
+  // loop will not affect the looping.
+  var length = TO_UINT32(this.length);
   var result = new $Array();
   var accumulator = new InternalArray(length);
   for (var i = 0; i < length; i++) {
-    if (i in array) {
-      var element = array[i];
-      accumulator[i] = %_CallFunction(receiver, element, i, array, f);
+    var current = this[i];
+    if (!IS_UNDEFINED(current) || i in this) {
+      accumulator[i] = %_CallFunction(receiver, current, i, this, f);
     }
   }
   %MoveArrayContents(accumulator, result);
@@ -1285,20 +1245,19 @@ function ArrayReduce(callback, current) {
                         ["Array.prototype.reduce"]);
   }
 
-  // Pull out the length so that modifications to the length in the
-  // loop will not affect the looping and side effects are visible.
-  var array = ToObject(this);
-  var length = ToUint32(array.length);
-
   if (!IS_SPEC_FUNCTION(callback)) {
     throw MakeTypeError('called_non_callable', [callback]);
   }
 
+  // Pull out the length so that modifications to the length in the
+  // loop will not affect the looping.
+  var length = ToUint32(this.length);
   var i = 0;
+
   find_initial: if (%_ArgumentsLength() < 2) {
     for (; i < length; i++) {
-      current = array[i];
-      if (!IS_UNDEFINED(current) || i in array) {
+      current = this[i];
+      if (!IS_UNDEFINED(current) || i in this) {
         i++;
         break find_initial;
       }
@@ -1308,9 +1267,9 @@ function ArrayReduce(callback, current) {
 
   var receiver = %GetDefaultReceiver(callback);
   for (; i < length; i++) {
-    if (i in array) {
-      var element = array[i];
-      current = %_CallFunction(receiver, current, element, i, array, callback);
+    var element = this[i];
+    if (!IS_UNDEFINED(element) || i in this) {
+      current = %_CallFunction(receiver, current, element, i, this, callback);
     }
   }
   return current;
@@ -1322,20 +1281,15 @@ function ArrayReduceRight(callback, current) {
                         ["Array.prototype.reduceRight"]);
   }
 
-  // Pull out the length so that side effects are visible before the
-  // callback function is checked.
-  var array = ToObject(this);
-  var length = ToUint32(array.length);
-
   if (!IS_SPEC_FUNCTION(callback)) {
     throw MakeTypeError('called_non_callable', [callback]);
   }
+  var i = ToUint32(this.length) - 1;
 
-  var i = length - 1;
   find_initial: if (%_ArgumentsLength() < 2) {
     for (; i >= 0; i--) {
-      current = array[i];
-      if (!IS_UNDEFINED(current) || i in array) {
+      current = this[i];
+      if (!IS_UNDEFINED(current) || i in this) {
         i--;
         break find_initial;
       }
@@ -1345,9 +1299,9 @@ function ArrayReduceRight(callback, current) {
 
   var receiver = %GetDefaultReceiver(callback);
   for (; i >= 0; i--) {
-    if (i in array) {
-      var element = array[i];
-      current = %_CallFunction(receiver, current, element, i, array, callback);
+    var element = this[i];
+    if (!IS_UNDEFINED(element) || i in this) {
+      current = %_CallFunction(receiver, current, element, i, this, callback);
     }
   }
   return current;
@@ -1373,7 +1327,7 @@ function SetUpArray() {
 
   var specialFunctions = %SpecialArrayFunctions({});
 
-  var getFunction = function(name, jsBuiltin, len) {
+  function getFunction(name, jsBuiltin, len) {
     var f = jsBuiltin;
     if (specialFunctions.hasOwnProperty(name)) {
       f = specialFunctions[name];
@@ -1382,13 +1336,13 @@ function SetUpArray() {
       %FunctionSetLength(f, len);
     }
     return f;
-  };
+  }
 
   // Set up non-enumerable functions of the Array.prototype object and
   // set their names.
   // Manipulate the length of some of the functions to meet
   // expectations set by ECMA-262 or Mozilla.
-  InstallFunctions($Array.prototype, DONT_ENUM, $Array(
+  InstallFunctionsOnHiddenPrototype($Array.prototype, DONT_ENUM, $Array(
     "toString", getFunction("toString", ArrayToString),
     "toLocaleString", getFunction("toLocaleString", ArrayToLocaleString),
     "join", getFunction("join", ArrayJoin),

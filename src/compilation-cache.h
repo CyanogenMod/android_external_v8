@@ -1,4 +1,4 @@
-// Copyright 2012 the V8 project authors. All rights reserved.
+// Copyright 2008 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -30,6 +30,8 @@
 
 namespace v8 {
 namespace internal {
+
+class HashMap;
 
 // The compilation cache consists of several generational sub-caches which uses
 // this class as a base class. A sub-cache contains a compilation cache tables
@@ -121,19 +123,7 @@ class CompilationCacheScript : public CompilationSubCache {
 };
 
 
-// Sub-cache for eval scripts. Two caches for eval are used. One for eval calls
-// in global contexts and one for eval calls in other contexts. The cache
-// considers the following pieces of information when checking for matching
-// entries:
-// 1. The source string.
-// 2. The shared function info of the calling function.
-// 3. Whether the source should be compiled as strict code or as non-strict
-//    code.
-//    Note: Currently there are clients of CompileEval that always compile
-//    non-strict code even if the calling function is a strict mode function.
-//    More specifically these are the CompileString, DebugEvaluate and
-//    DebugEvaluateGlobal runtime functions.
-// 4. The start position of the calling scope.
+// Sub-cache for eval scripts.
 class CompilationCacheEval: public CompilationSubCache {
  public:
   CompilationCacheEval(Isolate* isolate, int generations)
@@ -141,27 +131,23 @@ class CompilationCacheEval: public CompilationSubCache {
 
   Handle<SharedFunctionInfo> Lookup(Handle<String> source,
                                     Handle<Context> context,
-                                    LanguageMode language_mode,
-                                    int scope_position);
+                                    StrictModeFlag strict_mode);
 
   void Put(Handle<String> source,
            Handle<Context> context,
-           Handle<SharedFunctionInfo> function_info,
-           int scope_position);
+           Handle<SharedFunctionInfo> function_info);
 
  private:
   MUST_USE_RESULT MaybeObject* TryTablePut(
       Handle<String> source,
       Handle<Context> context,
-      Handle<SharedFunctionInfo> function_info,
-      int scope_position);
+      Handle<SharedFunctionInfo> function_info);
 
   // Note: Returns a new hash table if operation results in expansion.
   Handle<CompilationCacheTable> TablePut(
       Handle<String> source,
       Handle<Context> context,
-      Handle<SharedFunctionInfo> function_info,
-      int scope_position);
+      Handle<SharedFunctionInfo> function_info);
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(CompilationCacheEval);
 };
@@ -212,8 +198,7 @@ class CompilationCache {
   Handle<SharedFunctionInfo> LookupEval(Handle<String> source,
                                         Handle<Context> context,
                                         bool is_global,
-                                        LanguageMode language_mode,
-                                        int scope_position);
+                                        StrictModeFlag strict_mode);
 
   // Returns the regexp data associated with the given regexp if it
   // is in cache, otherwise an empty handle.
@@ -230,8 +215,7 @@ class CompilationCache {
   void PutEval(Handle<String> source,
                Handle<Context> context,
                bool is_global,
-               Handle<SharedFunctionInfo> function_info,
-               int scope_position);
+               Handle<SharedFunctionInfo> function_info);
 
   // Associate the (source, flags) pair to the given regexp data.
   // This may overwrite an existing mapping.

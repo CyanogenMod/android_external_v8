@@ -69,10 +69,10 @@ bool DisassembleAndCompare(byte* pc, const char* compare_string) {
 }
 
 
-// Set up V8 to a state where we can at least run the assembler and
+// Setup V8 to a state where we can at least run the assembler and
 // disassembler. Declare the variables and allocate the data structures used
 // in the rest of the macros.
-#define SET_UP()                                           \
+#define SETUP()                                           \
   InitializeVM();                                         \
   v8::HandleScope scope;                                  \
   byte *buffer = reinterpret_cast<byte*>(malloc(4*1024)); \
@@ -102,7 +102,7 @@ if (failure) { \
 
 
 TEST(Type0) {
-  SET_UP();
+  SETUP();
 
   COMPARE(and_(r0, r1, Operand(r2)),
           "e0010002       and r0, r1, r2");
@@ -329,7 +329,7 @@ TEST(Type0) {
 
 
 TEST(Type1) {
-  SET_UP();
+  SETUP();
 
   COMPARE(and_(r0, r1, Operand(0x00000000)),
           "e2010000       and r0, r1, #0");
@@ -358,7 +358,7 @@ TEST(Type1) {
 
 
 TEST(Type3) {
-  SET_UP();
+  SETUP();
 
   if (CpuFeatures::IsSupported(ARMv7)) {
     COMPARE(ubfx(r0, r1, 5, 10),
@@ -413,7 +413,7 @@ TEST(Type3) {
 
 
 TEST(Vfp) {
-  SET_UP();
+  SETUP();
 
   if (CpuFeatures::IsSupported(VFP3)) {
     CpuFeatures::Scope scope(VFP3);
@@ -546,7 +546,7 @@ TEST(Vfp) {
 
 
 TEST(LoadStore) {
-  SET_UP();
+  SETUP();
 
   COMPARE(ldrb(r0, MemOperand(r1)),
           "e5d10000       ldrb r0, [r1, #+0]");

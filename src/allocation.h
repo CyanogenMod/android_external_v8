@@ -1,4 +1,4 @@
-// Copyright 2012 the V8 project authors. All rights reserved.
+// Copyright 2008 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -28,6 +28,7 @@
 #ifndef V8_ALLOCATION_H_
 #define V8_ALLOCATION_H_
 
+#include "checks.h"
 #include "globals.h"
 
 namespace v8 {
@@ -80,7 +81,7 @@ class AllStatic {
 
 
 template <typename T>
-T* NewArray(size_t size) {
+static T* NewArray(int size) {
   T* result = new T[size];
   if (result == NULL) Malloced::FatalProcessOutOfMemory();
   return result;
@@ -88,7 +89,7 @@ T* NewArray(size_t size) {
 
 
 template <typename T>
-void DeleteArray(T* array) {
+static void DeleteArray(T* array) {
   delete[] array;
 }
 

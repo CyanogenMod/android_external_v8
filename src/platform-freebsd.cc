@@ -1,4 +1,4 @@
-// Copyright 2012 the V8 project authors. All rights reserved.
+// Copyright 2006-2008 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -79,7 +79,7 @@ double ceiling(double x) {
 static Mutex* limit_mutex = NULL;
 
 
-void OS::SetUp() {
+void OS::Setup() {
   // Seed the random number generator.
   // Convert the current time to a 64-bit integer first, before converting it
   // to an unsigned. Going directly can cause an overflow and the seed to be
@@ -128,7 +128,7 @@ double OS::LocalTimeOffset() {
 
 // We keep the lowest and highest addresses mapped as a quick way of
 // determining that pointers are outside the heap (used mostly in assertions
-// and verification).  The estimate is conservative, i.e., not all addresses in
+// and verification).  The estimate is conservative, ie, not all addresses in
 // 'allocated' space are actually allocated to our heap.  The range is
 // [lowest, highest), inclusive on the low and and exclusive on the high end.
 static void* lowest_ever_allocated = reinterpret_cast<void*>(-1);
@@ -333,132 +333,44 @@ int OS::StackWalk(Vector<OS::StackFrame> frames) {
 static const int kMmapFd = -1;
 static const int kMmapFdOffset = 0;
 
-VirtualMemory::VirtualMemory() : address_(NULL), size_(0) { }
 
 VirtualMemory::VirtualMemory(size_t size) {
-  address_ = ReserveRegion(size);
+  address_ = mmap(NULL, size, PROT_NONE,
+                  MAP_PRIVATE | MAP_ANON | MAP_NORESERVE,
+                  kMmapFd, kMmapFdOffset);
   size_ = size;
-}
-
-
-VirtualMemory::VirtualMemory(size_t size, size_t alignment)
-    : address_(NULL), size_(0) {
-  ASSERT(IsAligned(alignment, static_cast<intptr_t>(OS::AllocateAlignment())));
-  size_t request_size = RoundUp(size + alignment,
-                                static_cast<intptr_t>(OS::AllocateAlignment()));
-  void* reservation = mmap(OS::GetRandomMmapAddr(),
-                           request_size,
-                           PROT_NONE,
-                           MAP_PRIVATE | MAP_ANON | MAP_NORESERVE,
-                           kMmapFd,
-                           kMmapFdOffset);
-  if (reservation == MAP_FAILED) return;
-
-  Address base = static_cast<Address>(reservation);
-  Address aligned_base = RoundUp(base, alignment);
-  ASSERT_LE(base, aligned_base);
-
-  // Unmap extra memory reserved before and after the desired block.
-  if (aligned_base != base) {
-    size_t prefix_size = static_cast<size_t>(aligned_base - base);
-    OS::Free(base, prefix_size);
-    request_size -= prefix_size;
-  }
-
-  size_t aligned_size = RoundUp(size, OS::AllocateAlignment());
-  ASSERT_LE(aligned_size, request_size);
-
-  if (aligned_size != request_size) {
-    size_t suffix_size = request_size - aligned_size;
-    OS::Free(aligned_base + aligned_size, suffix_size);
-    request_size -= suffix_size;
-  }
-
-  ASSERT(aligned_size == request_size);
-
-  address_ = static_cast<void*>(aligned_base);
-  size_ = aligned_size;
 }
 
 
 VirtualMemory::~VirtualMemory() {
   if (IsReserved()) {
-    bool result = ReleaseRegion(address(), size());
-    ASSERT(result);
-    USE(result);
+    if (0 == munmap(address(), size())) address_ = MAP_FAILED;
   }
 }
 
 
 bool VirtualMemory::IsReserved() {
-  return address_ != NULL;
+  return address_ != MAP_FAILED;
 }
 
 
-void VirtualMemory::Reset() {
-  address_ = NULL;
-  size_ = 0;
-}
+bool VirtualMemory::Commit(void* address, size_t size, bool executable) {
+  int prot = PROT_READ | PROT_WRITE | (executable ? PROT_EXEC : 0);
+  if (MAP_FAILED == mmap(address, size, prot,
+                         MAP_PRIVATE | MAP_ANON | MAP_FIXED,
+                         kMmapFd, kMmapFdOffset)) {
+    return false;
+  }
 
-
-bool VirtualMemory::Commit(void* address, size_t size, bool is_executable) {
-  return CommitRegion(address, size, is_executable);
+  UpdateAllocatedSpaceLimits(address, size);
+  return true;
 }
 
 
 bool VirtualMemory::Uncommit(void* address, size_t size) {
-  return UncommitRegion(address, size);
-}
-
-
-bool VirtualMemory::Guard(void* address) {
-  OS::Guard(address, OS::CommitPageSize());
-  return true;
-}
-
-
-void* VirtualMemory::ReserveRegion(size_t size) {
-  void* result = mmap(OS::GetRandomMmapAddr(),
-                      size,
-                      PROT_NONE,
-                      MAP_PRIVATE | MAP_ANON | MAP_NORESERVE,
-                      kMmapFd,
-                      kMmapFdOffset);
-
-  if (result == MAP_FAILED) return NULL;
-
-  return result;
-}
-
-
-bool VirtualMemory::CommitRegion(void* base, size_t size, bool is_executable) {
-  int prot = PROT_READ | PROT_WRITE | (is_executable ? PROT_EXEC : 0);
-  if (MAP_FAILED == mmap(base,
-                         size,
-                         prot,
-                         MAP_PRIVATE | MAP_ANON | MAP_FIXED,
-                         kMmapFd,
-                         kMmapFdOffset)) {
-    return false;
-  }
-
-  UpdateAllocatedSpaceLimits(base, size);
-  return true;
-}
-
-
-bool VirtualMemory::UncommitRegion(void* base, size_t size) {
-  return mmap(base,
-              size,
-              PROT_NONE,
+  return mmap(address, size, PROT_NONE,
               MAP_PRIVATE | MAP_ANON | MAP_NORESERVE | MAP_FIXED,
-              kMmapFd,
-              kMmapFdOffset) != MAP_FAILED;
-}
-
-
-bool VirtualMemory::ReleaseRegion(void* base, size_t size) {
-  return munmap(base, size) == 0;
+              kMmapFd, kMmapFdOffset) != MAP_FAILED;
 }
 
 
@@ -470,8 +382,15 @@ class Thread::PlatformData : public Malloced {
 
 Thread::Thread(const Options& options)
     : data_(new PlatformData),
-      stack_size_(options.stack_size()) {
-  set_name(options.name());
+      stack_size_(options.stack_size) {
+  set_name(options.name);
+}
+
+
+Thread::Thread(const char* name)
+    : data_(new PlatformData),
+      stack_size_(0) {
+  set_name(name);
 }
 
 
@@ -716,14 +635,12 @@ class SignalSender : public Thread {
     FULL_INTERVAL
   };
 
-  static const int kSignalSenderStackSize = 64 * KB;
-
   explicit SignalSender(int interval)
-      : Thread(Thread::Options("SignalSender", kSignalSenderStackSize)),
+      : Thread("SignalSender"),
         interval_(interval) {}
 
   static void AddActiveSampler(Sampler* sampler) {
-    ScopedLock lock(mutex_.Pointer());
+    ScopedLock lock(mutex_);
     SamplerRegistry::AddActiveSampler(sampler);
     if (instance_ == NULL) {
       // Install a signal handler.
@@ -743,7 +660,7 @@ class SignalSender : public Thread {
   }
 
   static void RemoveActiveSampler(Sampler* sampler) {
-    ScopedLock lock(mutex_.Pointer());
+    ScopedLock lock(mutex_);
     SamplerRegistry::RemoveActiveSampler(sampler);
     if (SamplerRegistry::GetState() == SamplerRegistry::HAS_NO_SAMPLERS) {
       RuntimeProfiler::StopRuntimeProfilerThreadBeforeShutdown(instance_);
@@ -836,16 +753,15 @@ class SignalSender : public Thread {
   RuntimeProfilerRateLimiter rate_limiter_;
 
   // Protects the process wide state below.
-  static LazyMutex mutex_;
+  static Mutex* mutex_;
   static SignalSender* instance_;
   static bool signal_handler_installed_;
   static struct sigaction old_signal_handler_;
 
- private:
   DISALLOW_COPY_AND_ASSIGN(SignalSender);
 };
 
-LazyMutex SignalSender::mutex_ = LAZY_MUTEX_INITIALIZER;
+Mutex* SignalSender::mutex_ = OS::CreateMutex();
 SignalSender* SignalSender::instance_ = NULL;
 struct sigaction SignalSender::old_signal_handler_;
 bool SignalSender::signal_handler_installed_ = false;

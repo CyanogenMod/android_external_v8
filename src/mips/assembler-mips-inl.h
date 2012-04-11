@@ -30,14 +30,13 @@
 
 // The original source code covered by the above license above has been
 // modified significantly by Google Inc.
-// Copyright 2012 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 
 
 #ifndef V8_MIPS_ASSEMBLER_MIPS_INL_H_
 #define V8_MIPS_ASSEMBLER_MIPS_INL_H_
 
 #include "mips/assembler-mips.h"
-
 #include "cpu.h"
 #include "debug.h"
 
@@ -79,15 +78,6 @@ bool Operand::is_reg() const {
 }
 
 
-int FPURegister::ToAllocationIndex(FPURegister reg) {
-  ASSERT(reg.code() % 2 == 0);
-  ASSERT(reg.code() / 2 < kNumAllocatableRegisters);
-  ASSERT(reg.is_valid());
-  ASSERT(!reg.is(kDoubleRegZero));
-  ASSERT(!reg.is(kLithiumScratchDouble));
-  return (reg.code() / 2);
-}
-
 
 // -----------------------------------------------------------------------------
 // RelocInfo.
@@ -117,42 +107,19 @@ Address RelocInfo::target_address() {
 
 
 Address RelocInfo::target_address_address() {
-  ASSERT(IsCodeTarget(rmode_) ||
-         rmode_ == RUNTIME_ENTRY ||
-         rmode_ == EMBEDDED_OBJECT ||
-         rmode_ == EXTERNAL_REFERENCE);
-  // Read the address of the word containing the target_address in an
-  // instruction stream.
-  // The only architecture-independent user of this function is the serializer.
-  // The serializer uses it to find out how many raw bytes of instruction to
-  // output before the next target.
-  // For an instruction like LUI/ORI where the target bits are mixed into the
-  // instruction bits, the size of the target will be zero, indicating that the
-  // serializer should not step forward in memory after a target is resolved
-  // and written. In this case the target_address_address function should
-  // return the end of the instructions to be patched, allowing the
-  // deserializer to deserialize the instructions as raw bytes and put them in
-  // place, ready to be patched with the target. After jump optimization,
-  // that is the address of the instruction that follows J/JAL/JR/JALR
-  // instruction.
-  return reinterpret_cast<Address>(
-    pc_ + Assembler::kInstructionsFor32BitConstant * Assembler::kInstrSize);
+  ASSERT(IsCodeTarget(rmode_) || rmode_ == RUNTIME_ENTRY);
+  return reinterpret_cast<Address>(pc_);
 }
 
 
 int RelocInfo::target_address_size() {
-  return Assembler::kSpecialTargetSize;
+  return Assembler::kExternalTargetSize;
 }
 
 
-void RelocInfo::set_target_address(Address target, WriteBarrierMode mode) {
+void RelocInfo::set_target_address(Address target) {
   ASSERT(IsCodeTarget(rmode_) || rmode_ == RUNTIME_ENTRY);
   Assembler::set_target_address_at(pc_, target);
-  if (mode == UPDATE_WRITE_BARRIER && host() != NULL && IsCodeTarget(rmode_)) {
-    Object* target_code = Code::GetCodeFromTargetAddress(target);
-    host()->GetHeap()->incremental_marking()->RecordWriteIntoCode(
-        host(), this, HeapObject::cast(target_code));
-  }
 }
 
 
@@ -162,7 +129,7 @@ Object* RelocInfo::target_object() {
 }
 
 
-Handle<Object> RelocInfo::target_object_handle(Assembler* origin) {
+Handle<Object> RelocInfo::target_object_handle(Assembler *origin) {
   ASSERT(IsCodeTarget(rmode_) || rmode_ == EMBEDDED_OBJECT);
   return Handle<Object>(reinterpret_cast<Object**>(
       Assembler::target_address_at(pc_)));
@@ -179,15 +146,9 @@ Object** RelocInfo::target_object_address() {
 }
 
 
-void RelocInfo::set_target_object(Object* target, WriteBarrierMode mode) {
+void RelocInfo::set_target_object(Object* target) {
   ASSERT(IsCodeTarget(rmode_) || rmode_ == EMBEDDED_OBJECT);
   Assembler::set_target_address_at(pc_, reinterpret_cast<Address>(target));
-  if (mode == UPDATE_WRITE_BARRIER &&
-      host() != NULL &&
-      target->IsHeapObject()) {
-    host()->GetHeap()->incremental_marking()->RecordWrite(
-        host(), &Memory::Object_at(pc_), HeapObject::cast(target));
-  }
 }
 
 
@@ -215,17 +176,10 @@ JSGlobalPropertyCell* RelocInfo::target_cell() {
 }
 
 
-void RelocInfo::set_target_cell(JSGlobalPropertyCell* cell,
-                                WriteBarrierMode mode) {
+void RelocInfo::set_target_cell(JSGlobalPropertyCell* cell) {
   ASSERT(rmode_ == RelocInfo::GLOBAL_PROPERTY_CELL);
   Address address = cell->address() + JSGlobalPropertyCell::kValueOffset;
   Memory::Address_at(pc_) = address;
-  if (mode == UPDATE_WRITE_BARRIER && host() != NULL) {
-    // TODO(1550) We are passing NULL as a slot because cell can never be on
-    // evacuation candidate.
-    host()->GetHeap()->incremental_marking()->RecordWrite(
-        host(), NULL, cell);
-  }
 }
 
 
@@ -246,11 +200,6 @@ void RelocInfo::set_call_address(Address target) {
   // debug-mips.cc BreakLocationIterator::SetDebugBreakAtReturn(), or
   // debug break slot per BreakLocationIterator::SetDebugBreakAtSlot().
   Assembler::set_target_address_at(pc_, target);
-  if (host() != NULL) {
-    Object* target_code = Code::GetCodeFromTargetAddress(target);
-    host()->GetHeap()->incremental_marking()->RecordWriteIntoCode(
-        host(), this, HeapObject::cast(target_code));
-  }
 }
 
 
@@ -293,19 +242,24 @@ bool RelocInfo::IsPatchedDebugBreakSlotSequence() {
 void RelocInfo::Visit(ObjectVisitor* visitor) {
   RelocInfo::Mode mode = rmode();
   if (mode == RelocInfo::EMBEDDED_OBJECT) {
-    visitor->VisitEmbeddedPointer(this);
+    Object** p = target_object_address();
+    Object* orig = *p;
+    visitor->VisitPointer(p);
+    if (*p != orig) {
+      set_target_object(*p);
+    }
   } else if (RelocInfo::IsCodeTarget(mode)) {
     visitor->VisitCodeTarget(this);
   } else if (mode == RelocInfo::GLOBAL_PROPERTY_CELL) {
     visitor->VisitGlobalPropertyCell(this);
   } else if (mode == RelocInfo::EXTERNAL_REFERENCE) {
-    visitor->VisitExternalReference(this);
+    visitor->VisitExternalReference(target_reference_address());
 #ifdef ENABLE_DEBUGGER_SUPPORT
   // TODO(isolates): Get a cached isolate below.
   } else if (((RelocInfo::IsJSReturn(mode) &&
-              IsPatchedReturnSequence()) ||
-             (RelocInfo::IsDebugBreakSlot(mode) &&
-             IsPatchedDebugBreakSlotSequence())) &&
+               IsPatchedReturnSequence()) ||
+              (RelocInfo::IsDebugBreakSlot(mode) &&
+               IsPatchedDebugBreakSlotSequence())) &&
              Isolate::Current()->debug()->has_break_points()) {
     visitor->VisitDebugTarget(this);
 #endif
@@ -319,13 +273,13 @@ template<typename StaticVisitor>
 void RelocInfo::Visit(Heap* heap) {
   RelocInfo::Mode mode = rmode();
   if (mode == RelocInfo::EMBEDDED_OBJECT) {
-    StaticVisitor::VisitEmbeddedPointer(heap, this);
+    StaticVisitor::VisitPointer(heap, target_object_address());
   } else if (RelocInfo::IsCodeTarget(mode)) {
     StaticVisitor::VisitCodeTarget(heap, this);
   } else if (mode == RelocInfo::GLOBAL_PROPERTY_CELL) {
     StaticVisitor::VisitGlobalPropertyCell(heap, this);
   } else if (mode == RelocInfo::EXTERNAL_REFERENCE) {
-    StaticVisitor::VisitExternalReference(this);
+    StaticVisitor::VisitExternalReference(target_reference_address());
 #ifdef ENABLE_DEBUGGER_SUPPORT
   } else if (heap->isolate()->debug()->has_break_points() &&
              ((RelocInfo::IsJSReturn(mode) &&

@@ -36,9 +36,9 @@ namespace internal {
 // Register lists.
 // Note that the bit values must match those used in actual instruction
 // encoding.
-const int kNumRegs = 32;
+static const int kNumRegs = 32;
 
-const RegList kJSCallerSaved =
+static const RegList kJSCallerSaved =
   1 << 2  |  // v0
   1 << 3  |  // v1
   1 << 4  |  // a0
@@ -54,7 +54,7 @@ const RegList kJSCallerSaved =
   1 << 14 |  // t6
   1 << 15;   // t7
 
-const int kNumJSCallerSaved = 14;
+static const int kNumJSCallerSaved = 14;
 
 
 // Return the code of the n-th caller-saved register available to JavaScript
@@ -63,7 +63,7 @@ int JSCallerSavedCode(int n);
 
 
 // Callee-saved registers preserved when switching from C to JavaScript.
-const RegList kCalleeSaved =
+static const RegList kCalleeSaved =
   1 << 16 |  // s0
   1 << 17 |  // s1
   1 << 18 |  // s2
@@ -74,9 +74,9 @@ const RegList kCalleeSaved =
   1 << 23 |  // s7 (cp in Javascript code)
   1 << 30;   // fp/s8
 
-const int kNumCalleeSaved = 9;
+static const int kNumCalleeSaved = 9;
 
-const RegList kCalleeSavedFPU =
+static const RegList kCalleeSavedFPU =
   1 << 20 |  // f20
   1 << 22 |  // f22
   1 << 24 |  // f24
@@ -84,37 +84,23 @@ const RegList kCalleeSavedFPU =
   1 << 28 |  // f28
   1 << 30;   // f30
 
-const int kNumCalleeSavedFPU = 6;
-
-const RegList kCallerSavedFPU =
-  1 << 0  |  // f0
-  1 << 2  |  // f2
-  1 << 4  |  // f4
-  1 << 6  |  // f6
-  1 << 8  |  // f8
-  1 << 10 |  // f10
-  1 << 12 |  // f12
-  1 << 14 |  // f14
-  1 << 16 |  // f16
-  1 << 18;   // f18
-
-
+static const int kNumCalleeSavedFPU = 6;
 // Number of registers for which space is reserved in safepoints. Must be a
 // multiple of 8.
-const int kNumSafepointRegisters = 24;
+static const int kNumSafepointRegisters = 24;
 
 // Define the list of registers actually saved at safepoints.
 // Note that the number of saved registers may be smaller than the reserved
 // space, i.e. kNumSafepointSavedRegisters <= kNumSafepointRegisters.
-const RegList kSafepointSavedRegisters = kJSCallerSaved | kCalleeSaved;
-const int kNumSafepointSavedRegisters =
+static const RegList kSafepointSavedRegisters = kJSCallerSaved | kCalleeSaved;
+static const int kNumSafepointSavedRegisters =
     kNumJSCallerSaved + kNumCalleeSaved;
 
 typedef Object* JSCallerSavedBuffer[kNumJSCallerSaved];
 
-const int kUndefIndex = -1;
+static const int kUndefIndex = -1;
 // Map with indexes on stack that corresponds to codes of saved registers.
-const int kSafepointRegisterStackIndexMap[kNumRegs] = {
+static const int kSafepointRegisterStackIndexMap[kNumRegs] = {
   kUndefIndex,  // zero_reg
   kUndefIndex,  // at
   0,   // v0
@@ -154,13 +140,13 @@ const int kSafepointRegisterStackIndexMap[kNumRegs] = {
 
 class StackHandlerConstants : public AllStatic {
  public:
-  static const int kNextOffset     = 0 * kPointerSize;
-  static const int kCodeOffset     = 1 * kPointerSize;
-  static const int kStateOffset    = 2 * kPointerSize;
-  static const int kContextOffset  = 3 * kPointerSize;
-  static const int kFPOffset       = 4 * kPointerSize;
+  static const int kNextOffset    = 0 * kPointerSize;
+  static const int kStateOffset   = 1 * kPointerSize;
+  static const int kContextOffset = 2 * kPointerSize;
+  static const int kFPOffset      = 3 * kPointerSize;
+  static const int kPCOffset      = 4 * kPointerSize;
 
-  static const int kSize = kFPOffset + kPointerSize;
+  static const int kSize = kPCOffset + kPointerSize;
 };
 
 
@@ -195,9 +181,6 @@ class ExitFrameConstants : public AllStatic {
 
 class StandardFrameConstants : public AllStatic {
  public:
-  // Fixed part of the frame consists of return address, caller fp,
-  // context and function.
-  static const int kFixedFrameSize    =  4 * kPointerSize;
   static const int kExpressionsOffset = -3 * kPointerSize;
   static const int kMarkerOffset      = -2 * kPointerSize;
   static const int kContextOffset     = -1 * kPointerSize;
@@ -233,8 +216,6 @@ class JavaScriptFrameConstants : public AllStatic {
 class ArgumentsAdaptorFrameConstants : public AllStatic {
  public:
   static const int kLengthOffset = StandardFrameConstants::kExpressionsOffset;
-  static const int kFrameSize =
-      StandardFrameConstants::kFixedFrameSize + kPointerSize;
 };
 
 

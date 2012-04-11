@@ -1,4 +1,4 @@
-// Copyright 2012 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -68,7 +68,7 @@ inline bool StackHandler::includes(Address address) const {
 
 inline void StackHandler::Iterate(ObjectVisitor* v, Code* holder) const {
   v->VisitPointer(context_address());
-  v->VisitPointer(code_address());
+  StackFrame::IteratePc(v, pc_address(), holder);
 }
 
 
@@ -77,24 +77,9 @@ inline StackHandler* StackHandler::FromAddress(Address address) {
 }
 
 
-inline bool StackHandler::is_js_entry() const {
-  return kind() == JS_ENTRY;
-}
-
-
-inline bool StackHandler::is_catch() const {
-  return kind() == CATCH;
-}
-
-
-inline bool StackHandler::is_finally() const {
-  return kind() == FINALLY;
-}
-
-
-inline StackHandler::Kind StackHandler::kind() const {
+inline StackHandler::State StackHandler::state() const {
   const int offset = StackHandlerConstants::kStateOffset;
-  return KindField::decode(Memory::unsigned_at(address() + offset));
+  return static_cast<State>(Memory::int_at(address() + offset));
 }
 
 
@@ -104,9 +89,9 @@ inline Object** StackHandler::context_address() const {
 }
 
 
-inline Object** StackHandler::code_address() const {
-  const int offset = StackHandlerConstants::kCodeOffset;
-  return reinterpret_cast<Object**>(address() + offset);
+inline Address* StackHandler::pc_address() const {
+  const int offset = StackHandlerConstants::kPCOffset;
+  return reinterpret_cast<Address*>(address() + offset);
 }
 
 
@@ -120,33 +105,8 @@ inline StackHandler* StackFrame::top_handler() const {
 }
 
 
-inline Code* StackFrame::LookupCode() const {
-  return GetContainingCode(isolate(), pc());
-}
-
-
 inline Code* StackFrame::GetContainingCode(Isolate* isolate, Address pc) {
-  return isolate->inner_pointer_to_code_cache()->GetCacheEntry(pc)->code;
-}
-
-
-inline EntryFrame::EntryFrame(StackFrameIterator* iterator)
-    : StackFrame(iterator) {
-}
-
-
-inline EntryConstructFrame::EntryConstructFrame(StackFrameIterator* iterator)
-    : EntryFrame(iterator) {
-}
-
-
-inline ExitFrame::ExitFrame(StackFrameIterator* iterator)
-    : StackFrame(iterator) {
-}
-
-
-inline StandardFrame::StandardFrame(StackFrameIterator* iterator)
-    : StackFrame(iterator) {
+  return isolate->pc_to_code_cache()->GetCacheEntry(pc)->code;
 }
 
 
@@ -191,12 +151,7 @@ inline bool StandardFrame::IsArgumentsAdaptorFrame(Address fp) {
 inline bool StandardFrame::IsConstructFrame(Address fp) {
   Object* marker =
       Memory::Object_at(fp + StandardFrameConstants::kMarkerOffset);
-  return marker == Smi::FromInt(StackFrame::CONSTRUCT);
-}
-
-
-inline JavaScriptFrame::JavaScriptFrame(StackFrameIterator* iterator)
-    : StandardFrame(iterator) {
+  return marker == Smi::FromInt(CONSTRUCT);
 }
 
 
@@ -235,41 +190,12 @@ inline Object* JavaScriptFrame::function() const {
 }
 
 
-inline OptimizedFrame::OptimizedFrame(StackFrameIterator* iterator)
-    : JavaScriptFrame(iterator) {
-}
-
-
-inline ArgumentsAdaptorFrame::ArgumentsAdaptorFrame(
-    StackFrameIterator* iterator) : JavaScriptFrame(iterator) {
-}
-
-
-inline InternalFrame::InternalFrame(StackFrameIterator* iterator)
-    : StandardFrame(iterator) {
-}
-
-
-inline ConstructFrame::ConstructFrame(StackFrameIterator* iterator)
-    : InternalFrame(iterator) {
-}
-
-
 template<typename Iterator>
 inline JavaScriptFrameIteratorTemp<Iterator>::JavaScriptFrameIteratorTemp(
     Isolate* isolate)
     : iterator_(isolate) {
   if (!done()) Advance();
 }
-
-
-template<typename Iterator>
-inline JavaScriptFrameIteratorTemp<Iterator>::JavaScriptFrameIteratorTemp(
-    Isolate* isolate, ThreadLocalTop* top)
-    : iterator_(isolate, top) {
-  if (!done()) Advance();
-}
-
 
 template<typename Iterator>
 inline JavaScriptFrame* JavaScriptFrameIteratorTemp<Iterator>::frame() const {

@@ -371,12 +371,9 @@ void RegExpMacroAssemblerARM::CheckNotBackReferenceIgnoreCase(
     // Isolate.
     __ mov(r3, Operand(ExternalReference::isolate_address()));
 
-    {
-      AllowExternalCallThatCantCauseGC scope(masm_);
-      ExternalReference function =
-          ExternalReference::re_case_insensitive_compare_uc16(masm_->isolate());
-      __ CallCFunction(function, argument_count);
-    }
+    ExternalReference function =
+        ExternalReference::re_case_insensitive_compare_uc16(masm_->isolate());
+    __ CallCFunction(function, argument_count);
 
     // Check if function returned non-zero for success or zero for failure.
     __ cmp(r0, Operand(0, RelocInfo::NONE));
@@ -472,7 +469,7 @@ void RegExpMacroAssemblerARM::CheckNotCharacterAfterMinusAnd(
     uc16 minus,
     uc16 mask,
     Label* on_not_equal) {
-  ASSERT(minus < String::kMaxUtf16CodeUnit);
+  ASSERT(minus < String::kMaxUC16CharCode);
   __ sub(r0, current_character(), Operand(minus));
   __ and_(r0, r0, Operand(mask));
   __ cmp(r0, Operand(c));
@@ -571,7 +568,7 @@ bool RegExpMacroAssemblerARM::CheckSpecialCharacterClass(uc16 type,
     ExternalReference map = ExternalReference::re_word_character_map();
     __ mov(r0, Operand(map));
     __ ldrb(r0, MemOperand(r0, current_character()));
-    __ cmp(r0, Operand(0));
+    __ tst(r0, Operand(r0));
     BranchOrBacktrack(eq, on_no_match);
     return true;
   }
@@ -585,7 +582,7 @@ bool RegExpMacroAssemblerARM::CheckSpecialCharacterClass(uc16 type,
     ExternalReference map = ExternalReference::re_word_character_map();
     __ mov(r0, Operand(map));
     __ ldrb(r0, MemOperand(r0, current_character()));
-    __ cmp(r0, Operand(0));
+    __ tst(r0, Operand(r0));
     BranchOrBacktrack(ne, on_no_match);
     if (mode_ != ASCII) {
       __ bind(&done);
@@ -614,12 +611,6 @@ Handle<HeapObject> RegExpMacroAssemblerARM::GetCode(Handle<String> source) {
 
   // Entry code:
   __ bind(&entry_label_);
-
-  // Tell the system that we have a stack frame.  Because the type is MANUAL, no
-  // is generated.
-  FrameScope scope(masm_, StackFrame::MANUAL);
-
-  // Actually emit code to start a new stack frame.
   // Push arguments
   // Save callee-save registers.
   // Start new stack frame.
@@ -681,7 +672,7 @@ Handle<HeapObject> RegExpMacroAssemblerARM::GetCode(Handle<String> source) {
 
   // Determine whether the start index is zero, that is at the start of the
   // string, and store that value in a local variable.
-  __ cmp(r1, Operand(0));
+  __ tst(r1, Operand(r1));
   __ mov(r1, Operand(1), LeaveCC, eq);
   __ mov(r1, Operand(0, RelocInfo::NONE), LeaveCC, ne);
   __ str(r1, MemOperand(frame_pointer(), kAtStart));
@@ -1055,7 +1046,7 @@ int RegExpMacroAssemblerARM::CheckStackGuardState(Address* return_address,
   ASSERT(*return_address <=
       re_code->instruction_start() + re_code->instruction_size());
 
-  MaybeObject* result = Execution::HandleStackGuardInterrupt(isolate);
+  MaybeObject* result = Execution::HandleStackGuardInterrupt();
 
   if (*code_handle != re_code) {  // Return address no longer valid
     int delta = code_handle->address() - re_code->address();
@@ -1111,11 +1102,6 @@ int RegExpMacroAssemblerARM::CheckStackGuardState(Address* return_address,
     frame_entry<const String*>(re_frame, kInputString) = *subject;
     frame_entry<const byte*>(re_frame, kInputStart) = new_address;
     frame_entry<const byte*>(re_frame, kInputEnd) = new_address + byte_length;
-  } else if (frame_entry<const String*>(re_frame, kInputString) != *subject) {
-    // Subject string might have been a ConsString that underwent
-    // short-circuiting during GC. That will not change start_address but
-    // will change pointer inside the subject handle.
-    frame_entry<const String*>(re_frame, kInputString) = *subject;
   }
 
   return 0;

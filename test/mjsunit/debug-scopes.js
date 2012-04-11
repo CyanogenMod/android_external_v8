@@ -1,4 +1,4 @@
-// Copyright 2011 the V8 project authors. All rights reserved.
+// Copyright 2008 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,12 +25,13 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Flags: --expose-debug-as debug --allow-natives-syntax
+// Flags: --expose-debug-as debug
 // The functions used for testing backtraces. They are at the top to make the
 // testing of source line/column easier.
 
+
 // Get the Debug object exposed from the debug context global object.
-var Debug = debug.Debug;
+Debug = debug.Debug;
 
 var test_name;
 var listener_delegate;
@@ -435,26 +436,6 @@ with(with_object) {
     debugger;
   }
 }
-EndTest();
-
-
-// With block in function that is marked for optimization while being executed.
-BeginTest("With 7");
-
-function with_7() {
-  with({}) {
-    %OptimizeFunctionOnNextCall(with_7);
-    debugger;
-  }
-}
-
-listener_delegate = function(exec_state) {
-  CheckScopeChain([debug.ScopeType.With,
-                   debug.ScopeType.Local,
-                   debug.ScopeType.Global], exec_state);
-  CheckScopeContent({}, 0, exec_state);
-};
-with_7();
 EndTest();
 
 
@@ -966,28 +947,6 @@ try {
     debugger;
   })(2);
 }
-EndTest();
-
-
-// Catch block in function that is marked for optimization while being executed.
-BeginTest("Catch block 7");
-function catch_block_7() {
-  %OptimizeFunctionOnNextCall(catch_block_7);
-  try {
-    throw 'Exception';
-  } catch (e) {
-    debugger;
-  }
-};
-
-
-listener_delegate = function(exec_state) {
-  CheckScopeChain([debug.ScopeType.Catch,
-                   debug.ScopeType.Local,
-                   debug.ScopeType.Global], exec_state);
-  CheckScopeContent({e:'Exception'}, 0, exec_state);
-};
-catch_block_7();
 EndTest();
 
 

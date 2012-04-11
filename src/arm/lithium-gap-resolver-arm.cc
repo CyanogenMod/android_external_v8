@@ -245,24 +245,13 @@ void LGapResolver::EmitMove(int index) {
     }
 
   } else if (source->IsConstantOperand()) {
-    LConstantOperand* constant_source = LConstantOperand::cast(source);
+    Operand source_operand = cgen_->ToOperand(source);
     if (destination->IsRegister()) {
-      Register dst = cgen_->ToRegister(destination);
-      if (cgen_->IsInteger32(constant_source)) {
-        __ mov(dst, Operand(cgen_->ToInteger32(constant_source)));
-      } else {
-        __ LoadObject(dst, cgen_->ToHandle(constant_source));
-      }
+      __ mov(cgen_->ToRegister(destination), source_operand);
     } else {
       ASSERT(destination->IsStackSlot());
       ASSERT(!in_cycle_);  // Constant moves happen after all cycles are gone.
-      if (cgen_->IsInteger32(constant_source)) {
-        __ mov(kSavedValueRegister,
-               Operand(cgen_->ToInteger32(constant_source)));
-      } else {
-        __ LoadObject(kSavedValueRegister,
-                      cgen_->ToHandle(constant_source));
-      }
+      __ mov(kSavedValueRegister, source_operand);
       __ str(kSavedValueRegister, cgen_->ToMemOperand(destination));
     }
 

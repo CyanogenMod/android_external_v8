@@ -1,4 +1,4 @@
-// Copyright 2012 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -24,8 +24,6 @@
 // THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-// Flags: --allow-natives-syntax
 
 // Test function.arguments.
 
@@ -62,16 +60,13 @@ function hej(x) {
   return o.g(x, "z");
 }
 
-function opt() {
-  for (var k=0; k<2; k++) {
-    for (var i=0; i<5; i++) o.g(i, "g");
-    for (var j=0; j<5; j++) hej(j);
-  }
-  %OptimizeFunctionOnNextCall(o.g);
-  %OptimizeFunctionOnNextCall(hej);
+function stress() {
+  for (var i=0; i<5000000; i++) o.g(i, "g");
+  for (var j=0; j<5000000; j++) hej(j);
 }
 
-opt();
+stress();
+
 assertArrayEquals([0, "g"], o.g(0, "g"));
 assertArrayEquals([1, "f"], o.g(1, "g"));
 assertArrayEquals([0, "h"], hej(0));
@@ -79,7 +74,8 @@ assertArrayEquals([1, "f"], hej(1));
 
 o = new B();
 
-opt();
+stress();
+
 assertArrayEquals([0, "f"], o.g(0, "g"));
 assertArrayEquals([1, "g"], o.g(1, "g"));
 assertArrayEquals([0, "f"], hej(0));

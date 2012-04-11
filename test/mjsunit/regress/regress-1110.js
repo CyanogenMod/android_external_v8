@@ -28,9 +28,10 @@
 // Test that the illegal continue is thrown at parse time.
 
 try {
-  eval("function Crash() { assertUnreachable(); continue;if (Crash) {  } }");
+  function Crash() { continue;if (Crash) {
+    } }
   Crash();
-  assertUnreachable();
+  assertTrue(false);
 } catch (e) {
   assertTrue(e instanceof SyntaxError);
   assertTrue(/continue/.test(e.message));

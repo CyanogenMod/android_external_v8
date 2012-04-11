@@ -66,13 +66,11 @@ static uint64_t CpuFeaturesImpliedByCompiler() {
 
 #ifdef __arm__
   // If the compiler is allowed to use VFP then we can use VFP too in our code
-  // generation even when generating snapshots. ARMv7 and hardware floating
-  // point support implies VFPv3, see ARM DDI 0406B, page A1-6.
-#if defined(CAN_USE_ARMV7_INSTRUCTIONS) && defined(__VFP_FP__) \
-    && !defined(__SOFTFP__)
+  // generation even when generating snapshots.  This won't work for cross
+  // compilation. VFPv3 implies ARMv7, see ARM DDI 0406B, page A1-6.
+#if defined(__VFP_FP__) && !defined(__SOFTFP__)
   answer |= 1u << VFP3 | 1u << ARMv7;
-#endif  // defined(CAN_USE_ARMV7_INSTRUCTIONS) && defined(__VFP_FP__)
-        // && !defined(__SOFTFP__)
+#endif  // defined(__VFP_FP__) && !defined(__SOFTFP__)
 #endif  // def __arm__
 
   return answer;
@@ -80,9 +78,7 @@ static uint64_t CpuFeaturesImpliedByCompiler() {
 
 
 void CpuFeatures::Probe() {
-  unsigned standard_features = (OS::CpuFeaturesImpliedByPlatform() |
-                                CpuFeaturesImpliedByCompiler());
-  ASSERT(supported_ == 0 || supported_ == standard_features);
+  ASSERT(!initialized_);
 #ifdef DEBUG
   initialized_ = true;
 #endif
@@ -90,7 +86,8 @@ void CpuFeatures::Probe() {
   // Get the features implied by the OS and the compiler settings. This is the
   // minimal set of features which is also alowed for generated code in the
   // snapshot.
-  supported_ |= standard_features;
+  supported_ |= OS::CpuFeaturesImpliedByPlatform();
+  supported_ |= CpuFeaturesImpliedByCompiler();
 
   if (Serializer::enabled()) {
     // No probing for features if we might serialize (generate snapshot).
@@ -137,6 +134,7 @@ bool RelocInfo::IsCodedSpecially() {
   // generate those yet.
   return false;
 }
+
 
 
 void RelocInfo::PatchCode(byte* instructions, int instruction_count) {
@@ -237,27 +235,25 @@ MemOperand::MemOperand(Register rn, Register rm,
 
 // add(sp, sp, 4) instruction (aka Pop())
 const Instr kPopInstruction =
-    al | PostIndex | 4 | LeaveCC | I | kRegister_sp_Code * B16 |
-        kRegister_sp_Code * B12;
+    al | PostIndex | 4 | LeaveCC | I | sp.code() * B16 | sp.code() * B12;
 // str(r, MemOperand(sp, 4, NegPreIndex), al) instruction (aka push(r))
 // register r is not encoded.
 const Instr kPushRegPattern =
-    al | B26 | 4 | NegPreIndex | kRegister_sp_Code * B16;
+    al | B26 | 4 | NegPreIndex | sp.code() * B16;
 // ldr(r, MemOperand(sp, 4, PostIndex), al) instruction (aka pop(r))
 // register r is not encoded.
 const Instr kPopRegPattern =
-    al | B26 | L | 4 | PostIndex | kRegister_sp_Code * B16;
+    al | B26 | L | 4 | PostIndex | sp.code() * B16;
 // mov lr, pc
-const Instr kMovLrPc = al | MOV | kRegister_pc_Code | kRegister_lr_Code * B12;
+const Instr kMovLrPc = al | MOV | pc.code() | lr.code() * B12;
 // ldr rd, [pc, #offset]
 const Instr kLdrPCMask = kCondMask | 15 * B24 | 7 * B20 | 15 * B16;
-const Instr kLdrPCPattern = al | 5 * B24 | L | kRegister_pc_Code * B16;
+const Instr kLdrPCPattern = al | 5 * B24 | L | pc.code() * B16;
 // blxcc rm
 const Instr kBlxRegMask =
     15 * B24 | 15 * B20 | 15 * B16 | 15 * B12 | 15 * B8 | 15 * B4;
 const Instr kBlxRegPattern =
     B24 | B21 | 15 * B16 | 15 * B12 | 15 * B8 | BLX;
-const Instr kBlxIp = al | kBlxRegPattern | ip.code();
 const Instr kMovMvnMask = 0x6d * B21 | 0xf * B16;
 const Instr kMovMvnPattern = 0xd * B21;
 const Instr kMovMvnFlip = B22;
@@ -274,13 +270,13 @@ const Instr kAndBicFlip = 0xe * B21;
 
 // A mask for the Rd register for push, pop, ldr, str instructions.
 const Instr kLdrRegFpOffsetPattern =
-    al | B26 | L | Offset | kRegister_fp_Code * B16;
+    al | B26 | L | Offset | fp.code() * B16;
 const Instr kStrRegFpOffsetPattern =
-    al | B26 | Offset | kRegister_fp_Code * B16;
+    al | B26 | Offset | fp.code() * B16;
 const Instr kLdrRegFpNegOffsetPattern =
-    al | B26 | L | NegOffset | kRegister_fp_Code * B16;
+    al | B26 | L | NegOffset | fp.code() * B16;
 const Instr kStrRegFpNegOffsetPattern =
-    al | B26 | NegOffset | kRegister_fp_Code * B16;
+    al | B26 | NegOffset | fp.code() * B16;
 const Instr kLdrStrInstrTypeMask = 0xffff0000;
 const Instr kLdrStrInstrArgumentMask = 0x0000ffff;
 const Instr kLdrStrOffsetMask = 0x00000fff;
@@ -320,7 +316,7 @@ Assembler::Assembler(Isolate* arg_isolate, void* buffer, int buffer_size)
     own_buffer_ = false;
   }
 
-  // Set up buffer pointers.
+  // Setup buffer pointers.
   ASSERT(buffer_ != NULL);
   pc_ = buffer_;
   reloc_info_writer.Reposition(buffer_ + buffer_size, pc_);
@@ -352,7 +348,7 @@ void Assembler::GetCode(CodeDesc* desc) {
   CheckConstPool(true, false);
   ASSERT(num_pending_reloc_info_ == 0);
 
-  // Set up code descriptor.
+  // Setup code descriptor.
   desc->buffer = buffer_;
   desc->buffer_size = buffer_size_;
   desc->instr_size = pc_offset();
@@ -2449,7 +2445,7 @@ void Assembler::GrowBuffer() {
   }
   CHECK_GT(desc.buffer_size, 0);  // no overflow
 
-  // Set up new buffer.
+  // Setup new buffer.
   desc.buffer = NewArray<byte>(desc.buffer_size);
 
   desc.instr_size = pc_offset();
@@ -2509,8 +2505,7 @@ void Assembler::dd(uint32_t data) {
 
 
 void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data) {
-  // We do not try to reuse pool constants.
-  RelocInfo rinfo(pc_, rmode, data, NULL);
+  RelocInfo rinfo(pc_, rmode, data);  // we do not try to reuse pool constants
   if (rmode >= RelocInfo::JS_RETURN && rmode <= RelocInfo::DEBUG_BREAK_SLOT) {
     // Adjust code for new modes.
     ASSERT(RelocInfo::IsDebugBreakSlot(rmode)
@@ -2542,7 +2537,7 @@ void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data) {
     }
     ASSERT(buffer_space() >= kMaxRelocSize);  // too late to grow buffer here
     if (rmode == RelocInfo::CODE_TARGET_WITH_ID) {
-      RelocInfo reloc_info_with_ast_id(pc_, rmode, RecordedAstId(), NULL);
+      RelocInfo reloc_info_with_ast_id(pc_, rmode, RecordedAstId());
       ClearRecordedAstId();
       reloc_info_writer.Write(&reloc_info_with_ast_id);
     } else {

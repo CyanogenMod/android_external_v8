@@ -28,6 +28,8 @@
 #ifndef V8_CONVERSIONS_H_
 #define V8_CONVERSIONS_H_
 
+#include <limits>
+
 #include "utils.h"
 
 namespace v8 {
@@ -45,14 +47,14 @@ class UnicodeCache;
 const int kMaxSignificantDigits = 772;
 
 
-inline bool isDigit(int x, int radix) {
+static inline bool isDigit(int x, int radix) {
   return (x >= '0' && x <= '9' && x < '0' + radix)
       || (radix > 10 && x >= 'a' && x < 'a' + radix - 10)
       || (radix > 10 && x >= 'A' && x < 'A' + radix - 10);
 }
 
 
-inline double SignedZero(bool negative) {
+static inline double SignedZero(bool negative) {
   return negative ? -0.0 : 0.0;
 }
 
@@ -61,16 +63,16 @@ inline double SignedZero(bool negative) {
 // rounding towards zero.
 // The result is unspecified if x is infinite or NaN, or if the rounded
 // integer value is outside the range of type int.
-inline int FastD2I(double x) {
+static inline int FastD2I(double x) {
   // The static_cast convertion from double to int used to be slow, but
   // as new benchmarks show, now it is much faster than lrint().
   return static_cast<int>(x);
 }
 
-inline unsigned int FastD2UI(double x);
+static inline unsigned int FastD2UI(double x);
 
 
-inline double FastI2D(int x) {
+static inline double FastI2D(int x) {
   // There is no rounding involved in converting an integer to a
   // double, so this code should compile to a few instructions without
   // any FPU pipeline stalls.
@@ -78,7 +80,7 @@ inline double FastI2D(int x) {
 }
 
 
-inline double FastUI2D(unsigned x) {
+static inline double FastUI2D(unsigned x) {
   // There is no rounding involved in converting an unsigned integer to a
   // double, so this code should compile to a few instructions without
   // any FPU pipeline stalls.
@@ -87,15 +89,15 @@ inline double FastUI2D(unsigned x) {
 
 
 // This function should match the exact semantics of ECMA-262 9.4.
-inline double DoubleToInteger(double x);
+static inline double DoubleToInteger(double x);
 
 
 // This function should match the exact semantics of ECMA-262 9.5.
-inline int32_t DoubleToInt32(double x);
+static inline int32_t DoubleToInt32(double x);
 
 
 // This function should match the exact semantics of ECMA-262 9.6.
-inline uint32_t DoubleToUint32(double x) {
+static inline uint32_t DoubleToUint32(double x) {
   return static_cast<uint32_t>(DoubleToInt32(x));
 }
 

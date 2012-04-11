@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Copyright 2012 the V8 project authors. All rights reserved.
+# Copyright 2010 the V8 project authors. All rights reserved.
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are
 # met:
@@ -334,7 +334,6 @@ class LogReader(object):
   _ARCH_TO_POINTER_TYPE_MAP = {
     "ia32": ctypes.c_uint32,
     "arm": ctypes.c_uint32,
-    "mips": ctypes.c_uint32,
     "x64": ctypes.c_uint64
   }
 
@@ -400,16 +399,12 @@ class LogReader(object):
         code = Code(name, start_address, end_address, origin, origin_offset)
         conficting_code = self.code_map.Find(start_address)
         if conficting_code:
-          if not (conficting_code.start_address == code.start_address and
-            conficting_code.end_address == code.end_address):
-            self.code_map.Remove(conficting_code)
-          else:
-            LogReader._HandleCodeConflict(conficting_code, code)
-            # TODO(vitalyr): this warning is too noisy because of our
-            # attempts to reconstruct code log from the snapshot.
-            # print >>sys.stderr, \
-            #     "Warning: Skipping duplicate code log entry %s" % code
-            continue
+          LogReader._HandleCodeConflict(conficting_code, code)
+          # TODO(vitalyr): this warning is too noisy because of our
+          # attempts to reconstruct code log from the snapshot.
+          # print >>sys.stderr, \
+          #     "Warning: Skipping duplicate code log entry %s" % code
+          continue
         self.code_map.Add(code)
         continue
 
@@ -673,9 +668,7 @@ OBJDUMP_SECTION_HEADER_RE = re.compile(
 OBJDUMP_SYMBOL_LINE_RE = re.compile(
   r"^([a-f0-9]+)\s(.{7})\s(\S+)\s+([a-f0-9]+)\s+(?:\.hidden\s+)?(.*)$")
 OBJDUMP_DYNAMIC_SYMBOLS_START_RE = re.compile(
-  r"^DYNAMIC SYMBOL TABLE")
-OBJDUMP_SKIP_RE = re.compile(
-  r"^.*ld\.so\.cache$")
+   r"^DYNAMIC SYMBOL TABLE")
 KERNEL_ALLSYMS_FILE = "/proc/kallsyms"
 PERF_KERNEL_ALLSYMS_RE = re.compile(
   r".*kallsyms.*")
@@ -693,8 +686,6 @@ class LibraryRepo(object):
     # Skip kernel mmaps when requested using the fact that their tid
     # is 0.
     if mmap_info.tid == 0 and not options.kernel:
-      return True
-    if OBJDUMP_SKIP_RE.match(mmap_info.filename):
       return True
     if PERF_KERNEL_ALLSYMS_RE.match(mmap_info.filename):
       return self._LoadKernelSymbols(code_map)

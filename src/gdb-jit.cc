@@ -33,7 +33,6 @@
 #include "compiler.h"
 #include "global-handles.h"
 #include "messages.h"
-#include "platform.h"
 #include "natives.h"
 #include "scopeinfo.h"
 
@@ -1116,13 +1115,13 @@ class DebugInfoSection : public DebugSection {
       int context_slots = scope_info.number_of_context_slots();
       // The real slot ID is internal_slots + context_slot_id.
       int internal_slots = Context::MIN_CONTEXT_SLOTS;
-      int locals = scope_info.LocalCount();
+      int locals = scope_info.NumberOfLocals();
       int current_abbreviation = 4;
 
       for (int param = 0; param < params; ++param) {
         w->WriteULEB128(current_abbreviation++);
         w->WriteString(
-            *scope_info.ParameterName(param)->ToCString(DISALLOW_NULLS));
+            *scope_info.parameter_name(param)->ToCString(DISALLOW_NULLS));
         w->Write<uint32_t>(ty_offset);
         Writer::Slot<uint32_t> block_size = w->CreateSlotHere<uint32_t>();
         uintptr_t block_start = w->position();
@@ -1313,7 +1312,7 @@ class DebugAbbrevSection : public DebugSection {
       int context_slots = scope_info.number_of_context_slots();
       // The real slot ID is internal_slots + context_slot_id.
       int internal_slots = Context::MIN_CONTEXT_SLOTS;
-      int locals = scope_info.LocalCount();
+      int locals = scope_info.NumberOfLocals();
       int total_children =
           params + slots + context_slots + internal_slots + locals + 2;
 
@@ -1557,23 +1556,23 @@ class DebugLineSection : public DebugSection {
 
 class UnwindInfoSection : public DebugSection {
  public:
-  explicit UnwindInfoSection(CodeDescription* desc);
-  virtual bool WriteBody(Writer* w);
+  explicit UnwindInfoSection(CodeDescription *desc);
+  virtual bool WriteBody(Writer *w);
 
-  int WriteCIE(Writer* w);
-  void WriteFDE(Writer* w, int);
+  int WriteCIE(Writer *w);
+  void WriteFDE(Writer *w, int);
 
-  void WriteFDEStateOnEntry(Writer* w);
-  void WriteFDEStateAfterRBPPush(Writer* w);
-  void WriteFDEStateAfterRBPSet(Writer* w);
-  void WriteFDEStateAfterRBPPop(Writer* w);
+  void WriteFDEStateOnEntry(Writer *w);
+  void WriteFDEStateAfterRBPPush(Writer *w);
+  void WriteFDEStateAfterRBPSet(Writer *w);
+  void WriteFDEStateAfterRBPPop(Writer *w);
 
-  void WriteLength(Writer* w,
+  void WriteLength(Writer *w,
                    Writer::Slot<uint32_t>* length_slot,
                    int initial_position);
 
  private:
-  CodeDescription* desc_;
+  CodeDescription *desc_;
 
   // DWARF3 Specification, Table 7.23
   enum CFIInstructions {
@@ -1624,7 +1623,7 @@ class UnwindInfoSection : public DebugSection {
 };
 
 
-void UnwindInfoSection::WriteLength(Writer* w,
+void UnwindInfoSection::WriteLength(Writer *w,
                                     Writer::Slot<uint32_t>* length_slot,
                                     int initial_position) {
   uint32_t align = (w->position() - initial_position) % kPointerSize;
@@ -1640,7 +1639,7 @@ void UnwindInfoSection::WriteLength(Writer* w,
 }
 
 
-UnwindInfoSection::UnwindInfoSection(CodeDescription* desc)
+UnwindInfoSection::UnwindInfoSection(CodeDescription *desc)
 #ifdef __ELF
     : ELFSection(".eh_frame", TYPE_X86_64_UNWIND, 1),
 #else
@@ -1649,7 +1648,7 @@ UnwindInfoSection::UnwindInfoSection(CodeDescription* desc)
 #endif
       desc_(desc) { }
 
-int UnwindInfoSection::WriteCIE(Writer* w) {
+int UnwindInfoSection::WriteCIE(Writer *w) {
   Writer::Slot<uint32_t> cie_length_slot = w->CreateSlotHere<uint32_t>();
   uint32_t cie_position = w->position();
 
@@ -1669,7 +1668,7 @@ int UnwindInfoSection::WriteCIE(Writer* w) {
 }
 
 
-void UnwindInfoSection::WriteFDE(Writer* w, int cie_position) {
+void UnwindInfoSection::WriteFDE(Writer *w, int cie_position) {
   // The only FDE for this function. The CFA is the current RBP.
   Writer::Slot<uint32_t> fde_length_slot = w->CreateSlotHere<uint32_t>();
   int fde_position = w->position();
@@ -1687,7 +1686,7 @@ void UnwindInfoSection::WriteFDE(Writer* w, int cie_position) {
 }
 
 
-void UnwindInfoSection::WriteFDEStateOnEntry(Writer* w) {
+void UnwindInfoSection::WriteFDEStateOnEntry(Writer *w) {
   // The first state, just after the control has been transferred to the the
   // function.
 
@@ -1714,7 +1713,7 @@ void UnwindInfoSection::WriteFDEStateOnEntry(Writer* w) {
 }
 
 
-void UnwindInfoSection::WriteFDEStateAfterRBPPush(Writer* w) {
+void UnwindInfoSection::WriteFDEStateAfterRBPPush(Writer *w) {
   // The second state, just after RBP has been pushed.
 
   // RBP / CFA for this function is now the current RSP, so just set the
@@ -1735,7 +1734,7 @@ void UnwindInfoSection::WriteFDEStateAfterRBPPush(Writer* w) {
 }
 
 
-void UnwindInfoSection::WriteFDEStateAfterRBPSet(Writer* w) {
+void UnwindInfoSection::WriteFDEStateAfterRBPSet(Writer *w) {
   // The third state, after the RBP has been set.
 
   // The CFA can now directly be set to RBP.
@@ -1750,7 +1749,7 @@ void UnwindInfoSection::WriteFDEStateAfterRBPSet(Writer* w) {
 }
 
 
-void UnwindInfoSection::WriteFDEStateAfterRBPPop(Writer* w) {
+void UnwindInfoSection::WriteFDEStateAfterRBPPop(Writer *w) {
   // The fourth (final) state. The RBP has been popped (just before issuing a
   // return).
 
@@ -1770,7 +1769,7 @@ void UnwindInfoSection::WriteFDEStateAfterRBPPop(Writer* w) {
 }
 
 
-bool UnwindInfoSection::WriteBody(Writer* w) {
+bool UnwindInfoSection::WriteBody(Writer *w) {
   uint32_t cie_position = WriteCIE(w);
   WriteFDE(w, cie_position);
   return true;
@@ -1811,8 +1810,8 @@ extern "C" {
   struct JITDescriptor {
     uint32_t version_;
     uint32_t action_flag_;
-    JITCodeEntry* relevant_entry_;
-    JITCodeEntry* first_entry_;
+    JITCodeEntry *relevant_entry_;
+    JITCodeEntry *first_entry_;
   };
 
   // GDB will place breakpoint into this function.
@@ -1999,7 +1998,7 @@ void GDBJITInterface::AddCode(Handle<String> name,
   }
 }
 
-static void AddUnwindInfo(CodeDescription* desc) {
+static void AddUnwindInfo(CodeDescription *desc) {
 #ifdef V8_TARGET_ARCH_X64
   if (desc->tag() == GDBJITInterface::FUNCTION) {
     // To avoid propagating unwinding information through
@@ -2036,7 +2035,7 @@ static void AddUnwindInfo(CodeDescription* desc) {
 }
 
 
-static LazyMutex mutex = LAZY_MUTEX_INITIALIZER;
+Mutex* GDBJITInterface::mutex_ = OS::CreateMutex();
 
 
 void GDBJITInterface::AddCode(const char* name,
@@ -2046,7 +2045,7 @@ void GDBJITInterface::AddCode(const char* name,
                               CompilationInfo* info) {
   if (!FLAG_gdbjit) return;
 
-  ScopedLock lock(mutex.Pointer());
+  ScopedLock lock(mutex_);
   AssertNoAllocation no_gc;
 
   HashMap::Entry* e = GetEntries()->Lookup(code, HashForCodeObject(code), true);
@@ -2127,7 +2126,7 @@ void GDBJITInterface::AddCode(GDBJITInterface::CodeTag tag, Code* code) {
 void GDBJITInterface::RemoveCode(Code* code) {
   if (!FLAG_gdbjit) return;
 
-  ScopedLock lock(mutex.Pointer());
+  ScopedLock lock(mutex_);
   HashMap::Entry* e = GetEntries()->Lookup(code,
                                            HashForCodeObject(code),
                                            false);
@@ -2147,7 +2146,7 @@ void GDBJITInterface::RemoveCode(Code* code) {
 
 void GDBJITInterface::RegisterDetailedLineInfo(Code* code,
                                                GDBJITLineInfo* line_info) {
-  ScopedLock lock(mutex.Pointer());
+  ScopedLock lock(mutex_);
   ASSERT(!IsLineInfoTagged(line_info));
   HashMap::Entry* e = GetEntries()->Lookup(code, HashForCodeObject(code), true);
   ASSERT(e->value == NULL);

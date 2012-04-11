@@ -81,7 +81,7 @@ const byte* NativeRegExpMacroAssembler::StringCharacterPosition(
   if (subject->IsAsciiRepresentation()) {
     const byte* address;
     if (StringShape(subject).IsExternal()) {
-      const char* data = ExternalAsciiString::cast(subject)->GetChars();
+      const char* data = ExternalAsciiString::cast(subject)->resource()->data();
       address = reinterpret_cast<const byte*>(data);
     } else {
       ASSERT(subject->IsSeqAsciiString());
@@ -92,7 +92,7 @@ const byte* NativeRegExpMacroAssembler::StringCharacterPosition(
   }
   const uc16* data;
   if (StringShape(subject).IsExternal()) {
-    data = ExternalTwoByteString::cast(subject)->GetChars();
+    data = ExternalTwoByteString::cast(subject)->resource()->data();
   } else {
     ASSERT(subject->IsSeqTwoByteString());
     data = SeqTwoByteString::cast(subject)->GetChars();
@@ -133,7 +133,7 @@ NativeRegExpMacroAssembler::Result NativeRegExpMacroAssembler::Match(
     subject_ptr = slice->parent();
     slice_offset = slice->offset();
   }
-  // Ensure that an underlying string has the same ASCII-ness.
+  // Ensure that an underlying string has the same ascii-ness.
   bool is_ascii = subject_ptr->IsAsciiRepresentation();
   ASSERT(subject_ptr->IsExternalString() || subject_ptr->IsSeqString());
   // String is now either Sequential or External

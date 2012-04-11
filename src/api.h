@@ -1,4 +1,4 @@
-// Copyright 2012 the V8 project authors. All rights reserved.
+// Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -28,14 +28,10 @@
 #ifndef V8_API_H_
 #define V8_API_H_
 
-#include "v8.h"
+#include "apiutils.h"
+#include "factory.h"
 
 #include "../include/v8-testing.h"
-#include "apiutils.h"
-#include "contexts.h"
-#include "factory.h"
-#include "isolate.h"
-#include "list-inl.h"
 
 namespace v8 {
 
@@ -116,16 +112,15 @@ void NeanderObject::set(int offset, v8::internal::Object* value) {
 }
 
 
-template <typename T> inline T ToCData(v8::internal::Object* obj) {
+template <typename T> static inline T ToCData(v8::internal::Object* obj) {
   STATIC_ASSERT(sizeof(T) == sizeof(v8::internal::Address));
   return reinterpret_cast<T>(
-      reinterpret_cast<intptr_t>(
-          v8::internal::Foreign::cast(obj)->foreign_address()));
+      reinterpret_cast<intptr_t>(v8::internal::Foreign::cast(obj)->address()));
 }
 
 
 template <typename T>
-inline v8::internal::Handle<v8::internal::Object> FromCData(T obj) {
+static inline v8::internal::Handle<v8::internal::Object> FromCData(T obj) {
   STATIC_ASSERT(sizeof(T) == sizeof(v8::internal::Address));
   return FACTORY->NewForeign(
       reinterpret_cast<v8::internal::Address>(reinterpret_cast<intptr_t>(obj)));
@@ -141,6 +136,10 @@ class ApiFunction {
 };
 
 
+enum ExtensionTraversalState {
+  UNVISITED, VISITED, INSTALLED
+};
+
 
 class RegisteredExtension {
  public:
@@ -149,11 +148,14 @@ class RegisteredExtension {
   Extension* extension() { return extension_; }
   RegisteredExtension* next() { return next_; }
   RegisteredExtension* next_auto() { return next_auto_; }
+  ExtensionTraversalState state() { return state_; }
+  void set_state(ExtensionTraversalState value) { state_ = value; }
   static RegisteredExtension* first_extension() { return first_extension_; }
  private:
   Extension* extension_;
   RegisteredExtension* next_;
   RegisteredExtension* next_auto_;
+  ExtensionTraversalState state_;
   static RegisteredExtension* first_extension_;
 };
 
@@ -240,7 +242,7 @@ class Utils {
 
 
 template <class T>
-inline T* ToApi(v8::internal::Handle<v8::internal::Object> obj) {
+static inline T* ToApi(v8::internal::Handle<v8::internal::Object> obj) {
   return reinterpret_cast<T*>(obj.location());
 }
 
@@ -481,7 +483,7 @@ class HandleScopeImplementer {
 };
 
 
-const int kHandleBlockSize = v8::internal::KB - 2;  // fit in one page
+static const int kHandleBlockSize = v8::internal::KB - 2;  // fit in one page
 
 
 void HandleScopeImplementer::SaveContext(Context* context) {

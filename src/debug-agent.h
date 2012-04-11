@@ -115,6 +115,7 @@ class DebuggerAgentSession: public Thread {
 class DebuggerAgentUtil {
  public:
   static const char* const kContentLength;
+  static const int kContentLengthSize;
 
   static SmartArrayPointer<char> ReceiveMessage(const Socket* conn);
   static bool SendConnectMessage(const Socket* conn,

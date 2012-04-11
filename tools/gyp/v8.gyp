@@ -1,4 +1,4 @@
-# Copyright 2012 the V8 project authors. All rights reserved.
+# Copyright 2011 the V8 project authors. All rights reserved.
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are
 # met:
@@ -32,7 +32,6 @@
       'targets': [
         {
           'target_name': 'v8',
-          'dependencies_traverse': 1,
           'conditions': [
             ['want_separate_host_toolset==1', {
               'toolsets': ['host', 'target'],
@@ -40,16 +39,10 @@
               'toolsets': ['target'],
             }],
             ['v8_use_snapshot=="true"', {
-              # The dependency on v8_base should come from a transitive
-              # dependency however the Android toolchain requires libv8_base.a
-              # to appear before libv8_snapshot.a so it's listed explicitly.
-              'dependencies': ['v8_base', 'v8_snapshot'],
+              'dependencies': ['v8_snapshot'],
             },
             {
-              # The dependency on v8_base should come from a transitive
-              # dependency however the Android toolchain requires libv8_base.a
-              # to appear before libv8_snapshot.a so it's listed explicitly.
-              'dependencies': ['v8_base', 'v8_nosnapshot'],
+              'dependencies': ['v8_nosnapshot'],
             }],
             ['component=="shared_library"', {
               'type': '<(component)',
@@ -79,7 +72,11 @@
                   },
                 }],
                 ['soname_version!=""', {
-                  'product_extension': 'so.<(soname_version)',
+                  # Ideally, we'd like to specify the full filename for the
+                  # library and set it to "libv8.so.<(soname_version)",
+                  # but currently the best we can do is use 'product_name' and
+                  # get "libv8-<(soname_version).so".
+                  'product_name': 'v8-<(soname_version)',
                 }],
               ],
             },
@@ -228,9 +225,6 @@
         {
           'target_name': 'v8_base',
           'type': '<(library)',
-          'variables': {
-            'optimize': 'max',
-          },
           'include_dirs+': [
             '../../src',
           ],
@@ -246,8 +240,8 @@
             '../../src/assembler.cc',
             '../../src/assembler.h',
             '../../src/ast.cc',
+            '../../src/ast-inl.h',
             '../../src/ast.h',
-            '../../src/atomicops.h',
             '../../src/atomicops_internals_x86_gcc.cc',
             '../../src/bignum.cc',
             '../../src/bignum.h',
@@ -289,8 +283,6 @@
             '../../src/cpu-profiler.h',
             '../../src/data-flow.cc',
             '../../src/data-flow.h',
-            '../../src/date.cc',
-            '../../src/date.h',
             '../../src/dateparser.cc',
             '../../src/dateparser.h',
             '../../src/dateparser-inl.h',
@@ -334,6 +326,7 @@
             '../../src/handles-inl.h',
             '../../src/handles.cc',
             '../../src/handles.h',
+            '../../src/hashmap.cc',
             '../../src/hashmap.h',
             '../../src/heap-inl.h',
             '../../src/heap.cc',
@@ -347,12 +340,8 @@
             '../../src/ic-inl.h',
             '../../src/ic.cc',
             '../../src/ic.h',
-            '../../src/incremental-marking.cc',
-            '../../src/incremental-marking.h',
             '../../src/inspector.cc',
             '../../src/inspector.h',
-            '../../src/interface.cc',
-            '../../src/interface.h',
             '../../src/interpreter-irregexp.cc',
             '../../src/interpreter-irregexp.h',
             '../../src/json-parser.h',
@@ -360,7 +349,6 @@
             '../../src/jsregexp.h',
             '../../src/isolate.cc',
             '../../src/isolate.h',
-            '../../src/lazy-instance.h'
             '../../src/list-inl.h',
             '../../src/list.h',
             '../../src/lithium.cc',
@@ -391,8 +379,6 @@
             '../../src/objects-visiting.h',
             '../../src/objects.cc',
             '../../src/objects.h',
-            '../../src/once.cc',
-            '../../src/once.h',
             '../../src/parser.cc',
             '../../src/parser.h',
             '../../src/platform-tls-mac.h',
@@ -408,7 +394,6 @@
             '../../src/prettyprinter.h',
             '../../src/property.cc',
             '../../src/property.h',
-            '../../src/property-details.h',
             '../../src/profile-generator-inl.h',
             '../../src/profile-generator.cc',
             '../../src/profile-generator.h',
@@ -446,9 +431,6 @@
             '../../src/spaces-inl.h',
             '../../src/spaces.cc',
             '../../src/spaces.h',
-            '../../src/store-buffer-inl.h',
-            '../../src/store-buffer.cc',
-            '../../src/store-buffer.h',
             '../../src/string-search.cc',
             '../../src/string-search.h',
             '../../src/string-stream.cc',
@@ -567,40 +549,6 @@
                 '../../src/ia32/stub-cache-ia32.cc',
               ],
             }],
-            ['v8_target_arch=="mips"', {
-              'sources': [
-                '../../src/mips/assembler-mips.cc',
-                '../../src/mips/assembler-mips.h',
-                '../../src/mips/assembler-mips-inl.h',
-                '../../src/mips/builtins-mips.cc',
-                '../../src/mips/codegen-mips.cc',
-                '../../src/mips/codegen-mips.h',
-                '../../src/mips/code-stubs-mips.cc',
-                '../../src/mips/code-stubs-mips.h',
-                '../../src/mips/constants-mips.cc',
-                '../../src/mips/constants-mips.h',
-                '../../src/mips/cpu-mips.cc',
-                '../../src/mips/debug-mips.cc',
-                '../../src/mips/deoptimizer-mips.cc',
-                '../../src/mips/disasm-mips.cc',
-                '../../src/mips/frames-mips.cc',
-                '../../src/mips/frames-mips.h',
-                '../../src/mips/full-codegen-mips.cc',
-                '../../src/mips/ic-mips.cc',
-                '../../src/mips/lithium-codegen-mips.cc',
-                '../../src/mips/lithium-codegen-mips.h',
-                '../../src/mips/lithium-gap-resolver-mips.cc',
-                '../../src/mips/lithium-gap-resolver-mips.h',
-                '../../src/mips/lithium-mips.cc',
-                '../../src/mips/lithium-mips.h',
-                '../../src/mips/macro-assembler-mips.cc',
-                '../../src/mips/macro-assembler-mips.h',
-                '../../src/mips/regexp-macro-assembler-mips.cc',
-                '../../src/mips/regexp-macro-assembler-mips.h',
-                '../../src/mips/simulator-mips.cc',
-                '../../src/mips/stub-cache-mips.cc',
-              ],
-            }],
             ['v8_target_arch=="x64" or v8_target_arch=="mac" or OS=="mac"', {
               'sources': [
                 '../../src/x64/assembler-x64-inl.h',
@@ -638,8 +586,7 @@
                     ['v8_compress_startup_data=="bz2"', {
                       'libraries': [
                         '-lbz2',
-                      ]
-                    }],
+                    ]}],
                   ],
                 },
                 'sources': [
@@ -649,29 +596,25 @@
               }
             ],
             ['OS=="android"', {
-                'defines': [
-                  'CAN_USE_VFP_INSTRUCTIONS',
-                ],
                 'sources': [
                   '../../src/platform-posix.cc',
                 ],
                 'conditions': [
-                  ['host_os=="mac"', {
-                    'target_conditions': [
-                      ['_toolset=="host"', {
-                        'sources': [
-                          '../../src/platform-macos.cc'
-                        ]
-                      }, {
-                        'sources': [
-                          '../../src/platform-linux.cc'
-                        ]
-                      }],
-                    ],
+                  ['host_os=="mac" and _toolset!="target"', {
+                    'sources': [
+                      '../../src/platform-macos.cc'
+                    ]
                   }, {
                     'sources': [
                       '../../src/platform-linux.cc'
                     ]
+                  }],
+                  ['_toolset=="target"', {
+                    'link_settings': {
+                      'libraries': [
+                        '-llog',
+                       ],
+                     }
                   }],
                 ],
               },
@@ -698,28 +641,6 @@
                 ],
               }
             ],
-            ['OS=="netbsd"', {
-                'link_settings': {
-                  'libraries': [
-                    '-L/usr/pkg/lib -Wl,-R/usr/pkg/lib -lexecinfo',
-                ]},
-                'sources': [
-                  '../../src/platform-openbsd.cc',
-                  '../../src/platform-posix.cc'
-                ],
-              }
-            ],
-            ['OS=="solaris"', {
-                'link_settings': {
-                  'libraries': [
-                    '-lsocket -lnsl',
-                ]},
-                'sources': [
-                  '../../src/platform-solaris.cc',
-                  '../../src/platform-posix.cc',
-                ],
-              }
-            ],
             ['OS=="mac"', {
               'sources': [
                 '../../src/platform-macos.cc',
@@ -742,11 +663,6 @@
                 'BUILDING_V8_SHARED',
                 'V8_SHARED',
               ],
-            }],
-            ['v8_postmortem_support=="true"', {
-              'sources': [
-                '<(SHARED_INTERMEDIATE_DIR)/debug-support.cc',
-              ]
             }],
           ],
         },
@@ -781,7 +697,7 @@
             'experimental_library_files': [
               '../../src/macros.py',
               '../../src/proxy.js',
-              '../../src/collection.js',
+              '../../src/weakmap.js',
             ],
           },
           'actions': [
@@ -824,38 +740,9 @@
           ],
         },
         {
-          'target_name': 'postmortem-metadata',
-          'type': 'none',
-          'variables': {
-            'heapobject_files': [
-                '../../src/objects.h',
-                '../../src/objects-inl.h',
-            ],
-          },
-          'actions': [
-              {
-                'action_name': 'gen-postmortem-metadata',
-                'inputs': [
-                  '../../tools/gen-postmortem-metadata.py',
-                  '<@(heapobject_files)',
-                ],
-                'outputs': [
-                  '<(SHARED_INTERMEDIATE_DIR)/debug-support.cc',
-                ],
-                'action': [
-                  'python',
-                  '../../tools/gen-postmortem-metadata.py',
-                  '<@(_outputs)',
-                  '<@(heapobject_files)'
-                ]
-              }
-           ]
-        },
-        {
           'target_name': 'mksnapshot',
           'type': 'executable',
           'dependencies': [
-            'v8_base',
             'v8_nosnapshot',
           ],
           'include_dirs+': [
@@ -873,8 +760,8 @@
             ['v8_compress_startup_data=="bz2"', {
               'libraries': [
                 '-lbz2',
-              ]
-            }],
+              ]}
+            ],
           ],
         },
         {
@@ -899,8 +786,7 @@
             ['v8_compress_startup_data=="bz2"', {
               'libraries': [
                 '-lbz2',
-              ]
-            }],
+              ]}],
           ],
         },
         {
@@ -914,8 +800,6 @@
             '../../include/v8stdint.h',
             '../../src/allocation.cc',
             '../../src/allocation.h',
-            '../../src/atomicops.h',
-            '../../src/atomicops_internals_x86_gcc.cc',
             '../../src/bignum.cc',
             '../../src/bignum.h',
             '../../src/bignum-dtoa.cc',
@@ -938,11 +822,10 @@
             '../../src/fixed-dtoa.cc',
             '../../src/fixed-dtoa.h',
             '../../src/globals.h',
+            '../../src/hashmap.cc',
             '../../src/hashmap.h',
             '../../src/list-inl.h',
             '../../src/list.h',
-            '../../src/once.cc',
-            '../../src/once.h',
             '../../src/preparse-data-format.h',
             '../../src/preparse-data.cc',
             '../../src/preparse-data.h',
@@ -975,7 +858,7 @@
       'targets': [
         {
           'target_name': 'v8',
-          'type': 'none',
+          'type': 'settings',
           'conditions': [
             ['want_separate_host_toolset==1', {
               'toolsets': ['host', 'target'],

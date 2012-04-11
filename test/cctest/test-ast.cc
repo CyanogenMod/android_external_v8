@@ -1,4 +1,4 @@
-// Copyright 2012 the V8 project authors. All rights reserved.
+// Copyright 2006-2008 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -40,8 +40,7 @@ TEST(List) {
   CHECK_EQ(0, list->length());
 
   ZoneScope zone_scope(Isolate::Current(), DELETE_ON_EXIT);
-  AstNodeFactory<AstNullVisitor> factory(Isolate::Current());
-  AstNode* node = factory.NewEmptyStatement();
+  AstNode* node = new(ZONE) EmptyStatement();
   list->Add(node);
   CHECK_EQ(1, list->length());
   CHECK_EQ(node, list->at(0));

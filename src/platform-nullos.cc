@@ -55,32 +55,8 @@ double modulo(double x, double y) {
 }
 
 
-double fast_sin(double x) {
-  UNIMPLEMENTED();
-  return 0;
-}
-
-
-double fast_cos(double x) {
-  UNIMPLEMENTED();
-  return 0;
-}
-
-
-double fast_tan(double x) {
-  UNIMPLEMENTED();
-  return 0;
-}
-
-
-double fast_log(double x) {
-  UNIMPLEMENTED();
-  return 0;
-}
-
-
 // Initialize OS class early in the V8 startup.
-void OS::SetUp() {
+void OS::Setup() {
   // Seed the random number generator.
   UNIMPLEMENTED();
 }
@@ -314,12 +290,6 @@ bool VirtualMemory::Commit(void* address, size_t size, bool executable) {
 
 
 bool VirtualMemory::Uncommit(void* address, size_t size) {
-  UNIMPLEMENTED();
-  return false;
-}
-
-
-bool VirtualMemory::Guard(void* address) {
   UNIMPLEMENTED();
   return false;
 }

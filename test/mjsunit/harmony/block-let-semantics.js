@@ -25,10 +25,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Flags: --harmony-scoping
-
-// TODO(ES6): properly activate extended mode
-"use strict";
+// Flags: --harmony-block-scoping
 
 // Test temporal dead zone semantics of let bound variables in
 // function and block scopes.
@@ -64,7 +61,6 @@ TestAll('let x = x + 1');
 TestAll('let x = x += 1');
 TestAll('let x = x++');
 TestAll('let x = ++x');
-TestAll('const x = x + 1');
 
 // Use before initialization in prior statement.
 TestAll('x + 1; let x;');
@@ -72,36 +68,25 @@ TestAll('x = 1; let x;');
 TestAll('x += 1; let x;');
 TestAll('++x; let x;');
 TestAll('x++; let x;');
-TestAll('let y = x; const x = 1;');
 
 TestAll('f(); let x; function f() { return x + 1; }');
 TestAll('f(); let x; function f() { x = 1; }');
 TestAll('f(); let x; function f() { x += 1; }');
 TestAll('f(); let x; function f() { ++x; }');
 TestAll('f(); let x; function f() { x++; }');
-TestAll('f(); const x = 1; function f() { return x; }');
 
 TestAll('f()(); let x; function f() { return function() { return x + 1; } }');
 TestAll('f()(); let x; function f() { return function() { x = 1; } }');
 TestAll('f()(); let x; function f() { return function() { x += 1; } }');
 TestAll('f()(); let x; function f() { return function() { ++x; } }');
 TestAll('f()(); let x; function f() { return function() { x++; } }');
-TestAll('f()(); const x = 1; function f() { return function() { return x; } }');
 
-// Use before initialization with a dynamic lookup.
+// Use in before initialization with a dynamic lookup.
 TestAll('eval("x + 1;"); let x;');
 TestAll('eval("x = 1;"); let x;');
 TestAll('eval("x += 1;"); let x;');
 TestAll('eval("++x;"); let x;');
 TestAll('eval("x++;"); let x;');
-TestAll('eval("x"); const x = 1;');
-
-// Use before initialization with check for eval-shadowed bindings.
-TestAll('function f() { eval("var y = 2;"); x + 1; }; f(); let x;');
-TestAll('function f() { eval("var y = 2;"); x = 1; }; f(); let x;');
-TestAll('function f() { eval("var y = 2;"); x += 1; }; f(); let x;');
-TestAll('function f() { eval("var y = 2;"); ++x; }; f(); let x;');
-TestAll('function f() { eval("var y = 2;"); x++; }; f(); let x;');
 
 // Test that variables introduced by function declarations are created and
 // initialized upon entering a function / block scope.
@@ -130,7 +115,7 @@ TestAll('{ function k() { return 0; } }; k(); ');
 
 // Test that a function declaration sees the scope it resides in.
 function f2() {
-  let m, n, o, p;
+  let m, n;
   {
     m = g;
     function g() {
@@ -147,44 +132,7 @@ function f2() {
     function h() {
       return b + c;
     }
-    let c = 3;
+    let b = 3;
   }
   assertEquals(5, n());
-
-  {
-    o = i;
-    function i() {
-      return d;
-    }
-    let d = 4;
-  }
-  assertEquals(4, o());
-
-  try {
-    throw 5;
-  } catch(e) {
-    p = j;
-    function j() {
-      return e + f;
-    }
-    let f = 6;
-  }
-  assertEquals(11, p());
 }
-f2();
-
-// Test that resolution of let bound variables works with scopes that call eval.
-function outer() {
-  function middle() {
-    function inner() {
-      return x;
-    }
-    eval("1 + 1");
-    return x + inner();
-  }
-
-  let x = 1;
-  return middle();
-}
-
-assertEquals(2, outer());
