@@ -20,6 +20,10 @@ V8_LOCAL_SRC_FILES += \
   src/arm/simulator-arm.cc \
   src/snapshot-empty.cc
 
+ifeq ($(HOST_ARCH),x86)
+V8_LOCAL_SRC_FILES += src/atomicops_internals_x86_gcc.cc
+endif
+
 ifeq ($(HOST_OS),linux)
 V8_LOCAL_SRC_FILES += \
   src/platform-linux.cc \

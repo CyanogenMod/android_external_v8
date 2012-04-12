@@ -26,6 +26,10 @@ V8_LOCAL_SRC_FILES += \
   src/platform-linux.cc \
   src/platform-posix.cc
 
+ifeq ($(TARGET_ARCH),x86)
+V8_LOCAL_SRC_FILES += src/atomicops_internals_x86_gcc.cc
+endif
+
 LOCAL_SRC_FILES := $(V8_LOCAL_SRC_FILES)
 
 LOCAL_JS_LIBRARY_FILES := $(addprefix $(LOCAL_PATH)/, $(V8_LOCAL_JS_LIBRARY_FILES))
