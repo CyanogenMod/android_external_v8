@@ -27,6 +27,7 @@ include $(CLEAR_VARS)
 #    can be set to true, so that two builds can be different but without
 #    specifying which JS engine to use.
 
+ifneq ($(DYNAMIC_SHARED_LIBV8SO),true)
 # Build libv8 and v8shell
 ifeq ($(TARGET_ARCH),arm)
     ifeq ($(ARCH_ARM_HAVE_ARMV7A),true)
@@ -37,4 +38,5 @@ ifeq ($(TARGET_ARCH),arm)
     endif
     include $(BASE_PATH)/Android.libv8.mk
     include $(BASE_PATH)/Android.v8shell.mk
+endif
 endif
