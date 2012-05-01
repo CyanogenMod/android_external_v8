@@ -11,8 +11,8 @@ LOCAL_MODULE := libv8
 LOCAL_MODULE_CLASS := STATIC_LIBRARIES
 intermediates := $(call local-intermediates-dir)
 
-PRIVATE_CLEAN_FILES := $(HOST_OUT)/bin/mksnapshot \
-    $(HOST_OUT)/obj/EXECUTABLES/mksnapshot_intermediates
+PRIVATE_CLEAN_FILES := $(HOST_OUT)/bin/mksnapshot.$(TARGET_ARCH) \
+    $(HOST_OUT)/obj/EXECUTABLES/mksnapshot.$(TARGET_ARCH)_intermediates
 
 # Android.v8common.mk defines common V8_LOCAL_SRC_FILES
 # and V8_LOCAL_JS_LIBRARY_FILES
@@ -65,7 +65,7 @@ LOCAL_GENERATED_SOURCES += $(V8_GENERATED_LIBRARIES)
 # Generate snapshot.cc
 ifeq ($(ENABLE_V8_SNAPSHOT),true)
 SNAP_GEN := $(intermediates)/snapshot.cc
-MKSNAPSHOT := $(HOST_OUT_EXECUTABLES)/mksnapshot
+MKSNAPSHOT := $(HOST_OUT_EXECUTABLES)/mksnapshot.$(TARGET_ARCH)
 $(SNAP_GEN): PRIVATE_CUSTOM_TOOL = $(MKSNAPSHOT) --logfile $(intermediates)/v8.log $(SNAP_GEN)
 $(SNAP_GEN): $(MKSNAPSHOT)
 	$(transform-generated-source)
