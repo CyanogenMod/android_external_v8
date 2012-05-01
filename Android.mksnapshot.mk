@@ -6,8 +6,9 @@ include $(CLEAR_VARS)
 
 # Set up the target identity
 LOCAL_IS_HOST_MODULE := true
-LOCAL_MODULE := mksnapshot
+LOCAL_MODULE := mksnapshot.$(TARGET_ARCH)
 LOCAL_MODULE_CLASS := EXECUTABLES
+LOCAL_MODULE_TAGS = optional
 intermediates := $(call local-intermediates-dir)
 
 V8_LOCAL_SRC_FILES :=
