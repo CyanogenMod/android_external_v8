@@ -23,10 +23,10 @@ ifeq ($(TARGET_ARCH),arm)
     endif
 endif
 
-# Build libv8 and v8shell
+# Build libv8 and d8
 ifneq ($(filter $(TARGET_ARCH),x86 arm),)
     ENABLE_V8_SNAPSHOT = true
     include $(BASE_PATH)/Android.mksnapshot.mk
     include $(BASE_PATH)/Android.libv8.mk
-    include $(BASE_PATH)/Android.v8shell.mk
+    include $(BASE_PATH)/Android.d8.mk
 endif
