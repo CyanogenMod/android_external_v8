@@ -1,4 +1,2 @@
-V8 3.9.24.29
-http://v8.googlecode.com/svn/branches/3.9@11646
-
-Note local edits to src/heap.cc, see http://codereview.chromium.org/10541053/
+V8 3.9.24.30
+http://v8.googlecode.com/svn/branches/3.9@11743
