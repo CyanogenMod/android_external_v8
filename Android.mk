@@ -24,6 +24,8 @@ ifeq ($(TARGET_ARCH),arm)
 endif
 
 # Build libv8 and v8shell
+ifeq ($(DYNAMIC_SHARED_LIBV8SO),true)
+else
 ifneq ($(filter $(TARGET_ARCH),x86 arm),)
     ifeq ($(ARCH_ARM_HAVE_ARMV7A),true)
     ifneq ($(ARCH_ARM_HAVE_ARMV7A_BUG),true)
@@ -33,4 +35,5 @@ ifneq ($(filter $(TARGET_ARCH),x86 arm),)
     endif
     include $(BASE_PATH)/Android.libv8.mk
     include $(BASE_PATH)/Android.v8shell.mk
+endif
 endif
