@@ -6,6 +6,10 @@ include $(CLEAR_VARS)
 
 include external/stlport/libstlport.mk
 
+ifeq ($(TARGET_ARCH),mips)
+       LOCAL_MIPS_MODE=mips
+endif
+
 # Set up the target identity
 LOCAL_MODULE := libv8
 LOCAL_MODULE_CLASS := STATIC_LIBRARIES
@@ -90,6 +94,13 @@ LOCAL_CFLAGS += \
 
 ifeq ($(TARGET_ARCH),arm)
 	LOCAL_CFLAGS += -DARM -DV8_TARGET_ARCH_ARM
+endif
+
+ifeq ($(TARGET_ARCH),mips)
+	LOCAL_CFLAGS += -DV8_TARGET_ARCH_MIPS
+	LOCAL_CFLAGS += -Umips
+	LOCAL_CFLAGS += -finline-limit=64
+	LOCAL_CFLAGS += -fno-strict-aliasing
 endif
 
 ifeq ($(TARGET_ARCH),x86)
