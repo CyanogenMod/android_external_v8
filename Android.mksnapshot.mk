@@ -18,8 +18,11 @@ include $(LOCAL_PATH)/Android.v8common.mk
 
 V8_LOCAL_SRC_FILES += \
   src/mksnapshot.cc \
-  src/arm/simulator-arm.cc \
   src/snapshot-empty.cc
+
+ifeq ($(TARGET_ARCH),arm)
+V8_LOCAL_SRC_FILES += src/arm/simulator-arm.cc
+endif
 
 ifeq ($(HOST_ARCH),x86)
 V8_LOCAL_SRC_FILES += src/atomicops_internals_x86_gcc.cc
