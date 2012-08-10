@@ -122,6 +122,28 @@ ifeq ($(TARGET_ARCH),arm)
 		src/arm/stub-cache-arm.cc
 endif
 
+ifeq ($(TARGET_ARCH),mips)
+  V8_LOCAL_SRC_FILES += \
+		src/mips/assembler-mips.cc \
+		src/mips/builtins-mips.cc \
+		src/mips/codegen-mips.cc \
+		src/mips/code-stubs-mips.cc \
+		src/mips/constants-mips.cc \
+		src/mips/cpu-mips.cc \
+		src/mips/debug-mips.cc \
+		src/mips/deoptimizer-mips.cc \
+		src/mips/disasm-mips.cc \
+		src/mips/frames-mips.cc \
+		src/mips/full-codegen-mips.cc \
+		src/mips/ic-mips.cc \
+		src/mips/lithium-mips.cc \
+		src/mips/lithium-codegen-mips.cc \
+		src/mips/lithium-gap-resolver-mips.cc \
+		src/mips/macro-assembler-mips.cc \
+		src/mips/regexp-macro-assembler-mips.cc \
+		src/mips/stub-cache-mips.cc
+endif
+
 ifeq ($(TARGET_ARCH),x86)
   V8_LOCAL_SRC_FILES += \
 		src/ia32/assembler-ia32.cc \
