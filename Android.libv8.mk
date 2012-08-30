@@ -104,7 +104,7 @@ ifeq ($(TARGET_ARCH),mips)
 endif
 
 ifeq ($(TARGET_ARCH),x86)
-	LOCAL_CFLAGS += -DV8_TARGET_ARCH_IA32
+	LOCAL_CFLAGS += -DV8_TARGET_ARCH_IA32 -fno-pic
 endif
 
 ifeq ($(DEBUG_V8),true)
