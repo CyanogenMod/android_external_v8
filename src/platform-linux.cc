@@ -938,32 +938,32 @@ Semaphore* OS::CreateSemaphore(int count) {
 }
 
 
-#if defined(__ANDROID__) && !defined(__BIONIC_HAVE_UCONTEXT_T)
+#if !defined(__GLIBC__) && (defined(__arm__) || defined(__thumb__))
+// Android runs a fairly new Linux kernel, so signal info is there,
+// but the C library doesn't have the structs defined.
 
-// Not all versions of the Android C library headers provide ucontext_t.
-// Provide custom but compatible declarations if this is the case here.
-
-// Follow the modern ARM GLibc convention of defining mcontext_t as a typedef
-// for 'struct sigcontext'. This means that register values are accessed
-// by individual fields like arm_r0, arm_r1, arm_pc, instead of a gregs[]
-// array.
-#if !defined(__BIONIC_HAVE_STRUCT_SIGCONTEXT)
-#include <asm/sigcontext.h>
-#endif
-
-typedef uint32_t kernel_sigset_t[2];  // ARM kernel uses 64-bit signal masks
+struct sigcontext {
+  uint32_t trap_no;
+  uint32_t error_code;
+  uint32_t oldmask;
+  uint32_t gregs[16];
+  uint32_t arm_cpsr;
+  uint32_t fault_address;
+};
+typedef uint32_t __sigset_t;
 typedef struct sigcontext mcontext_t;
 typedef struct ucontext {
   uint32_t uc_flags;
   struct ucontext* uc_link;
   stack_t uc_stack;
   mcontext_t uc_mcontext;
-  kernel_sigset_t uc_sigmask;
+  __sigset_t uc_sigmask;
 } ucontext_t;
+enum ArmRegisters {R15 = 15, R13 = 13, R11 = 11};
 
 #elif !defined(__GLIBC__) && defined(__mips__)
-// MIPS version of mcontext_t for Android bionic.
-typedef struct {
+// MIPS version of sigcontext, for Android bionic.
+struct sigcontext {
   uint32_t regmask;
   uint32_t status;
   uint64_t pc;
@@ -982,43 +982,44 @@ typedef struct {
   uint32_t lo2;
   uint32_t hi3;
   uint32_t lo3;
-} mcontext_t;
-typedef uint32_t kernel_sigset_t[4];  // Mips kernel uses 128-bit signal masks.
+};
+typedef uint32_t __sigset_t;
+typedef struct sigcontext mcontext_t;
 typedef struct ucontext {
   uint32_t uc_flags;
   struct ucontext* uc_link;
   stack_t uc_stack;
   mcontext_t uc_mcontext;
-  kernel_sigset_t uc_sigmask;
+  __sigset_t uc_sigmask;
 } ucontext_t;
 
 #elif !defined(__GLIBC__) && defined(__i386__)
 // x86 version for Android.
-typedef struct {
+struct sigcontext {
   uint32_t gregs[19];
   void* fpregs;
   uint32_t oldmask;
   uint32_t cr2;
-} mcontext_t;
+};
 
-typedef uint32_t kernel_sigset_t[2];  // i386 kernel uses 64-bit signal masks
+typedef uint32_t __sigset_t;
+typedef struct sigcontext mcontext_t;
 typedef struct ucontext {
   uint32_t uc_flags;
   struct ucontext* uc_link;
   stack_t uc_stack;
   mcontext_t uc_mcontext;
-  kernel_sigset_t uc_sigmask;
+  __sigset_t uc_sigmask;
 } ucontext_t;
 enum { REG_EBP = 6, REG_ESP = 7, REG_EIP = 14 };
 #endif
 
 
 static int GetThreadID() {
-#if defined(__ANDROID__)
-  // Android's C library provides gettid(2).
-  return gettid();
-#else
   // Glibc doesn't provide a wrapper for gettid(2).
+#if defined(ANDROID)
+  return syscall(__NR_gettid);
+#else
   return syscall(SYS_gettid);
 #endif
 }
@@ -1058,18 +1059,15 @@ static void ProfilerSignalHandler(int signal, siginfo_t* info, void* context) {
   sample->fp = reinterpret_cast<Address>(mcontext.gregs[REG_RBP]);
 #elif V8_HOST_ARCH_ARM
 // An undefined macro evaluates to 0, so this applies to Android's Bionic also.
-#if defined(__GLIBC__) && !defined(__UCLIBC__) && \
-    (__GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ <= 3))
-  // Obsolete ARM GLibc convention to access register values.
+#if (__GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ <= 3))
   sample->pc = reinterpret_cast<Address>(mcontext.gregs[R15]);
   sample->sp = reinterpret_cast<Address>(mcontext.gregs[R13]);
   sample->fp = reinterpret_cast<Address>(mcontext.gregs[R11]);
 #else
-  // Modern ARM GLibc convention. Also followed by UCLibc and Android.
   sample->pc = reinterpret_cast<Address>(mcontext.arm_pc);
   sample->sp = reinterpret_cast<Address>(mcontext.arm_sp);
   sample->fp = reinterpret_cast<Address>(mcontext.arm_fp);
-#endif  // .... (__GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ <= 3))
+#endif  // (__GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ <= 3))
 #elif V8_HOST_ARCH_MIPS
   sample->pc = reinterpret_cast<Address>(mcontext.pc);
   sample->sp = reinterpret_cast<Address>(mcontext.gregs[29]);
