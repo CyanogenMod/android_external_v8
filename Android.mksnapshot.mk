@@ -6,8 +6,9 @@ include $(CLEAR_VARS)
 
 # Set up the target identity
 LOCAL_IS_HOST_MODULE := true
-LOCAL_MODULE := mksnapshot
+LOCAL_MODULE := mksnapshot.$(TARGET_ARCH)
 LOCAL_MODULE_CLASS := EXECUTABLES
+LOCAL_MODULE_TAGS = optional
 intermediates := $(call local-intermediates-dir)
 
 V8_LOCAL_SRC_FILES :=
@@ -17,8 +18,16 @@ include $(LOCAL_PATH)/Android.v8common.mk
 
 V8_LOCAL_SRC_FILES += \
   src/mksnapshot.cc \
-  src/arm/simulator-arm.cc \
   src/snapshot-empty.cc
+
+ifeq ($(TARGET_ARCH),arm)
+V8_LOCAL_SRC_FILES += src/arm/simulator-arm.cc
+endif
+
+ifeq ($(TARGET_ARCH),mips)
+V8_LOCAL_SRC_FILES += src/mips/simulator-mips.cc
+
+endif
 
 ifeq ($(HOST_ARCH),x86)
 V8_LOCAL_SRC_FILES += src/atomicops_internals_x86_gcc.cc
@@ -84,6 +93,14 @@ ifeq ($(TARGET_CPU_ABI),armeabi-v7a)
     ifeq ($(ARCH_ARM_HAVE_VFP),true)
         LOCAL_CFLAGS += -DCAN_USE_VFP_INSTRUCTIONS -DCAN_USE_ARMV7_INSTRUCTIONS
     endif
+endif
+
+ifeq ($(TARGET_ARCH),mips)
+  LOCAL_CFLAGS += -DV8_TARGET_ARCH_MIPS
+  LOCAL_CFLAGS += -DCAN_USE_FPU_INSTRUCTIONS
+  LOCAL_CFLAGS += -Umips
+  LOCAL_CFLAGS += -finline-limit=64
+  LOCAL_CFLAGS += -fno-strict-aliasing
 endif
 
 ifeq ($(TARGET_ARCH),x86)

@@ -4,8 +4,11 @@ include $(CLEAR_VARS)
 LOCAL_SHARED_LIBRARIES := libstlport
 include external/stlport/libstlport.mk
 
-LOCAL_SRC_FILES:= samples/shell.cc
-LOCAL_MODULE := v8shell
+LOCAL_SRC_FILES := \
+    src/d8.cc \
+    src/d8-posix.cc
+
+LOCAL_MODULE := d8
 
 LOCAL_CPP_EXTENSION := .cc
 
