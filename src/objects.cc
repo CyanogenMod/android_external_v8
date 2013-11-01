@@ -10102,6 +10102,13 @@ bool JSObject::HasRealElementProperty(uint32_t index) {
     }
   }
 
+  if (IsJSGlobalProxy()) {
+    Object* proto = GetPrototype();
+    if (proto->IsNull()) return false;
+    ASSERT(proto->IsJSGlobalObject());
+    return JSObject::cast(proto)->HasRealElementProperty(index);
+  }
+
   // Handle [] on String objects.
   if (this->IsStringObjectWithCharacterAt(index)) return true;
 
