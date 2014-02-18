@@ -17,6 +17,8 @@
 
 BASE_PATH := $(call my-dir)
 
+V8_SUPPORTED_ARCH := arm mips x86
+
 ifeq ($(TARGET_ARCH),arm)
     ifneq ($(strip $(ARCH_ARM_HAVE_ARMV7A)),true)
         $(warning WARNING: Building on ARM with non-ARMv7 variant. On ARM, V8 is well tested only on ARMv7.)
@@ -24,9 +26,15 @@ ifeq ($(TARGET_ARCH),arm)
 endif
 
 # Build libv8 and d8
-ifneq ($(filter $(TARGET_ARCH),x86 arm mips),)
-    ENABLE_V8_SNAPSHOT = true
-    include $(BASE_PATH)/Android.mksnapshot.mk
-    include $(BASE_PATH)/Android.libv8.mk
-    include $(BASE_PATH)/Android.d8.mk
+
+ENABLE_V8_SNAPSHOT = true
+mksnapshot_arch := $(TARGET_ARCH)
+include $(BASE_PATH)/Android.mksnapshot.mk
+
+ifdef TARGET_2ND_ARCH
+mksnapshot_arch := $(TARGET_2ND_ARCH)
+include $(BASE_PATH)/Android.mksnapshot.mk
 endif
+
+include $(BASE_PATH)/Android.libv8.mk
+include $(BASE_PATH)/Android.d8.mk
