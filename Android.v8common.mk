@@ -1,6 +1,6 @@
 LOCAL_CPP_EXTENSION := .cc
 
-V8_LOCAL_SRC_FILES := \
+LOCAL_SRC_FILES := \
 	src/accessors.cc \
 	src/allocation.cc \
 	src/api.cc \
@@ -100,8 +100,7 @@ V8_LOCAL_SRC_FILES := \
 	src/version.cc \
 	src/zone.cc
 
-ifeq ($(TARGET_ARCH),arm)
-  V8_LOCAL_SRC_FILES += \
+LOCAL_SRC_FILES_arm += \
 		src/arm/assembler-arm.cc \
 		src/arm/builtins-arm.cc \
 		src/arm/codegen-arm.cc \
@@ -120,10 +119,8 @@ ifeq ($(TARGET_ARCH),arm)
 		src/arm/macro-assembler-arm.cc \
 		src/arm/regexp-macro-assembler-arm.cc \
 		src/arm/stub-cache-arm.cc
-endif
 
-ifeq ($(TARGET_ARCH),mips)
-  V8_LOCAL_SRC_FILES += \
+LOCAL_SRC_FILES_mips += \
 		src/mips/assembler-mips.cc \
 		src/mips/builtins-mips.cc \
 		src/mips/codegen-mips.cc \
@@ -142,10 +139,8 @@ ifeq ($(TARGET_ARCH),mips)
 		src/mips/macro-assembler-mips.cc \
 		src/mips/regexp-macro-assembler-mips.cc \
 		src/mips/stub-cache-mips.cc
-endif
 
-ifeq ($(TARGET_ARCH),x86)
-  V8_LOCAL_SRC_FILES += \
+LOCAL_SRC_FILES_x86 += \
 		src/ia32/assembler-ia32.cc \
 		src/ia32/builtins-ia32.cc \
 		src/ia32/codegen-ia32.cc \
@@ -163,11 +158,10 @@ ifeq ($(TARGET_ARCH),x86)
 		src/ia32/macro-assembler-ia32.cc \
 		src/ia32/regexp-macro-assembler-ia32.cc \
 		src/ia32/stub-cache-ia32.cc
-endif
 
 # Enable DEBUG option.
 ifeq ($(DEBUG_V8),true)
-  V8_LOCAL_SRC_FILES += \
+  LOCAL_SRC_FILES += \
 		src/objects-debug.cc \
 		src/prettyprinter.cc \
 		src/regexp-macro-assembler-tracer.cc
@@ -202,4 +196,3 @@ V8_LOCAL_JS_LIBRARY_FILES += \
 V8_LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES := \
 	src/collection.js \
 	src/proxy.js
-
