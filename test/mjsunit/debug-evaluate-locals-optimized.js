@@ -25,7 +25,9 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Flags: --expose-debug-as debug --expose-gc --allow-natives-syntax --inline-construct
+// Flags: --expose-debug-as debug --expose-gc --allow-natives-syntax
+// Flags: --inline-construct
+
 // Get the Debug object exposed from the debug context global object.
 Debug = debug.Debug
 
@@ -35,11 +37,16 @@ var exception = false;
 var testingConstructCall = false;
 
 var expected = [
-  { locals: {a0: 1, b0: 2}, args: { names: ["i", "x0", "y0"], values: [0, 3, 4] } },
-  { locals: {a1: 3, b1: 4}, args: { names: ["i", "x1", "y1"], values: [1, 5, 6] } },
-  { locals: {a2: 5, b2: 6}, args: { names: ["i"], values: [2] } },
-  { locals: {a3: 7, b3: 8}, args: { names: ["i", "x3", "y3", "z3"], values: [3, 9, 10, undefined] } },
-  { locals: {a4: 9, b4: 10}, args: { names: ["i", "x4", "y4"], values: [4, 11, 12] } }
+  { locals: {a0: 1, b0: 2},
+    args: { names: ["i", "x0", "y0"], values: [0, 3, 4] } },
+  { locals: {a1: 3, b1: 4},
+    args: { names: ["i", "x1", "y1"], values: [1, 5, 6] } },
+  { locals: {a2: 5, b2: 6},
+    args: { names: ["i"], values: [2] } },
+  { locals: {a3: 7, b3: 8},
+    args: { names: ["i", "x3", "y3", "z3"], values: [3, 9, 10, undefined] } },
+  { locals: {a4: 9, b4: 10},
+    args: { names: ["i", "x4", "y4"], values: [4, 11, 12] } }
 ];
 
 function arraySum(arr) {
@@ -68,7 +75,8 @@ function listener(event, exec_state, event_data, data) {
           // All frames except the bottom one have expected arguments.
           for (var j = 0; j < expected_args.names.length; j++) {
             assertEquals(expected_args.names[j], frame.argumentName(j));
-            assertEquals(expected_args.values[j], frame.argumentValue(j).value());
+            assertEquals(expected_args.values[j],
+                         frame.argumentValue(j).value());
           }
 
           // All frames except the bottom one have two scopes.
@@ -77,13 +85,15 @@ function listener(event, exec_state, event_data, data) {
           assertEquals(debug.ScopeType.Global, frame.scope(1).scopeType());
 
           Object.keys(expected_locals).forEach(function (name) {
-            assertEquals(expected_locals[name], frame.scope(0).scopeObject().value()[name]);
+            assertEquals(expected_locals[name],
+                         frame.scope(0).scopeObject().value()[name]);
           });
 
           for (var j = 0; j < expected_args.names.length; j++) {
             var arg_name = expected_args.names[j];
             var arg_value = expected_args.values[j];
-            assertEquals(arg_value, frame.scope(0).scopeObject().value()[arg_name]);
+            assertEquals(arg_value,
+                         frame.scope(0).scopeObject().value()[arg_name]);
           }
 
           // Evaluate in the inlined frame.
@@ -104,7 +114,8 @@ function listener(event, exec_state, event_data, data) {
                        map(function (k) { return expected_locals[k]; }));
 
           assertEquals(expected_locals_sum + expected_args_sum,
-                       frame.evaluate(Object.keys(expected_locals).join('+') + ' + ' +
+                       frame.evaluate(Object.keys(expected_locals).join('+') +
+                                      ' + ' +
                                       expected_args.names.join('+')).value());
 
           var arguments_sum = expected_args.names.map(function(_, idx) {
@@ -138,20 +149,9 @@ function listener(event, exec_state, event_data, data) {
           assertFalse(frame.isConstructCall());
         }
 
-        // When function f is optimized (1 means YES, see runtime.cc) we
-        // expect an optimized frame for f with g1, g2 and g3 inlined.
-        if (%GetOptimizationStatus(f) == 1) {
-          if (i == 1 || i == 2 || i == 3) {
-            assertTrue(frame.isOptimizedFrame());
-            assertTrue(frame.isInlinedFrame());
-            assertEquals(4 - i, frame.inlinedFrameIndex());
-          } else if (i == 4) {
-            assertTrue(frame.isOptimizedFrame());
-            assertFalse(frame.isInlinedFrame());
-          } else {
-            assertFalse(frame.isOptimizedFrame());
-            assertFalse(frame.isInlinedFrame());
-          }
+        if (i > 4) {
+          assertFalse(frame.isOptimizedFrame());
+          assertFalse(frame.isInlinedFrame());
         }
       }
 
@@ -174,30 +174,35 @@ function h(i, x0, y0) {
   var a0 = expected[i].locals.a0;
   var b0 = expected[i].locals.b0;
   debugger;  // Breakpoint.
+  return a0 + b0;
 }
 
 function g3(i, x1, y1) {
   var a1 = expected[i].locals.a1;
   var b1 = expected[i].locals.b1;
   h(i - 1, a1, b1);
+  return a1 + b1;
 }
 
 function g2(i) {
   var a2 = expected[i].locals.a2;
   var b2 = expected[i].locals.b2;
   g3(i - 1, a2, b2);
+  return a2 + b2;
 }
 
 function g1(i, x3, y3, z3) {
   var a3 = expected[i].locals.a3;
   var b3 = expected[i].locals.b3;
   new g2(i - 1, a3, b3);
+  return a3 + b3;
 }
 
 function f(i, x4, y4) {
   var a4 = expected[i].locals.a4;
   var b4 = expected[i].locals.b4;
   g1(i - 1, a4, b4);
+  return a4 + b4;
 }
 
 // Test calling f normally and as a constructor.

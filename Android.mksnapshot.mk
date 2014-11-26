@@ -9,11 +9,11 @@ include $(CLEAR_VARS)
 
 # Set up the target identity
 LOCAL_IS_HOST_MODULE := true
-LOCAL_MODULE := mksnapshot.$(mksnapshot_arch)
+LOCAL_MODULE := v8_mksnapshot.$(mksnapshot_arch)
 LOCAL_MODULE_CLASS := EXECUTABLES
 LOCAL_MODULE_TAGS = optional
+LOCAL_MULTILIB := $(mksnapshot_multilib)
 generated_sources := $(call local-generated-sources-dir)
-
 
 V8_LOCAL_JS_LIBRARY_FILES :=
 V8_LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES :=
@@ -23,24 +23,19 @@ LOCAL_SRC_FILES += \
   src/mksnapshot.cc \
   src/snapshot-empty.cc
 
-LOCAL_SRC_FILES_arm += src/arm/simulator-arm.cc
-
-LOCAL_SRC_FILES_mips += src/mips/simulator-mips.cc
-
-
-ifeq ($(HOST_ARCH),x86)
-LOCAL_SRC_FILES += src/atomicops_internals_x86_gcc.cc
+ifneq (,$(filter $(HOST_ARCH),x86 x86_64))
+LOCAL_SRC_FILES += src/base/atomicops_internals_x86_gcc.cc
 endif
 
 ifeq ($(HOST_OS),linux)
 LOCAL_SRC_FILES += \
-  src/platform-linux.cc \
-  src/platform-posix.cc
+  src/base/platform/platform-linux.cc \
+  src/base/platform/platform-posix.cc
 endif
 ifeq ($(HOST_OS),darwin)
 LOCAL_SRC_FILES += \
-  src/platform-macos.cc \
-  src/platform-posix.cc
+  src/base/platform/platform-macos.cc \
+  src/base/platform/platform-posix.cc
 endif
 
 LOCAL_JS_LIBRARY_FILES := $(addprefix $(LOCAL_PATH)/, $(V8_LOCAL_JS_LIBRARY_FILES))
@@ -59,7 +54,7 @@ $(GEN3): SCRIPT := $(generated_sources)/js2c.py
 $(GEN3): $(LOCAL_JS_LIBRARY_FILES) $(JS2C_PY)
 	@echo "Generating libraries.cc"
 	@mkdir -p $(dir $@)
-	python $(SCRIPT) $(GEN3) CORE off $(LOCAL_JS_LIBRARY_FILES)
+	python $(SCRIPT) $@ CORE off $(LOCAL_JS_LIBRARY_FILES)
 LOCAL_GENERATED_SOURCES := $(generated_sources)/libraries.cc
 
 # Generate experimental-libraries.cc
@@ -68,7 +63,7 @@ $(GEN4): SCRIPT := $(generated_sources)/js2c.py
 $(GEN4): $(LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES) $(JS2C_PY)
 	@echo "Generating experimental-libraries.cc"
 	@mkdir -p $(dir $@)
-	python $(SCRIPT) $(GEN4) EXPERIMENTAL off $(LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES)
+	python $(SCRIPT) $@ EXPERIMENTAL off $(LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES)
 LOCAL_GENERATED_SOURCES += $(generated_sources)/experimental-libraries.cc
 
 LOCAL_CFLAGS := \
@@ -81,21 +76,30 @@ LOCAL_CFLAGS := \
 	-DENABLE_LOGGING_AND_PROFILING \
 	-DENABLE_VMSTATE_TRACKING \
 	-DV8_NATIVE_REGEXP \
-	-Wno-unused-parameter
+	-DV8_LIBRT_NOT_AVAILABLE \
+	-Wno-unused-parameter \
+	-std=gnu++0x
 
-LOCAL_CFLAGS_arm += -DV8_TARGET_ARCH_ARM
+LOCAL_CFLAGS_v8_target_arm += -DV8_TARGET_ARCH_ARM
+LOCAL_CFLAGS_v8_target_arm64 += -DV8_TARGET_ARCH_ARM64
 
 ifeq ($(ARCH_ARM_HAVE_VFP),true)
-    LOCAL_CFLAGS_arm += -DCAN_USE_VFP_INSTRUCTIONS -DCAN_USE_ARMV7_INSTRUCTIONS
+    LOCAL_CFLAGS_v8_target_arm += -DCAN_USE_VFP_INSTRUCTIONS -DCAN_USE_ARMV7_INSTRUCTIONS
 endif
 
-LOCAL_CFLAGS_mips += -DV8_TARGET_ARCH_MIPS
-LOCAL_CFLAGS_mips += -DCAN_USE_FPU_INSTRUCTIONS
-LOCAL_CFLAGS_mips += -Umips
-LOCAL_CFLAGS_mips += -finline-limit=64
-LOCAL_CFLAGS_mips += -fno-strict-aliasing
+LOCAL_CFLAGS_v8_target_mips += -DV8_TARGET_ARCH_MIPS \
+	-DCAN_USE_FPU_INSTRUCTIONS \
+	-Umips \
+	-finline-limit=64 \
+	-fno-strict-aliasing
 
-LOCAL_CFLAGS_x86 += -DV8_TARGET_ARCH_IA32
+LOCAL_CLFAGS_v8_target_mips64 += -DV8_TARGET_ARCH_MIPS64 \
+	-Umips \
+	-finline-limit=64 \
+	-fno-strict-aliasing
+
+LOCAL_CFLAGS_v8_target_x86 += -DV8_TARGET_ARCH_IA32
+LOCAL_CFLAGS_v8_target_x86_64 += -DV8_TARGET_ARCH_X64
 
 ifeq ($(DEBUG_V8),true)
 	LOCAL_CFLAGS += -DDEBUG -UNDEBUG
@@ -103,13 +107,18 @@ endif
 
 # LOCAL_SRC_FILES_arch only applies to target modules, but we want them
 # for a host module, so append them manually
-LOCAL_SRC_FILES += $(LOCAL_SRC_FILES_$(mksnapshot_arch))
-LOCAL_CFLAGS += $(LOCAL_CFLAGS_$(mksnapshot_arch))
+LOCAL_SRC_FILES += $(v8_local_src_files_$(mksnapshot_arch))
+LOCAL_CFLAGS += $(LOCAL_CFLAGS_v8_target_$(mksnapshot_arch))
 
-LOCAL_C_INCLUDES := $(LOCAL_PATH)/src
+LOCAL_C_INCLUDES := \
+	$(LOCAL_PATH)/src \
+	external/icu/icu4c/source/common \
+	external/icu/icu4c/source/i18n
 
 # This is on host.
 LOCAL_LDLIBS := -lpthread
+
+LOCAL_SHARED_LIBRARIES := libicuuc-host libicui18n-host
 
 LOCAL_STATIC_LIBRARIES := liblog
 

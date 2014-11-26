@@ -1,36 +1,14 @@
 // Copyright 2012 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef V8_HASHMAP_H_
 #define V8_HASHMAP_H_
 
-#include "allocation.h"
-#include "checks.h"
-#include "utils.h"
+#include "src/allocation.h"
+#include "src/base/bits.h"
+#include "src/base/logging.h"
+#include "src/utils.h"
 
 namespace v8 {
 namespace internal {
@@ -40,9 +18,16 @@ class TemplateHashMapImpl {
  public:
   typedef bool (*MatchFun) (void* key1, void* key2);
 
+  // The default capacity.  This is used by the call sites which want
+  // to pass in a non-default AllocationPolicy but want to use the
+  // default value of capacity specified by the implementation.
+  static const uint32_t kDefaultHashMapCapacity = 8;
+
   // initial_capacity is the size of the initial hash map;
   // it must be a power of 2 (and thus must not be 0).
-  TemplateHashMapImpl(MatchFun match, uint32_t initial_capacity = 8);
+  TemplateHashMapImpl(MatchFun match,
+                      uint32_t capacity = kDefaultHashMapCapacity,
+                      AllocationPolicy allocator = AllocationPolicy());
 
   ~TemplateHashMapImpl();
 
@@ -52,7 +37,8 @@ class TemplateHashMapImpl {
   struct Entry {
     void* key;
     void* value;
-    uint32_t hash;  // the full hash value for key
+    uint32_t hash;  // The full hash value for key
+    int order;  // If you never remove entries this is the insertion order.
   };
 
   // If an entry with matching key is found, Lookup()
@@ -60,10 +46,13 @@ class TemplateHashMapImpl {
   // but insert is set, a new entry is inserted with
   // corresponding key, key hash, and NULL value.
   // Otherwise, NULL is returned.
-  Entry* Lookup(void* key, uint32_t hash, bool insert);
+  Entry* Lookup(void* key, uint32_t hash, bool insert,
+                AllocationPolicy allocator = AllocationPolicy());
 
   // Removes the entry with matching key.
-  void Remove(void* key, uint32_t hash);
+  // It returns the value of the deleted entry
+  // or null if there is no value for such key.
+  void* Remove(void* key, uint32_t hash);
 
   // Empties the hash map (occupancy() == 0).
   void Clear();
@@ -87,6 +76,11 @@ class TemplateHashMapImpl {
   Entry* Start() const;
   Entry* Next(Entry* p) const;
 
+  // Some match functions defined for convenience.
+  static bool PointersMatch(void* key1, void* key2) {
+    return key1 == key2;
+  }
+
  private:
   MatchFun match_;
   Entry* map_;
@@ -95,29 +89,30 @@ class TemplateHashMapImpl {
 
   Entry* map_end() const { return map_ + capacity_; }
   Entry* Probe(void* key, uint32_t hash);
-  void Initialize(uint32_t capacity);
-  void Resize();
+  void Initialize(uint32_t capacity, AllocationPolicy allocator);
+  void Resize(AllocationPolicy allocator);
 };
 
 typedef TemplateHashMapImpl<FreeStoreAllocationPolicy> HashMap;
 
-template<class P>
-TemplateHashMapImpl<P>::TemplateHashMapImpl(MatchFun match,
-                    uint32_t initial_capacity) {
+template<class AllocationPolicy>
+TemplateHashMapImpl<AllocationPolicy>::TemplateHashMapImpl(
+    MatchFun match, uint32_t initial_capacity, AllocationPolicy allocator) {
   match_ = match;
-  Initialize(initial_capacity);
+  Initialize(initial_capacity, allocator);
 }
 
 
-template<class P>
-TemplateHashMapImpl<P>::~TemplateHashMapImpl() {
-  P::Delete(map_);
+template<class AllocationPolicy>
+TemplateHashMapImpl<AllocationPolicy>::~TemplateHashMapImpl() {
+  AllocationPolicy::Delete(map_);
 }
 
 
-template<class P>
-typename TemplateHashMapImpl<P>::Entry* TemplateHashMapImpl<P>::Lookup(
-    void* key, uint32_t hash, bool insert) {
+template<class AllocationPolicy>
+typename TemplateHashMapImpl<AllocationPolicy>::Entry*
+TemplateHashMapImpl<AllocationPolicy>::Lookup(
+    void* key, uint32_t hash, bool insert, AllocationPolicy allocator) {
   // Find a matching entry.
   Entry* p = Probe(key, hash);
   if (p->key != NULL) {
@@ -129,11 +124,12 @@ typename TemplateHashMapImpl<P>::Entry* TemplateHashMapImpl<P>::Lookup(
     p->key = key;
     p->value = NULL;
     p->hash = hash;
+    p->order = occupancy_;
     occupancy_++;
 
     // Grow the map if we reached >= 80% occupancy.
     if (occupancy_ + occupancy_/4 >= capacity_) {
-      Resize();
+      Resize(allocator);
       p = Probe(key, hash);
     }
 
@@ -145,15 +141,16 @@ typename TemplateHashMapImpl<P>::Entry* TemplateHashMapImpl<P>::Lookup(
 }
 
 
-template<class P>
-void TemplateHashMapImpl<P>::Remove(void* key, uint32_t hash) {
+template<class AllocationPolicy>
+void* TemplateHashMapImpl<AllocationPolicy>::Remove(void* key, uint32_t hash) {
   // Lookup the entry for the key to remove.
   Entry* p = Probe(key, hash);
   if (p->key == NULL) {
     // Key not found nothing to remove.
-    return;
+    return NULL;
   }
 
+  void* value = p->value;
   // To remove an entry we need to ensure that it does not create an empty
   // entry that will cause the search for another entry to stop too soon. If all
   // the entries between the entry to remove and the next empty slot have their
@@ -168,7 +165,7 @@ void TemplateHashMapImpl<P>::Remove(void* key, uint32_t hash) {
 
   // This guarantees loop termination as there is at least one empty entry so
   // eventually the removed entry will have an empty entry after it.
-  ASSERT(occupancy_ < capacity_);
+  DCHECK(occupancy_ < capacity_);
 
   // p is the candidate entry to clear. q is used to scan forwards.
   Entry* q = p;  // Start at the entry to remove.
@@ -202,11 +199,12 @@ void TemplateHashMapImpl<P>::Remove(void* key, uint32_t hash) {
   // Clear the entry which is allowed to en emptied.
   p->key = NULL;
   occupancy_--;
+  return value;
 }
 
 
-template<class P>
-void TemplateHashMapImpl<P>::Clear() {
+template<class AllocationPolicy>
+void TemplateHashMapImpl<AllocationPolicy>::Clear() {
   // Mark all entries as empty.
   const Entry* end = map_end();
   for (Entry* p = map_; p < end; p++) {
@@ -216,17 +214,18 @@ void TemplateHashMapImpl<P>::Clear() {
 }
 
 
-template<class P>
-typename TemplateHashMapImpl<P>::Entry* TemplateHashMapImpl<P>::Start() const {
+template<class AllocationPolicy>
+typename TemplateHashMapImpl<AllocationPolicy>::Entry*
+    TemplateHashMapImpl<AllocationPolicy>::Start() const {
   return Next(map_ - 1);
 }
 
 
-template<class P>
-typename TemplateHashMapImpl<P>::Entry* TemplateHashMapImpl<P>::Next(Entry* p)
-    const {
+template<class AllocationPolicy>
+typename TemplateHashMapImpl<AllocationPolicy>::Entry*
+    TemplateHashMapImpl<AllocationPolicy>::Next(Entry* p) const {
   const Entry* end = map_end();
-  ASSERT(map_ - 1 <= p && p < end);
+  DCHECK(map_ - 1 <= p && p < end);
   for (p++; p < end; p++) {
     if (p->key != NULL) {
       return p;
@@ -236,17 +235,17 @@ typename TemplateHashMapImpl<P>::Entry* TemplateHashMapImpl<P>::Next(Entry* p)
 }
 
 
-template<class P>
-typename TemplateHashMapImpl<P>::Entry* TemplateHashMapImpl<P>::Probe(void* key,
-                                                            uint32_t hash) {
-  ASSERT(key != NULL);
+template<class AllocationPolicy>
+typename TemplateHashMapImpl<AllocationPolicy>::Entry*
+    TemplateHashMapImpl<AllocationPolicy>::Probe(void* key, uint32_t hash) {
+  DCHECK(key != NULL);
 
-  ASSERT(IsPowerOf2(capacity_));
+  DCHECK(base::bits::IsPowerOfTwo32(capacity_));
   Entry* p = map_ + (hash & (capacity_ - 1));
   const Entry* end = map_end();
-  ASSERT(map_ <= p && p < end);
+  DCHECK(map_ <= p && p < end);
 
-  ASSERT(occupancy_ < capacity_);  // Guarantees loop termination.
+  DCHECK(occupancy_ < capacity_);  // Guarantees loop termination.
   while (p->key != NULL && (hash != p->hash || !match_(key, p->key))) {
     p++;
     if (p >= end) {
@@ -258,10 +257,11 @@ typename TemplateHashMapImpl<P>::Entry* TemplateHashMapImpl<P>::Probe(void* key,
 }
 
 
-template<class P>
-void TemplateHashMapImpl<P>::Initialize(uint32_t capacity) {
-  ASSERT(IsPowerOf2(capacity));
-  map_ = reinterpret_cast<Entry*>(P::New(capacity * sizeof(Entry)));
+template<class AllocationPolicy>
+void TemplateHashMapImpl<AllocationPolicy>::Initialize(
+    uint32_t capacity, AllocationPolicy allocator) {
+  DCHECK(base::bits::IsPowerOfTwo32(capacity));
+  map_ = reinterpret_cast<Entry*>(allocator.New(capacity * sizeof(Entry)));
   if (map_ == NULL) {
     v8::internal::FatalProcessOutOfMemory("HashMap::Initialize");
     return;
@@ -271,24 +271,26 @@ void TemplateHashMapImpl<P>::Initialize(uint32_t capacity) {
 }
 
 
-template<class P>
-void TemplateHashMapImpl<P>::Resize() {
+template<class AllocationPolicy>
+void TemplateHashMapImpl<AllocationPolicy>::Resize(AllocationPolicy allocator) {
   Entry* map = map_;
   uint32_t n = occupancy_;
 
   // Allocate larger map.
-  Initialize(capacity_ * 2);
+  Initialize(capacity_ * 2, allocator);
 
   // Rehash all current entries.
   for (Entry* p = map; n > 0; p++) {
     if (p->key != NULL) {
-      Lookup(p->key, p->hash, true)->value = p->value;
+      Entry* entry = Lookup(p->key, p->hash, true, allocator);
+      entry->value = p->value;
+      entry->order = p->order;
       n--;
     }
   }
 
   // Delete old map.
-  P::Delete(map);
+  AllocationPolicy::Delete(map);
 }
 
 
@@ -325,13 +327,18 @@ class TemplateHashMap: private TemplateHashMapImpl<AllocationPolicy> {
   };
 
   TemplateHashMap(
-      typename TemplateHashMapImpl<AllocationPolicy>::MatchFun match)
-    : TemplateHashMapImpl<AllocationPolicy>(match) { }
+      typename TemplateHashMapImpl<AllocationPolicy>::MatchFun match,
+      AllocationPolicy allocator = AllocationPolicy())
+        : TemplateHashMapImpl<AllocationPolicy>(
+            match,
+            TemplateHashMapImpl<AllocationPolicy>::kDefaultHashMapCapacity,
+            allocator) { }
 
   Iterator begin() const { return Iterator(this, this->Start()); }
   Iterator end() const { return Iterator(this, NULL); }
-  Iterator find(Key* key, bool insert = false) {
-    return Iterator(this, this->Lookup(key, key->Hash(), insert));
+  Iterator find(Key* key, bool insert = false,
+                AllocationPolicy allocator = AllocationPolicy()) {
+    return Iterator(this, this->Lookup(key, key->Hash(), insert, allocator));
   }
 };
 

@@ -1,44 +1,24 @@
-// Copyright 2008 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright 2012 the V8 project authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
-#include "v8.h"
-#include "ast.h"
-#include "regexp-macro-assembler.h"
-#include "regexp-macro-assembler-tracer.h"
+#include "src/v8.h"
+
+#include "src/ast.h"
+#include "src/regexp-macro-assembler.h"
+#include "src/regexp-macro-assembler-tracer.h"
 
 namespace v8 {
 namespace internal {
 
 RegExpMacroAssemblerTracer::RegExpMacroAssemblerTracer(
     RegExpMacroAssembler* assembler) :
+  RegExpMacroAssembler(assembler->zone()),
   assembler_(assembler) {
   unsigned int type = assembler->Implementation();
-  ASSERT(type < 5);
-  const char* impl_names[] = {"IA32", "ARM", "MIPS", "X64", "Bytecode"};
+  DCHECK(type < 6);
+  const char* impl_names[] = {"IA32", "ARM", "ARM64",
+                              "MIPS", "X64", "X87", "Bytecode"};
   PrintF("RegExpMacroAssembler%s();\n", impl_names[type]);
 }
 
@@ -102,14 +82,15 @@ void RegExpMacroAssemblerTracer::PushBacktrack(Label* label) {
 }
 
 
-void RegExpMacroAssemblerTracer::Succeed() {
-  PrintF(" Succeed();\n");
-  assembler_->Succeed();
+bool RegExpMacroAssemblerTracer::Succeed() {
+  bool restart = assembler_->Succeed();
+  PrintF(" Succeed();%s\n", restart ? " [restart for global match]" : "");
+  return restart;
 }
 
 
 void RegExpMacroAssemblerTracer::Fail() {
-  PrintF(" Fail();\n");
+  PrintF(" Fail();");
   assembler_->Fail();
 }
 
@@ -198,24 +179,55 @@ void RegExpMacroAssemblerTracer::LoadCurrentCharacter(int cp_offset,
 }
 
 
+class PrintablePrinter {
+ public:
+  explicit PrintablePrinter(uc16 character) : character_(character) { }
+
+  const char* operator*() {
+    if (character_ >= ' ' && character_ <= '~') {
+      buffer_[0] = '(';
+      buffer_[1] = static_cast<char>(character_);
+      buffer_[2] = ')';
+      buffer_[3] = '\0';
+    } else {
+      buffer_[0] = '\0';
+    }
+    return &buffer_[0];
+  }
+
+ private:
+  uc16 character_;
+  char buffer_[4];
+};
+
+
 void RegExpMacroAssemblerTracer::CheckCharacterLT(uc16 limit, Label* on_less) {
-  PrintF(" CheckCharacterLT(c='u%04x', label[%08x]);\n",
-         limit, LabelToInt(on_less));
+  PrintablePrinter printable(limit);
+  PrintF(" CheckCharacterLT(c=0x%04x%s, label[%08x]);\n",
+         limit,
+         *printable,
+         LabelToInt(on_less));
   assembler_->CheckCharacterLT(limit, on_less);
 }
 
 
 void RegExpMacroAssemblerTracer::CheckCharacterGT(uc16 limit,
                                                   Label* on_greater) {
-  PrintF(" CheckCharacterGT(c='u%04x', label[%08x]);\n",
-         limit, LabelToInt(on_greater));
+  PrintablePrinter printable(limit);
+  PrintF(" CheckCharacterGT(c=0x%04x%s, label[%08x]);\n",
+         limit,
+         *printable,
+         LabelToInt(on_greater));
   assembler_->CheckCharacterGT(limit, on_greater);
 }
 
 
 void RegExpMacroAssemblerTracer::CheckCharacter(unsigned c, Label* on_equal) {
-  PrintF(" CheckCharacter(c='u%04x', label[%08x]);\n",
-         c, LabelToInt(on_equal));
+  PrintablePrinter printable(c);
+  PrintF(" CheckCharacter(c=0x%04x%s, label[%08x]);\n",
+         c,
+         *printable,
+         LabelToInt(on_equal));
   assembler_->CheckCharacter(c, on_equal);
 }
 
@@ -234,8 +246,11 @@ void RegExpMacroAssemblerTracer::CheckNotAtStart(Label* on_not_at_start) {
 
 void RegExpMacroAssemblerTracer::CheckNotCharacter(unsigned c,
                                                    Label* on_not_equal) {
-  PrintF(" CheckNotCharacter(c='u%04x', label[%08x]);\n",
-         c, LabelToInt(on_not_equal));
+  PrintablePrinter printable(c);
+  PrintF(" CheckNotCharacter(c=0x%04x%s, label[%08x]);\n",
+         c,
+         *printable,
+         LabelToInt(on_not_equal));
   assembler_->CheckNotCharacter(c, on_not_equal);
 }
 
@@ -244,8 +259,10 @@ void RegExpMacroAssemblerTracer::CheckCharacterAfterAnd(
     unsigned c,
     unsigned mask,
     Label* on_equal) {
-  PrintF(" CheckCharacterAfterAnd(c='u%04x', mask=0x%04x, label[%08x]);\n",
+  PrintablePrinter printable(c);
+  PrintF(" CheckCharacterAfterAnd(c=0x%04x%s, mask=0x%04x, label[%08x]);\n",
          c,
+         *printable,
          mask,
          LabelToInt(on_equal));
   assembler_->CheckCharacterAfterAnd(c, mask, on_equal);
@@ -256,8 +273,10 @@ void RegExpMacroAssemblerTracer::CheckNotCharacterAfterAnd(
     unsigned c,
     unsigned mask,
     Label* on_not_equal) {
-  PrintF(" CheckNotCharacterAfterAnd(c='u%04x', mask=0x%04x, label[%08x]);\n",
+  PrintablePrinter printable(c);
+  PrintF(" CheckNotCharacterAfterAnd(c=0x%04x%s, mask=0x%04x, label[%08x]);\n",
          c,
+         *printable,
          mask,
          LabelToInt(on_not_equal));
   assembler_->CheckNotCharacterAfterAnd(c, mask, on_not_equal);
@@ -269,13 +288,60 @@ void RegExpMacroAssemblerTracer::CheckNotCharacterAfterMinusAnd(
     uc16 minus,
     uc16 mask,
     Label* on_not_equal) {
-  PrintF(" CheckNotCharacterAfterMinusAnd(c='u%04x', minus=%04x, mask=0x%04x, "
+  PrintF(" CheckNotCharacterAfterMinusAnd(c=0x%04x, minus=%04x, mask=0x%04x, "
              "label[%08x]);\n",
          c,
          minus,
          mask,
          LabelToInt(on_not_equal));
   assembler_->CheckNotCharacterAfterMinusAnd(c, minus, mask, on_not_equal);
+}
+
+
+void RegExpMacroAssemblerTracer::CheckCharacterInRange(
+    uc16 from,
+    uc16 to,
+    Label* on_not_in_range) {
+  PrintablePrinter printable_from(from);
+  PrintablePrinter printable_to(to);
+  PrintF(" CheckCharacterInRange(from=0x%04x%s, to=0x%04x%s, label[%08x]);\n",
+         from,
+         *printable_from,
+         to,
+         *printable_to,
+         LabelToInt(on_not_in_range));
+  assembler_->CheckCharacterInRange(from, to, on_not_in_range);
+}
+
+
+void RegExpMacroAssemblerTracer::CheckCharacterNotInRange(
+    uc16 from,
+    uc16 to,
+    Label* on_in_range) {
+  PrintablePrinter printable_from(from);
+  PrintablePrinter printable_to(to);
+  PrintF(
+      " CheckCharacterNotInRange(from=0x%04x%s," " to=%04x%s, label[%08x]);\n",
+      from,
+      *printable_from,
+      to,
+      *printable_to,
+      LabelToInt(on_in_range));
+  assembler_->CheckCharacterNotInRange(from, to, on_in_range);
+}
+
+
+void RegExpMacroAssemblerTracer::CheckBitInTable(
+    Handle<ByteArray> table, Label* on_bit_set) {
+  PrintF(" CheckBitInTable(label[%08x] ", LabelToInt(on_bit_set));
+  for (int i = 0; i < kTableSize; i++) {
+    PrintF("%c", table->get(i) != 0 ? 'X' : '.');
+    if (i % 32 == 31 && i != kTableMask) {
+      PrintF("\n                                 ");
+    }
+  }
+  PrintF(");\n");
+  assembler_->CheckBitInTable(table, on_bit_set);
 }
 
 
@@ -293,32 +359,6 @@ void RegExpMacroAssemblerTracer::CheckNotBackReferenceIgnoreCase(
   PrintF(" CheckNotBackReferenceIgnoreCase(register=%d, label[%08x]);\n",
          start_reg, LabelToInt(on_no_match));
   assembler_->CheckNotBackReferenceIgnoreCase(start_reg, on_no_match);
-}
-
-
-void RegExpMacroAssemblerTracer::CheckNotRegistersEqual(int reg1,
-                                                        int reg2,
-                                                        Label* on_not_equal) {
-  PrintF(" CheckNotRegistersEqual(reg1=%d, reg2=%d, label[%08x]);\n",
-         reg1,
-         reg2,
-         LabelToInt(on_not_equal));
-  assembler_->CheckNotRegistersEqual(reg1, reg2, on_not_equal);
-}
-
-
-void RegExpMacroAssemblerTracer::CheckCharacters(Vector<const uc16> str,
-                                                 int cp_offset,
-                                                 Label* on_failure,
-                                                 bool check_end_of_string) {
-  PrintF(" %s(str=\"",
-         check_end_of_string ? "CheckCharacters" : "CheckCharactersUnchecked");
-  for (int i = 0; i < str.length(); i++) {
-    PrintF("u%04x", str[i]);
-  }
-  PrintF("\", cp_offset=%d, label[%08x])\n",
-         cp_offset, LabelToInt(on_failure));
-  assembler_->CheckCharacters(str, cp_offset, on_failure, check_end_of_string);
 }
 
 
@@ -366,7 +406,7 @@ RegExpMacroAssembler::IrregexpImplementation
 
 
 Handle<HeapObject> RegExpMacroAssemblerTracer::GetCode(Handle<String> source) {
-  PrintF(" GetCode(%s);\n", *(source->ToCString()));
+  PrintF(" GetCode(%s);\n", source->ToCString().get());
   return assembler_->GetCode(source);
 }
 

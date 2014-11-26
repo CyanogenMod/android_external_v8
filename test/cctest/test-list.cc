@@ -27,15 +27,15 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include "v8.h"
-#include "cctest.h"
+#include "src/v8.h"
+#include "test/cctest/cctest.h"
 
 using namespace v8::internal;
 
 // Use a testing allocator that clears memory before deletion.
 class ZeroingAllocationPolicy {
  public:
-  static void* New(size_t size) {
+  void* New(size_t size) {
     // Stash the size in the first word to use for Delete.
     size_t true_size = size + sizeof(size_t);
     size_t* result = reinterpret_cast<size_t*>(malloc(true_size));
@@ -51,6 +51,7 @@ class ZeroingAllocationPolicy {
   }
 };
 
+
 // Check that we can add (a reference to) an element of the list
 // itself.
 TEST(ListAdd) {
@@ -65,6 +66,7 @@ TEST(ListAdd) {
   list.Add(list[0]);
   CHECK_EQ(1, list[4]);
 }
+
 
 // Test that we can add all elements from a list to another list.
 TEST(ListAddAll) {
@@ -127,6 +129,18 @@ TEST(RemoveLast) {
     list.RemoveLast();
     CHECK_EQ(j, list.length());
   }
+}
+
+
+TEST(Allocate) {
+  List<int> list(4);
+  list.Add(1);
+  CHECK_EQ(1, list.length());
+  list.Allocate(100);
+  CHECK_EQ(100, list.length());
+  CHECK_LE(100, list.capacity());
+  list[99] = 123;
+  CHECK_EQ(123, list[99]);
 }
 
 

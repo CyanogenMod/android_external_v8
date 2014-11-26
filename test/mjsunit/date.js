@@ -25,6 +25,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+// Flags: --allow-natives-syntax
+
 // Test date construction from other dates.
 var date0 = new Date(1111);
 var date1 = new Date(date0);
@@ -148,7 +150,7 @@ assertTrue(isNaN(l.getUTCMilliseconds()));
 // date without the timezone information.
 function testToLocaleTimeString() {
   var d = new Date();
-  var s = d.toLocaleTimeString();
+  var s = d.toLocaleTimeString("en-GB");
   assertEquals(8, s.length);
 }
 
@@ -319,3 +321,22 @@ for (var i = 0; i < 24; i++) {
     assertEquals(70674603500 - ms, Date.parse(string), string);
   }
 }
+
+assertThrows('Date.prototype.setTime.call("", 1);', TypeError);
+assertThrows('Date.prototype.setYear.call("", 1);', TypeError);
+assertThrows('Date.prototype.setHours.call("", 1, 2, 3, 4);', TypeError);
+assertThrows('Date.prototype.getDate.call("");', TypeError);
+assertThrows('Date.prototype.getUTCDate.call("");', TypeError);
+
+var date = new Date();
+date.getTime();
+date.getTime();
+%OptimizeFunctionOnNextCall(Date.prototype.getTime);
+assertThrows(function() { Date.prototype.getTime.call(""); }, TypeError);
+assertUnoptimized(Date.prototype.getTime);
+
+date.getYear();
+date.getYear();
+%OptimizeFunctionOnNextCall(Date.prototype.getYear);
+assertThrows(function() { Date.prototype.getYear.call(""); }, TypeError);
+assertUnoptimized(Date.prototype.getYear);

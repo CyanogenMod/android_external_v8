@@ -70,7 +70,7 @@ module B {
 
   import i0 from I
   import i1, i2, i3, M from I
-  import i4, i5 from "http://where"
+  //import i4, i5 from "http://where"
 }
 
 module I {
@@ -85,7 +85,7 @@ module D3 = D2
 
 module E1 at "http://where"
 module E2 at "http://where";
-module E3 = E1.F
+module E3 = E1
 
 // Check that ASI does not interfere.
 
@@ -103,15 +103,20 @@ at
 "file://local"
 
 import
-x
+vx
 ,
-y
+vy
 from
-"file://local"
+B
 
 
 module Wrap {
 export
+x
+,
+y
+
+var
 x
 ,
 y
@@ -157,3 +162,29 @@ try {} catch (module) {}
 
 module
 v = 20
+
+
+
+// Check that module declarations are rejected in eval or local scope.
+
+module M { export let x; }
+
+assertThrows("export x;", SyntaxError);  // It's using eval, so should throw.
+assertThrows("export let x;", SyntaxError);
+assertThrows("import x from M;", SyntaxError);
+assertThrows("module M {};", SyntaxError);
+
+assertThrows("{ export x; }", SyntaxError);
+assertThrows("{ export let x; }", SyntaxError);
+assertThrows("{ import x from M; }", SyntaxError);
+assertThrows("{ module M {}; }", SyntaxError);
+
+assertThrows("function f() { export x; }", SyntaxError);
+assertThrows("function f() { export let x; }", SyntaxError);
+assertThrows("function f() { import x from M; }", SyntaxError);
+assertThrows("function f() { module M {}; }", SyntaxError);
+
+assertThrows("function f() { { export x; } }", SyntaxError);
+assertThrows("function f() { { export let x; } }", SyntaxError);
+assertThrows("function f() { { import x from M; } }", SyntaxError);
+assertThrows("function f() { { module M {}; } }", SyntaxError);

@@ -1,54 +1,24 @@
 // Copyright 2012 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
-#include "v8.h"
+#include "src/v8.h"
 
-#include "interface.h"
+#include "src/interface.h"
 
 namespace v8 {
 namespace internal {
 
-static bool Match(void* key1, void* key2) {
-  String* name1 = *static_cast<String**>(key1);
-  String* name2 = *static_cast<String**>(key2);
-  ASSERT(name1->IsSymbol());
-  ASSERT(name2->IsSymbol());
-  return name1 == name2;
-}
-
-
-Interface* Interface::Lookup(Handle<String> name) {
-  ASSERT(IsModule());
+Interface* Interface::Lookup(Handle<String> name, Zone* zone) {
+  DCHECK(IsModule());
   ZoneHashMap* map = Chase()->exports_;
   if (map == NULL) return NULL;
-  ZoneHashMap::Entry* p = map->Lookup(name.location(), name->Hash(), false);
+  ZoneAllocationPolicy allocator(zone);
+  ZoneHashMap::Entry* p = map->Lookup(name.location(), name->Hash(), false,
+                                      allocator);
   if (p == NULL) return NULL;
-  ASSERT(*static_cast<String**>(p->key) == *name);
-  ASSERT(p->value != NULL);
+  DCHECK(*static_cast<String**>(p->key) == *name);
+  DCHECK(p->value != NULL);
   return static_cast<Interface*>(p->value);
 }
 
@@ -68,8 +38,8 @@ int Nesting::current_ = 0;
 #endif
 
 
-void Interface::DoAdd(
-    void* name, uint32_t hash, Interface* interface, bool* ok) {
+void Interface::DoAdd(const void* name, uint32_t hash, Interface* interface,
+                      Zone* zone, bool* ok) {
   MakeModule(ok);
   if (!*ok) return;
 
@@ -78,16 +48,24 @@ void Interface::DoAdd(
     PrintF("%*s# Adding...\n", Nesting::current(), "");
     PrintF("%*sthis = ", Nesting::current(), "");
     this->Print(Nesting::current());
-    PrintF("%*s%s : ", Nesting::current(), "",
-           (*reinterpret_cast<String**>(name))->ToAsciiArray());
+    const AstRawString* symbol = static_cast<const AstRawString*>(name);
+    PrintF("%*s%.*s : ", Nesting::current(), "", symbol->length(),
+           symbol->raw_data());
     interface->Print(Nesting::current());
   }
 #endif
 
   ZoneHashMap** map = &Chase()->exports_;
-  if (*map == NULL) *map = new ZoneHashMap(Match, 8);
+  ZoneAllocationPolicy allocator(zone);
 
-  ZoneHashMap::Entry* p = (*map)->Lookup(name, hash, !IsFrozen());
+  if (*map == NULL) {
+    *map = new(zone->New(sizeof(ZoneHashMap)))
+        ZoneHashMap(ZoneHashMap::PointersMatch,
+                    ZoneHashMap::kDefaultHashMapCapacity, allocator);
+  }
+
+  ZoneHashMap::Entry* p =
+      (*map)->Lookup(const_cast<void*>(name), hash, !IsFrozen(), allocator);
   if (p == NULL) {
     // This didn't have name but was frozen already, that's an error.
     *ok = false;
@@ -97,7 +75,7 @@ void Interface::DoAdd(
 #ifdef DEBUG
     Nesting nested;
 #endif
-    reinterpret_cast<Interface*>(p->value)->Unify(interface, ok);
+    static_cast<Interface*>(p->value)->Unify(interface, zone, ok);
   }
 
 #ifdef DEBUG
@@ -110,16 +88,24 @@ void Interface::DoAdd(
 }
 
 
-void Interface::Unify(Interface* that, bool* ok) {
-  if (this->forward_) return this->Chase()->Unify(that, ok);
-  if (that->forward_) return this->Unify(that->Chase(), ok);
-  ASSERT(this->forward_ == NULL);
-  ASSERT(that->forward_ == NULL);
+void Interface::Unify(Interface* that, Zone* zone, bool* ok) {
+  if (this->forward_) return this->Chase()->Unify(that, zone, ok);
+  if (that->forward_) return this->Unify(that->Chase(), zone, ok);
+  DCHECK(this->forward_ == NULL);
+  DCHECK(that->forward_ == NULL);
 
   *ok = true;
   if (this == that) return;
-  if (this->IsValue()) return that->MakeValue(ok);
-  if (that->IsValue()) return this->MakeValue(ok);
+  if (this->IsValue()) {
+    that->MakeValue(ok);
+    if (*ok && this->IsConst()) that->MakeConst(ok);
+    return;
+  }
+  if (that->IsValue()) {
+    this->MakeValue(ok);
+    if (*ok && that->IsConst()) this->MakeConst(ok);
+    return;
+  }
 
 #ifdef DEBUG
   if (FLAG_print_interface_details) {
@@ -134,9 +120,9 @@ void Interface::Unify(Interface* that, bool* ok) {
   // Merge the smaller interface into the larger, for performance.
   if (this->exports_ != NULL && (that->exports_ == NULL ||
       this->exports_->occupancy() >= that->exports_->occupancy())) {
-    this->DoUnify(that, ok);
+    this->DoUnify(that, ok, zone);
   } else {
-    that->DoUnify(this, ok);
+    that->DoUnify(this, ok, zone);
   }
 
 #ifdef DEBUG
@@ -151,12 +137,14 @@ void Interface::Unify(Interface* that, bool* ok) {
 }
 
 
-void Interface::DoUnify(Interface* that, bool* ok) {
-  ASSERT(this->forward_ == NULL);
-  ASSERT(that->forward_ == NULL);
-  ASSERT(!this->IsValue());
-  ASSERT(!that->IsValue());
-  ASSERT(*ok);
+void Interface::DoUnify(Interface* that, bool* ok, Zone* zone) {
+  DCHECK(this->forward_ == NULL);
+  DCHECK(that->forward_ == NULL);
+  DCHECK(!this->IsValue());
+  DCHECK(!that->IsValue());
+  DCHECK(this->index_ == -1);
+  DCHECK(that->index_ == -1);
+  DCHECK(*ok);
 
 #ifdef DEBUG
     Nesting nested;
@@ -166,7 +154,7 @@ void Interface::DoUnify(Interface* that, bool* ok) {
   ZoneHashMap* map = that->exports_;
   if (map != NULL) {
     for (ZoneHashMap::Entry* p = map->Start(); p != NULL; p = map->Next(p)) {
-      this->DoAdd(p->key, p->hash, static_cast<Interface*>(p->value), ok);
+      this->DoAdd(p->key, p->hash, static_cast<Interface*>(p->value), zone, ok);
       if (!*ok) return;
     }
   }
@@ -199,10 +187,12 @@ void Interface::Print(int n) {
 
   if (IsUnknown()) {
     PrintF("unknown\n");
+  } else if (IsConst()) {
+    PrintF("const\n");
   } else if (IsValue()) {
     PrintF("value\n");
   } else if (IsModule()) {
-    PrintF("module %s{", IsFrozen() ? "" : "(unresolved) ");
+    PrintF("module %d %s{", Index(), IsFrozen() ? "" : "(unresolved) ");
     ZoneHashMap* map = Chase()->exports_;
     if (map == NULL || map->occupancy() == 0) {
       PrintF("}\n");

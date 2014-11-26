@@ -64,13 +64,13 @@ function testNestedEval() {
 }
 
 function testEvalWithSourceURL() {
-  eval("function Doo() { FAIL; }; Doo();\n//@ sourceURL=res://name");
+  eval("function Doo() { FAIL; }; Doo();\n//# sourceURL=res://name");
 }
 
 function testNestedEvalWithSourceURL() {
   var x = "FAIL";
   var innerEval = 'function Inner() { eval(x); }\n//@ sourceURL=res://inner-eval';
-  eval("function Outer() { eval(innerEval); Inner(); }; Outer();\n//@ sourceURL=res://outer-eval");
+  eval("function Outer() { eval(innerEval); Inner(); }; Outer();\n//# sourceURL=res://outer-eval");
 }
 
 function testValue() {
@@ -109,6 +109,18 @@ function testDefaultCustomError() {
 
 function testStrippedCustomError() {
   throw new CustomError("hep-hey", CustomError);
+}
+
+MyObj = function() { FAIL; }
+
+MyObjCreator = function() {}
+
+MyObjCreator.prototype.Create = function() {
+  return new MyObj();
+}
+
+function testClassNames() {
+  (new MyObjCreator).Create();
 }
 
 // Utility function for testing that the expected strings occur
@@ -254,6 +266,8 @@ testTrace("testDefaultCustomError", testDefaultCustomError,
     ["collectStackTrace"]);
 testTrace("testStrippedCustomError", testStrippedCustomError, ["hep-hey"],
     ["new CustomError", "collectStackTrace"]);
+testTrace("testClassNames", testClassNames,
+          ["new MyObj", "MyObjCreator.Create"], ["as Create"]);
 testCallerCensorship();
 testUnintendedCallerCensorship();
 testErrorsDuringFormatting();
@@ -275,3 +289,65 @@ testOmittedBuiltin(function(){ [thrower, 2].sort(function (a,b) {
 
 // Omitted because ADD from runtime.js is non-native builtin.
 testOmittedBuiltin(function(){ thrower + 2; }, "ADD");
+
+var error = new Error();
+error.toString = function() { assertUnreachable(); };
+error.stack;
+
+error = new Error();
+error.name = { toString: function() { assertUnreachable(); }};
+error.message = { toString: function() {  assertUnreachable(); }};
+error.stack;
+
+error = new Error();
+Array.prototype.push = function(x) { assertUnreachable(); };
+Array.prototype.join = function(x) { assertUnreachable(); };
+error.stack;
+
+var fired = false;
+error = new Error({ toString: function() { fired = true; } });
+assertTrue(fired);
+error.stack;
+assertTrue(fired);
+
+// Check that throwing exception in a custom stack trace formatting function
+// does not lead to recursion.
+Error.prepareStackTrace = function() { throw new Error("abc"); };
+var message;
+try {
+  try {
+    throw new Error();
+  } catch (e) {
+    e.stack;
+  }
+} catch (e) {
+  message = e.message;
+}
+
+assertEquals("abc", message);
+
+// Test that modifying Error.prepareStackTrace by itself works.
+Error.prepareStackTrace = function() { Error.prepareStackTrace = "custom"; };
+new Error().stack;
+
+assertEquals("custom", Error.prepareStackTrace);
+
+// Check that the formatted stack trace can be set to undefined.
+error = new Error();
+error.stack = undefined;
+assertEquals(undefined, error.stack);
+
+// Check that the stack trace accessors are not forcibly set.
+var my_error = {};
+Object.freeze(my_error);
+assertThrows(function() { Error.captureStackTrace(my_error); });
+
+my_error = {};
+Object.preventExtensions(my_error);
+assertThrows(function() { Error.captureStackTrace(my_error); });
+
+var fake_error = {};
+my_error = new Error();
+var stolen_getter = Object.getOwnPropertyDescriptor(my_error, 'stack').get;
+Object.defineProperty(fake_error, 'stack', { get: stolen_getter });
+assertEquals(undefined, fake_error.stack);

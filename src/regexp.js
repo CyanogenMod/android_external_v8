@@ -1,34 +1,15 @@
 // Copyright 2012 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
-// Expect $Object = global.Object;
-// Expect $Array = global.Array;
+// This file relies on the fact that the following declaration has been made
+// in runtime.js:
+// var $Object = global.Object;
+// var $Array = global.Array;
 
 var $RegExp = global.RegExp;
+
+// -------------------------------------------------------------------
 
 // A recursive descent parser for Patterns according to the grammar of
 // ECMA-262 15.10.1, with deviations noted below.
@@ -41,6 +22,8 @@ function DoConstructRegExp(object, pattern, flags) {
     flags = (pattern.global ? 'g' : '')
         + (pattern.ignoreCase ? 'i' : '')
         + (pattern.multiline ? 'm' : '');
+    if (harmony_regexps)
+        flags += (pattern.sticky ? 'y' : '');
     pattern = pattern.source;
   }
 
@@ -50,6 +33,7 @@ function DoConstructRegExp(object, pattern, flags) {
   var global = false;
   var ignoreCase = false;
   var multiline = false;
+  var sticky = false;
   for (var i = 0; i < flags.length; i++) {
     var c = %_CallFunction(flags, i, StringCharAt);
     switch (c) {
@@ -71,12 +55,18 @@ function DoConstructRegExp(object, pattern, flags) {
         }
         multiline = true;
         break;
+      case 'y':
+        if (!harmony_regexps || sticky) {
+          throw MakeSyntaxError("invalid_regexp_flags", [flags]);
+        }
+        sticky = true;
+        break;
       default:
         throw MakeSyntaxError("invalid_regexp_flags", [flags]);
     }
   }
 
-  %RegExpInitializeObject(object, pattern, global, ignoreCase, multiline);
+  %RegExpInitializeObject(object, pattern, global, ignoreCase, multiline, sticky);
 
   // Call internal function to compile the pattern.
   %RegExpCompile(object, pattern, flags);
@@ -99,7 +89,7 @@ function RegExpConstructor(pattern, flags) {
 // were called again.  In SpiderMonkey, this method returns the regexp object.
 // In JSC, it returns undefined.  For compatibility with JSC, we match their
 // behavior.
-function RegExpCompile(pattern, flags) {
+function RegExpCompileJS(pattern, flags) {
   // Both JSC and SpiderMonkey treat a missing pattern argument as the
   // empty subject string, and an actual undefined value passed as the
   // pattern as the string 'undefined'.  Note that JSC is inconsistent
@@ -127,34 +117,30 @@ function DoRegExpExec(regexp, string, index) {
 }
 
 
-function BuildResultFromMatchInfo(lastMatchInfo, s) {
-  var numResults = NUMBER_OF_CAPTURES(lastMatchInfo) >> 1;
-  var start = lastMatchInfo[CAPTURE0];
-  var end = lastMatchInfo[CAPTURE1];
-  var result = %_RegExpConstructResult(numResults, start, s);
-  if (start + 1 == end) {
-    result[0] = %_StringCharAt(s, start);
-  } else {
-    result[0] = %_SubString(s, start, end);
-  }
+// This is kind of performance sensitive, so we want to avoid unnecessary
+// type checks on inputs. But we also don't want to inline it several times
+// manually, so we use a macro :-)
+macro RETURN_NEW_RESULT_FROM_MATCH_INFO(MATCHINFO, STRING)
+  var numResults = NUMBER_OF_CAPTURES(MATCHINFO) >> 1;
+  var start = MATCHINFO[CAPTURE0];
+  var end = MATCHINFO[CAPTURE1];
+  // Calculate the substring of the first match before creating the result array
+  // to avoid an unnecessary write barrier storing the first result.
+  var first = %_SubString(STRING, start, end);
+  var result = %_RegExpConstructResult(numResults, start, STRING);
+  result[0] = first;
+  if (numResults == 1) return result;
   var j = REGEXP_FIRST_CAPTURE + 2;
   for (var i = 1; i < numResults; i++) {
-    start = lastMatchInfo[j++];
-    end = lastMatchInfo[j++];
-    if (end != -1) {
-      if (start + 1 == end) {
-        result[i] = %_StringCharAt(s, start);
-      } else {
-        result[i] = %_SubString(s, start, end);
-      }
-    } else {
-      // Make sure the element is present. Avoid reading the undefined
-      // property from the global object since this may change.
-      result[i] = void 0;
+    start = MATCHINFO[j++];
+    if (start != -1) {
+      end = MATCHINFO[j];
+      result[i] = %_SubString(STRING, start, end);
     }
+    j++;
   }
   return result;
-}
+endmacro
 
 
 function RegExpExecNoTests(regexp, string, start) {
@@ -162,8 +148,9 @@ function RegExpExecNoTests(regexp, string, start) {
   var matchInfo = %_RegExpExec(regexp, string, start, lastMatchInfo);
   if (matchInfo !== null) {
     lastMatchInfoOverride = null;
-    return BuildResultFromMatchInfo(matchInfo, string);
+    RETURN_NEW_RESULT_FROM_MATCH_INFO(matchInfo, string);
   }
+  regexp.lastIndex = 0;
   return null;
 }
 
@@ -181,8 +168,8 @@ function RegExpExec(string) {
   // algorithm, step 5) even if the value is discarded for non-global RegExps.
   var i = TO_INTEGER(lastIndex);
 
-  var global = this.global;
-  if (global) {
+  var updateLastIndex = this.global || (harmony_regexps && this.sticky);
+  if (updateLastIndex) {
     if (i < 0 || i > string.length) {
       this.lastIndex = 0;
       return null;
@@ -191,21 +178,20 @@ function RegExpExec(string) {
     i = 0;
   }
 
-  %_Log('regexp', 'regexp-exec,%0r,%1S,%2i', [this, string, lastIndex]);
   // matchIndices is either null or the lastMatchInfo array.
   var matchIndices = %_RegExpExec(this, string, i, lastMatchInfo);
 
-  if (matchIndices === null) {
-    if (global) this.lastIndex = 0;
+  if (IS_NULL(matchIndices)) {
+    this.lastIndex = 0;
     return null;
   }
 
   // Successful match.
   lastMatchInfoOverride = null;
-  if (global) {
+  if (updateLastIndex) {
     this.lastIndex = lastMatchInfo[CAPTURE1];
   }
-  return BuildResultFromMatchInfo(matchIndices, string);
+  RETURN_NEW_RESULT_FROM_MATCH_INFO(matchIndices, string);
 }
 
 
@@ -230,15 +216,14 @@ function RegExpTest(string) {
   // algorithm, step 5) even if the value is discarded for non-global RegExps.
   var i = TO_INTEGER(lastIndex);
 
-  if (this.global) {
+  if (this.global || (harmony_regexps && this.sticky)) {
     if (i < 0 || i > string.length) {
       this.lastIndex = 0;
       return false;
     }
-    %_Log('regexp', 'regexp-exec,%0r,%1S,%2i', [this, string, lastIndex]);
     // matchIndices is either null or the lastMatchInfo array.
     var matchIndices = %_RegExpExec(this, string, i, lastMatchInfo);
-    if (matchIndices === null) {
+    if (IS_NULL(matchIndices)) {
       this.lastIndex = 0;
       return false;
     }
@@ -246,20 +231,23 @@ function RegExpTest(string) {
     this.lastIndex = lastMatchInfo[CAPTURE1];
     return true;
   } else {
-    // Non-global regexp.
-    // Remove irrelevant preceeding '.*' in a non-global test regexp.
-    // The expression checks whether this.source starts with '.*' and
-    // that the third char is not a '?'.
+    // Non-global, non-sticky regexp.
+    // Remove irrelevant preceeding '.*' in a test regexp.  The expression
+    // checks whether this.source starts with '.*' and that the third char is
+    // not a '?'.  But see https://code.google.com/p/v8/issues/detail?id=3560
     var regexp = this;
-    if (%_StringCharCodeAt(regexp.source, 0) == 46 &&  // '.'
+    if (regexp.source.length >= 3 &&
+        %_StringCharCodeAt(regexp.source, 0) == 46 &&  // '.'
         %_StringCharCodeAt(regexp.source, 1) == 42 &&  // '*'
         %_StringCharCodeAt(regexp.source, 2) != 63) {  // '?'
       regexp = TrimRegExp(regexp);
     }
-    %_Log('regexp', 'regexp-exec,%0r,%1S,%2i', [regexp, string, lastIndex]);
     // matchIndices is either null or the lastMatchInfo array.
     var matchIndices = %_RegExpExec(regexp, string, 0, lastMatchInfo);
-    if (matchIndices === null) return false;
+    if (IS_NULL(matchIndices)) {
+      this.lastIndex = 0;
+      return false;
+    }
     lastMatchInfoOverride = null;
     return true;
   }
@@ -269,7 +257,7 @@ function TrimRegExp(regexp) {
   if (!%_ObjectEquals(regexp_key, regexp)) {
     regexp_key = regexp;
     regexp_val =
-      new $RegExp(SubString(regexp.source, 2, regexp.source.length),
+      new $RegExp(%_SubString(regexp.source, 2, regexp.source.length),
                   (regexp.ignoreCase ? regexp.multiline ? "im" : "i"
                                      : regexp.multiline ? "m" : ""));
   }
@@ -278,14 +266,15 @@ function TrimRegExp(regexp) {
 
 
 function RegExpToString() {
-  // If this.source is an empty string, output /(?:)/.
-  // http://bugzilla.mozilla.org/show_bug.cgi?id=225550
-  // ecma_2/RegExp/properties-001.js.
-  var src = this.source ? this.source : '(?:)';
-  var result = '/' + src + '/';
+  if (!IS_REGEXP(this)) {
+    throw MakeTypeError('incompatible_method_receiver',
+                        ['RegExp.prototype.toString', this]);
+  }
+  var result = '/' + this.source + '/';
   if (this.global) result += 'g';
   if (this.ignoreCase) result += 'i';
   if (this.multiline) result += 'm';
+  if (harmony_regexps && this.sticky) result += 'y';
   return result;
 }
 
@@ -296,12 +285,12 @@ function RegExpToString() {
 // of the last successful match.
 function RegExpGetLastMatch() {
   if (lastMatchInfoOverride !== null) {
-    return lastMatchInfoOverride[0];
+    return OVERRIDE_MATCH(lastMatchInfoOverride);
   }
   var regExpSubject = LAST_SUBJECT(lastMatchInfo);
-  return SubString(regExpSubject,
-                   lastMatchInfo[CAPTURE0],
-                   lastMatchInfo[CAPTURE1]);
+  return %_SubString(regExpSubject,
+                     lastMatchInfo[CAPTURE0],
+                     lastMatchInfo[CAPTURE1]);
 }
 
 
@@ -320,7 +309,7 @@ function RegExpGetLastParen() {
   var start = lastMatchInfo[CAPTURE(length - 2)];
   var end = lastMatchInfo[CAPTURE(length - 1)];
   if (start != -1 && end != -1) {
-    return SubString(regExpSubject, start, end);
+    return %_SubString(regExpSubject, start, end);
   }
   return "";
 }
@@ -334,10 +323,10 @@ function RegExpGetLeftContext() {
     subject = LAST_SUBJECT(lastMatchInfo);
   } else {
     var override = lastMatchInfoOverride;
-    start_index = override[override.length - 2];
-    subject = override[override.length - 1];
+    start_index = OVERRIDE_POS(override);
+    subject = OVERRIDE_SUBJECT(override);
   }
-  return SubString(subject, 0, start_index);
+  return %_SubString(subject, 0, start_index);
 }
 
 
@@ -349,11 +338,11 @@ function RegExpGetRightContext() {
     subject = LAST_SUBJECT(lastMatchInfo);
   } else {
     var override = lastMatchInfoOverride;
-    subject = override[override.length - 1];
-    var pattern = override[override.length - 3];
-    start_index = override[override.length - 2] + pattern.length;
+    subject = OVERRIDE_SUBJECT(override);
+    var match = OVERRIDE_MATCH(override);
+    start_index = OVERRIDE_POS(override) + match.length;
   }
-  return SubString(subject, start_index, subject.length);
+  return %_SubString(subject, start_index, subject.length);
 }
 
 
@@ -363,7 +352,9 @@ function RegExpGetRightContext() {
 function RegExpMakeCaptureGetter(n) {
   return function() {
     if (lastMatchInfoOverride) {
-      if (n < lastMatchInfoOverride.length - 2) return lastMatchInfoOverride[n];
+      if (n < lastMatchInfoOverride.length - 2) {
+        return OVERRIDE_CAPTURE(lastMatchInfoOverride, n);
+      }
       return '';
     }
     var index = n * 2;
@@ -371,7 +362,7 @@ function RegExpMakeCaptureGetter(n) {
     var matchStart = lastMatchInfo[CAPTURE(index)];
     var matchEnd = lastMatchInfo[CAPTURE(index + 1)];
     if (matchStart == -1 || matchEnd == -1) return '';
-    return SubString(LAST_SUBJECT(lastMatchInfo), matchStart, matchEnd);
+    return %_SubString(LAST_SUBJECT(lastMatchInfo), matchStart, matchEnd);
   };
 }
 
@@ -382,10 +373,10 @@ function RegExpMakeCaptureGetter(n) {
 // pairs for the match and all the captured substrings), the invariant is
 // that there are at least two capture indeces.  The array also contains
 // the subject string for the last successful match.
-var lastMatchInfo = new InternalArray(
+var lastMatchInfo = new InternalPackedArray(
     2,                 // REGEXP_NUMBER_OF_CAPTURES
     "",                // Last subject.
-    void 0,            // Last input - settable with RegExpSetInput.
+    UNDEFINED,         // Last input - settable with RegExpSetInput.
     0,                 // REGEXP_FIRST_CAPTURE + 0
     0                  // REGEXP_FIRST_CAPTURE + 1
 );
@@ -401,20 +392,20 @@ var lastMatchInfoOverride = null;
 function SetUpRegExp() {
   %CheckIsBootstrapping();
   %FunctionSetInstanceClassName($RegExp, 'RegExp');
-  %SetProperty($RegExp.prototype, 'constructor', $RegExp, DONT_ENUM);
+  %AddNamedProperty($RegExp.prototype, 'constructor', $RegExp, DONT_ENUM);
   %SetCode($RegExp, RegExpConstructor);
 
   InstallFunctions($RegExp.prototype, DONT_ENUM, $Array(
     "exec", RegExpExec,
     "test", RegExpTest,
     "toString", RegExpToString,
-    "compile", RegExpCompile
+    "compile", RegExpCompileJS
   ));
 
   // The length of compile is 1 in SpiderMonkey.
   %FunctionSetLength($RegExp.prototype.compile, 1);
 
-  // The properties input, $input, and $_ are aliases for each other.  When this
+  // The properties `input` and `$_` are aliases for each other.  When this
   // value is set the value it is set to is coerced to a string.
   // Getter and setter for the input.
   var RegExpGetInput = function() {
@@ -425,12 +416,11 @@ function SetUpRegExp() {
     LAST_INPUT(lastMatchInfo) = ToString(string);
   };
 
-  %DefineOrRedefineAccessorProperty($RegExp, 'input', RegExpGetInput,
-                                    RegExpSetInput, DONT_DELETE);
-  %DefineOrRedefineAccessorProperty($RegExp, '$_', RegExpGetInput,
-                                    RegExpSetInput, DONT_ENUM | DONT_DELETE);
-  %DefineOrRedefineAccessorProperty($RegExp, '$input', RegExpGetInput,
-                                    RegExpSetInput, DONT_ENUM | DONT_DELETE);
+  %OptimizeObjectForAddingMultipleProperties($RegExp, 22);
+  %DefineAccessorPropertyUnchecked($RegExp, 'input', RegExpGetInput,
+                                   RegExpSetInput, DONT_DELETE);
+  %DefineAccessorPropertyUnchecked($RegExp, '$_', RegExpGetInput,
+                                   RegExpSetInput, DONT_ENUM | DONT_DELETE);
 
   // The properties multiline and $* are aliases for each other.  When this
   // value is set in SpiderMonkey, the value it is set to is coerced to a
@@ -444,41 +434,42 @@ function SetUpRegExp() {
   var RegExpGetMultiline = function() { return multiline; };
   var RegExpSetMultiline = function(flag) { multiline = flag ? true : false; };
 
-  %DefineOrRedefineAccessorProperty($RegExp, 'multiline', RegExpGetMultiline,
-                                    RegExpSetMultiline, DONT_DELETE);
-  %DefineOrRedefineAccessorProperty($RegExp, '$*', RegExpGetMultiline,
-                                    RegExpSetMultiline,
-                                    DONT_ENUM | DONT_DELETE);
+  %DefineAccessorPropertyUnchecked($RegExp, 'multiline', RegExpGetMultiline,
+                                   RegExpSetMultiline, DONT_DELETE);
+  %DefineAccessorPropertyUnchecked($RegExp, '$*', RegExpGetMultiline,
+                                   RegExpSetMultiline,
+                                   DONT_ENUM | DONT_DELETE);
 
 
   var NoOpSetter = function(ignored) {};
 
 
   // Static properties set by a successful match.
-  %DefineOrRedefineAccessorProperty($RegExp, 'lastMatch', RegExpGetLastMatch,
-                                    NoOpSetter, DONT_DELETE);
-  %DefineOrRedefineAccessorProperty($RegExp, '$&', RegExpGetLastMatch,
-                                    NoOpSetter, DONT_ENUM | DONT_DELETE);
-  %DefineOrRedefineAccessorProperty($RegExp, 'lastParen', RegExpGetLastParen,
-                                    NoOpSetter, DONT_DELETE);
-  %DefineOrRedefineAccessorProperty($RegExp, '$+', RegExpGetLastParen,
-                                    NoOpSetter, DONT_ENUM | DONT_DELETE);
-  %DefineOrRedefineAccessorProperty($RegExp, 'leftContext',
-                                    RegExpGetLeftContext, NoOpSetter,
-                                    DONT_DELETE);
-  %DefineOrRedefineAccessorProperty($RegExp, '$`', RegExpGetLeftContext,
-                                    NoOpSetter, DONT_ENUM | DONT_DELETE);
-  %DefineOrRedefineAccessorProperty($RegExp, 'rightContext',
-                                    RegExpGetRightContext, NoOpSetter,
-                                    DONT_DELETE);
-  %DefineOrRedefineAccessorProperty($RegExp, "$'", RegExpGetRightContext,
-                                    NoOpSetter, DONT_ENUM | DONT_DELETE);
+  %DefineAccessorPropertyUnchecked($RegExp, 'lastMatch', RegExpGetLastMatch,
+                                   NoOpSetter, DONT_DELETE);
+  %DefineAccessorPropertyUnchecked($RegExp, '$&', RegExpGetLastMatch,
+                                   NoOpSetter, DONT_ENUM | DONT_DELETE);
+  %DefineAccessorPropertyUnchecked($RegExp, 'lastParen', RegExpGetLastParen,
+                                   NoOpSetter, DONT_DELETE);
+  %DefineAccessorPropertyUnchecked($RegExp, '$+', RegExpGetLastParen,
+                                   NoOpSetter, DONT_ENUM | DONT_DELETE);
+  %DefineAccessorPropertyUnchecked($RegExp, 'leftContext',
+                                   RegExpGetLeftContext, NoOpSetter,
+                                   DONT_DELETE);
+  %DefineAccessorPropertyUnchecked($RegExp, '$`', RegExpGetLeftContext,
+                                   NoOpSetter, DONT_ENUM | DONT_DELETE);
+  %DefineAccessorPropertyUnchecked($RegExp, 'rightContext',
+                                   RegExpGetRightContext, NoOpSetter,
+                                   DONT_DELETE);
+  %DefineAccessorPropertyUnchecked($RegExp, "$'", RegExpGetRightContext,
+                                   NoOpSetter, DONT_ENUM | DONT_DELETE);
 
   for (var i = 1; i < 10; ++i) {
-    %DefineOrRedefineAccessorProperty($RegExp, '$' + i,
-                                      RegExpMakeCaptureGetter(i), NoOpSetter,
-                                      DONT_DELETE);
+    %DefineAccessorPropertyUnchecked($RegExp, '$' + i,
+                                     RegExpMakeCaptureGetter(i), NoOpSetter,
+                                     DONT_DELETE);
   }
+  %ToFastProperties($RegExp);
 }
 
 SetUpRegExp();

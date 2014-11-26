@@ -17,7 +17,7 @@
 
 BASE_PATH := $(call my-dir)
 
-V8_SUPPORTED_ARCH := arm mips x86
+V8_SUPPORTED_ARCH := arm mips x86 arm64 mips64 x86_64
 
 ifeq ($(TARGET_ARCH),arm)
     ifneq ($(strip $(ARCH_ARM_HAVE_ARMV7A)),true)
@@ -29,9 +29,26 @@ endif
 
 ENABLE_V8_SNAPSHOT = true
 mksnapshot_arch := $(TARGET_ARCH)
+ifeq ($(HOST_IS_64_BIT),true)
+ifeq ($(TARGET_IS_64_BIT),true)
+mksnapshot_multilib := 64
+else  # Target is 32-bit.
+mksnapshot_multilib := 32
+endif
+endif
+
 include $(BASE_PATH)/Android.mksnapshot.mk
 
 ifdef TARGET_2ND_ARCH
+
+ifeq ($(HOST_IS_64_BIT),true)
+ifeq ($(2ND_TARGET_IS_64_BIT),true)
+mksnapshot_multilib := 64
+else  # Target is 32-bit.
+mksnapshot_multilib := 32
+endif
+endif
+
 mksnapshot_arch := $(TARGET_2ND_ARCH)
 include $(BASE_PATH)/Android.mksnapshot.mk
 endif

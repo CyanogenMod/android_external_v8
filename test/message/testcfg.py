@@ -25,113 +25,90 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import test
+import itertools
 import os
-from os.path import join, dirname, exists, basename, isdir
 import re
 
+from testrunner.local import testsuite
+from testrunner.local import utils
+from testrunner.objects import testcase
+
+
 FLAGS_PATTERN = re.compile(r"//\s+Flags:(.*)")
+INVALID_FLAGS = ["--enable-slow-asserts"]
 
-class MessageTestCase(test.TestCase):
 
-  def __init__(self, path, file, expected, mode, context, config):
-    super(MessageTestCase, self).__init__(context, path, mode)
-    self.file = file
-    self.expected = expected
-    self.config = config
+class MessageTestSuite(testsuite.TestSuite):
+  def __init__(self, name, root):
+    super(MessageTestSuite, self).__init__(name, root)
 
-  def IgnoreLine(self, str):
-    """Ignore empty lines and valgrind output."""
-    if not str: return True
-    else: return str.startswith('==') or str.startswith('**')
+  def ListTests(self, context):
+    tests = []
+    for dirname, dirs, files in os.walk(self.root):
+      for dotted in [x for x in dirs if x.startswith('.')]:
+        dirs.remove(dotted)
+      dirs.sort()
+      files.sort()
+      for filename in files:
+        if filename.endswith(".js"):
+          testname = os.path.join(dirname[len(self.root) + 1:], filename[:-3])
+          test = testcase.TestCase(self, testname)
+          tests.append(test)
+    return tests
 
-  def IsFailureOutput(self, output):
-    f = file(self.expected)
-    # Skip initial '#' comment and spaces
-    for line in f:
-      if (not line.startswith('#')) and (not line.strip()):
-        break
-    # Convert output lines to regexps that we can match
-    env = { 'basename': basename(self.file) }
-    patterns = [ ]
-    for line in f:
-      if not line.strip():
-        continue
-      pattern = re.escape(line.rstrip() % env)
-      pattern = pattern.replace('\\*', '.*')
-      pattern = '^%s$' % pattern
-      patterns.append(pattern)
-    # Compare actual output with the expected
-    raw_lines = output.stdout.split('\n')
-    outlines = [ s for s in raw_lines if not self.IgnoreLine(s) ]
-    if len(outlines) != len(patterns):
+  def GetFlagsForTestCase(self, testcase, context):
+    source = self.GetSourceForTest(testcase)
+    result = []
+    flags_match = re.findall(FLAGS_PATTERN, source)
+    for match in flags_match:
+      result += match.strip().split()
+    result += context.mode_flags
+    result = [x for x in result if x not in INVALID_FLAGS]
+    result.append(os.path.join(self.root, testcase.path + ".js"))
+    return testcase.flags + result
+
+  def GetSourceForTest(self, testcase):
+    filename = os.path.join(self.root, testcase.path + self.suffix())
+    with open(filename) as f:
+      return f.read()
+
+  def _IgnoreLine(self, string):
+    """Ignore empty lines, valgrind output, Android output."""
+    if not string: return True
+    return (string.startswith("==") or string.startswith("**") or
+            string.startswith("ANDROID") or
+            # These five patterns appear in normal Native Client output.
+            string.startswith("DEBUG MODE ENABLED") or
+            string.startswith("tools/nacl-run.py") or
+            string.find("BYPASSING ALL ACL CHECKS") > 0 or
+            string.find("Native Client module will be loaded") > 0 or
+            string.find("NaClHostDescOpen:") > 0)
+
+  def IsFailureOutput(self, output, testpath):
+    expected_path = os.path.join(self.root, testpath + ".out")
+    expected_lines = []
+    # Can't use utils.ReadLinesFrom() here because it strips whitespace.
+    with open(expected_path) as f:
+      for line in f:
+        if line.startswith("#") or not line.strip(): continue
+        expected_lines.append(line)
+    raw_lines = output.stdout.splitlines()
+    actual_lines = [ s for s in raw_lines if not self._IgnoreLine(s) ]
+    env = { "basename": os.path.basename(testpath + ".js") }
+    if len(expected_lines) != len(actual_lines):
       return True
-    for i in xrange(len(patterns)):
-      if not re.match(patterns[i], outlines[i]):
+    for (expected, actual) in itertools.izip_longest(
+        expected_lines, actual_lines, fillvalue=''):
+      pattern = re.escape(expected.rstrip() % env)
+      pattern = pattern.replace("\\*", ".*")
+      pattern = "^%s$" % pattern
+      if not re.match(pattern, actual):
         return True
     return False
 
-  def GetLabel(self):
-    return "%s %s" % (self.mode, self.GetName())
-
-  def GetName(self):
-    return self.path[-1]
-
-  def GetCommand(self):
-    result = self.config.context.GetVmCommand(self, self.mode)
-    source = open(self.file).read()
-    flags_match = FLAGS_PATTERN.search(source)
-    if flags_match:
-      result += flags_match.group(1).strip().split()
-    result.append(self.file)
-    return result
-
-  def GetSource(self):
-    return (open(self.file).read()
-          + "\n--- expected output ---\n"
-          + open(self.expected).read())
+  def StripOutputForTransmit(self, testcase):
+    pass
 
 
-class MessageTestConfiguration(test.TestConfiguration):
-
-  def __init__(self, context, root):
-    super(MessageTestConfiguration, self).__init__(context, root)
-
-  def Ls(self, path):
-    if isdir(path):
-        return [f[:-3] for f in os.listdir(path) if f.endswith('.js')]
-    else:
-        return []
-
-  def ListTests(self, current_path, path, mode, variant_flags):
-    mjsunit = [current_path + [t] for t in self.Ls(self.root)]
-    regress = [current_path + ['regress', t] for t in self.Ls(join(self.root, 'regress'))]
-    bugs = [current_path + ['bugs', t] for t in self.Ls(join(self.root, 'bugs'))]
-    mjsunit.sort()
-    regress.sort()
-    bugs.sort()
-    all_tests = mjsunit + regress + bugs
-    result = []
-    for test in all_tests:
-      if self.Contains(path, test):
-        file_prefix = join(self.root, reduce(join, test[1:], ""))
-        file_path = file_prefix + ".js"
-        output_path = file_prefix + ".out"
-        if not exists(output_path):
-          print "Could not find %s" % output_path
-          continue
-        result.append(MessageTestCase(test, file_path, output_path, mode,
-                                      self.context, self))
-    return result
-
-  def GetBuildRequirements(self):
-    return ['d8']
-
-  def GetTestStatus(self, sections, defs):
-    status_file = join(self.root, 'message.status')
-    if exists(status_file):
-      test.ReadConfigurationInto(status_file, sections, defs)
-
-
-def GetConfiguration(context, root):
-  return MessageTestConfiguration(context, root)
+def GetSuite(name, root):
+  return MessageTestSuite(name, root)

@@ -29,10 +29,10 @@ assertEquals(0, parseInt('0'));
 assertEquals(0, parseInt(' 0'));
 assertEquals(0, parseInt(' 0 '));
 
-assertEquals(63, parseInt('077'));
-assertEquals(63, parseInt('  077'));
-assertEquals(63, parseInt('  077   '));
-assertEquals(-63, parseInt('  -077'));
+assertEquals(77, parseInt('077'));
+assertEquals(77, parseInt('  077'));
+assertEquals(77, parseInt('  077   '));
+assertEquals(-77, parseInt('  -077'));
 
 assertEquals(3, parseInt('11', 2));
 assertEquals(4, parseInt('11', 3));
@@ -114,3 +114,12 @@ assertEquals(state, "throwingString");
 state = null;
 try { parseInt(throwingString, throwingRadix); } catch (e) {}
 assertEquals(state, "throwingString");
+
+// And finally, check that the Harmony additions to the Number
+// constructor is available:
+assertTrue("parseInt" in Number);
+assertTrue("parseFloat" in Number);
+assertSame( Number.parseInt, parseInt);
+assertSame(Number.parseFloat, parseFloat);
+assertEquals(Number.parseFloat('0.1'), parseFloat('0.1'));
+assertEquals(Number.parseInt('0xea'), parseInt('0xEA'));

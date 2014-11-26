@@ -1,34 +1,11 @@
-// Copyright 2008 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright 2012 the V8 project authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef V8_REGEXP_MACRO_ASSEMBLER_H_
 #define V8_REGEXP_MACRO_ASSEMBLER_H_
 
-#include "ast.h"
+#include "src/ast.h"
 
 namespace v8 {
 namespace internal {
@@ -45,11 +22,18 @@ class RegExpMacroAssembler {
   static const int kMaxRegister = (1 << 16) - 1;
   static const int kMaxCPOffset = (1 << 15) - 1;
   static const int kMinCPOffset = -(1 << 15);
+
+  static const int kTableSizeBits = 7;
+  static const int kTableSize = 1 << kTableSizeBits;
+  static const int kTableMask = kTableSize - 1;
+
   enum IrregexpImplementation {
     kIA32Implementation,
     kARMImplementation,
+    kARM64Implementation,
     kMIPSImplementation,
     kX64Implementation,
+    kX87Implementation,
     kBytecodeImplementation
   };
 
@@ -58,13 +42,13 @@ class RegExpMacroAssembler {
     kCheckStackLimit = true
   };
 
-  RegExpMacroAssembler();
+  explicit RegExpMacroAssembler(Zone* zone);
   virtual ~RegExpMacroAssembler();
   // The maximal number of pushes between stack checks. Users must supply
   // kCheckStackLimit flag to push operations (instead of kNoStackLimitCheck)
   // at least once for every stack_limit() pushes that are executed.
   virtual int stack_limit_slack() = 0;
-  virtual bool CanReadUnaligned();
+  virtual bool CanReadUnaligned() = 0;
   virtual void AdvanceCurrentPosition(int by) = 0;  // Signed cp change.
   virtual void AdvanceRegister(int reg, int by) = 0;  // r[reg] += by.
   // Continues execution from the position pushed on the top of the backtrack
@@ -82,17 +66,6 @@ class RegExpMacroAssembler {
                                       Label* on_equal) = 0;
   virtual void CheckCharacterGT(uc16 limit, Label* on_greater) = 0;
   virtual void CheckCharacterLT(uc16 limit, Label* on_less) = 0;
-  // Check the current character for a match with a literal string.  If we
-  // fail to match then goto the on_failure label.  If check_eos is set then
-  // the end of input always fails.  If check_eos is clear then it is the
-  // caller's responsibility to ensure that the end of string is not hit.
-  // If the label is NULL then we should pop a backtrack address off
-  // the stack and go to that.
-  virtual void CheckCharacters(
-      Vector<const uc16> str,
-      int cp_offset,
-      Label* on_failure,
-      bool check_eos) = 0;
   virtual void CheckGreedyLoop(Label* on_tos_equals_current_position) = 0;
   virtual void CheckNotAtStart(Label* on_not_at_start) = 0;
   virtual void CheckNotBackReference(int start_reg, Label* on_no_match) = 0;
@@ -106,15 +79,22 @@ class RegExpMacroAssembler {
   virtual void CheckNotCharacterAfterAnd(unsigned c,
                                          unsigned and_with,
                                          Label* on_not_equal) = 0;
-  // Subtract a constant from the current character, then or with the given
+  // Subtract a constant from the current character, then and with the given
   // constant and then check for a match with c.
   virtual void CheckNotCharacterAfterMinusAnd(uc16 c,
                                               uc16 minus,
                                               uc16 and_with,
                                               Label* on_not_equal) = 0;
-  virtual void CheckNotRegistersEqual(int reg1,
-                                      int reg2,
-                                      Label* on_not_equal) = 0;
+  virtual void CheckCharacterInRange(uc16 from,
+                                     uc16 to,  // Both inclusive.
+                                     Label* on_in_range) = 0;
+  virtual void CheckCharacterNotInRange(uc16 from,
+                                        uc16 to,  // Both inclusive.
+                                        Label* on_not_in_range) = 0;
+
+  // The current character (modulus the kTableSize) is looked up in the byte
+  // array, and if the found byte is non-zero, we jump to the on_bit_set label.
+  virtual void CheckBitInTable(Handle<ByteArray> table, Label* on_bit_set) = 0;
 
   // Checks whether the given offset from the current position is before
   // the end of the string.  May overwrite the current character.
@@ -158,7 +138,8 @@ class RegExpMacroAssembler {
   virtual void ReadStackPointerFromRegister(int reg) = 0;
   virtual void SetCurrentPositionFromEnd(int by) = 0;
   virtual void SetRegister(int register_index, int to) = 0;
-  virtual void Succeed() = 0;
+  // Return whether the matching (with a global regexp) will be restarted.
+  virtual bool Succeed() = 0;
   virtual void WriteCurrentPositionToRegister(int reg, int cp_offset) = 0;
   virtual void ClearRegisters(int reg_from, int reg_to) = 0;
   virtual void WriteStackPointerToRegister(int reg) = 0;
@@ -167,8 +148,21 @@ class RegExpMacroAssembler {
   void set_slow_safe(bool ssc) { slow_safe_compiler_ = ssc; }
   bool slow_safe() { return slow_safe_compiler_; }
 
+  enum GlobalMode { NOT_GLOBAL, GLOBAL, GLOBAL_NO_ZERO_LENGTH_CHECK };
+  // Set whether the regular expression has the global flag.  Exiting due to
+  // a failure in a global regexp may still mean success overall.
+  inline void set_global_mode(GlobalMode mode) { global_mode_ = mode; }
+  inline bool global() { return global_mode_ != NOT_GLOBAL; }
+  inline bool global_with_zero_length_check() {
+    return global_mode_ == GLOBAL;
+  }
+
+  Zone* zone() const { return zone_; }
+
  private:
   bool slow_safe_compiler_;
+  bool global_mode_;
+  Zone* zone_;
 };
 
 
@@ -177,7 +171,7 @@ class RegExpMacroAssembler {
 class NativeRegExpMacroAssembler: public RegExpMacroAssembler {
  public:
   // Type of input string to generate code for.
-  enum Mode { ASCII = 1, UC16 = 2 };
+  enum Mode { LATIN1 = 1, UC16 = 2 };
 
   // Result of calling generated native RegExp code.
   // RETRY: Something significant changed during execution, and the matching
@@ -190,7 +184,7 @@ class NativeRegExpMacroAssembler: public RegExpMacroAssembler {
   //        capture positions.
   enum Result { RETRY = -2, EXCEPTION = -1, FAILURE = 0, SUCCESS = 1 };
 
-  NativeRegExpMacroAssembler();
+  explicit NativeRegExpMacroAssembler(Zone* zone);
   virtual ~NativeRegExpMacroAssembler();
   virtual bool CanReadUnaligned();
 
@@ -218,10 +212,10 @@ class NativeRegExpMacroAssembler: public RegExpMacroAssembler {
 
   static const byte* StringCharacterPosition(String* subject, int start_index);
 
-  // Byte map of ASCII characters with a 0xff if the character is a word
+  // Byte map of one byte characters with a 0xff if the character is a word
   // character (digit, letter or underscore) and 0x00 otherwise.
   // Used by generated RegExp code.
-  static const byte word_character_map[128];
+  static const byte word_character_map[256];
 
   static Address word_character_map_address() {
     return const_cast<Address>(&word_character_map[0]);
@@ -233,6 +227,7 @@ class NativeRegExpMacroAssembler: public RegExpMacroAssembler {
                         const byte* input_start,
                         const byte* input_end,
                         int* output,
+                        int output_size,
                         Isolate* isolate);
 };
 

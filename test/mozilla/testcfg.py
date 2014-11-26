@@ -26,12 +26,19 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-import test
 import os
-from os.path import join, exists
+import shutil
+import subprocess
+import tarfile
+
+from testrunner.local import testsuite
+from testrunner.objects import testcase
 
 
-EXCLUDED = ['CVS']
+MOZILLA_VERSION = "2010-06-29"
+
+
+EXCLUDED = ["CVS"]
 
 
 FRAMEWORK = """
@@ -54,84 +61,106 @@ TEST_DIRS = """
 """.split()
 
 
-class MozillaTestCase(test.TestCase):
+class MozillaTestSuite(testsuite.TestSuite):
 
-  def __init__(self, filename, path, context, root, mode, framework):
-    super(MozillaTestCase, self).__init__(context, path, mode)
-    self.filename = filename
-    self.framework = framework
-    self.root = root
+  def __init__(self, name, root):
+    super(MozillaTestSuite, self).__init__(name, root)
+    self.testroot = os.path.join(root, "data")
 
-  def IsNegative(self):
-    return self.filename.endswith('-n.js')
-
-  def GetLabel(self):
-    return "%s mozilla %s" % (self.mode, self.GetName())
-
-  def IsFailureOutput(self, output):
-    if output.exit_code != 0:
-      return True
-    return 'FAILED!' in output.stdout
-
-  def GetCommand(self):
-    result = self.context.GetVmCommand(self, self.mode) + \
-       [ '--expose-gc', join(self.root, 'mozilla-shell-emulation.js') ]
-    result += self.framework
-    result.append(self.filename)
-    return result
-
-  def GetName(self):
-    return self.path[-1]
-
-  def GetSource(self):
-    return open(self.filename).read()
-
-
-class MozillaTestConfiguration(test.TestConfiguration):
-
-  def __init__(self, context, root):
-    super(MozillaTestConfiguration, self).__init__(context, root)
-
-  def ListTests(self, current_path, path, mode, variant_flags):
+  def ListTests(self, context):
     tests = []
-    for test_dir in TEST_DIRS:
-      current_root = join(self.root, 'data', test_dir)
-      for root, dirs, files in os.walk(current_root):
-        for dotted in [x  for x in dirs if x.startswith('.')]:
+    for testdir in TEST_DIRS:
+      current_root = os.path.join(self.testroot, testdir)
+      for dirname, dirs, files in os.walk(current_root):
+        for dotted in [x for x in dirs if x.startswith(".")]:
           dirs.remove(dotted)
         for excluded in EXCLUDED:
           if excluded in dirs:
             dirs.remove(excluded)
         dirs.sort()
-        root_path = root[len(self.root):].split(os.path.sep)
-        root_path = current_path + [x for x in root_path if x]
-        framework = []
-        for i in xrange(len(root_path)):
-          if i == 0: dir = root_path[1:]
-          else: dir = root_path[1:-i]
-          script = join(self.root, reduce(join, dir, ''), 'shell.js')
-          if exists(script):
-            framework.append(script)
-        framework.reverse()
         files.sort()
-        for file in files:
-          if (not file in FRAMEWORK) and file.endswith('.js'):
-            full_path = root_path + [file[:-3]]
-            full_path = [x for x in full_path if x != 'data']
-            if self.Contains(path, full_path):
-              test = MozillaTestCase(join(root, file), full_path, self.context,
-                                     self.root, mode, framework)
-              tests.append(test)
+        for filename in files:
+          if filename.endswith(".js") and not filename in FRAMEWORK:
+            testname = os.path.join(dirname[len(self.testroot) + 1:],
+                                    filename[:-3])
+            case = testcase.TestCase(self, testname)
+            tests.append(case)
     return tests
 
-  def GetBuildRequirements(self):
-    return ['d8']
+  def GetFlagsForTestCase(self, testcase, context):
+    result = []
+    result += context.mode_flags
+    result += ["--expose-gc"]
+    result += [os.path.join(self.root, "mozilla-shell-emulation.js")]
+    testfilename = testcase.path + ".js"
+    testfilepath = testfilename.split(os.path.sep)
+    for i in xrange(len(testfilepath)):
+      script = os.path.join(self.testroot,
+                            reduce(os.path.join, testfilepath[:i], ""),
+                            "shell.js")
+      if os.path.exists(script):
+        result.append(script)
+    result.append(os.path.join(self.testroot, testfilename))
+    return testcase.flags + result
 
-  def GetTestStatus(self, sections, defs):
-    status_file = join(self.root, 'mozilla.status')
-    if exists(status_file):
-      test.ReadConfigurationInto(status_file, sections, defs)
+  def GetSourceForTest(self, testcase):
+    filename = os.path.join(self.testroot, testcase.path + ".js")
+    with open(filename) as f:
+      return f.read()
+
+  def IsNegativeTest(self, testcase):
+    return testcase.path.endswith("-n")
+
+  def IsFailureOutput(self, output, testpath):
+    if output.exit_code != 0:
+      return True
+    return "FAILED!" in output.stdout
+
+  def DownloadData(self):
+    old_cwd = os.getcwd()
+    os.chdir(os.path.abspath(self.root))
+
+    # Maybe we're still up to date?
+    versionfile = "CHECKED_OUT_VERSION"
+    checked_out_version = None
+    if os.path.exists(versionfile):
+      with open(versionfile) as f:
+        checked_out_version = f.read()
+    if checked_out_version == MOZILLA_VERSION:
+      os.chdir(old_cwd)
+      return
+
+    # If we have a local archive file with the test data, extract it.
+    directory_name = "data"
+    directory_name_old = "data.old"
+    if os.path.exists(directory_name):
+      if os.path.exists(directory_name_old):
+        shutil.rmtree(directory_name_old)
+      os.rename(directory_name, directory_name_old)
+    archive_file = "downloaded_%s.tar.gz" % MOZILLA_VERSION
+    if os.path.exists(archive_file):
+      with tarfile.open(archive_file, "r:gz") as tar:
+        tar.extractall()
+      with open(versionfile, "w") as f:
+        f.write(MOZILLA_VERSION)
+      os.chdir(old_cwd)
+      return
+
+    # No cached copy. Check out via CVS, and pack as .tar.gz for later use.
+    command = ("cvs -d :pserver:anonymous@cvs-mirror.mozilla.org:/cvsroot"
+               " co -D %s mozilla/js/tests" % MOZILLA_VERSION)
+    code = subprocess.call(command, shell=True)
+    if code != 0:
+      os.chdir(old_cwd)
+      raise Exception("Error checking out Mozilla test suite!")
+    os.rename(os.path.join("mozilla", "js", "tests"), directory_name)
+    shutil.rmtree("mozilla")
+    with tarfile.open(archive_file, "w:gz") as tar:
+      tar.add("data")
+    with open(versionfile, "w") as f:
+      f.write(MOZILLA_VERSION)
+    os.chdir(old_cwd)
 
 
-def GetConfiguration(context, root):
-  return MozillaTestConfiguration(context, root)
+def GetSuite(name, root):
+  return MozillaTestSuite(name, root)

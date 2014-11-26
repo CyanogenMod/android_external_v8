@@ -1,384 +1,236 @@
-// Copyright 2012 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright 2014 the V8 project authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef V8_PROPERTY_H_
 #define V8_PROPERTY_H_
 
-#include "allocation.h"
+#include "src/factory.h"
+#include "src/field-index.h"
+#include "src/field-index-inl.h"
+#include "src/isolate.h"
+#include "src/types.h"
 
 namespace v8 {
 namespace internal {
 
+class OStream;
 
 // Abstraction for elements in instance-descriptor arrays.
 //
 // Each descriptor has a key, property attributes, property type,
 // property index (in the actual instance-descriptor array) and
 // optionally a piece of data.
-//
-
 class Descriptor BASE_EMBEDDED {
  public:
-  static int IndexFromValue(Object* value) {
-    return Smi::cast(value)->value();
-  }
-
-  MUST_USE_RESULT MaybeObject* KeyToSymbol() {
-    if (!StringShape(key_).IsSymbol()) {
-      MaybeObject* maybe_result = HEAP->LookupSymbol(key_);
-      if (!maybe_result->To(&key_)) return maybe_result;
+  void KeyToUniqueName() {
+    if (!key_->IsUniqueName()) {
+      key_ = key_->GetIsolate()->factory()->InternalizeString(
+          Handle<String>::cast(key_));
     }
-    return key_;
   }
 
-  String* GetKey() { return key_; }
-  Object* GetValue() { return value_; }
-  PropertyDetails GetDetails() { return details_; }
+  Handle<Name> GetKey() const { return key_; }
+  Handle<Object> GetValue() const { return value_; }
+  PropertyDetails GetDetails() const { return details_; }
 
-#ifdef OBJECT_PRINT
-  void Print(FILE* out);
-#endif
-
-  void SetEnumerationIndex(int index) {
-    ASSERT(PropertyDetails::IsValidIndex(index));
-    details_ = PropertyDetails(details_.attributes(), details_.type(), index);
-  }
-
-  bool ContainsTransition();
+  void SetSortedKeyIndex(int index) { details_ = details_.set_pointer(index); }
 
  private:
-  String* key_;
-  Object* value_;
+  Handle<Name> key_;
+  Handle<Object> value_;
   PropertyDetails details_;
 
  protected:
   Descriptor() : details_(Smi::FromInt(0)) {}
 
-  void Init(String* key, Object* value, PropertyDetails details) {
+  void Init(Handle<Name> key, Handle<Object> value, PropertyDetails details) {
     key_ = key;
     value_ = value;
     details_ = details;
   }
 
-  Descriptor(String* key, Object* value, PropertyDetails details)
+  Descriptor(Handle<Name> key, Handle<Object> value, PropertyDetails details)
       : key_(key),
         value_(value),
         details_(details) { }
 
-  Descriptor(String* key,
-             Object* value,
+  Descriptor(Handle<Name> key,
+             Handle<Object> value,
              PropertyAttributes attributes,
              PropertyType type,
-             int index = 0)
+             Representation representation,
+             int field_index = 0)
       : key_(key),
         value_(value),
-        details_(attributes, type, index) { }
+        details_(attributes, type, representation, field_index) { }
 
   friend class DescriptorArray;
-};
-
-// A pointer from a map to the new map that is created by adding
-// a named property.  These are key to the speed and functioning of V8.
-// The two maps should always have the same prototype, since
-// MapSpace::CreateBackPointers depends on this.
-class MapTransitionDescriptor: public Descriptor {
- public:
-  MapTransitionDescriptor(String* key, Map* map, PropertyAttributes attributes)
-      : Descriptor(key, map, attributes, MAP_TRANSITION) { }
-};
-
-class ElementsTransitionDescriptor: public Descriptor {
- public:
-  ElementsTransitionDescriptor(String* key,
-                               Object* map_or_array)
-      : Descriptor(key, map_or_array, PropertyDetails(NONE,
-                                                      ELEMENTS_TRANSITION)) { }
-};
-
-// Marks a field name in a map so that adding the field is guaranteed
-// to create a FIELD descriptor in the new map.  Used after adding
-// a constant function the first time, creating a CONSTANT_FUNCTION
-// descriptor in the new map.  This avoids creating multiple maps with
-// the same CONSTANT_FUNCTION field.
-class ConstTransitionDescriptor: public Descriptor {
- public:
-  explicit ConstTransitionDescriptor(String* key, Map* map)
-      : Descriptor(key, map, NONE, CONSTANT_TRANSITION) { }
+  friend class Map;
 };
 
 
-class FieldDescriptor: public Descriptor {
+OStream& operator<<(OStream& os, const Descriptor& d);
+
+
+class FieldDescriptor FINAL : public Descriptor {
  public:
-  FieldDescriptor(String* key,
+  FieldDescriptor(Handle<Name> key,
                   int field_index,
                   PropertyAttributes attributes,
-                  int index = 0)
-      : Descriptor(key, Smi::FromInt(field_index), attributes, FIELD, index) {}
+                  Representation representation)
+      : Descriptor(key, HeapType::Any(key->GetIsolate()), attributes,
+                   FIELD, representation, field_index) {}
+  FieldDescriptor(Handle<Name> key,
+                  int field_index,
+                  Handle<HeapType> field_type,
+                  PropertyAttributes attributes,
+                  Representation representation)
+      : Descriptor(key, field_type, attributes, FIELD,
+                   representation, field_index) { }
 };
 
 
-class ConstantFunctionDescriptor: public Descriptor {
+class ConstantDescriptor FINAL : public Descriptor {
  public:
-  ConstantFunctionDescriptor(String* key,
-                             JSFunction* function,
-                             PropertyAttributes attributes,
-                             int index = 0)
-      : Descriptor(key, function, attributes, CONSTANT_FUNCTION, index) {}
+  ConstantDescriptor(Handle<Name> key,
+                     Handle<Object> value,
+                     PropertyAttributes attributes)
+      : Descriptor(key, value, attributes, CONSTANT,
+                   value->OptimalRepresentation()) {}
 };
 
 
-class CallbacksDescriptor:  public Descriptor {
+class CallbacksDescriptor FINAL : public Descriptor {
  public:
-  CallbacksDescriptor(String* key,
-                      Object* foreign,
-                      PropertyAttributes attributes,
-                      int index = 0)
-      : Descriptor(key, foreign, attributes, CALLBACKS, index) {}
+  CallbacksDescriptor(Handle<Name> key,
+                      Handle<Object> foreign,
+                      PropertyAttributes attributes)
+      : Descriptor(key, foreign, attributes, CALLBACKS,
+                   Representation::Tagged()) {}
 };
 
 
-template <class T>
-bool IsPropertyDescriptor(T* desc) {
-  switch (desc->type()) {
-    case NORMAL:
-    case FIELD:
-    case CONSTANT_FUNCTION:
-    case HANDLER:
-    case INTERCEPTOR:
-      return true;
-    case CALLBACKS: {
-      Object* callback_object = desc->GetCallbackObject();
-      // Non-JavaScript (i.e. native) accessors are always a property, otherwise
-      // either the getter or the setter must be an accessor. Put another way:
-      // If we only see map transitions and holes in a pair, this is not a
-      // property.
-      return (!callback_object->IsAccessorPair() ||
-              AccessorPair::cast(callback_object)->ContainsAccessor());
-    }
-    case MAP_TRANSITION:
-    case ELEMENTS_TRANSITION:
-    case CONSTANT_TRANSITION:
-    case NULL_DESCRIPTOR:
-      return false;
-  }
-  UNREACHABLE();  // keep the compiler happy
-  return false;
-}
-
-
-class LookupResult BASE_EMBEDDED {
+class LookupResult FINAL BASE_EMBEDDED {
  public:
   explicit LookupResult(Isolate* isolate)
       : isolate_(isolate),
         next_(isolate->top_lookup_result()),
         lookup_type_(NOT_FOUND),
         holder_(NULL),
-        cacheable_(true),
-        details_(NONE, NORMAL) {
-    isolate->SetTopLookupResult(this);
+        transition_(NULL),
+        details_(NONE, NORMAL, Representation::None()) {
+    isolate->set_top_lookup_result(this);
   }
 
   ~LookupResult() {
-    ASSERT(isolate_->top_lookup_result() == this);
-    isolate_->SetTopLookupResult(next_);
+    DCHECK(isolate()->top_lookup_result() == this);
+    isolate()->set_top_lookup_result(next_);
   }
+
+  Isolate* isolate() const { return isolate_; }
 
   void DescriptorResult(JSObject* holder, PropertyDetails details, int number) {
     lookup_type_ = DESCRIPTOR_TYPE;
     holder_ = holder;
+    transition_ = NULL;
     details_ = details;
     number_ = number;
   }
 
-  void DescriptorResult(JSObject* holder, Smi* details, int number) {
-    lookup_type_ = DESCRIPTOR_TYPE;
+  void TransitionResult(JSObject* holder, Map* target) {
+    lookup_type_ = TRANSITION_TYPE;
+    number_ = target->LastAdded();
+    details_ = target->instance_descriptors()->GetDetails(number_);
     holder_ = holder;
-    details_ = PropertyDetails(details);
-    number_ = number;
-  }
-
-  void ConstantResult(JSObject* holder) {
-    lookup_type_ = CONSTANT_TYPE;
-    holder_ = holder;
-    details_ =
-        PropertyDetails(static_cast<PropertyAttributes>(DONT_ENUM |
-                                                        DONT_DELETE),
-                        CALLBACKS);
-    number_ = -1;
-  }
-
-  void DictionaryResult(JSObject* holder, int entry) {
-    lookup_type_ = DICTIONARY_TYPE;
-    holder_ = holder;
-    details_ = holder->property_dictionary()->DetailsAt(entry);
-    number_ = entry;
-  }
-
-  void HandlerResult(JSProxy* proxy) {
-    lookup_type_ = HANDLER_TYPE;
-    holder_ = proxy;
-    details_ = PropertyDetails(NONE, HANDLER);
-    cacheable_ = false;
-  }
-
-  void InterceptorResult(JSObject* holder) {
-    lookup_type_ = INTERCEPTOR_TYPE;
-    holder_ = holder;
-    details_ = PropertyDetails(NONE, INTERCEPTOR);
+    transition_ = target;
   }
 
   void NotFound() {
     lookup_type_ = NOT_FOUND;
+    details_ = PropertyDetails(NONE, NORMAL, Representation::None());
     holder_ = NULL;
+    transition_ = NULL;
   }
 
-  JSObject* holder() {
-    ASSERT(IsFound());
-    return JSObject::cast(holder_);
+  Representation representation() const {
+    DCHECK(IsFound());
+    return details_.representation();
   }
 
-  JSProxy* proxy() {
-    ASSERT(IsFound());
-    return JSProxy::cast(holder_);
+  // Property callbacks does not include transitions to callbacks.
+  bool IsPropertyCallbacks() const {
+    DCHECK(!(details_.type() == CALLBACKS && !IsFound()));
+    return !IsTransition() && details_.type() == CALLBACKS;
   }
 
-  PropertyType type() {
-    ASSERT(IsFound());
-    return details_.type();
+  bool IsReadOnly() const {
+    DCHECK(IsFound());
+    return details_.IsReadOnly();
   }
 
-  PropertyAttributes GetAttributes() {
-    ASSERT(IsFound());
-    return details_.attributes();
+  bool IsField() const {
+    DCHECK(!(details_.type() == FIELD && !IsFound()));
+    return lookup_type_ == DESCRIPTOR_TYPE && details_.type() == FIELD;
   }
 
-  PropertyDetails GetPropertyDetails() {
-    return details_;
+  bool IsConstant() const {
+    DCHECK(!(details_.type() == CONSTANT && !IsFound()));
+    return lookup_type_ == DESCRIPTOR_TYPE && details_.type() == CONSTANT;
   }
 
-  bool IsReadOnly() { return details_.IsReadOnly(); }
-  bool IsDontDelete() { return details_.IsDontDelete(); }
-  bool IsDontEnum() { return details_.IsDontEnum(); }
-  bool IsDeleted() { return details_.IsDeleted(); }
-  bool IsFound() { return lookup_type_ != NOT_FOUND; }
-  bool IsHandler() { return lookup_type_ == HANDLER_TYPE; }
+  bool IsConfigurable() const { return details_.IsConfigurable(); }
+  bool IsFound() const { return lookup_type_ != NOT_FOUND; }
+  bool IsTransition() const { return lookup_type_ == TRANSITION_TYPE; }
 
   // Is the result is a property excluding transitions and the null descriptor?
-  bool IsProperty() {
-    return IsFound() && IsPropertyDescriptor(this);
+  bool IsProperty() const {
+    return IsFound() && !IsTransition();
   }
 
-  bool IsCacheable() { return cacheable_; }
-  void DisallowCaching() { cacheable_ = false; }
-
-  Object* GetLazyValue() {
-    switch (type()) {
-      case FIELD:
-        return holder()->FastPropertyAt(GetFieldIndex());
-      case NORMAL: {
-        Object* value;
-        value = holder()->property_dictionary()->ValueAt(GetDictionaryEntry());
-        if (holder()->IsGlobalObject()) {
-          value = JSGlobalPropertyCell::cast(value)->value();
-        }
-        return value;
-      }
-      case CONSTANT_FUNCTION:
-        return GetConstantFunction();
-      default:
-        return Smi::FromInt(0);
-    }
+  Map* GetTransitionTarget() const {
+    DCHECK(IsTransition());
+    return transition_;
   }
 
-
-  Map* GetTransitionMap() {
-    ASSERT(lookup_type_ == DESCRIPTOR_TYPE);
-    ASSERT(type() == MAP_TRANSITION ||
-           type() == ELEMENTS_TRANSITION ||
-           type() == CONSTANT_TRANSITION);
-    return Map::cast(GetValue());
+  bool IsTransitionToField() const {
+    return IsTransition() && details_.type() == FIELD;
   }
 
-  Map* GetTransitionMapFromMap(Map* map) {
-    ASSERT(lookup_type_ == DESCRIPTOR_TYPE);
-    ASSERT(type() == MAP_TRANSITION);
-    return Map::cast(map->instance_descriptors()->GetValue(number_));
+  int GetLocalFieldIndexFromMap(Map* map) const {
+    return GetFieldIndexFromMap(map) - map->inobject_properties();
   }
 
-  int GetFieldIndex() {
-    ASSERT(lookup_type_ == DESCRIPTOR_TYPE);
-    ASSERT(type() == FIELD);
-    return Descriptor::IndexFromValue(GetValue());
+  Object* GetConstantFromMap(Map* map) const {
+    DCHECK(details_.type() == CONSTANT);
+    return GetValueFromMap(map);
   }
 
-  int GetLocalFieldIndexFromMap(Map* map) {
-    ASSERT(lookup_type_ == DESCRIPTOR_TYPE);
-    ASSERT(type() == FIELD);
-    return Descriptor::IndexFromValue(
-        map->instance_descriptors()->GetValue(number_)) -
-        map->inobject_properties();
+  Object* GetValueFromMap(Map* map) const {
+    DCHECK(lookup_type_ == DESCRIPTOR_TYPE ||
+           lookup_type_ == TRANSITION_TYPE);
+    DCHECK(number_ < map->NumberOfOwnDescriptors());
+    return map->instance_descriptors()->GetValue(number_);
   }
 
-  int GetDictionaryEntry() {
-    ASSERT(lookup_type_ == DICTIONARY_TYPE);
-    return number_;
+  int GetFieldIndexFromMap(Map* map) const {
+    DCHECK(lookup_type_ == DESCRIPTOR_TYPE ||
+           lookup_type_ == TRANSITION_TYPE);
+    DCHECK(number_ < map->NumberOfOwnDescriptors());
+    return map->instance_descriptors()->GetFieldIndex(number_);
   }
 
-  JSFunction* GetConstantFunction() {
-    ASSERT(type() == CONSTANT_FUNCTION);
-    return JSFunction::cast(GetValue());
+  HeapType* GetFieldTypeFromMap(Map* map) const {
+    DCHECK_NE(NOT_FOUND, lookup_type_);
+    DCHECK(number_ < map->NumberOfOwnDescriptors());
+    return map->instance_descriptors()->GetFieldType(number_);
   }
 
-  JSFunction* GetConstantFunctionFromMap(Map* map) {
-    ASSERT(lookup_type_ == DESCRIPTOR_TYPE);
-    ASSERT(type() == CONSTANT_FUNCTION);
-    return JSFunction::cast(map->instance_descriptors()->GetValue(number_));
-  }
-
-  Object* GetCallbackObject() {
-    if (lookup_type_ == CONSTANT_TYPE) {
-      // For now we only have the __proto__ as constant type.
-      return HEAP->prototype_accessors();
-    }
-    return GetValue();
-  }
-
-#ifdef OBJECT_PRINT
-  void Print(FILE* out);
-#endif
-
-  Object* GetValue() {
-    if (lookup_type_ == DESCRIPTOR_TYPE) {
-      DescriptorArray* descriptors = holder()->map()->instance_descriptors();
-      return descriptors->GetValue(number_);
-    }
-    // In the dictionary case, the data is held in the value field.
-    ASSERT(lookup_type_ == DICTIONARY_TYPE);
-    return holder()->GetNormalizedProperty(this);
+  Map* GetFieldOwnerFromMap(Map* map) const {
+    DCHECK(lookup_type_ == DESCRIPTOR_TYPE ||
+           lookup_type_ == TRANSITION_TYPE);
+    DCHECK(number_ < map->NumberOfOwnDescriptors());
+    return map->FindFieldOwner(number_);
   }
 
   void Iterate(ObjectVisitor* visitor);
@@ -388,22 +240,16 @@ class LookupResult BASE_EMBEDDED {
   LookupResult* next_;
 
   // Where did we find the result;
-  enum {
-    NOT_FOUND,
-    DESCRIPTOR_TYPE,
-    DICTIONARY_TYPE,
-    HANDLER_TYPE,
-    INTERCEPTOR_TYPE,
-    CONSTANT_TYPE
-  } lookup_type_;
+  enum { NOT_FOUND, DESCRIPTOR_TYPE, TRANSITION_TYPE } lookup_type_;
 
   JSReceiver* holder_;
+  Map* transition_;
   int number_;
-  bool cacheable_;
   PropertyDetails details_;
 };
 
 
+OStream& operator<<(OStream& os, const LookupResult& r);
 } }  // namespace v8::internal
 
 #endif  // V8_PROPERTY_H_

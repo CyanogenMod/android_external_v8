@@ -1,34 +1,15 @@
 // Copyright 2012 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef V8_SERIALIZE_H_
 #define V8_SERIALIZE_H_
 
-#include "hashmap.h"
+#include "src/compiler.h"
+#include "src/hashmap.h"
+#include "src/heap-profiler.h"
+#include "src/isolate.h"
+#include "src/snapshot-source-sink.h"
 
 namespace v8 {
 namespace internal {
@@ -36,29 +17,27 @@ namespace internal {
 // A TypeCode is used to distinguish different kinds of external reference.
 // It is a single bit to make testing for types easy.
 enum TypeCode {
-  UNCLASSIFIED,        // One-of-a-kind references.
+  UNCLASSIFIED,  // One-of-a-kind references.
+  C_BUILTIN,
   BUILTIN,
   RUNTIME_FUNCTION,
   IC_UTILITY,
-  DEBUG_ADDRESS,
   STATS_COUNTER,
   TOP_ADDRESS,
-  C_BUILTIN,
-  EXTENSION,
   ACCESSOR,
+  STUB_CACHE_TABLE,
   RUNTIME_ENTRY,
-  STUB_CACHE_TABLE
+  LAZY_DEOPTIMIZATION
 };
 
-const int kTypeCodeCount = STUB_CACHE_TABLE + 1;
+const int kTypeCodeCount = LAZY_DEOPTIMIZATION + 1;
 const int kFirstTypeCode = UNCLASSIFIED;
 
 const int kReferenceIdBits = 16;
 const int kReferenceIdMask = (1 << kReferenceIdBits) - 1;
 const int kReferenceTypeShift = kReferenceIdBits;
-const int kDebugRegisterBits = 4;
-const int kDebugIdShift = kDebugRegisterBits;
 
+const int kDeoptTableSerializeEntryCount = 64;
 
 // ExternalReferenceTable is a helper class that defines the relationship
 // between external references and their encodings. It is used to build
@@ -81,7 +60,7 @@ class ExternalReferenceTable {
 
  private:
   explicit ExternalReferenceTable(Isolate* isolate) : refs_(64) {
-      PopulateTable(isolate);
+    PopulateTable(isolate);
   }
 
   struct ExternalReferenceEntry {
@@ -101,14 +80,18 @@ class ExternalReferenceTable {
   // For other types of references, the caller will figure out the address.
   void Add(Address address, TypeCode type, uint16_t id, const char* name);
 
+  void Add(Address address, const char* name) {
+    Add(address, UNCLASSIFIED, ++max_id_[UNCLASSIFIED], name);
+  }
+
   List<ExternalReferenceEntry> refs_;
-  int max_id_[kTypeCodeCount];
+  uint16_t max_id_[kTypeCodeCount];
 };
 
 
 class ExternalReferenceEncoder {
  public:
-  ExternalReferenceEncoder();
+  explicit ExternalReferenceEncoder(Isolate* isolate);
 
   uint32_t Encode(Address key) const;
 
@@ -122,8 +105,6 @@ class ExternalReferenceEncoder {
 
   int IndexOf(Address key) const;
 
-  static bool Match(void* key1, void* key2) { return key1 == key2; }
-
   void Put(Address key, int index);
 
   Isolate* isolate_;
@@ -132,7 +113,7 @@ class ExternalReferenceEncoder {
 
 class ExternalReferenceDecoder {
  public:
-  ExternalReferenceDecoder();
+  explicit ExternalReferenceDecoder(Isolate* isolate);
   ~ExternalReferenceDecoder();
 
   Address Decode(uint32_t key) const {
@@ -145,7 +126,7 @@ class ExternalReferenceDecoder {
 
   Address* Lookup(uint32_t key) const {
     int type = key >> kReferenceTypeShift;
-    ASSERT(kFirstTypeCode <= type && type < kTypeCodeCount);
+    DCHECK(kFirstTypeCode <= type && type < kTypeCodeCount);
     int id = key & kReferenceIdMask;
     return &encodings_[type][id];
   }
@@ -158,77 +139,32 @@ class ExternalReferenceDecoder {
 };
 
 
-class SnapshotByteSource {
- public:
-  SnapshotByteSource(const byte* array, int length)
-    : data_(array), length_(length), position_(0) { }
-
-  bool HasMore() { return position_ < length_; }
-
-  int Get() {
-    ASSERT(position_ < length_);
-    return data_[position_++];
-  }
-
-  inline void CopyRaw(byte* to, int number_of_bytes);
-
-  inline int GetInt();
-
-  bool AtEOF() {
-    return position_ == length_;
-  }
-
-  int position() { return position_; }
-
- private:
-  const byte* data_;
-  int length_;
-  int position_;
-};
-
-
-#define COMMON_RAW_LENGTHS(f)        \
-  f(1, 1)  \
-  f(2, 2)  \
-  f(3, 3)  \
-  f(4, 4)  \
-  f(5, 5)  \
-  f(6, 6)  \
-  f(7, 7)  \
-  f(8, 8)  \
-  f(9, 12)  \
-  f(10, 16) \
-  f(11, 20) \
-  f(12, 24) \
-  f(13, 28) \
-  f(14, 32) \
-  f(15, 36)
-
 // The Serializer/Deserializer class is a common superclass for Serializer and
 // Deserializer which is used to store common constants and methods used by
 // both.
 class SerializerDeserializer: public ObjectVisitor {
  public:
-  static void Iterate(ObjectVisitor* visitor);
-  static void SetSnapshotCacheSize(int size);
+  static void Iterate(Isolate* isolate, ObjectVisitor* visitor);
+
+  static int nop() { return kNop; }
 
  protected:
   // Where the pointed-to object can be found:
   enum Where {
-    kNewObject = 0,                 // Object is next in snapshot.
-    // 1-8                             One per space.
-    kRootArray = 0x9,               // Object is found in root array.
-    kPartialSnapshotCache = 0xa,    // Object is in the cache.
-    kExternalReference = 0xb,       // Pointer to an external reference.
-    kSkip = 0xc,                    // Skip a pointer sized cell.
-    // 0xd-0xf                         Free.
-    kBackref = 0x10,                 // Object is described relative to end.
-    // 0x11-0x18                       One per space.
-    // 0x19-0x1f                       Free.
-    kFromStart = 0x20,              // Object is described relative to start.
-    // 0x21-0x28                       One per space.
-    // 0x29-0x2f                       Free.
-    // 0x30-0x3f                       Used by misc. tags below.
+    kNewObject = 0,  // Object is next in snapshot.
+    // 1-6                             One per space.
+    kRootArray = 0x9,             // Object is found in root array.
+    kPartialSnapshotCache = 0xa,  // Object is in the cache.
+    kExternalReference = 0xb,     // Pointer to an external reference.
+    kSkip = 0xc,                  // Skip n bytes.
+    kBuiltin = 0xd,               // Builtin code object.
+    kAttachedReference = 0xe,     // Object is described in an attached list.
+    kNop = 0xf,                   // Does nothing, used to pad.
+    kBackref = 0x10,              // Object is described relative to end.
+    // 0x11-0x16                       One per space.
+    kBackrefWithSkip = 0x18,  // Object is described relative to end.
+    // 0x19-0x1e                       One per space.
+    // 0x20-0x3f                       Used by misc. tags below.
     kPointedToMask = 0x3f
   };
 
@@ -240,17 +176,27 @@ class SerializerDeserializer: public ObjectVisitor {
     kHowToCodeMask = 0x40
   };
 
+  // For kRootArrayConstants
+  enum WithSkip {
+    kNoSkipDistance = 0,
+    kHasSkipDistance = 0x40,
+    kWithSkipMask = 0x40
+  };
+
   // Where to point within the object.
   enum WhereToPoint {
     kStartOfObject = 0,
-    kFirstInstruction = 0x80,
+    kInnerPointer = 0x80,  // First insn in code object or payload of cell.
     kWhereToPointMask = 0x80
   };
 
   // Misc.
-  // Raw data to be copied from the snapshot.
-  static const int kRawData = 0x30;
-  // Some common raw lengths: 0x31-0x3f
+  // Raw data to be copied from the snapshot.  This byte code does not advance
+  // the current pointer, which is used for code objects, where we write the
+  // entire code in one memcpy, then fix up stuff with kSkip and other byte
+  // codes that overwrite data.
+  static const int kRawData = 0x20;
+  // Some common raw lengths: 0x21-0x3f.  These autoadvance the current pointer.
   // A tag emitted at strategic points in the snapshot to delineate sections.
   // If the deserializer does not find these at the expected moments then it
   // is an indication that the snapshot and the VM do not fit together.
@@ -260,71 +206,31 @@ class SerializerDeserializer: public ObjectVisitor {
   // Used for the source code of the natives, which is in the executable, but
   // is referred to from external strings in the snapshot.
   static const int kNativesStringResource = 0x71;
-  static const int kNewPage = 0x72;
-  static const int kRepeat = 0x73;
-  static const int kConstantRepeat = 0x74;
-  // 0x74-0x7f            Repeat last word (subtract 0x73 to get the count).
-  static const int kMaxRepeats = 0x7f - 0x73;
+  static const int kRepeat = 0x72;
+  static const int kConstantRepeat = 0x73;
+  // 0x73-0x7f            Repeat last word (subtract 0x72 to get the count).
+  static const int kMaxRepeats = 0x7f - 0x72;
   static int CodeForRepeats(int repeats) {
-    ASSERT(repeats >= 1 && repeats <= kMaxRepeats);
-    return 0x73 + repeats;
+    DCHECK(repeats >= 1 && repeats <= kMaxRepeats);
+    return 0x72 + repeats;
   }
   static int RepeatsForCode(int byte_code) {
-    ASSERT(byte_code >= kConstantRepeat && byte_code <= 0x7f);
-    return byte_code - 0x73;
+    DCHECK(byte_code >= kConstantRepeat && byte_code <= 0x7f);
+    return byte_code - 0x72;
   }
-  static const int kRootArrayLowConstants = 0xb0;
-  // 0xb0-0xbf            Things from the first 16 elements of the root array.
-  static const int kRootArrayHighConstants = 0xf0;
-  // 0xf0-0xff            Things from the next 16 elements of the root array.
+  static const int kRootArrayConstants = 0xa0;
+  // 0xa0-0xbf            Things from the first 32 elements of the root array.
   static const int kRootArrayNumberOfConstantEncodings = 0x20;
-  static const int kRootArrayNumberOfLowConstantEncodings = 0x10;
   static int RootArrayConstantFromByteCode(int byte_code) {
-    int constant = (byte_code & 0xf) | ((byte_code & 0x40) >> 2);
-    ASSERT(constant >= 0 && constant < kRootArrayNumberOfConstantEncodings);
-    return constant;
+    return byte_code & 0x1f;
   }
 
-
-  static const int kLargeData = LAST_SPACE;
-  static const int kLargeCode = kLargeData + 1;
-  static const int kLargeFixedArray = kLargeCode + 1;
-  static const int kNumberOfSpaces = kLargeFixedArray + 1;
+  static const int kNumberOfSpaces = LO_SPACE;
   static const int kAnyOldSpace = -1;
 
   // A bitmask for getting the space out of an instruction.
-  static const int kSpaceMask = 15;
-
-  static inline bool SpaceIsLarge(int space) { return space >= kLargeData; }
-  static inline bool SpaceIsPaged(int space) {
-    return space >= FIRST_PAGED_SPACE && space <= LAST_PAGED_SPACE;
-  }
+  static const int kSpaceMask = 7;
 };
-
-
-int SnapshotByteSource::GetInt() {
-  // A little unwind to catch the really small ints.
-  int snapshot_byte = Get();
-  if ((snapshot_byte & 0x80) == 0) {
-    return snapshot_byte;
-  }
-  int accumulator = (snapshot_byte & 0x7f) << 7;
-  while (true) {
-    snapshot_byte = Get();
-    if ((snapshot_byte & 0x80) == 0) {
-      return accumulator | snapshot_byte;
-    }
-    accumulator = (accumulator | (snapshot_byte & 0x7f)) << 7;
-  }
-  UNREACHABLE();
-  return accumulator;
-}
-
-
-void SnapshotByteSource::CopyRaw(byte* to, int number_of_bytes) {
-  memcpy(to, data_ + position_, number_of_bytes);
-  position_ += number_of_bytes;
-}
 
 
 // A Deserializer reads a snapshot and reconstructs the Object graph it defines.
@@ -336,21 +242,37 @@ class Deserializer: public SerializerDeserializer {
   virtual ~Deserializer();
 
   // Deserialize the snapshot into an empty heap.
-  void Deserialize();
+  void Deserialize(Isolate* isolate);
 
   // Deserialize a single object and the objects reachable from it.
-  void DeserializePartial(Object** root);
+  void DeserializePartial(Isolate* isolate, Object** root);
+
+  void set_reservation(int space_number, int reservation) {
+    DCHECK(space_number >= 0);
+    DCHECK(space_number <= LAST_SPACE);
+    reservations_[space_number] = reservation;
+  }
+
+  void FlushICacheForNewCodeObjects();
+
+  // Serialized user code reference certain objects that are provided in a list
+  // By calling this method, we assume that we are deserializing user code.
+  void SetAttachedObjects(Vector<Handle<Object> >* attached_objects) {
+    attached_objects_ = attached_objects;
+  }
+
+  bool deserializing_user_code() { return attached_objects_ != NULL; }
 
  private:
   virtual void VisitPointers(Object** start, Object** end);
 
-  virtual void VisitExternalReferences(Address* start, Address* end) {
-    UNREACHABLE();
-  }
-
   virtual void VisitRuntimeEntry(RelocInfo* rinfo) {
     UNREACHABLE();
   }
+
+  // Allocation sites are present in the snapshot, and must be linked into
+  // a list at deserialization time.
+  void RelinkAllocationSite(AllocationSite* site);
 
   // Fills in some heap data in an area from start to end (non-inclusive).  The
   // space id is used for the write barrier.  The object_address is the address
@@ -359,44 +281,46 @@ class Deserializer: public SerializerDeserializer {
   // the heap.
   void ReadChunk(
       Object** start, Object** end, int space, Address object_address);
-  HeapObject* GetAddressFromStart(int space);
-  inline HeapObject* GetAddressFromEnd(int space);
-  Address Allocate(int space_number, Space* space, int size);
-  void ReadObject(int space_number, Space* space, Object** write_back);
+  void ReadObject(int space_number, Object** write_back);
+
+  // Special handling for serialized code like hooking up internalized strings.
+  HeapObject* ProcessNewObjectFromSerializedCode(HeapObject* obj);
+  Object* ProcessBackRefInSerializedCode(Object* obj);
+
+  // This routine both allocates a new object, and also keeps
+  // track of where objects have been allocated so that we can
+  // fix back references when deserializing.
+  Address Allocate(int space_index, int size) {
+    Address address = high_water_[space_index];
+    high_water_[space_index] = address + size;
+    return address;
+  }
+
+  // This returns the address of an object that has been described in the
+  // snapshot as being offset bytes back in a particular space.
+  HeapObject* GetAddressFromEnd(int space) {
+    int offset = source_->GetInt();
+    offset <<= kObjectAlignmentBits;
+    return HeapObject::FromAddress(high_water_[space] - offset);
+  }
 
   // Cached current isolate.
   Isolate* isolate_;
 
-  // Keep track of the pages in the paged spaces.
-  // (In large object space we are keeping track of individual objects
-  // rather than pages.)  In new space we just need the address of the
-  // first object and the others will flow from that.
-  List<Address> pages_[SerializerDeserializer::kNumberOfSpaces];
+  // Objects from the attached object descriptions in the serialized user code.
+  Vector<Handle<Object> >* attached_objects_;
 
   SnapshotByteSource* source_;
   // This is the address of the next object that will be allocated in each
   // space.  It is used to calculate the addresses of back-references.
   Address high_water_[LAST_SPACE + 1];
-  // This is the address of the most recent object that was allocated.  It
-  // is used to set the location of the new page when we encounter a
-  // START_NEW_PAGE_SERIALIZATION tag.
-  Address last_object_address_;
+
+  int reservations_[LAST_SPACE + 1];
+  static const intptr_t kUninitializedReservation = -1;
 
   ExternalReferenceDecoder* external_reference_decoder_;
 
   DISALLOW_COPY_AND_ASSIGN(Deserializer);
-};
-
-
-class SnapshotByteSink {
- public:
-  virtual ~SnapshotByteSink() { }
-  virtual void Put(int byte, const char* description) = 0;
-  virtual void PutSection(int byte, const char* description) {
-    Put(byte, description);
-  }
-  void PutInt(uintptr_t integer, const char* description);
-  virtual int Position() = 0;
 };
 
 
@@ -405,12 +329,11 @@ class SnapshotByteSink {
 class SerializationAddressMapper {
  public:
   SerializationAddressMapper()
-      : serialization_map_(new HashMap(&SerializationMatchFun)),
-        no_allocation_(new AssertNoAllocation()) { }
+      : no_allocation_(),
+        serialization_map_(new HashMap(HashMap::PointersMatch)) { }
 
   ~SerializationAddressMapper() {
     delete serialization_map_;
-    delete no_allocation_;
   }
 
   bool IsMapped(HeapObject* obj) {
@@ -418,23 +341,19 @@ class SerializationAddressMapper {
   }
 
   int MappedTo(HeapObject* obj) {
-    ASSERT(IsMapped(obj));
+    DCHECK(IsMapped(obj));
     return static_cast<int>(reinterpret_cast<intptr_t>(
         serialization_map_->Lookup(Key(obj), Hash(obj), false)->value));
   }
 
   void AddMapping(HeapObject* obj, int to) {
-    ASSERT(!IsMapped(obj));
+    DCHECK(!IsMapped(obj));
     HashMap::Entry* entry =
         serialization_map_->Lookup(Key(obj), Hash(obj), true);
     entry->value = Value(to);
   }
 
  private:
-  static bool SerializationMatchFun(void* key1, void* key2) {
-    return key1 == key2;
-  }
-
   static uint32_t Hash(HeapObject* obj) {
     return static_cast<int32_t>(reinterpret_cast<intptr_t>(obj->address()));
   }
@@ -447,49 +366,43 @@ class SerializationAddressMapper {
     return reinterpret_cast<void*>(v);
   }
 
+  DisallowHeapAllocation no_allocation_;
   HashMap* serialization_map_;
-  AssertNoAllocation* no_allocation_;
   DISALLOW_COPY_AND_ASSIGN(SerializationAddressMapper);
 };
 
 
+class CodeAddressMap;
+
 // There can be only one serializer per V8 process.
 class Serializer : public SerializerDeserializer {
  public:
-  explicit Serializer(SnapshotByteSink* sink);
+  Serializer(Isolate* isolate, SnapshotByteSink* sink);
   ~Serializer();
   void VisitPointers(Object** start, Object** end);
   // You can call this after serialization to find out how much space was used
   // in each space.
-  int CurrentAllocationAddress(int space) {
-    if (SpaceIsLarge(space)) return large_object_total_;
+  int CurrentAllocationAddress(int space) const {
+    DCHECK(space < kNumberOfSpaces);
     return fullness_[space];
   }
 
-  static void Enable() {
-    if (!serialization_enabled_) {
-      ASSERT(!too_late_to_enable_now_);
-    }
-    serialization_enabled_ = true;
-  }
+  Isolate* isolate() const { return isolate_; }
 
-  static void Disable() { serialization_enabled_ = false; }
-  // Call this when you have made use of the fact that there is no serialization
-  // going on.
-  static void TooLateToEnableNow() { too_late_to_enable_now_ = true; }
-  static bool enabled() { return serialization_enabled_; }
   SerializationAddressMapper* address_mapper() { return &address_mapper_; }
-  void PutRoot(
-      int index, HeapObject* object, HowToCode how, WhereToPoint where);
+  void PutRoot(int index,
+               HeapObject* object,
+               HowToCode how,
+               WhereToPoint where,
+               int skip);
 
  protected:
   static const int kInvalidRootIndex = -1;
 
   int RootIndex(HeapObject* heap_object, HowToCode from);
-  virtual bool ShouldBeInThePartialSnapshotCache(HeapObject* o) = 0;
   intptr_t root_index_wave_front() { return root_index_wave_front_; }
   void set_root_index_wave_front(intptr_t value) {
-    ASSERT(value >= root_index_wave_front_);
+    DCHECK(value >= root_index_wave_front_);
     root_index_wave_front_ = value;
   }
 
@@ -504,19 +417,21 @@ class Serializer : public SerializerDeserializer {
         object_(HeapObject::cast(o)),
         sink_(sink),
         reference_representation_(how_to_code + where_to_point),
-        bytes_processed_so_far_(0) { }
+        bytes_processed_so_far_(0),
+        code_object_(o->IsCode()),
+        code_has_been_output_(false) { }
     void Serialize();
     void VisitPointers(Object** start, Object** end);
     void VisitEmbeddedPointer(RelocInfo* target);
-    void VisitExternalReferences(Address* start, Address* end);
+    void VisitExternalReference(Address* p);
     void VisitExternalReference(RelocInfo* rinfo);
     void VisitCodeTarget(RelocInfo* target);
     void VisitCodeEntry(Address entry_address);
-    void VisitGlobalPropertyCell(RelocInfo* rinfo);
+    void VisitCell(RelocInfo* rinfo);
     void VisitRuntimeEntry(RelocInfo* reloc);
     // Used for seralizing the external strings that hold the natives source.
-    void VisitExternalAsciiString(
-        v8::String::ExternalAsciiStringResource** resource);
+    void VisitExternalOneByteString(
+        v8::String::ExternalOneByteStringResource** resource);
     // We can't serialize a heap with external two byte strings.
     void VisitExternalTwoByteString(
         v8::String::ExternalStringResource** resource) {
@@ -524,94 +439,102 @@ class Serializer : public SerializerDeserializer {
     }
 
    private:
-    void OutputRawData(Address up_to);
+    enum ReturnSkip { kCanReturnSkipInsteadOfSkipping, kIgnoringReturn };
+    // This function outputs or skips the raw data between the last pointer and
+    // up to the current position.  It optionally can just return the number of
+    // bytes to skip instead of performing a skip instruction, in case the skip
+    // can be merged into the next instruction.
+    int OutputRawData(Address up_to, ReturnSkip return_skip = kIgnoringReturn);
 
     Serializer* serializer_;
     HeapObject* object_;
     SnapshotByteSink* sink_;
     int reference_representation_;
     int bytes_processed_so_far_;
+    bool code_object_;
+    bool code_has_been_output_;
   };
 
   virtual void SerializeObject(Object* o,
                                HowToCode how_to_code,
-                               WhereToPoint where_to_point) = 0;
-  void SerializeReferenceToPreviousObject(
-      int space,
-      int address,
-      HowToCode how_to_code,
-      WhereToPoint where_to_point);
+                               WhereToPoint where_to_point,
+                               int skip) = 0;
+  void SerializeReferenceToPreviousObject(HeapObject* heap_object,
+                                          HowToCode how_to_code,
+                                          WhereToPoint where_to_point,
+                                          int skip);
   void InitializeAllocators();
-  // This will return the space for an object.  If the object is in large
-  // object space it may return kLargeCode or kLargeFixedArray in order
-  // to indicate to the deserializer what kind of large object allocation
-  // to make.
+  // This will return the space for an object.
   static int SpaceOfObject(HeapObject* object);
-  // This just returns the space of the object.  It will return LO_SPACE
-  // for all large objects since you can't check the type of the object
-  // once the map has been used for the serialization address.
-  static int SpaceOfAlreadySerializedObject(HeapObject* object);
-  int Allocate(int space, int size, bool* new_page_started);
+  int Allocate(int space, int size);
   int EncodeExternalReference(Address addr) {
     return external_reference_encoder_->Encode(addr);
   }
 
   int SpaceAreaSize(int space);
 
+  // Some roots should not be serialized, because their actual value depends on
+  // absolute addresses and they are reset after deserialization, anyway.
+  bool ShouldBeSkipped(Object** current);
+
   Isolate* isolate_;
   // Keep track of the fullness of each space in order to generate
-  // relative addresses for back references.  Large objects are
-  // just numbered sequentially since relative addresses make no
-  // sense in large object space.
+  // relative addresses for back references.
   int fullness_[LAST_SPACE + 1];
   SnapshotByteSink* sink_;
-  int current_root_index_;
   ExternalReferenceEncoder* external_reference_encoder_;
-  static bool serialization_enabled_;
-  // Did we already make use of the fact that serialization was not enabled?
-  static bool too_late_to_enable_now_;
-  int large_object_total_;
+
   SerializationAddressMapper address_mapper_;
   intptr_t root_index_wave_front_;
+  void Pad();
 
   friend class ObjectSerializer;
   friend class Deserializer;
 
+  // We may not need the code address map for logging for every instance
+  // of the serializer.  Initialize it on demand.
+  void InitializeCodeAddressMap();
+
  private:
+  CodeAddressMap* code_address_map_;
   DISALLOW_COPY_AND_ASSIGN(Serializer);
 };
 
 
 class PartialSerializer : public Serializer {
  public:
-  PartialSerializer(Serializer* startup_snapshot_serializer,
+  PartialSerializer(Isolate* isolate,
+                    Serializer* startup_snapshot_serializer,
                     SnapshotByteSink* sink)
-    : Serializer(sink),
+    : Serializer(isolate, sink),
       startup_serializer_(startup_snapshot_serializer) {
     set_root_index_wave_front(Heap::kStrongRootListLength);
+    InitializeCodeAddressMap();
   }
 
   // Serialize the objects reachable from a single object pointer.
-  virtual void Serialize(Object** o);
+  void Serialize(Object** o);
   virtual void SerializeObject(Object* o,
                                HowToCode how_to_code,
-                               WhereToPoint where_to_point);
+                               WhereToPoint where_to_point,
+                               int skip);
 
- protected:
-  virtual int PartialSnapshotCacheIndex(HeapObject* o);
-  virtual bool ShouldBeInThePartialSnapshotCache(HeapObject* o) {
+ private:
+  int PartialSnapshotCacheIndex(HeapObject* o);
+  bool ShouldBeInThePartialSnapshotCache(HeapObject* o) {
     // Scripts should be referred only through shared function infos.  We can't
     // allow them to be part of the partial snapshot because they contain a
     // unique ID, and deserializing several partial snapshots containing script
     // would cause dupes.
-    ASSERT(!o->IsScript());
-    return o->IsString() || o->IsSharedFunctionInfo() ||
+    DCHECK(!o->IsScript());
+    return o->IsName() || o->IsSharedFunctionInfo() ||
            o->IsHeapNumber() || o->IsCode() ||
            o->IsScopeInfo() ||
-           o->map() == HEAP->fixed_cow_array_map();
+           o->map() ==
+               startup_serializer_->isolate()->heap()->fixed_cow_array_map();
   }
 
- private:
+
   Serializer* startup_serializer_;
   DISALLOW_COPY_AND_ASSIGN(PartialSerializer);
 };
@@ -619,34 +542,166 @@ class PartialSerializer : public Serializer {
 
 class StartupSerializer : public Serializer {
  public:
-  explicit StartupSerializer(SnapshotByteSink* sink) : Serializer(sink) {
+  StartupSerializer(Isolate* isolate, SnapshotByteSink* sink)
+    : Serializer(isolate, sink) {
     // Clear the cache of objects used by the partial snapshot.  After the
     // strong roots have been serialized we can create a partial snapshot
     // which will repopulate the cache with objects needed by that partial
     // snapshot.
-    Isolate::Current()->set_serialize_partial_snapshot_cache_length(0);
+    isolate->set_serialize_partial_snapshot_cache_length(0);
+    InitializeCodeAddressMap();
   }
   // Serialize the current state of the heap.  The order is:
   // 1) Strong references.
   // 2) Partial snapshot cache.
-  // 3) Weak references (e.g. the symbol table).
+  // 3) Weak references (e.g. the string table).
   virtual void SerializeStrongReferences();
   virtual void SerializeObject(Object* o,
                                HowToCode how_to_code,
-                               WhereToPoint where_to_point);
+                               WhereToPoint where_to_point,
+                               int skip);
   void SerializeWeakReferences();
   void Serialize() {
     SerializeStrongReferences();
     SerializeWeakReferences();
+    Pad();
   }
 
  private:
-  virtual bool ShouldBeInThePartialSnapshotCache(HeapObject* o) {
-    return false;
-  }
+  DISALLOW_COPY_AND_ASSIGN(StartupSerializer);
 };
 
 
+class CodeSerializer : public Serializer {
+ public:
+  CodeSerializer(Isolate* isolate, SnapshotByteSink* sink, String* source)
+      : Serializer(isolate, sink), source_(source) {
+    set_root_index_wave_front(Heap::kStrongRootListLength);
+    InitializeCodeAddressMap();
+  }
+
+  static ScriptData* Serialize(Isolate* isolate,
+                               Handle<SharedFunctionInfo> info,
+                               Handle<String> source);
+
+  virtual void SerializeObject(Object* o, HowToCode how_to_code,
+                               WhereToPoint where_to_point, int skip);
+
+  static Handle<SharedFunctionInfo> Deserialize(Isolate* isolate,
+                                                ScriptData* data,
+                                                Handle<String> source);
+
+  static const int kSourceObjectIndex = 0;
+  static const int kCodeStubsBaseIndex = 1;
+
+  String* source() {
+    DCHECK(!AllowHeapAllocation::IsAllowed());
+    return source_;
+  }
+
+  List<uint32_t>* stub_keys() { return &stub_keys_; }
+
+ private:
+  void SerializeBuiltin(Code* builtin, HowToCode how_to_code,
+                        WhereToPoint where_to_point, int skip);
+  void SerializeCodeStub(Code* code, HowToCode how_to_code,
+                         WhereToPoint where_to_point, int skip);
+  void SerializeSourceObject(HowToCode how_to_code, WhereToPoint where_to_point,
+                             int skip);
+  void SerializeHeapObject(HeapObject* heap_object, HowToCode how_to_code,
+                           WhereToPoint where_to_point, int skip);
+  int AddCodeStubKey(uint32_t stub_key);
+
+  DisallowHeapAllocation no_gc_;
+  String* source_;
+  List<uint32_t> stub_keys_;
+  DISALLOW_COPY_AND_ASSIGN(CodeSerializer);
+};
+
+
+// Wrapper around ScriptData to provide code-serializer-specific functionality.
+class SerializedCodeData {
+ public:
+  // Used by when consuming.
+  explicit SerializedCodeData(ScriptData* data, String* source)
+      : script_data_(data), owns_script_data_(false) {
+    DisallowHeapAllocation no_gc;
+    CHECK(IsSane(source));
+  }
+
+  // Used when producing.
+  SerializedCodeData(List<byte>* payload, CodeSerializer* cs);
+
+  ~SerializedCodeData() {
+    if (owns_script_data_) delete script_data_;
+  }
+
+  // Return ScriptData object and relinquish ownership over it to the caller.
+  ScriptData* GetScriptData() {
+    ScriptData* result = script_data_;
+    script_data_ = NULL;
+    DCHECK(owns_script_data_);
+    owns_script_data_ = false;
+    return result;
+  }
+
+  Vector<const uint32_t> CodeStubKeys() const {
+    return Vector<const uint32_t>(
+        reinterpret_cast<const uint32_t*>(script_data_->data() + kHeaderSize),
+        GetHeaderValue(kNumCodeStubKeysOffset));
+  }
+
+  const byte* Payload() const {
+    int code_stubs_size = GetHeaderValue(kNumCodeStubKeysOffset) * kInt32Size;
+    return script_data_->data() + kHeaderSize + code_stubs_size;
+  }
+
+  int PayloadLength() const {
+    int payload_length = GetHeaderValue(kPayloadLengthOffset);
+    DCHECK_EQ(script_data_->data() + script_data_->length(),
+              Payload() + payload_length);
+    return payload_length;
+  }
+
+  int GetReservation(int space) const {
+    return GetHeaderValue(kReservationsOffset + space);
+  }
+
+ private:
+  void SetHeaderValue(int offset, int value) {
+    reinterpret_cast<int*>(const_cast<byte*>(script_data_->data()))[offset] =
+        value;
+  }
+
+  int GetHeaderValue(int offset) const {
+    return reinterpret_cast<const int*>(script_data_->data())[offset];
+  }
+
+  bool IsSane(String* source);
+
+  int CheckSum(String* source);
+
+  // The data header consists of int-sized entries:
+  // [0] version hash
+  // [1] number of code stub keys
+  // [2] payload length
+  // [3..9] reservation sizes for spaces from NEW_SPACE to PROPERTY_CELL_SPACE.
+  static const int kCheckSumOffset = 0;
+  static const int kNumCodeStubKeysOffset = 1;
+  static const int kPayloadLengthOffset = 2;
+  static const int kReservationsOffset = 3;
+
+  static const int kNumSpaces = PROPERTY_CELL_SPACE - NEW_SPACE + 1;
+  static const int kHeaderEntries = kReservationsOffset + kNumSpaces;
+  static const int kHeaderSize = kHeaderEntries * kIntSize;
+
+  // Following the header, we store, in sequential order
+  // - code stub keys
+  // - serialization payload
+
+  ScriptData* script_data_;
+  bool owns_script_data_;
+};
 } }  // namespace v8::internal
 
 #endif  // V8_SERIALIZE_H_

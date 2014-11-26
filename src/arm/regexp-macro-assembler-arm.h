@@ -1,51 +1,22 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright 2012 the V8 project authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef V8_ARM_REGEXP_MACRO_ASSEMBLER_ARM_H_
 #define V8_ARM_REGEXP_MACRO_ASSEMBLER_ARM_H_
 
-#include "arm/assembler-arm.h"
-#include "arm/assembler-arm-inl.h"
+#include "src/arm/assembler-arm.h"
+#include "src/arm/assembler-arm-inl.h"
+#include "src/macro-assembler.h"
 
 namespace v8 {
 namespace internal {
 
 
-#ifdef V8_INTERPRETED_REGEXP
-class RegExpMacroAssemblerARM: public RegExpMacroAssembler {
- public:
-  RegExpMacroAssemblerARM();
-  virtual ~RegExpMacroAssemblerARM();
-};
-
-#else  // V8_INTERPRETED_REGEXP
+#ifndef V8_INTERPRETED_REGEXP
 class RegExpMacroAssemblerARM: public NativeRegExpMacroAssembler {
  public:
-  RegExpMacroAssemblerARM(Mode mode, int registers_to_save);
+  RegExpMacroAssemblerARM(Mode mode, int registers_to_save, Zone* zone);
   virtual ~RegExpMacroAssemblerARM();
   virtual int stack_limit_slack();
   virtual void AdvanceCurrentPosition(int by);
@@ -59,10 +30,6 @@ class RegExpMacroAssemblerARM: public NativeRegExpMacroAssembler {
                                       Label* on_equal);
   virtual void CheckCharacterGT(uc16 limit, Label* on_greater);
   virtual void CheckCharacterLT(uc16 limit, Label* on_less);
-  virtual void CheckCharacters(Vector<const uc16> str,
-                               int cp_offset,
-                               Label* on_failure,
-                               bool check_end_of_string);
   // A "greedy loop" is a loop that is both greedy and with a simple
   // body. It has a particularly simple implementation.
   virtual void CheckGreedyLoop(Label* on_tos_equals_current_position);
@@ -70,7 +37,6 @@ class RegExpMacroAssemblerARM: public NativeRegExpMacroAssembler {
   virtual void CheckNotBackReference(int start_reg, Label* on_no_match);
   virtual void CheckNotBackReferenceIgnoreCase(int start_reg,
                                                Label* on_no_match);
-  virtual void CheckNotRegistersEqual(int reg1, int reg2, Label* on_not_equal);
   virtual void CheckNotCharacter(unsigned c, Label* on_not_equal);
   virtual void CheckNotCharacterAfterAnd(unsigned c,
                                          unsigned mask,
@@ -79,6 +45,14 @@ class RegExpMacroAssemblerARM: public NativeRegExpMacroAssembler {
                                               uc16 minus,
                                               uc16 mask,
                                               Label* on_not_equal);
+  virtual void CheckCharacterInRange(uc16 from,
+                                     uc16 to,
+                                     Label* on_in_range);
+  virtual void CheckCharacterNotInRange(uc16 from,
+                                        uc16 to,
+                                        Label* on_not_in_range);
+  virtual void CheckBitInTable(Handle<ByteArray> table, Label* on_bit_set);
+
   // Checks whether the given offset from the current position is before
   // the end of the string.
   virtual void CheckPosition(int cp_offset, Label* on_outside_input);
@@ -105,10 +79,11 @@ class RegExpMacroAssemblerARM: public NativeRegExpMacroAssembler {
   virtual void ReadStackPointerFromRegister(int reg);
   virtual void SetCurrentPositionFromEnd(int by);
   virtual void SetRegister(int register_index, int to);
-  virtual void Succeed();
+  virtual bool Succeed();
   virtual void WriteCurrentPositionToRegister(int reg, int cp_offset);
   virtual void ClearRegisters(int reg_from, int reg_to);
   virtual void WriteStackPointerToRegister(int reg);
+  virtual bool CanReadUnaligned();
 
   // Called from RegExp if the stack-guard is triggered.
   // If the code object is relocated, the return address is fixed before
@@ -129,7 +104,8 @@ class RegExpMacroAssemblerARM: public NativeRegExpMacroAssembler {
   static const int kSecondaryReturnAddress = kReturnAddress + kPointerSize;
   // Stack parameters placed by caller.
   static const int kRegisterOutput = kSecondaryReturnAddress + kPointerSize;
-  static const int kStackHighEnd = kRegisterOutput + kPointerSize;
+  static const int kNumOutputRegisters = kRegisterOutput + kPointerSize;
+  static const int kStackHighEnd = kNumOutputRegisters + kPointerSize;
   static const int kDirectCall = kStackHighEnd + kPointerSize;
   static const int kIsolate = kDirectCall + kPointerSize;
 
@@ -141,10 +117,10 @@ class RegExpMacroAssemblerARM: public NativeRegExpMacroAssembler {
   static const int kInputString = kStartIndex - kPointerSize;
   // When adding local variables remember to push space for them in
   // the frame in GetCode.
-  static const int kInputStartMinusOne = kInputString - kPointerSize;
-  static const int kAtStart = kInputStartMinusOne - kPointerSize;
+  static const int kSuccessfulCaptures = kInputString - kPointerSize;
+  static const int kInputStartMinusOne = kSuccessfulCaptures - kPointerSize;
   // First register address. Following registers are below it on the stack.
-  static const int kRegisterZero = kAtStart - kPointerSize;
+  static const int kRegisterZero = kInputStartMinusOne - kPointerSize;
 
   // Initial size of code buffer.
   static const size_t kRegExpCodeSize = 1024;
@@ -160,9 +136,6 @@ class RegExpMacroAssemblerARM: public NativeRegExpMacroAssembler {
 
   // Check whether we are exceeding the stack limit on the backtrack stack.
   void CheckStackLimit();
-
-  void EmitBacktrackConstantPool();
-  int GetBacktrackConstantPoolEntry();
 
 
   // Generate a call to CheckStackGuardState.
@@ -213,18 +186,11 @@ class RegExpMacroAssemblerARM: public NativeRegExpMacroAssembler {
   // and increments it by a word size.
   inline void Pop(Register target);
 
-  // Calls a C function and cleans up the frame alignment done by
-  // by FrameAlign. The called function *is* allowed to trigger a garbage
-  // collection, but may not take more than four arguments (no arguments
-  // passed on the stack), and the first argument will be a pointer to the
-  // return address.
-  inline void CallCFunctionUsingStub(ExternalReference function,
-                                     int num_arguments);
-
+  Isolate* isolate() const { return masm_->isolate(); }
 
   MacroAssembler* masm_;
 
-  // Which mode to generate code for (ASCII or UC16).
+  // Which mode to generate code for (Latin1 or UC16).
   Mode mode_;
 
   // One greater than maximal register index actually used.
@@ -233,11 +199,6 @@ class RegExpMacroAssemblerARM: public NativeRegExpMacroAssembler {
   // Number of registers to output at the end (the saved registers
   // are always 0..num_saved_registers_-1)
   int num_saved_registers_;
-
-  // Manage a small pre-allocated pool for writing label targets
-  // to for pushing backtrack addresses.
-  int backtrack_constant_pool_offset_;
-  int backtrack_constant_pool_capacity_;
 
   // Labels used internally.
   Label entry_label_;

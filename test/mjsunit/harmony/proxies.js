@@ -25,7 +25,11 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Flags: --harmony-proxies
+// We change the stack size for the ARM64 simulator because at one point this
+// test enters an infinite recursion which goes through the runtime and we
+// overflow the system stack before the simulator stack.
+
+// Flags: --harmony-proxies --sim-stack-size=500
 
 
 // Helper.
@@ -572,15 +576,16 @@ TestSetThrow(Proxy.create({
 }))
 
 
+var rec
 var key
 var val
 
-function TestSetForDerived(handler) {
-  TestWithProxies(TestSetForDerived2, handler)
+function TestSetForDerived(trap) {
+  TestWithProxies(TestSetForDerived2, trap)
 }
 
-function TestSetForDerived2(create, handler) {
-  var p = create(handler)
+function TestSetForDerived2(create, trap) {
+  var p = create({getPropertyDescriptor: trap, getOwnPropertyDescriptor: trap})
   var o = Object.create(p, {x: {value: 88, writable: true},
                             '1': {value: 89, writable: true}})
 
@@ -607,10 +612,16 @@ function TestSetForDerived2(create, handler) {
 
   assertEquals(45, o.p_nonwritable = 45)
   assertEquals("p_nonwritable", key)
-  assertEquals(45, o.p_nonwritable)
+  assertFalse(Object.prototype.hasOwnProperty.call(o, "p_nonwritable"))
 
+  assertThrows(function(){ "use strict"; o.p_nonwritable = 45 }, TypeError)
+  assertEquals("p_nonwritable", key)
+  assertFalse(Object.prototype.hasOwnProperty.call(o, "p_nonwritable"))
+
+  val = ""
   assertEquals(46, o.p_setter = 46)
   assertEquals("p_setter", key)
+  assertSame(o, rec)
   assertEquals(46, val)  // written to parent
   assertFalse(Object.prototype.hasOwnProperty.call(o, "p_setter"))
 
@@ -624,32 +635,48 @@ function TestSetForDerived2(create, handler) {
   assertThrows(function(){ "use strict"; o.p_nosetter = 50 }, TypeError)
   assertEquals("p_nosetter", key)
   assertEquals("", val)  // not written at all
+  assertFalse(Object.prototype.hasOwnProperty.call(o, "p_nosetter"));
 
   assertThrows(function(){ o.p_nonconf = 53 }, TypeError)
   assertEquals("p_nonconf", key)
+  assertFalse(Object.prototype.hasOwnProperty.call(o, "p_nonconf"));
 
   assertThrows(function(){ o.p_throw = 51 }, "myexn")
   assertEquals("p_throw", key)
+  assertFalse(Object.prototype.hasOwnProperty.call(o, "p_throw"));
 
   assertThrows(function(){ o.p_setterthrow = 52 }, "myexn")
   assertEquals("p_setterthrow", key)
+  assertFalse(Object.prototype.hasOwnProperty.call(o, "p_setterthrow"));
 }
 
-TestSetForDerived({
-  getPropertyDescriptor: function(k) {
+
+TestSetForDerived(
+  function(k) {
+    // TODO(yangguo): issue 2398 - throwing an error causes formatting of
+    // the message string, which can be observable through this handler.
+    // We ignore keys that occur when formatting the message string.
+    if (k == "toString" || k == "valueOf") return;
+
     key = k;
     switch (k) {
       case "p_writable": return {writable: true, configurable: true}
       case "p_nonwritable": return {writable: false, configurable: true}
-      case "p_setter":return {set: function(x) { val = x }, configurable: true}
-      case "p_nosetter": return {get: function() { return 1 }, configurable: true}
-      case "p_nonconf":return {}
+      case "p_setter": return {
+        set: function(x) { rec = this; val = x },
+        configurable: true
+      }
+      case "p_nosetter": return {
+        get: function() { return 1 },
+        configurable: true
+      }
+      case "p_nonconf": return {}
       case "p_throw": throw "myexn"
       case "p_setterthrow": return {set: function(x) { throw "myexn" }}
       default: return undefined
     }
   }
-})
+)
 
 
 // Evil proxy-induced side-effects shouldn't crash.
@@ -1630,8 +1657,8 @@ TestPropertyNames([], {
   getOwnPropertyNames: function() { return [] }
 })
 
-TestPropertyNames(["a", "zz", " ", "0"], {
-  getOwnPropertyNames: function() { return ["a", "zz", " ", 0] }
+TestPropertyNames(["a", "zz", " ", "0", "toString"], {
+  getOwnPropertyNames: function() { return ["a", "zz", " ", 0, "toString"] }
 })
 
 TestPropertyNames(["throw", "function "], {
@@ -1678,8 +1705,8 @@ TestKeys([], {
   keys: function() { return [] }
 })
 
-TestKeys(["a", "zz", " ", "0"], {
-  keys: function() { return ["a", "zz", " ", 0] }
+TestKeys(["a", "zz", " ", "0", "toString"], {
+  keys: function() { return ["a", "zz", " ", 0, "toString"] }
 })
 
 TestKeys(["throw", "function "], {
@@ -1780,7 +1807,7 @@ TestKeysThrow({
   },
 })
 
-TestKeysThrow([], {
+TestKeysThrow({
   get getOwnPropertyNames() {
     return function() { return [1, 2] }
   },
@@ -2271,7 +2298,6 @@ function TestConstructorWithProxyPrototype2(create, handler) {
   C.prototype = create(handler);
 
   var o = new C;
-  assertSame(C.prototype, o.__proto__);
   assertSame(C.prototype, Object.getPrototypeOf(o));
 }
 
