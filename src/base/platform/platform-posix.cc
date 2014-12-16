@@ -254,7 +254,13 @@ int OS::GetCurrentProcessId() {
 
 int OS::GetCurrentThreadId() {
 #if defined(ANDROID)
+#if defined(__APPLE__)
+  uint64_t owner;
+  pthread_threadid_np(NULL, &owner);  // Requires Mac OS 10.6
+  return owner;
+#else
   return static_cast<int>(syscall(__NR_gettid));
+#endif
 #elif defined(SYS_gettid)
   return static_cast<int>(syscall(SYS_gettid));
 #else
