@@ -103,6 +103,10 @@ LOCAL_CFLAGS += \
 LOCAL_CFLAGS_arm += -DV8_TARGET_ARCH_ARM
 LOCAL_CFLAGS_arm64 += -DV8_TARGET_ARCH_ARM64
 
+# atomicops_internals_arm64_gcc.h:77:49: error:
+# expected compatible register, symbol or integer in range [0, 4095]
+LOCAL_CLANG_CFLAGS_arm64 += -no-integrated-as
+
 LOCAL_CFLAGS_mips += -DV8_TARGET_ARCH_MIPS \
 	-Umips \
 	-finline-limit=64 \
