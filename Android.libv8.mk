@@ -107,7 +107,7 @@ LOCAL_CFLAGS_mips += -DV8_TARGET_ARCH_MIPS \
 	-Umips \
 	-finline-limit=64 \
 	-fno-strict-aliasing
-LOCAL_CLFAGS_mips64 += -DV8_TARGET_ARCH_MIPS64 \
+LOCAL_CFLAGS_mips64 += -DV8_TARGET_ARCH_MIPS64 \
 	-Umips \
 	-finline-limit=64 \
 	-fno-strict-aliasing
