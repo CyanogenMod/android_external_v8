@@ -107,6 +107,11 @@ LOCAL_CFLAGS_arm64 += -DV8_TARGET_ARCH_ARM64
 # expected compatible register, symbol or integer in range [0, 4095]
 LOCAL_CLANG_CFLAGS_arm64 += -no-integrated-as
 
+# mark-compact.cc has error: macro used $at after ".set noat"
+ifeq ($(TARGET_ARCH),mips)
+    LOCAL_CLANG := false
+endif
+
 LOCAL_CFLAGS_mips += -DV8_TARGET_ARCH_MIPS \
 	-Umips \
 	-finline-limit=64 \
