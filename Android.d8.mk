@@ -40,9 +40,6 @@ LOCAL_SHARED_LIBRARIES += liblog libicuuc libicui18n
 
 LOCAL_MODULE_TAGS := optional
 
-LOCAL_C_INCLUDES += \
-	external/icu/icu4c/source/common
-
 LOCAL_CFLAGS := \
 	-Wno-unused-parameter \
 	-std=gnu++0x

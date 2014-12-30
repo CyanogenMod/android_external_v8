@@ -134,10 +134,9 @@ endif
 
 LOCAL_SRC_FILES_$(TARGET_ARCH) += $(v8_local_src_files_$(TARGET_ARCH))
 
-LOCAL_C_INCLUDES += \
-	$(LOCAL_PATH)/src \
-	external/icu/icu4c/source/common \
-	external/icu/icu4c/source/i18n
+LOCAL_SHARED_LIBRARIES += libicuuc libicui18n
+
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/src
 
 LOCAL_MODULE_TARGET_ARCH_WARN := $(V8_SUPPORTED_ARCH)
 
