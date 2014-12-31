@@ -110,10 +110,7 @@ endif
 LOCAL_SRC_FILES += $(v8_local_src_files_$(mksnapshot_arch))
 LOCAL_CFLAGS += $(LOCAL_CFLAGS_v8_target_$(mksnapshot_arch))
 
-LOCAL_C_INCLUDES := \
-	$(LOCAL_PATH)/src \
-	external/icu/icu4c/source/common \
-	external/icu/icu4c/source/i18n
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/src
 
 # This is on host.
 LOCAL_LDLIBS := -lpthread
