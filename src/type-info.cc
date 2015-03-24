@@ -9,10 +9,7 @@
 #include "src/compiler.h"
 #include "src/ic/ic.h"
 #include "src/ic/stub-cache.h"
-#include "src/macro-assembler.h"
 #include "src/type-info.h"
-
-#include "src/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -52,9 +49,20 @@ Handle<Object> TypeFeedbackOracle::GetInfo(TypeFeedbackId ast_id) {
 }
 
 
-Handle<Object> TypeFeedbackOracle::GetInfo(int slot) {
-  DCHECK(slot >= 0 && slot < feedback_vector_->length());
-  Object* obj = feedback_vector_->get(slot);
+Handle<Object> TypeFeedbackOracle::GetInfo(FeedbackVectorSlot slot) {
+  DCHECK(slot.ToInt() >= 0 && slot.ToInt() < feedback_vector_->length());
+  Object* obj = feedback_vector_->Get(slot);
+  if (!obj->IsJSFunction() ||
+      !CanRetainOtherContext(JSFunction::cast(obj), *native_context_)) {
+    return Handle<Object>(obj, isolate());
+  }
+  return Handle<Object>::cast(isolate()->factory()->undefined_value());
+}
+
+
+Handle<Object> TypeFeedbackOracle::GetInfo(FeedbackVectorICSlot slot) {
+  DCHECK(slot.ToInt() >= 0 && slot.ToInt() < feedback_vector_->length());
+  Object* obj = feedback_vector_->Get(slot);
   if (!obj->IsJSFunction() ||
       !CanRetainOtherContext(JSFunction::cast(obj), *native_context_)) {
     return Handle<Object>(obj, isolate());
@@ -73,6 +81,24 @@ bool TypeFeedbackOracle::LoadIsUninitialized(TypeFeedbackId id) {
 }
 
 
+bool TypeFeedbackOracle::LoadIsUninitialized(FeedbackVectorICSlot slot) {
+  Code::Kind kind = feedback_vector_->GetKind(slot);
+  if (kind == Code::LOAD_IC) {
+    LoadICNexus nexus(feedback_vector_, slot);
+    return nexus.StateFromFeedback() == UNINITIALIZED;
+  } else if (kind == Code::KEYED_LOAD_IC) {
+    KeyedLoadICNexus nexus(feedback_vector_, slot);
+    return nexus.StateFromFeedback() == UNINITIALIZED;
+  } else if (kind == Code::NUMBER_OF_KINDS) {
+    // Code::NUMBER_OF_KINDS indicates a slot that was never even compiled
+    // in full code.
+    return true;
+  }
+
+  return false;
+}
+
+
 bool TypeFeedbackOracle::StoreIsUninitialized(TypeFeedbackId ast_id) {
   Handle<Object> maybe_code = GetInfo(ast_id);
   if (!maybe_code->IsCode()) return false;
@@ -81,24 +107,21 @@ bool TypeFeedbackOracle::StoreIsUninitialized(TypeFeedbackId ast_id) {
 }
 
 
-bool TypeFeedbackOracle::StoreIsKeyedPolymorphic(TypeFeedbackId ast_id) {
-  Handle<Object> maybe_code = GetInfo(ast_id);
-  if (maybe_code->IsCode()) {
-    Handle<Code> code = Handle<Code>::cast(maybe_code);
-    return code->is_keyed_store_stub() &&
-        code->ic_state() == POLYMORPHIC;
-  }
-  return false;
+bool TypeFeedbackOracle::CallIsUninitialized(FeedbackVectorICSlot slot) {
+  Handle<Object> value = GetInfo(slot);
+  return value->IsUndefined() ||
+         value.is_identical_to(
+             TypeFeedbackVector::UninitializedSentinel(isolate()));
 }
 
 
-bool TypeFeedbackOracle::CallIsMonomorphic(int slot) {
+bool TypeFeedbackOracle::CallIsMonomorphic(FeedbackVectorICSlot slot) {
   Handle<Object> value = GetInfo(slot);
   return value->IsAllocationSite() || value->IsJSFunction();
 }
 
 
-bool TypeFeedbackOracle::CallNewIsMonomorphic(int slot) {
+bool TypeFeedbackOracle::CallNewIsMonomorphic(FeedbackVectorSlot slot) {
   Handle<Object> info = GetInfo(slot);
   return FLAG_pretenuring_call_new
       ? info->IsJSFunction()
@@ -106,7 +129,7 @@ bool TypeFeedbackOracle::CallNewIsMonomorphic(int slot) {
 }
 
 
-byte TypeFeedbackOracle::ForInType(int feedback_vector_slot) {
+byte TypeFeedbackOracle::ForInType(FeedbackVectorSlot feedback_vector_slot) {
   Handle<Object> value = GetInfo(feedback_vector_slot);
   return value.is_identical_to(
              TypeFeedbackVector::UninitializedSentinel(isolate()))
@@ -115,20 +138,41 @@ byte TypeFeedbackOracle::ForInType(int feedback_vector_slot) {
 }
 
 
-KeyedAccessStoreMode TypeFeedbackOracle::GetStoreMode(
-    TypeFeedbackId ast_id) {
+void TypeFeedbackOracle::GetStoreModeAndKeyType(
+    TypeFeedbackId ast_id, KeyedAccessStoreMode* store_mode,
+    IcCheckType* key_type) {
   Handle<Object> maybe_code = GetInfo(ast_id);
   if (maybe_code->IsCode()) {
     Handle<Code> code = Handle<Code>::cast(maybe_code);
     if (code->kind() == Code::KEYED_STORE_IC) {
-      return KeyedStoreIC::GetKeyedAccessStoreMode(code->extra_ic_state());
+      ExtraICState extra_ic_state = code->extra_ic_state();
+      *store_mode = KeyedStoreIC::GetKeyedAccessStoreMode(extra_ic_state);
+      *key_type = KeyedStoreIC::GetKeyType(extra_ic_state);
+      return;
     }
   }
-  return STANDARD_STORE;
+  *store_mode = STANDARD_STORE;
+  *key_type = ELEMENT;
 }
 
 
-Handle<JSFunction> TypeFeedbackOracle::GetCallTarget(int slot) {
+void TypeFeedbackOracle::GetLoadKeyType(
+    TypeFeedbackId ast_id, IcCheckType* key_type) {
+  Handle<Object> maybe_code = GetInfo(ast_id);
+  if (maybe_code->IsCode()) {
+    Handle<Code> code = Handle<Code>::cast(maybe_code);
+    if (code->kind() == Code::KEYED_LOAD_IC) {
+      ExtraICState extra_ic_state = code->extra_ic_state();
+      *key_type = KeyedLoadIC::GetKeyType(extra_ic_state);
+      return;
+    }
+  }
+  *key_type = ELEMENT;
+}
+
+
+Handle<JSFunction> TypeFeedbackOracle::GetCallTarget(
+    FeedbackVectorICSlot slot) {
   Handle<Object> info = GetInfo(slot);
   if (info->IsAllocationSite()) {
     return Handle<JSFunction>(isolate()->native_context()->array_function());
@@ -138,7 +182,8 @@ Handle<JSFunction> TypeFeedbackOracle::GetCallTarget(int slot) {
 }
 
 
-Handle<JSFunction> TypeFeedbackOracle::GetCallNewTarget(int slot) {
+Handle<JSFunction> TypeFeedbackOracle::GetCallNewTarget(
+    FeedbackVectorSlot slot) {
   Handle<Object> info = GetInfo(slot);
   if (FLAG_pretenuring_call_new || info->IsJSFunction()) {
     return Handle<JSFunction>::cast(info);
@@ -149,7 +194,8 @@ Handle<JSFunction> TypeFeedbackOracle::GetCallNewTarget(int slot) {
 }
 
 
-Handle<AllocationSite> TypeFeedbackOracle::GetCallAllocationSite(int slot) {
+Handle<AllocationSite> TypeFeedbackOracle::GetCallAllocationSite(
+    FeedbackVectorICSlot slot) {
   Handle<Object> info = GetInfo(slot);
   if (info->IsAllocationSite()) {
     return Handle<AllocationSite>::cast(info);
@@ -158,7 +204,8 @@ Handle<AllocationSite> TypeFeedbackOracle::GetCallAllocationSite(int slot) {
 }
 
 
-Handle<AllocationSite> TypeFeedbackOracle::GetCallNewAllocationSite(int slot) {
+Handle<AllocationSite> TypeFeedbackOracle::GetCallNewAllocationSite(
+    FeedbackVectorSlot slot) {
   Handle<Object> info = GetInfo(slot);
   if (FLAG_pretenuring_call_new || info->IsAllocationSite()) {
     return Handle<AllocationSite>::cast(info);
@@ -263,15 +310,45 @@ void TypeFeedbackOracle::PropertyReceiverTypes(TypeFeedbackId id,
 }
 
 
-void TypeFeedbackOracle::KeyedPropertyReceiverTypes(
-    TypeFeedbackId id, SmallMapList* receiver_types, bool* is_string) {
-  receiver_types->Clear();
-  *is_string = false;
-  if (LoadIsBuiltin(id, Builtins::kKeyedLoadIC_String)) {
-    *is_string = true;
-  } else {
-    CollectReceiverTypes(id, receiver_types);
+bool TypeFeedbackOracle::HasOnlyStringMaps(SmallMapList* receiver_types) {
+  bool all_strings = receiver_types->length() > 0;
+  for (int i = 0; i < receiver_types->length(); i++) {
+    all_strings &= receiver_types->at(i)->IsStringMap();
   }
+  return all_strings;
+}
+
+
+void TypeFeedbackOracle::KeyedPropertyReceiverTypes(
+    TypeFeedbackId id,
+    SmallMapList* receiver_types,
+    bool* is_string,
+    IcCheckType* key_type) {
+  receiver_types->Clear();
+  CollectReceiverTypes(id, receiver_types);
+  *is_string = HasOnlyStringMaps(receiver_types);
+  GetLoadKeyType(id, key_type);
+}
+
+
+void TypeFeedbackOracle::PropertyReceiverTypes(FeedbackVectorICSlot slot,
+                                               Handle<String> name,
+                                               SmallMapList* receiver_types) {
+  receiver_types->Clear();
+  LoadICNexus nexus(feedback_vector_, slot);
+  Code::Flags flags = Code::ComputeHandlerFlags(Code::LOAD_IC);
+  CollectReceiverTypes(&nexus, name, flags, receiver_types);
+}
+
+
+void TypeFeedbackOracle::KeyedPropertyReceiverTypes(
+    FeedbackVectorICSlot slot, SmallMapList* receiver_types, bool* is_string,
+    IcCheckType* key_type) {
+  receiver_types->Clear();
+  KeyedLoadICNexus nexus(feedback_vector_, slot);
+  CollectReceiverTypes<FeedbackNexus>(&nexus, receiver_types);
+  *is_string = HasOnlyStringMaps(receiver_types);
+  *key_type = nexus.FindFirstName() != NULL ? PROPERTY : ELEMENT;
 }
 
 
@@ -285,10 +362,10 @@ void TypeFeedbackOracle::AssignmentReceiverTypes(
 
 void TypeFeedbackOracle::KeyedAssignmentReceiverTypes(
     TypeFeedbackId id, SmallMapList* receiver_types,
-    KeyedAccessStoreMode* store_mode) {
+    KeyedAccessStoreMode* store_mode, IcCheckType* key_type) {
   receiver_types->Clear();
   CollectReceiverTypes(id, receiver_types);
-  *store_mode = GetStoreMode(id);
+  GetStoreModeAndKeyType(id, store_mode, key_type);
 }
 
 
@@ -308,14 +385,21 @@ void TypeFeedbackOracle::CollectReceiverTypes(TypeFeedbackId ast_id,
 
   DCHECK(object->IsCode());
   Handle<Code> code(Handle<Code>::cast(object));
+  CollectReceiverTypes<Code>(*code, name, flags, types);
+}
 
+
+template <class T>
+void TypeFeedbackOracle::CollectReceiverTypes(T* obj, Handle<String> name,
+                                              Code::Flags flags,
+                                              SmallMapList* types) {
   if (FLAG_collect_megamorphic_maps_from_stub_cache &&
-      code->ic_state() == MEGAMORPHIC) {
+      obj->ic_state() == MEGAMORPHIC) {
     types->Reserve(4, zone());
     isolate()->stub_cache()->CollectMatchingMaps(
         types, name, flags, native_context_, zone());
   } else {
-    CollectReceiverTypes(ast_id, types);
+    CollectReceiverTypes<T>(obj, types);
   }
 }
 
@@ -359,12 +443,18 @@ void TypeFeedbackOracle::CollectReceiverTypes(TypeFeedbackId ast_id,
   Handle<Object> object = GetInfo(ast_id);
   if (!object->IsCode()) return;
   Handle<Code> code = Handle<Code>::cast(object);
+  CollectReceiverTypes<Code>(*code, types);
+}
+
+
+template <class T>
+void TypeFeedbackOracle::CollectReceiverTypes(T* obj, SmallMapList* types) {
   MapHandleList maps;
-  if (code->ic_state() == MONOMORPHIC) {
-    Map* map = code->FindFirstMap();
+  if (obj->ic_state() == MONOMORPHIC) {
+    Map* map = obj->FindFirstMap();
     if (map != NULL) maps.Add(handle(map));
-  } else if (code->ic_state() == POLYMORPHIC) {
-    code->FindAllMaps(&maps);
+  } else if (obj->ic_state() == POLYMORPHIC) {
+    obj->FindAllMaps(&maps);
   } else {
     return;
   }

@@ -5,12 +5,18 @@
 #ifndef V8_COMPILER_INSTRUCTION_CODES_H_
 #define V8_COMPILER_INSTRUCTION_CODES_H_
 
+#include <iosfwd>
+
 #if V8_TARGET_ARCH_ARM
 #include "src/compiler/arm/instruction-codes-arm.h"
 #elif V8_TARGET_ARCH_ARM64
 #include "src/compiler/arm64/instruction-codes-arm64.h"
 #elif V8_TARGET_ARCH_IA32
 #include "src/compiler/ia32/instruction-codes-ia32.h"
+#elif V8_TARGET_ARCH_MIPS
+#include "src/compiler/mips/instruction-codes-mips.h"
+#elif V8_TARGET_ARCH_MIPS64
+#include "src/compiler/mips64/instruction-codes-mips64.h"
 #elif V8_TARGET_ARCH_X64
 #include "src/compiler/x64/instruction-codes-x64.h"
 #else
@@ -21,9 +27,6 @@
 
 namespace v8 {
 namespace internal {
-
-class OStream;
-
 namespace compiler {
 
 // Target-specific opcodes that specify which assembly sequence to emit.
@@ -34,7 +37,20 @@ namespace compiler {
   V(ArchJmp)                \
   V(ArchNop)                \
   V(ArchRet)                \
+  V(ArchStackPointer)       \
   V(ArchTruncateDoubleToI)  \
+  V(CheckedLoadInt8)        \
+  V(CheckedLoadUint8)       \
+  V(CheckedLoadInt16)       \
+  V(CheckedLoadUint16)      \
+  V(CheckedLoadWord32)      \
+  V(CheckedLoadFloat32)     \
+  V(CheckedLoadFloat64)     \
+  V(CheckedStoreWord8)      \
+  V(CheckedStoreWord16)     \
+  V(CheckedStoreWord32)     \
+  V(CheckedStoreFloat32)    \
+  V(CheckedStoreFloat64)    \
   TARGET_ARCH_OPCODE_LIST(V)
 
 enum ArchOpcode {
@@ -46,7 +62,7 @@ enum ArchOpcode {
 #undef COUNT_ARCH_OPCODE
 };
 
-OStream& operator<<(OStream& os, const ArchOpcode& ao);
+std::ostream& operator<<(std::ostream& os, const ArchOpcode& ao);
 
 // Addressing modes represent the "shape" of inputs to an instruction.
 // Many instructions support multiple addressing modes. Addressing modes
@@ -65,12 +81,12 @@ enum AddressingMode {
 #undef COUNT_ADDRESSING_MODE
 };
 
-OStream& operator<<(OStream& os, const AddressingMode& am);
+std::ostream& operator<<(std::ostream& os, const AddressingMode& am);
 
 // The mode of the flags continuation (see below).
 enum FlagsMode { kFlags_none = 0, kFlags_branch = 1, kFlags_set = 2 };
 
-OStream& operator<<(OStream& os, const FlagsMode& fm);
+std::ostream& operator<<(std::ostream& os, const FlagsMode& fm);
 
 // The condition of flags continuation (see below).
 enum FlagsCondition {
@@ -94,7 +110,11 @@ enum FlagsCondition {
   kNotOverflow
 };
 
-OStream& operator<<(OStream& os, const FlagsCondition& fc);
+inline FlagsCondition NegateFlagsCondition(FlagsCondition condition) {
+  return static_cast<FlagsCondition>(condition ^ 1);
+}
+
+std::ostream& operator<<(std::ostream& os, const FlagsCondition& fc);
 
 // The InstructionCode is an opaque, target-specific integer that encodes
 // what code to emit for an instruction in the code generator. It is not
@@ -107,10 +127,10 @@ typedef int32_t InstructionCode;
 // continuation into a single InstructionCode which is stored as part of
 // the instruction.
 typedef BitField<ArchOpcode, 0, 7> ArchOpcodeField;
-typedef BitField<AddressingMode, 7, 4> AddressingModeField;
-typedef BitField<FlagsMode, 11, 2> FlagsModeField;
-typedef BitField<FlagsCondition, 13, 5> FlagsConditionField;
-typedef BitField<int, 13, 19> MiscField;
+typedef BitField<AddressingMode, 7, 5> AddressingModeField;
+typedef BitField<FlagsMode, 12, 2> FlagsModeField;
+typedef BitField<FlagsCondition, 14, 5> FlagsConditionField;
+typedef BitField<int, 14, 18> MiscField;
 
 }  // namespace compiler
 }  // namespace internal

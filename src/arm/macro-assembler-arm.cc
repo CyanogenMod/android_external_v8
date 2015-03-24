@@ -15,7 +15,7 @@
 #include "src/cpu-profiler.h"
 #include "src/debug.h"
 #include "src/isolate-inl.h"
-#include "src/runtime.h"
+#include "src/runtime/runtime.h"
 
 namespace v8 {
 namespace internal {
@@ -967,7 +967,7 @@ void MacroAssembler::StubPrologue() {
   add(fp, sp, Operand(StandardFrameConstants::kFixedFrameSizeFromFp));
   if (FLAG_enable_ool_constant_pool) {
     LoadConstantPoolPointerRegister();
-    set_constant_pool_available(true);
+    set_ool_constant_pool_available(true);
   }
 }
 
@@ -992,16 +992,16 @@ void MacroAssembler::Prologue(bool code_pre_aging) {
   }
   if (FLAG_enable_ool_constant_pool) {
     LoadConstantPoolPointerRegister();
-    set_constant_pool_available(true);
+    set_ool_constant_pool_available(true);
   }
 }
 
 
 void MacroAssembler::EnterFrame(StackFrame::Type type,
-                                bool load_constant_pool) {
+                                bool load_constant_pool_pointer_reg) {
   // r0-r3: preserved
   PushFixedFrame();
-  if (FLAG_enable_ool_constant_pool && load_constant_pool) {
+  if (FLAG_enable_ool_constant_pool && load_constant_pool_pointer_reg) {
     LoadConstantPoolPointerRegister();
   }
   mov(ip, Operand(Smi::FromInt(type)));
@@ -1699,11 +1699,12 @@ void MacroAssembler::LoadFromNumberDictionary(Label* miss,
   }
 
   bind(&done);
-  // Check that the value is a normal property.
+  // Check that the value is a field property.
   // t2: elements + (index * kPointerSize)
   const int kDetailsOffset =
       SeededNumberDictionary::kElementsStartOffset + 2 * kPointerSize;
   ldr(t1, FieldMemOperand(t2, kDetailsOffset));
+  DCHECK_EQ(FIELD, 0);
   tst(t1, Operand(Smi::FromInt(PropertyDetails::TypeField::kMask)));
   b(ne, miss);
 
@@ -2251,20 +2252,34 @@ void MacroAssembler::CheckMap(Register obj,
 }
 
 
-void MacroAssembler::DispatchMap(Register obj,
-                                 Register scratch,
-                                 Handle<Map> map,
-                                 Handle<Code> success,
-                                 SmiCheckType smi_check_type) {
+void MacroAssembler::DispatchWeakMap(Register obj, Register scratch1,
+                                     Register scratch2, Handle<WeakCell> cell,
+                                     Handle<Code> success,
+                                     SmiCheckType smi_check_type) {
   Label fail;
   if (smi_check_type == DO_SMI_CHECK) {
     JumpIfSmi(obj, &fail);
   }
-  ldr(scratch, FieldMemOperand(obj, HeapObject::kMapOffset));
-  mov(ip, Operand(map));
-  cmp(scratch, ip);
+  ldr(scratch1, FieldMemOperand(obj, HeapObject::kMapOffset));
+  CmpWeakValue(scratch1, cell, scratch2);
   Jump(success, RelocInfo::CODE_TARGET, eq);
   bind(&fail);
+}
+
+
+void MacroAssembler::CmpWeakValue(Register value, Handle<WeakCell> cell,
+                                  Register scratch) {
+  mov(scratch, Operand(cell));
+  ldr(scratch, FieldMemOperand(scratch, WeakCell::kValueOffset));
+  cmp(value, scratch);
+}
+
+
+void MacroAssembler::LoadWeakValue(Register value, Handle<WeakCell> cell,
+                                   Label* miss) {
+  mov(value, Operand(cell));
+  ldr(value, FieldMemOperand(value, WeakCell::kValueOffset));
+  JumpIfSmi(value, miss);
 }
 
 
@@ -3653,18 +3668,6 @@ void MacroAssembler::CheckPageFlag(
 }
 
 
-void MacroAssembler::CheckMapDeprecated(Handle<Map> map,
-                                        Register scratch,
-                                        Label* if_deprecated) {
-  if (map->CanBeDeprecated()) {
-    mov(scratch, Operand(map));
-    ldr(scratch, FieldMemOperand(scratch, Map::kBitField3Offset));
-    tst(scratch, Operand(Map::Deprecated::kMask));
-    b(ne, if_deprecated);
-  }
-}
-
-
 void MacroAssembler::JumpIfBlack(Register object,
                                  Register scratch0,
                                  Register scratch1,
@@ -4071,21 +4074,22 @@ void MacroAssembler::TruncatingDiv(Register result,
   DCHECK(!dividend.is(ip));
   DCHECK(!result.is(ip));
   base::MagicNumbersForDivision<uint32_t> mag =
-      base::SignedDivisionByConstant(static_cast<uint32_t>(divisor));
+      base::SignedDivisionByConstant(bit_cast<uint32_t>(divisor));
   mov(ip, Operand(mag.multiplier));
-  smull(ip, result, dividend, ip);
-  bool neg = (mag.multiplier & (static_cast<uint32_t>(1) << 31)) != 0;
+  bool neg = (mag.multiplier & (1U << 31)) != 0;
   if (divisor > 0 && neg) {
-    add(result, result, Operand(dividend));
-  }
-  if (divisor < 0 && !neg && mag.multiplier > 0) {
-    sub(result, result, Operand(dividend));
+    smmla(result, dividend, ip, dividend);
+  } else {
+    smmul(result, dividend, ip);
+    if (divisor < 0 && !neg && mag.multiplier > 0) {
+      sub(result, result, Operand(dividend));
+    }
   }
   if (mag.shift > 0) mov(result, Operand(result, ASR, mag.shift));
   add(result, result, Operand(dividend, LSR, 31));
 }
 
-
-} }  // namespace v8::internal
+}  // namespace internal
+}  // namespace v8
 
 #endif  // V8_TARGET_ARCH_ARM

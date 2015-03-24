@@ -64,6 +64,10 @@ endif
 ifeq ($(verifyheap), on)
   GYPFLAGS += -Dv8_enable_verify_heap=1
 endif
+# tracemaps=on
+ifeq ($(tracemaps), on)
+  GYPFLAGS += -Dv8_trace_maps=1
+endif
 # backtrace=off
 ifeq ($(backtrace), off)
   GYPFLAGS += -Dv8_enable_backtrace=0
@@ -77,6 +81,9 @@ endif
 # snapshot=off
 ifeq ($(snapshot), off)
   GYPFLAGS += -Dv8_use_snapshot='false'
+endif
+ifeq ($(snapshot), external)
+  GYPFLAGS += -Dv8_use_external_startup_data=1
 endif
 # extrachecks=on/off
 ifeq ($(extrachecks), on)
@@ -140,10 +147,15 @@ endif
 # asan=/path/to/clang++
 ifneq ($(strip $(asan)),)
   GYPFLAGS += -Dasan=1
+  export CC=$(dir $(asan))clang
   export CXX=$(asan)
   export CXX_host=$(asan)
   export LINK=$(asan)
-  export ASAN_SYMBOLIZER_PATH="$(dir $(asan))llvm-symbolizer"
+  export ASAN_SYMBOLIZER_PATH=$(dir $(asan))llvm-symbolizer
+  TESTFLAGS += --asan
+  ifeq ($(lsan), on)
+    GYPFLAGS += -Dlsan=1
+  endif
 endif
 
 # arm specific flags.
@@ -230,8 +242,8 @@ NACL_ARCHES = nacl_ia32 nacl_x64
 
 # List of files that trigger Makefile regeneration:
 GYPFILES = build/all.gyp build/features.gypi build/standalone.gypi \
-           build/toolchain.gypi samples/samples.gyp src/compiler/compiler.gyp \
-           src/d8.gyp test/cctest/cctest.gyp tools/gyp/v8.gyp
+           build/toolchain.gypi samples/samples.gyp src/d8.gyp \
+           test/cctest/cctest.gyp test/unittests/unittests.gyp tools/gyp/v8.gyp
 
 # If vtunejit=on, the v8vtune.gyp will be appended.
 ifeq ($(vtunejit), on)
@@ -252,7 +264,7 @@ NACL_CHECKS = $(addsuffix .check,$(NACL_BUILDS))
 ENVFILE = $(OUTDIR)/environment
 
 .PHONY: all check clean builddeps dependencies $(ENVFILE).new native \
-        qc quickcheck $(QUICKCHECKS) \
+        qc quickcheck $(QUICKCHECKS) turbocheck \
         $(addsuffix .quickcheck,$(MODES)) $(addsuffix .quickcheck,$(ARCHES)) \
         $(ARCHES) $(MODES) $(BUILDS) $(CHECKS) $(addsuffix .clean,$(ARCHES)) \
         $(addsuffix .check,$(MODES)) $(addsuffix .check,$(ARCHES)) \
@@ -381,6 +393,15 @@ quickcheck: $(subst $(COMMA),$(SPACE),$(FASTCOMPILEMODES))
 	    --arch-and-mode=$(FASTTESTMODES) $(TESTFLAGS) --quickcheck
 qc: quickcheck
 
+turbocheck: $(subst $(COMMA),$(SPACE),$(FASTCOMPILEMODES))
+	tools/run-tests.py $(TESTJOBS) --outdir=$(OUTDIR) \
+	    --arch-and-mode=$(SUPERFASTTESTMODES) $(TESTFLAGS) \
+	    --quickcheck --variants=turbofan --download-data mozilla webkit
+	tools/run-tests.py $(TESTJOBS) --outdir=$(OUTDIR) \
+	    --arch-and-mode=$(FASTTESTMODES) $(TESTFLAGS) \
+	    --quickcheck --variants=turbofan
+tc: turbocheck
+
 # Clean targets. You can clean each architecture individually, or everything.
 $(addsuffix .clean, $(ARCHES) $(ANDROID_ARCHES) $(NACL_ARCHES)):
 	rm -f $(OUTDIR)/Makefile.$(basename $@)*
@@ -472,7 +493,7 @@ gtags.clean:
 # "dependencies" includes also dependencies required for development.
 # Remember to keep these in sync with the DEPS file.
 builddeps:
-	svn checkout --force http://gyp.googlecode.com/svn/trunk build/gyp \
+	svn checkout --force https://gyp.googlecode.com/svn/trunk build/gyp \
 	    --revision 1831
 	if svn info third_party/icu 2>&1 | grep -q icu46 ; then \
 	  svn switch --force \
@@ -483,9 +504,9 @@ builddeps:
 	      https://src.chromium.org/chrome/trunk/deps/third_party/icu52 \
 	      third_party/icu --revision 277999 ; \
 	fi
-	svn checkout --force http://googletest.googlecode.com/svn/trunk \
+	svn checkout --force https://googletest.googlecode.com/svn/trunk \
 	    testing/gtest --revision 692
-	svn checkout --force http://googlemock.googlecode.com/svn/trunk \
+	svn checkout --force https://googlemock.googlecode.com/svn/trunk \
 	    testing/gmock --revision 485
 
 dependencies: builddeps

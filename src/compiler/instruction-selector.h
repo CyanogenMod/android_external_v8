@@ -19,13 +19,20 @@ namespace compiler {
 // Forward declarations.
 struct CallBuffer;  // TODO(bmeurer): Remove this.
 class FlagsContinuation;
+class Linkage;
+
+typedef IntVector NodeToVregMap;
 
 class InstructionSelector FINAL {
  public:
+  static const int kNodeUnmapped = -1;
+
   // Forward declarations.
   class Features;
 
-  InstructionSelector(InstructionSequence* sequence,
+  // TODO(dcarney): pass in vreg mapping instead of graph.
+  InstructionSelector(Zone* local_zone, Graph* graph, Linkage* linkage,
+                      InstructionSequence* sequence, Schedule* schedule,
                       SourcePositionTable* source_positions,
                       Features features = SupportedFeatures());
 
@@ -51,6 +58,16 @@ class InstructionSelector FINAL {
   Instruction* Emit(InstructionCode opcode, InstructionOperand* output,
                     InstructionOperand* a, InstructionOperand* b,
                     InstructionOperand* c, InstructionOperand* d,
+                    size_t temp_count = 0, InstructionOperand* *temps = NULL);
+  Instruction* Emit(InstructionCode opcode, InstructionOperand* output,
+                    InstructionOperand* a, InstructionOperand* b,
+                    InstructionOperand* c, InstructionOperand* d,
+                    InstructionOperand* e, size_t temp_count = 0,
+                    InstructionOperand* *temps = NULL);
+  Instruction* Emit(InstructionCode opcode, InstructionOperand* output,
+                    InstructionOperand* a, InstructionOperand* b,
+                    InstructionOperand* c, InstructionOperand* d,
+                    InstructionOperand* e, InstructionOperand* f,
                     size_t temp_count = 0, InstructionOperand* *temps = NULL);
   Instruction* Emit(InstructionCode opcode, size_t output_count,
                     InstructionOperand** outputs, size_t input_count,
@@ -84,16 +101,12 @@ class InstructionSelector FINAL {
     return Features(CpuFeatures::SupportedFeatures());
   }
 
- private:
-  friend class OperandGenerator;
+  // TODO(sigurds) This should take a CpuFeatures argument.
+  static MachineOperatorBuilder::Flags SupportedMachineOperatorFlags();
 
   // ===========================================================================
   // ============ Architecture-independent graph covering methods. =============
   // ===========================================================================
-
-  // Checks if {block} will appear directly after {current_block_} when
-  // assembling code, in which case, a fall-through can be used.
-  bool IsNextInAssemblyOrder(const BasicBlock* block) const;
 
   // Used in pattern matching during code generation.
   // Check if {node} can be covered while generating code for the current
@@ -105,12 +118,23 @@ class InstructionSelector FINAL {
   // generated for it.
   bool IsDefined(Node* node) const;
 
-  // Inform the instruction selection that {node} was just defined.
-  void MarkAsDefined(Node* node);
-
   // Checks if {node} has any uses, and therefore code has to be generated for
   // it.
   bool IsUsed(Node* node) const;
+
+  // Checks if {node} is currently live.
+  bool IsLive(Node* node) const { return !IsDefined(node) && IsUsed(node); }
+
+  int GetVirtualRegister(const Node* node);
+  // Gets the current mapping if it exists, kNodeUnmapped otherwise.
+  int GetMappedVirtualRegister(const Node* node) const;
+  const NodeToVregMap& GetNodeMapForTesting() const { return node_map_; }
+
+ private:
+  friend class OperandGenerator;
+
+  // Inform the instruction selection that {node} was just defined.
+  void MarkAsDefined(Node* node);
 
   // Inform the instruction selection that {node} has at least one use and we
   // will need to generate code for it.
@@ -132,6 +156,10 @@ class InstructionSelector FINAL {
   // by {node}.
   void MarkAsRepresentation(MachineType rep, Node* node);
 
+  // Inform the register allocation of the representation of the unallocated
+  // operand {op}.
+  void MarkAsRepresentation(MachineType rep, InstructionOperand* op);
+
   // Initialize the call buffer with the InstructionOperands, nodes, etc,
   // corresponding
   // to the inputs and outputs of the call.
@@ -142,8 +170,11 @@ class InstructionSelector FINAL {
                             bool call_address_immediate);
 
   FrameStateDescriptor* GetFrameStateDescriptor(Node* node);
+  void FillTypeVectorFromStateValues(ZoneVector<MachineType>* parameters,
+                                     Node* state_values);
   void AddFrameStateInputs(Node* state, InstructionOperandVector* inputs,
                            FrameStateDescriptor* descriptor);
+  MachineType GetMachineType(Node* node);
 
   // ===========================================================================
   // ============= Architecture-specific graph covering methods. ===============
@@ -163,22 +194,12 @@ class InstructionSelector FINAL {
   MACHINE_OP_LIST(DECLARE_GENERATOR)
 #undef DECLARE_GENERATOR
 
-  void VisitInt32AddWithOverflow(Node* node, FlagsContinuation* cont);
-  void VisitInt32SubWithOverflow(Node* node, FlagsContinuation* cont);
-
-  void VisitWord32Test(Node* node, FlagsContinuation* cont);
-  void VisitWord64Test(Node* node, FlagsContinuation* cont);
-  void VisitWord32Compare(Node* node, FlagsContinuation* cont);
-  void VisitWord64Compare(Node* node, FlagsContinuation* cont);
-  void VisitFloat64Compare(Node* node, FlagsContinuation* cont);
-
   void VisitFinish(Node* node);
   void VisitParameter(Node* node);
   void VisitPhi(Node* node);
   void VisitProjection(Node* node);
   void VisitConstant(Node* node);
-  void VisitCall(Node* call, BasicBlock* continuation,
-                 BasicBlock* deoptimization);
+  void VisitCall(Node* call);
   void VisitGoto(BasicBlock* target);
   void VisitBranch(Node* input, BasicBlock* tbranch, BasicBlock* fbranch);
   void VisitReturn(Node* value);
@@ -187,19 +208,21 @@ class InstructionSelector FINAL {
 
   // ===========================================================================
 
-  Graph* graph() const { return sequence()->graph(); }
-  Linkage* linkage() const { return sequence()->linkage(); }
-  Schedule* schedule() const { return sequence()->schedule(); }
+  Schedule* schedule() const { return schedule_; }
+  Linkage* linkage() const { return linkage_; }
   InstructionSequence* sequence() const { return sequence_; }
   Zone* instruction_zone() const { return sequence()->zone(); }
-  Zone* zone() { return &zone_; }
+  Zone* zone() const { return zone_; }
 
   // ===========================================================================
 
-  Zone zone_;
-  InstructionSequence* sequence_;
-  SourcePositionTable* source_positions_;
+  Zone* const zone_;
+  Linkage* const linkage_;
+  InstructionSequence* const sequence_;
+  SourcePositionTable* const source_positions_;
   Features features_;
+  Schedule* const schedule_;
+  NodeToVregMap node_map_;
   BasicBlock* current_block_;
   ZoneDeque<Instruction*> instructions_;
   BoolVector defined_;

@@ -57,7 +57,6 @@ TEST_CONFIG = {
   "BRANCHNAME": "test-prepare-push",
   "TRUNKBRANCH": "test-trunk-push",
   "PERSISTFILE_BASENAME": "/tmp/test-v8-push-to-trunk-tempfile",
-  "CHANGELOG_FILE": None,
   "CHANGELOG_ENTRY_FILE": "/tmp/test-v8-push-to-trunk-tempfile-changelog-entry",
   "PATCH_FILE": "/tmp/test-v8-push-to-trunk-tempfile-patch",
   "COMMITMSG_FILE": "/tmp/test-v8-push-to-trunk-tempfile-commitmsg",
@@ -446,7 +445,7 @@ class ScriptTest(unittest.TestCase):
     self.Expect([
       Cmd("git status -s -uno", ""),
       Cmd("git status -s -b -uno", "## some_branch"),
-      Cmd("git svn fetch", ""),
+      Cmd("git fetch", ""),
       Cmd("git branch", "  branch1\n* %s" % TEST_CONFIG["BRANCHNAME"]),
       RL("Y"),
       Cmd("git branch -D %s" % TEST_CONFIG["BRANCHNAME"], ""),
@@ -459,7 +458,7 @@ class ScriptTest(unittest.TestCase):
     self.Expect([
       Cmd("git status -s -uno", ""),
       Cmd("git status -s -b -uno", "## some_branch"),
-      Cmd("git svn fetch", ""),
+      Cmd("git fetch", ""),
       Cmd("git branch", "  branch1\n* %s" % TEST_CONFIG["BRANCHNAME"]),
       RL("n"),
     ])
@@ -471,7 +470,7 @@ class ScriptTest(unittest.TestCase):
     self.Expect([
       Cmd("git status -s -uno", ""),
       Cmd("git status -s -b -uno", "## some_branch"),
-      Cmd("git svn fetch", ""),
+      Cmd("git fetch", ""),
       Cmd("git branch", "  branch1\n* %s" % TEST_CONFIG["BRANCHNAME"]),
       RL("Y"),
       Cmd("git branch -D %s" % TEST_CONFIG["BRANCHNAME"], None),
@@ -487,6 +486,23 @@ class ScriptTest(unittest.TestCase):
       Cmd("which vi", "/usr/bin/vi"),
     ])
     self.MakeStep().InitialEnvironmentChecks(TEST_CONFIG["DEFAULT_CWD"])
+
+  def testTagTimeout(self):
+    self.Expect([
+      Cmd("git fetch", ""),
+      Cmd("git log -1 --format=%H --grep=\"Title\" origin/candidates", ""),
+      Cmd("git fetch", ""),
+      Cmd("git log -1 --format=%H --grep=\"Title\" origin/candidates", ""),
+      Cmd("git fetch", ""),
+      Cmd("git log -1 --format=%H --grep=\"Title\" origin/candidates", ""),
+      Cmd("git fetch", ""),
+      Cmd("git log -1 --format=%H --grep=\"Title\" origin/candidates", ""),
+    ])
+    args = ["--branch", "candidates", "ab12345"]
+    self._state["version"] = "tag_name"
+    self._state["commit_title"] = "Title"
+    self.assertRaises(Exception,
+        lambda: self.RunStep(MergeToBranch, TagRevision, args))
 
   def testReadAndPersistVersion(self):
     self.WriteFakeVersionFile(build=5)
@@ -610,7 +626,7 @@ class ScriptTest(unittest.TestCase):
 
     self.Expect([
       Cmd("git checkout -f hash1 -- src/version.cc", ""),
-      Cmd("git checkout -f svn/bleeding_edge -- src/version.cc",
+      Cmd("git checkout -f origin/master -- src/version.cc",
           "", cb=lambda: self.WriteFakeVersionFile(22, 6)),
       RL("Y"),  # Increment build number.
     ])
@@ -628,8 +644,7 @@ class ScriptTest(unittest.TestCase):
       f.write(change_log)
 
     self.Expect([
-      Cmd("git diff svn/trunk hash1", "patch content"),
-      Cmd("git svn find-rev hash1", "123455\n"),
+      Cmd("git diff origin/candidates hash1", "patch content"),
     ])
 
     self._state["push_hash"] = "hash1"
@@ -648,7 +663,7 @@ class ScriptTest(unittest.TestCase):
         Chromium issue 12345
 
         Performance and stability improvements on all platforms.\n"""
-    commit_msg = """Version 3.22.5 (based on bleeding_edge revision r123455)
+    commit_msg = """Version 3.22.5 (based on hash1)
 
 Log text 1. Chromium issue 12345
 
@@ -662,7 +677,7 @@ Performance and stability improvements on all platforms."""
         12345).
 
         Performance and stability improvements on all platforms.\n"""
-    commit_msg = """Version 3.22.5 (based on bleeding_edge revision r123455)
+    commit_msg = """Version 3.22.5 (based on hash1)
 
 Long commit message that fills more than 80 characters (Chromium issue 12345).
 
@@ -674,6 +689,21 @@ Performance and stability improvements on all platforms."""
     commit_msg = """Line with "quotation marks"."""
     self._TestSquashCommits(change_log, commit_msg)
 
+  def testBootstrapper(self):
+    work_dir = self.MakeEmptyTempDirectory()
+    class FakeScript(ScriptsBase):
+      def _Steps(self):
+        return []
+
+    # Use the test configuration without the fake testing default work dir.
+    fake_config = dict(TEST_CONFIG)
+    del(fake_config["DEFAULT_CWD"])
+
+    self.Expect([
+      Cmd("fetch v8", "", cwd=work_dir),
+    ])
+    FakeScript(fake_config, self).Run(["--work-dir", work_dir])
+
   def _PushToTrunk(self, force=False, manual=False):
     TextToFile("", os.path.join(TEST_CONFIG["DEFAULT_CWD"], ".git"))
 
@@ -682,9 +712,9 @@ Performance and stability improvements on all platforms."""
     self.WriteFakeVersionFile(build=5)
 
     TEST_CONFIG["CHANGELOG_ENTRY_FILE"] = self.MakeEmptyTempFile()
-    TEST_CONFIG["CHANGELOG_FILE"] = self.MakeEmptyTempFile()
     bleeding_edge_change_log = "2014-03-17: Sentinel\n"
-    TextToFile(bleeding_edge_change_log, TEST_CONFIG["CHANGELOG_FILE"])
+    TextToFile(bleeding_edge_change_log,
+               os.path.join(TEST_CONFIG["DEFAULT_CWD"], CHANGELOG_FILE))
     os.environ["EDITOR"] = "vi"
 
     def ResetChangeLog():
@@ -693,7 +723,8 @@ Performance and stability improvements on all platforms."""
       trunk_change_log = """1999-04-05: Version 3.22.4
 
         Performance and stability improvements on all platforms.\n"""
-      TextToFile(trunk_change_log, TEST_CONFIG["CHANGELOG_FILE"])
+      TextToFile(trunk_change_log,
+                 os.path.join(TEST_CONFIG["DEFAULT_CWD"], CHANGELOG_FILE))
 
     def ResetToTrunk():
       ResetChangeLog()
@@ -702,7 +733,7 @@ Performance and stability improvements on all platforms."""
     def CheckSVNCommit():
       commit = FileToText(TEST_CONFIG["COMMITMSG_FILE"])
       self.assertEquals(
-"""Version 3.22.5 (based on bleeding_edge revision r123455)
+"""Version 3.22.5 (based on push_hash)
 
 Log text 1 (issue 321).
 
@@ -716,7 +747,8 @@ Performance and stability improvements on all platforms.""", commit)
       self.assertTrue(re.search(r"#define IS_CANDIDATE_VERSION\s+0", version))
 
       # Check that the change log on the trunk branch got correctly modified.
-      change_log = FileToText(TEST_CONFIG["CHANGELOG_FILE"])
+      change_log = FileToText(
+          os.path.join(TEST_CONFIG["DEFAULT_CWD"], CHANGELOG_FILE))
       self.assertEquals(
 """1999-07-31: Version 3.22.5
 
@@ -737,24 +769,23 @@ Performance and stability improvements on all platforms.""", commit)
     expectations += [
       Cmd("git status -s -uno", ""),
       Cmd("git status -s -b -uno", "## some_branch\n"),
-      Cmd("git svn fetch", ""),
+      Cmd("git fetch", ""),
       Cmd("git branch", "  branch1\n* branch2\n"),
       Cmd("git branch", "  branch1\n* branch2\n"),
-      Cmd("git checkout -b %s svn/bleeding_edge" % TEST_CONFIG["BRANCHNAME"],
+      Cmd(("git new-branch %s --upstream origin/master" %
+           TEST_CONFIG["BRANCHNAME"]),
           ""),
-      Cmd("git svn find-rev r123455", "push_hash\n"),
       Cmd(("git log -1 --format=%H --grep="
            "\"^Version [[:digit:]]*\.[[:digit:]]*\.[[:digit:]]* (based\" "
-           "svn/trunk"), "hash2\n"),
+           "origin/candidates"), "hash2\n"),
       Cmd("git log -1 hash2", "Log message\n"),
     ]
     if manual:
       expectations.append(RL("Y"))  # Confirm last push.
     expectations += [
       Cmd("git log -1 --format=%s hash2",
-       "Version 3.4.5 (based on bleeding_edge revision r1234)\n"),
-      Cmd("git svn find-rev r1234", "hash3\n"),
-      Cmd("git checkout -f svn/bleeding_edge -- src/version.cc",
+       "Version 3.4.5 (based on abc3)\n"),
+      Cmd("git checkout -f origin/master -- src/version.cc",
           "", cb=self.WriteFakeVersionFile),
       Cmd("git checkout -f hash2 -- src/version.cc", "",
           cb=self.WriteFakeVersionFile),
@@ -762,7 +793,7 @@ Performance and stability improvements on all platforms.""", commit)
     if manual:
       expectations.append(RL(""))  # Increment build number.
     expectations += [
-      Cmd("git log --format=%H hash3..push_hash", "rev1\n"),
+      Cmd("git log --format=%H abc3..push_hash", "rev1\n"),
       Cmd("git log -1 --format=%s rev1", "Log text 1.\n"),
       Cmd("git log -1 --format=%B rev1", "Text\nLOG=YES\nBUG=v8:321\nText\n"),
       Cmd("git log -1 --format=%an rev1", "author1@chromium.org\n"),
@@ -773,16 +804,15 @@ Performance and stability improvements on all platforms.""", commit)
       expectations.append(
           Cmd("vi %s" % TEST_CONFIG["CHANGELOG_ENTRY_FILE"], ""))
     expectations += [
-      Cmd("git svn fetch", "fetch result\n"),
-      Cmd("git checkout -f svn/bleeding_edge", ""),
-      Cmd("git diff svn/trunk push_hash", "patch content\n"),
-      Cmd("git svn find-rev push_hash", "123455\n"),
-      Cmd("git checkout -b %s svn/trunk" % TEST_CONFIG["TRUNKBRANCH"], "",
-          cb=ResetToTrunk),
+      Cmd("git fetch", ""),
+      Cmd("git checkout -f origin/master", ""),
+      Cmd("git diff origin/candidates push_hash", "patch content\n"),
+      Cmd(("git new-branch %s --upstream origin/candidates" %
+           TEST_CONFIG["TRUNKBRANCH"]), "", cb=ResetToTrunk),
       Cmd("git apply --index --reject \"%s\"" % TEST_CONFIG["PATCH_FILE"], ""),
-      Cmd("git checkout -f svn/trunk -- %s" % TEST_CONFIG["CHANGELOG_FILE"], "",
+      Cmd("git checkout -f origin/candidates -- ChangeLog", "",
           cb=ResetChangeLog),
-      Cmd("git checkout -f svn/trunk -- src/version.cc", "",
+      Cmd("git checkout -f origin/candidates -- src/version.cc", "",
           cb=self.WriteFakeVersionFile),
       Cmd("git commit -aF \"%s\"" % TEST_CONFIG["COMMITMSG_FILE"], "",
           cb=CheckSVNCommit),
@@ -790,22 +820,26 @@ Performance and stability improvements on all platforms.""", commit)
     if manual:
       expectations.append(RL("Y"))  # Sanity check.
     expectations += [
-      Cmd("git svn dcommit 2>&1",
-          "Some output\nCommitted r123456\nSome output\n"),
-      Cmd("git svn tag 3.22.5 -m \"Tagging version 3.22.5\"", ""),
+      Cmd("git cl land -f --bypass-hooks", ""),
+      Cmd("git fetch", ""),
+      Cmd("git log -1 --format=%H --grep="
+          "\"Version 3.22.5 (based on push_hash)\""
+          " origin/candidates", "hsh_to_tag"),
+      Cmd("git tag 3.22.5 hsh_to_tag", ""),
+      Cmd("git push origin 3.22.5", ""),
       Cmd("git checkout -f some_branch", ""),
       Cmd("git branch -D %s" % TEST_CONFIG["BRANCHNAME"], ""),
       Cmd("git branch -D %s" % TEST_CONFIG["TRUNKBRANCH"], ""),
     ]
     self.Expect(expectations)
 
-    args = ["-a", "author@chromium.org", "--revision", "123455"]
+    args = ["-a", "author@chromium.org", "--revision", "push_hash"]
     if force: args.append("-f")
     if manual: args.append("-m")
     else: args += ["-r", "reviewer@chromium.org"]
     PushToTrunk(TEST_CONFIG, self).Run(args)
 
-    cl = FileToText(TEST_CONFIG["CHANGELOG_FILE"])
+    cl = FileToText(os.path.join(TEST_CONFIG["DEFAULT_CWD"], CHANGELOG_FILE))
     self.assertTrue(re.search(r"^\d\d\d\d\-\d+\-\d+: Version 3\.22\.5", cl))
     self.assertTrue(re.search(r"        Log text 1 \(issue 321\).", cl))
     self.assertTrue(re.search(r"1999\-04\-05: Version 3\.22\.4", cl))
@@ -867,8 +901,7 @@ def get_list():
       Cmd("git fetch origin", ""),
       Cmd(("git log -1 --format=%H --grep="
            "\"^Version [[:digit:]]*\.[[:digit:]]*\.[[:digit:]]*\" "
-           "origin/master"), "push_hash\n"),
-      Cmd("git log -1 --format=%B push_hash", self.C_V8_22624_LOG),
+           "origin/candidates"), "push_hash\n"),
       Cmd("git log -1 --format=%s push_hash",
           "Version 3.22.5 (based on bleeding_edge revision r22622)\n"),
       URL("https://chromium-build.appspot.com/p/chromium/sheriff_v8.js",
@@ -878,8 +911,8 @@ def get_list():
       Cmd("gclient sync --nohooks", "syncing...", cwd=chrome_dir),
       Cmd("git pull", "", cwd=chrome_dir),
       Cmd("git fetch origin", ""),
-      Cmd("git checkout -b v8-roll-22624", "", cwd=chrome_dir),
-      Cmd("roll-dep v8 22624", "rolled", cb=WriteDeps, cwd=chrome_dir),
+      Cmd("git new-branch v8-roll-push_hash", "", cwd=chrome_dir),
+      Cmd("roll-dep v8 push_hash", "rolled", cb=WriteDeps, cwd=chrome_dir),
       Cmd(("git commit -am \"Update V8 to version 3.22.5 "
            "(based on bleeding_edge revision r22622).\n\n"
            "Please reply to the V8 sheriff c_name@chromium.org in "
@@ -903,16 +936,14 @@ def get_list():
     self.Expect([
       Cmd(("git log -1 --format=%H --grep="
            "\"^Version [[:digit:]]*\.[[:digit:]]*\.[[:digit:]]* (based\" "
-           "svn/trunk"), "hash2\n"),
+           "origin/candidates"), "hash2\n"),
       Cmd("git log -1 --format=%s hash2",
-          "Version 3.4.5 (based on bleeding_edge revision r99)\n"),
+          "Version 3.4.5 (based on abc123)\n"),
     ])
 
-    self._state["lkgr"] = "101"
-
-    self.assertRaises(Exception, lambda: self.RunStep(auto_push.AutoPush,
-                                                      CheckLastPush,
-                                                      AUTO_PUSH_ARGS))
+    self._state["candidate"] = "abc123"
+    self.assertEquals(0, self.RunStep(
+        auto_push.AutoPush, CheckLastPush, AUTO_PUSH_ARGS))
 
   def testAutoPush(self):
     TextToFile("", os.path.join(TEST_CONFIG["DEFAULT_CWD"], ".git"))
@@ -921,16 +952,16 @@ def get_list():
     self.Expect([
       Cmd("git status -s -uno", ""),
       Cmd("git status -s -b -uno", "## some_branch\n"),
-      Cmd("git svn fetch", ""),
+      Cmd("git fetch", ""),
       URL("https://v8-status.appspot.com/current?format=json",
           "{\"message\": \"Tree is throttled\"}"),
-      URL("https://v8-status.appspot.com/lkgr", Exception("Network problem")),
-      URL("https://v8-status.appspot.com/lkgr", "100"),
+      Cmd("git fetch origin +refs/heads/candidate:refs/heads/candidate", ""),
+      Cmd("git show-ref -s refs/heads/candidate", "abc123\n"),
       Cmd(("git log -1 --format=%H --grep=\""
            "^Version [[:digit:]]*\.[[:digit:]]*\.[[:digit:]]* (based\""
-           " svn/trunk"), "push_hash\n"),
+           " origin/candidates"), "push_hash\n"),
       Cmd("git log -1 --format=%s push_hash",
-          "Version 3.4.5 (based on bleeding_edge revision r79)\n"),
+          "Version 3.4.5 (based on abc101)\n"),
     ])
 
     auto_push.AutoPush(TEST_CONFIG, self).Run(AUTO_PUSH_ARGS + ["--push"])
@@ -938,7 +969,7 @@ def get_list():
     state = json.loads(FileToText("%s-state.json"
                                   % TEST_CONFIG["PERSISTFILE_BASENAME"]))
 
-    self.assertEquals("100", state["lkgr"])
+    self.assertEquals("abc123", state["candidate"])
 
   def testAutoPushStoppedBySettings(self):
     TextToFile("", os.path.join(TEST_CONFIG["DEFAULT_CWD"], ".git"))
@@ -949,7 +980,7 @@ def get_list():
     self.Expect([
       Cmd("git status -s -uno", ""),
       Cmd("git status -s -b -uno", "## some_branch\n"),
-      Cmd("git svn fetch", ""),
+      Cmd("git fetch", ""),
     ])
 
     def RunAutoPush():
@@ -963,7 +994,7 @@ def get_list():
     self.Expect([
       Cmd("git status -s -uno", ""),
       Cmd("git status -s -b -uno", "## some_branch\n"),
-      Cmd("git svn fetch", ""),
+      Cmd("git fetch", ""),
       URL("https://v8-status.appspot.com/current?format=json",
           "{\"message\": \"Tree is throttled (no push)\"}"),
     ])
@@ -1003,9 +1034,10 @@ deps = {
       URL("https://codereview.chromium.org/search",
           "owner=author%40chromium.org&limit=30&closed=3&format=json",
           ("{\"results\": [{\"subject\": \"different\"}]}")),
+      Cmd("git fetch", ""),
       Cmd(("git log -1 --format=%H --grep="
            "\"^Version [[:digit:]]*\.[[:digit:]]*\.[[:digit:]]*\" "
-           "origin/master"), "push_hash\n"),
+           "origin/candidates"), "push_hash\n"),
       Cmd("git log -1 --format=%B push_hash", self.C_V8_22624_LOG),
       Cmd("git log -1 --format=%B abcd123455", self.C_V8_123455_LOG),
     ])
@@ -1024,9 +1056,10 @@ deps = {
       URL("https://codereview.chromium.org/search",
           "owner=author%40chromium.org&limit=30&closed=3&format=json",
           ("{\"results\": [{\"subject\": \"different\"}]}")),
+      Cmd("git fetch", ""),
       Cmd(("git log -1 --format=%H --grep="
            "\"^Version [[:digit:]]*\.[[:digit:]]*\.[[:digit:]]*\" "
-           "origin/master"), "push_hash\n"),
+           "origin/candidates"), "push_hash\n"),
       Cmd("git log -1 --format=%B push_hash", self.C_V8_123456_LOG),
       Cmd("git log -1 --format=%B abcd123455", self.C_V8_123455_LOG),
     ])
@@ -1046,7 +1079,13 @@ deps = {
       return lambda: self.assertEquals(patch,
           FileToText(TEST_CONFIG["TEMPORARY_PATCH_FILE"]))
 
-    msg = """Version 3.22.5.1 (merged r12345, r23456, r34567, r45678, r56789)
+    msg = """Version 3.22.5.1 (cherry-pick)
+
+Merged ab12345
+Merged ab23456
+Merged ab34567
+Merged ab45678
+Merged ab56789
 
 Title4
 
@@ -1075,61 +1114,53 @@ LOG=N
     self.Expect([
       Cmd("git status -s -uno", ""),
       Cmd("git status -s -b -uno", "## some_branch\n"),
-      Cmd("git svn fetch", ""),
+      Cmd("git fetch", ""),
       Cmd("git branch", "  branch1\n* branch2\n"),
-      Cmd("git checkout -b %s svn/trunk" % TEST_CONFIG["BRANCHNAME"], ""),
-      Cmd(("git log --format=%H --grep=\"Port r12345\" "
-           "--reverse svn/bleeding_edge"),
-          "hash1\nhash2"),
-      Cmd("git svn find-rev hash1 svn/bleeding_edge", "45678"),
-      Cmd("git log -1 --format=%s hash1", "Title1"),
-      Cmd("git svn find-rev hash2 svn/bleeding_edge", "23456"),
-      Cmd("git log -1 --format=%s hash2", "Title2"),
-      Cmd(("git log --format=%H --grep=\"Port r23456\" "
-           "--reverse svn/bleeding_edge"),
+      Cmd("git new-branch %s --upstream origin/candidates" %
+          TEST_CONFIG["BRANCHNAME"], ""),
+      Cmd(("git log --format=%H --grep=\"Port ab12345\" "
+           "--reverse origin/master"),
+          "ab45678\nab23456"),
+      Cmd("git log -1 --format=%s ab45678", "Title1"),
+      Cmd("git log -1 --format=%s ab23456", "Title2"),
+      Cmd(("git log --format=%H --grep=\"Port ab23456\" "
+           "--reverse origin/master"),
           ""),
-      Cmd(("git log --format=%H --grep=\"Port r34567\" "
-           "--reverse svn/bleeding_edge"),
-          "hash3"),
-      Cmd("git svn find-rev hash3 svn/bleeding_edge", "56789"),
-      Cmd("git log -1 --format=%s hash3", "Title3"),
-      RL("Y"),  # Automatically add corresponding ports (34567, 56789)?
-      Cmd("git svn find-rev r12345 svn/bleeding_edge", "hash4"),
-      # Simulate svn being down which stops the script.
-      Cmd("git svn find-rev r23456 svn/bleeding_edge", None),
+      Cmd(("git log --format=%H --grep=\"Port ab34567\" "
+           "--reverse origin/master"),
+          "ab56789"),
+      Cmd("git log -1 --format=%s ab56789", "Title3"),
+      RL("Y"),  # Automatically add corresponding ports (ab34567, ab56789)?
+      # Simulate git being down which stops the script.
+      Cmd("git log -1 --format=%s ab12345", None),
       # Restart script in the failing step.
-      Cmd("git svn find-rev r12345 svn/bleeding_edge", "hash4"),
-      Cmd("git svn find-rev r23456 svn/bleeding_edge", "hash2"),
-      Cmd("git svn find-rev r34567 svn/bleeding_edge", "hash3"),
-      Cmd("git svn find-rev r45678 svn/bleeding_edge", "hash1"),
-      Cmd("git svn find-rev r56789 svn/bleeding_edge", "hash5"),
-      Cmd("git log -1 --format=%s hash4", "Title4"),
-      Cmd("git log -1 --format=%s hash2", "Title2"),
-      Cmd("git log -1 --format=%s hash3", "Title3"),
-      Cmd("git log -1 --format=%s hash1", "Title1"),
-      Cmd("git log -1 --format=%s hash5", "Revert \"Something\""),
-      Cmd("git log -1 hash4", "Title4\nBUG=123\nBUG=234"),
-      Cmd("git log -1 hash2", "Title2\n BUG = v8:123,345"),
-      Cmd("git log -1 hash3", "Title3\nLOG=n\nBUG=567, 456"),
-      Cmd("git log -1 hash1", "Title1\nBUG="),
-      Cmd("git log -1 hash5", "Revert \"Something\"\nBUG=none"),
-      Cmd("git log -1 -p hash4", "patch4"),
+      Cmd("git log -1 --format=%s ab12345", "Title4"),
+      Cmd("git log -1 --format=%s ab23456", "Title2"),
+      Cmd("git log -1 --format=%s ab34567", "Title3"),
+      Cmd("git log -1 --format=%s ab45678", "Title1"),
+      Cmd("git log -1 --format=%s ab56789", "Revert \"Something\""),
+      Cmd("git log -1 ab12345", "Title4\nBUG=123\nBUG=234"),
+      Cmd("git log -1 ab23456", "Title2\n BUG = v8:123,345"),
+      Cmd("git log -1 ab34567", "Title3\nLOG=n\nBUG=567, 456"),
+      Cmd("git log -1 ab45678", "Title1\nBUG="),
+      Cmd("git log -1 ab56789", "Revert \"Something\"\nBUG=none"),
+      Cmd("git log -1 -p ab12345", "patch4"),
       Cmd(("git apply --index --reject \"%s\"" %
            TEST_CONFIG["TEMPORARY_PATCH_FILE"]),
           "", cb=VerifyPatch("patch4")),
-      Cmd("git log -1 -p hash2", "patch2"),
+      Cmd("git log -1 -p ab23456", "patch2"),
       Cmd(("git apply --index --reject \"%s\"" %
            TEST_CONFIG["TEMPORARY_PATCH_FILE"]),
           "", cb=VerifyPatch("patch2")),
-      Cmd("git log -1 -p hash3", "patch3"),
+      Cmd("git log -1 -p ab34567", "patch3"),
       Cmd(("git apply --index --reject \"%s\"" %
            TEST_CONFIG["TEMPORARY_PATCH_FILE"]),
           "", cb=VerifyPatch("patch3")),
-      Cmd("git log -1 -p hash1", "patch1"),
+      Cmd("git log -1 -p ab45678", "patch1"),
       Cmd(("git apply --index --reject \"%s\"" %
            TEST_CONFIG["TEMPORARY_PATCH_FILE"]),
           "", cb=VerifyPatch("patch1")),
-      Cmd("git log -1 -p hash5", "patch5\n"),
+      Cmd("git log -1 -p ab56789", "patch5\n"),
       Cmd(("git apply --index --reject \"%s\"" %
            TEST_CONFIG["TEMPORARY_PATCH_FILE"]),
           "", cb=VerifyPatch("patch5\n")),
@@ -1138,64 +1169,42 @@ LOG=N
       Cmd("git commit -aF \"%s\"" % TEST_CONFIG["COMMITMSG_FILE"], ""),
       RL("reviewer@chromium.org"),  # V8 reviewer.
       Cmd("git cl upload --send-mail -r \"reviewer@chromium.org\" "
-          "--bypass-hooks", ""),
+          "--bypass-hooks --cc \"ulan@chromium.org\"", ""),
       Cmd("git checkout -f %s" % TEST_CONFIG["BRANCHNAME"], ""),
       RL("LGTM"),  # Enter LGTM for V8 CL.
       Cmd("git cl presubmit", "Presubmit successfull\n"),
-      Cmd("git cl dcommit -f --bypass-hooks", "Closing issue\n",
+      Cmd("git cl land -f --bypass-hooks", "Closing issue\n",
           cb=VerifySVNCommit),
-      Cmd("git svn fetch", ""),
-      Cmd(("git log -1 --format=%%H --grep=\"%s\" svn/trunk"
-           % msg.replace("\"", "\\\"")), "hash6"),
-      Cmd("git svn find-rev hash6", "1324"),
-      Cmd(("svn copy -r 1324 https://v8.googlecode.com/svn/trunk "
-           "https://v8.googlecode.com/svn/tags/3.22.5.1 -m "
-           "\"Tagging version 3.22.5.1\""), ""),
+      Cmd("git fetch", ""),
+      Cmd("git log -1 --format=%H --grep=\""
+          "Version 3.22.5.1 (cherry-pick)"
+          "\" origin/candidates",
+          ""),
+      Cmd("git fetch", ""),
+      Cmd("git log -1 --format=%H --grep=\""
+          "Version 3.22.5.1 (cherry-pick)"
+          "\" origin/candidates",
+          "hsh_to_tag"),
+      Cmd("git tag 3.22.5.1 hsh_to_tag", ""),
+      Cmd("git push origin 3.22.5.1", ""),
       Cmd("git checkout -f some_branch", ""),
       Cmd("git branch -D %s" % TEST_CONFIG["BRANCHNAME"], ""),
     ])
 
-    # r12345 and r34567 are patches. r23456 (included) and r45678 are the MIPS
-    # ports of r12345. r56789 is the MIPS port of r34567.
-    args = ["-f", "-p", extra_patch, "--branch", "trunk", "12345", "23456",
-            "34567"]
+    # ab12345 and ab34567 are patches. ab23456 (included) and ab45678 are the
+    # MIPS ports of ab12345. ab56789 is the MIPS port of ab34567.
+    args = ["-f", "-p", extra_patch, "--branch", "candidates",
+            "ab12345", "ab23456", "ab34567"]
 
-    # The first run of the script stops because of the svn being down.
+    # The first run of the script stops because of git being down.
     self.assertRaises(GitFailedException,
         lambda: MergeToBranch(TEST_CONFIG, self).Run(args))
 
     # Test that state recovery after restarting the script works.
-    args += ["-s", "3"]
+    args += ["-s", "4"]
     MergeToBranch(TEST_CONFIG, self).Run(args)
 
   def testReleases(self):
-    tag_response_text = """
-------------------------------------------------------------------------
-r22631 | author1@chromium.org | 2014-07-28 02:05:29 +0200 (Mon, 28 Jul 2014)
-Changed paths:
-   A /tags/3.28.43 (from /trunk:22630)
-
-Tagging version 3.28.43
-------------------------------------------------------------------------
-r22629 | author2@chromium.org | 2014-07-26 05:09:29 +0200 (Sat, 26 Jul 2014)
-Changed paths:
-   A /tags/3.28.41 (from /branches/bleeding_edge:22626)
-
-Tagging version 3.28.41
-------------------------------------------------------------------------
-r22556 | author3@chromium.org | 2014-07-23 13:31:59 +0200 (Wed, 23 Jul 2014)
-Changed paths:
-   A /tags/3.27.34.7 (from /branches/3.27:22555)
-
-Tagging version 3.27.34.7
-------------------------------------------------------------------------
-r22627 | author4@chromium.org | 2014-07-26 01:39:15 +0200 (Sat, 26 Jul 2014)
-Changed paths:
-   A /tags/3.28.40 (from /branches/bleeding_edge:22624)
-
-Tagging version 3.28.40
-------------------------------------------------------------------------
-"""
     c_hash2_commit_log = """Revert something.
 
 BUG=12345
@@ -1216,6 +1225,23 @@ git-svn-id: svn://svn.chromium.org/chrome/trunk/src@4567 0039-1c4b
 git-svn-id: svn://svn.chromium.org/chrome/trunk/src@3456 0039-1c4b
 
 """
+    c_hash_234_commit_log = """Version 3.3.1.1 (cherry-pick).
+
+Merged abc12.
+
+Review URL: fake.com
+
+Cr-Commit-Position: refs/heads/candidates@{#234}
+"""
+    c_hash_123_commit_log = """Version 3.3.1.0
+
+git-svn-id: googlecode@123 0039-1c4b
+"""
+    c_hash_345_commit_log = """Version 3.4.0.
+
+Cr-Commit-Position: refs/heads/candidates@{#345}
+"""
+
     json_output = self.MakeEmptyTempFile()
     csv_output = self.MakeEmptyTempFile()
     self.WriteFakeVersionFile()
@@ -1240,58 +1266,50 @@ git-svn-id: svn://svn.chromium.org/chrome/trunk/src@3456 0039-1c4b
     self.Expect([
       Cmd("git status -s -uno", ""),
       Cmd("git status -s -b -uno", "## some_branch\n"),
-      Cmd("git svn fetch", ""),
+      Cmd("git fetch", ""),
       Cmd("git branch", "  branch1\n* branch2\n"),
-      Cmd("git checkout -b %s" % TEST_CONFIG["BRANCHNAME"], ""),
-      Cmd("git branch -r", "  svn/3.21\n  svn/3.3\n"),
-      Cmd("git reset --hard svn/3.3", ""),
-      Cmd("git log --format=%H", "hash1\nhash2"),
+      Cmd("git new-branch %s" % TEST_CONFIG["BRANCHNAME"], ""),
+      Cmd("git branch -r", "  branch-heads/3.21\n  branch-heads/3.3\n"),
+      Cmd("git reset --hard branch-heads/3.3", ""),
+      Cmd("git log --format=%H", "hash1\nhash_234"),
       Cmd("git diff --name-only hash1 hash1^", ""),
-      Cmd("git diff --name-only hash2 hash2^", VERSION_FILE),
-      Cmd("git checkout -f hash2 -- %s" % VERSION_FILE, "",
+      Cmd("git diff --name-only hash_234 hash_234^", VERSION_FILE),
+      Cmd("git checkout -f hash_234 -- %s" % VERSION_FILE, "",
           cb=ResetVersion(3, 1, 1)),
-      Cmd("git log -1 --format=%B hash2",
-          "Version 3.3.1.1 (merged 12)\n\nReview URL: fake.com\n"),
-      Cmd("git log -1 --format=%s hash2", ""),
-      Cmd("git svn find-rev hash2", "234"),
-      Cmd("git log -1 --format=%ci hash2", "18:15"),
+      Cmd("git log -1 --format=%B hash_234", c_hash_234_commit_log),
+      Cmd("git log -1 --format=%s hash_234", ""),
+      Cmd("git log -1 --format=%B hash_234", c_hash_234_commit_log),
+      Cmd("git log -1 --format=%ci hash_234", "18:15"),
       Cmd("git checkout -f HEAD -- %s" % VERSION_FILE, "",
           cb=ResetVersion(22, 5)),
-      Cmd("git reset --hard svn/3.21", ""),
-      Cmd("git log --format=%H", "hash3\nhash4\nhash5\n"),
-      Cmd("git diff --name-only hash3 hash3^", VERSION_FILE),
-      Cmd("git checkout -f hash3 -- %s" % VERSION_FILE, "",
+      Cmd("git reset --hard branch-heads/3.21", ""),
+      Cmd("git log --format=%H", "hash_123\nhash4\nhash5\n"),
+      Cmd("git diff --name-only hash_123 hash_123^", VERSION_FILE),
+      Cmd("git checkout -f hash_123 -- %s" % VERSION_FILE, "",
           cb=ResetVersion(21, 2)),
-      Cmd("git log -1 --format=%B hash3", ""),
-      Cmd("git log -1 --format=%s hash3", ""),
-      Cmd("git svn find-rev hash3", "123"),
-      Cmd("git log -1 --format=%ci hash3", "03:15"),
+      Cmd("git log -1 --format=%B hash_123", c_hash_123_commit_log),
+      Cmd("git log -1 --format=%s hash_123", ""),
+      Cmd("git log -1 --format=%B hash_123", c_hash_123_commit_log),
+      Cmd("git log -1 --format=%ci hash_123", "03:15"),
       Cmd("git checkout -f HEAD -- %s" % VERSION_FILE, "",
           cb=ResetVersion(22, 5)),
-      Cmd("git reset --hard svn/trunk", ""),
-      Cmd("git log --format=%H", "hash6\n"),
-      Cmd("git diff --name-only hash6 hash6^", VERSION_FILE),
-      Cmd("git checkout -f hash6 -- %s" % VERSION_FILE, "",
+      Cmd("git reset --hard origin/candidates", ""),
+      Cmd("git log --format=%H", "hash_345\n"),
+      Cmd("git diff --name-only hash_345 hash_345^", VERSION_FILE),
+      Cmd("git checkout -f hash_345 -- %s" % VERSION_FILE, "",
           cb=ResetVersion(22, 3)),
-      Cmd("git log -1 --format=%B hash6", ""),
-      Cmd("git log -1 --format=%s hash6", ""),
-      Cmd("git svn find-rev hash6", "345"),
-      Cmd("git log -1 --format=%ci hash6", ""),
+      Cmd("git log -1 --format=%B hash_345", c_hash_345_commit_log),
+      Cmd("git log -1 --format=%s hash_345", ""),
+      Cmd("git log -1 --format=%B hash_345", c_hash_345_commit_log),
+      Cmd("git log -1 --format=%ci hash_345", ""),
       Cmd("git checkout -f HEAD -- %s" % VERSION_FILE, "",
           cb=ResetVersion(22, 5)),
-      Cmd("git reset --hard svn/bleeding_edge", ""),
-      Cmd("svn log https://v8.googlecode.com/svn/tags -v --limit 20",
-          tag_response_text),
-      Cmd("git svn find-rev r22626", "hash_22626"),
-      Cmd("git svn find-rev hash_22626", "22626"),
-      Cmd("git log -1 --format=%ci hash_22626", "01:23"),
-      Cmd("git svn find-rev r22624", "hash_22624"),
-      Cmd("git svn find-rev hash_22624", "22624"),
-      Cmd("git log -1 --format=%ci hash_22624", "02:34"),
+      Cmd("git reset --hard origin/master", ""),
       Cmd("git status -s -uno", "", cwd=chrome_dir),
       Cmd("git checkout -f master", "", cwd=chrome_dir),
       Cmd("git pull", "", cwd=chrome_dir),
-      Cmd("git checkout -b %s" % TEST_CONFIG["BRANCHNAME"], "", cwd=chrome_dir),
+      Cmd("git new-branch %s" % TEST_CONFIG["BRANCHNAME"], "",
+          cwd=chrome_dir),
       Cmd("git fetch origin", "", cwd=chrome_v8_dir),
       Cmd("git log --format=%H --grep=\"V8\"", "c_hash1\nc_hash2\nc_hash3\n",
           cwd=chrome_dir),
@@ -1302,8 +1320,6 @@ git-svn-id: svn://svn.chromium.org/chrome/trunk/src@3456 0039-1c4b
           cwd=chrome_dir),
       Cmd("git log -1 --format=%B c_hash2", c_hash2_commit_log,
           cwd=chrome_dir),
-      Cmd("git rev-list -n 1 0123456789012345678901234567890123456789",
-          "0123456789012345678901234567890123456789", cwd=chrome_v8_dir),
       Cmd("git log -1 --format=%B 0123456789012345678901234567890123456789",
           self.C_V8_22624_LOG, cwd=chrome_v8_dir),
       Cmd("git diff --name-only c_hash3 c_hash3^", "DEPS", cwd=chrome_dir),
@@ -1331,35 +1347,54 @@ git-svn-id: svn://svn.chromium.org/chrome/trunk/src@3456 0039-1c4b
     Releases(TEST_CONFIG, self).Run(args)
 
     # Check expected output.
-    csv = ("3.28.41,bleeding_edge,22626,,\r\n"
-           "3.28.40,bleeding_edge,22624,4567,\r\n"
-           "3.22.3,trunk,345,3456:4566,\r\n"
+    csv = ("3.22.3,candidates,345,3456:4566,\r\n"
            "3.21.2,3.21,123,,\r\n"
-           "3.3.1.1,3.3,234,,12\r\n")
+           "3.3.1.1,3.3,234,,abc12\r\n")
     self.assertEquals(csv, FileToText(csv_output))
 
     expected_json = [
-      {"bleeding_edge": "22626", "patches_merged": "", "version": "3.28.41",
-       "chromium_revision": "", "branch": "bleeding_edge", "revision": "22626",
-       "review_link": "", "date": "01:23", "chromium_branch": "",
-       "revision_link": "https://code.google.com/p/v8/source/detail?r=22626"},
-      {"bleeding_edge": "22624", "patches_merged": "", "version": "3.28.40",
-       "chromium_revision": "4567", "branch": "bleeding_edge",
-       "revision": "22624", "review_link": "", "date": "02:34",
-       "chromium_branch": "",
-       "revision_link": "https://code.google.com/p/v8/source/detail?r=22624"},
-      {"bleeding_edge": "", "patches_merged": "", "version": "3.22.3",
-       "chromium_revision": "3456:4566", "branch": "trunk", "revision": "345",
-       "review_link": "", "date": "", "chromium_branch": "7",
-       "revision_link": "https://code.google.com/p/v8/source/detail?r=345"},
-      {"patches_merged": "", "bleeding_edge": "", "version": "3.21.2",
-       "chromium_revision": "", "branch": "3.21", "revision": "123",
-       "review_link": "", "date": "03:15", "chromium_branch": "",
-       "revision_link": "https://code.google.com/p/v8/source/detail?r=123"},
-      {"patches_merged": "12", "bleeding_edge": "", "version": "3.3.1.1",
-       "chromium_revision": "", "branch": "3.3", "revision": "234",
-       "review_link": "fake.com", "date": "18:15", "chromium_branch": "",
-       "revision_link": "https://code.google.com/p/v8/source/detail?r=234"},
+      {
+        "revision": "345",
+        "revision_git": "hash_345",
+        "bleeding_edge": "",
+        "bleeding_edge_git": "",
+        "patches_merged": "",
+        "version": "3.22.3",
+        "chromium_revision": "3456:4566",
+        "branch": "candidates",
+        "review_link": "",
+        "date": "",
+        "chromium_branch": "7",
+        "revision_link": "https://code.google.com/p/v8/source/detail?r=345",
+      },
+      {
+        "revision": "123",
+        "revision_git": "hash_123",
+        "patches_merged": "",
+        "bleeding_edge": "",
+        "bleeding_edge_git": "",
+        "version": "3.21.2",
+        "chromium_revision": "",
+        "branch": "3.21",
+        "review_link": "",
+        "date": "03:15",
+        "chromium_branch": "",
+        "revision_link": "https://code.google.com/p/v8/source/detail?r=123",
+      },
+      {
+        "revision": "234",
+        "revision_git": "hash_234",
+        "patches_merged": "abc12",
+        "bleeding_edge": "",
+        "bleeding_edge_git": "",
+        "version": "3.3.1.1",
+        "chromium_revision": "",
+        "branch": "3.3",
+        "review_link": "fake.com",
+        "date": "18:15",
+        "chromium_branch": "",
+        "revision_link": "https://code.google.com/p/v8/source/detail?r=234",
+      },
     ]
     self.assertEquals(expected_json, json.loads(FileToText(json_output)))
 
@@ -1374,26 +1409,27 @@ git-svn-id: svn://svn.chromium.org/chrome/trunk/src@3456 0039-1c4b
 
     return [
       Cmd("git status -s -uno", ""),
-      Cmd("git checkout -f bleeding_edge", "", cb=ResetVersion(11, 4)),
+      Cmd("git checkout -f master", "", cb=ResetVersion(11, 4)),
       Cmd("git pull", ""),
       Cmd("git branch", ""),
-      Cmd("git checkout -f bleeding_edge", ""),
+      Cmd("git checkout -f master", ""),
       Cmd("git log -1 --format=%H", "latest_hash"),
       Cmd("git diff --name-only latest_hash latest_hash^", ""),
       URL("https://v8-status.appspot.com/lkgr", "12345"),
-      Cmd("git checkout -f bleeding_edge", ""),
+      Cmd("git checkout -f master", ""),
       Cmd(("git log --format=%H --grep="
            "\"^git-svn-id: [^@]*@12345 [A-Za-z0-9-]*$\""),
           "lkgr_hash"),
-      Cmd("git checkout -b auto-bump-up-version lkgr_hash", ""),
-      Cmd("git checkout -f bleeding_edge", ""),
-      Cmd("git branch", ""),
+      Cmd("git new-branch auto-bump-up-version --upstream lkgr_hash", ""),
+      Cmd("git checkout -f master", ""),
+      Cmd("git branch", "auto-bump-up-version\n* master"),
+      Cmd("git branch -D auto-bump-up-version", ""),
       Cmd("git diff --name-only lkgr_hash lkgr_hash^", ""),
-      Cmd("git checkout -f master", "", cb=ResetVersion(11, 5)),
+      Cmd("git checkout -f candidates", "", cb=ResetVersion(11, 5)),
       Cmd("git pull", ""),
       URL("https://v8-status.appspot.com/current?format=json",
           "{\"message\": \"Tree is open\"}"),
-      Cmd("git checkout -b auto-bump-up-version bleeding_edge", "",
+      Cmd("git new-branch auto-bump-up-version --upstream master", "",
           cb=ResetVersion(11, 4)),
       Cmd("git commit -am \"[Auto-roll] Bump up version to 3.11.6.0\n\n"
           "TBR=author@chromium.org\" "
@@ -1405,88 +1441,15 @@ git-svn-id: svn://svn.chromium.org/chrome/trunk/src@3456 0039-1c4b
     expectations += [
       Cmd("git cl upload --send-mail --email \"author@chromium.org\" -f "
           "--bypass-hooks", ""),
-      Cmd("git cl dcommit -f --bypass-hooks", ""),
-      Cmd("git checkout -f bleeding_edge", ""),
-      Cmd("git branch", "auto-bump-up-version\n* bleeding_edge"),
+      Cmd("git cl land -f --bypass-hooks", ""),
+      Cmd("git checkout -f master", ""),
+      Cmd("git branch", "auto-bump-up-version\n* master"),
       Cmd("git branch -D auto-bump-up-version", ""),
     ]
     self.Expect(expectations)
 
     BumpUpVersion(TEST_CONFIG, self).Run(["-a", "author@chromium.org"])
 
-  def testBumpUpVersionSvn(self):
-    svn_root = self.MakeEmptyTempDirectory()
-    expectations = self._bumpUpVersion()
-    expectations += [
-      Cmd("git diff HEAD^ HEAD", "patch content"),
-      Cmd("svn update", "", cwd=svn_root),
-      Cmd("svn status", "", cwd=svn_root),
-      Cmd("patch -d branches/bleeding_edge -p1 -i %s" %
-          TEST_CONFIG["PATCH_FILE"], "Applied patch...", cwd=svn_root),
-      Cmd("svn commit --non-interactive --username=author@chromium.org "
-          "--config-dir=[CONFIG_DIR] "
-          "-m \"[Auto-roll] Bump up version to 3.11.6.0\"",
-          "", cwd=svn_root),
-      Cmd("git checkout -f bleeding_edge", ""),
-      Cmd("git branch", "auto-bump-up-version\n* bleeding_edge"),
-      Cmd("git branch -D auto-bump-up-version", ""),
-    ]
-    self.Expect(expectations)
-
-    BumpUpVersion(TEST_CONFIG, self).Run(
-        ["-a", "author@chromium.org",
-         "--svn", svn_root,
-         "--svn-config", "[CONFIG_DIR]"])
-
-  def testAutoTag(self):
-    self.WriteFakeVersionFile()
-
-    def ResetVersion(minor, build, patch=0):
-      return lambda: self.WriteFakeVersionFile(minor=minor,
-                                               build=build,
-                                               patch=patch)
-
-    self.Expect([
-      Cmd("git status -s -uno", ""),
-      Cmd("git status -s -b -uno", "## some_branch\n"),
-      Cmd("git svn fetch", ""),
-      Cmd("git branch", "  branch1\n* branch2\n"),
-      Cmd("git checkout -f master", ""),
-      Cmd("git svn rebase", ""),
-      Cmd("git checkout -b %s" % TEST_CONFIG["BRANCHNAME"], "",
-          cb=ResetVersion(4, 5)),
-      Cmd("git branch -r",
-          "svn/tags/3.4.2\nsvn/tags/3.2.1.0\nsvn/branches/3.4"),
-      Cmd(("git log --format=%H --grep="
-           "\"\\[Auto\\-roll\\] Bump up version to\""),
-          "hash125\nhash118\nhash111\nhash101"),
-      Cmd("git checkout -f hash125 -- %s" % VERSION_FILE, "",
-          cb=ResetVersion(4, 4)),
-      Cmd("git checkout -f HEAD -- %s" % VERSION_FILE, "",
-          cb=ResetVersion(4, 5)),
-      Cmd("git checkout -f hash118 -- %s" % VERSION_FILE, "",
-          cb=ResetVersion(4, 3)),
-      Cmd("git checkout -f HEAD -- %s" % VERSION_FILE, "",
-          cb=ResetVersion(4, 5)),
-      Cmd("git checkout -f hash111 -- %s" % VERSION_FILE, "",
-          cb=ResetVersion(4, 2)),
-      Cmd("git checkout -f HEAD -- %s" % VERSION_FILE, "",
-          cb=ResetVersion(4, 5)),
-      URL("https://v8-status.appspot.com/revisions?format=json",
-          "[{\"revision\": \"126\", \"status\": true},"
-           "{\"revision\": \"123\", \"status\": true},"
-           "{\"revision\": \"112\", \"status\": true}]"),
-      Cmd("git svn find-rev hash118", "118"),
-      Cmd("git svn find-rev hash125", "125"),
-      Cmd("git svn find-rev r123", "hash123"),
-      Cmd("git log -1 --format=%at hash123", "1"),
-      Cmd("git reset --hard hash123", ""),
-      Cmd("git svn tag 3.4.3 -m \"Tagging version 3.4.3\"", ""),
-      Cmd("git checkout -f some_branch", ""),
-      Cmd("git branch -D %s" % TEST_CONFIG["BRANCHNAME"], ""),
-    ])
-
-    AutoTag(TEST_CONFIG, self).Run(["-a", "author@chromium.org"])
 
   # Test that we bail out if the last change was a version change.
   def testBumpUpVersionBailout1(self):
@@ -1527,7 +1490,10 @@ git-svn-id: svn://svn.chromium.org/chrome/trunk/src@3456 0039-1c4b
 
 class SystemTest(unittest.TestCase):
   def testReload(self):
+    options = ScriptsBase(
+        TEST_CONFIG, DEFAULT_SIDE_EFFECT_HANDLER, {}).MakeOptions([])
     step = MakeStep(step_class=PrepareChangeLog, number=0, state={}, config={},
+                    options=options,
                     side_effect_handler=DEFAULT_SIDE_EFFECT_HANDLER)
     body = step.Reload(
 """------------------------------------------------------------------------

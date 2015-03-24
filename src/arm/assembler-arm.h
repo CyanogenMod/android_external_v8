@@ -218,6 +218,11 @@ struct DwVfpRegister {
   inline static int NumReservedRegisters();
   inline static int NumAllocatableRegisters();
 
+  // TODO(turbofan): This is a temporary work-around required because our
+  // register allocator does not yet support the aliasing of single/double
+  // registers on ARM.
+  inline static int NumAllocatableAliasedRegisters();
+
   inline static int ToAllocationIndex(DwVfpRegister reg);
   static const char* AllocationIndexToString(int index);
   inline static DwVfpRegister FromAllocationIndex(int index);
@@ -970,6 +975,11 @@ class Assembler : public AssemblerBase {
   void mul(Register dst, Register src1, Register src2,
            SBit s = LeaveCC, Condition cond = al);
 
+  void smmla(Register dst, Register src1, Register src2, Register srcA,
+             Condition cond = al);
+
+  void smmul(Register dst, Register src1, Register src2, Condition cond = al);
+
   void smlal(Register dstL, Register dstH, Register src1, Register src2,
              SBit s = LeaveCC, Condition cond = al);
 
@@ -1024,12 +1034,20 @@ class Assembler : public AssemblerBase {
   void pkhtb(Register dst, Register src1, const Operand& src2,
              Condition cond = al);
 
-  void uxtb(Register dst, const Operand& src, Condition cond = al);
-
-  void uxtab(Register dst, Register src1, const Operand& src2,
+  void sxtb(Register dst, Register src, int rotate = 0, Condition cond = al);
+  void sxtab(Register dst, Register src1, Register src2, int rotate = 0,
+             Condition cond = al);
+  void sxth(Register dst, Register src, int rotate = 0, Condition cond = al);
+  void sxtah(Register dst, Register src1, Register src2, int rotate = 0,
              Condition cond = al);
 
-  void uxtb16(Register dst, const Operand& src, Condition cond = al);
+  void uxtb(Register dst, Register src, int rotate = 0, Condition cond = al);
+  void uxtab(Register dst, Register src1, Register src2, int rotate = 0,
+             Condition cond = al);
+  void uxtb16(Register dst, Register src, int rotate = 0, Condition cond = al);
+  void uxth(Register dst, Register src, int rotate = 0, Condition cond = al);
+  void uxtah(Register dst, Register src1, Register src2, int rotate = 0,
+             Condition cond = al);
 
   // Status register access instructions
 
@@ -1162,6 +1180,7 @@ class Assembler : public AssemblerBase {
             SwVfpRegister last,
             Condition cond = al);
 
+  void vmov(const SwVfpRegister dst, float imm);
   void vmov(const DwVfpRegister dst,
             double imm,
             const Register scratch = no_reg);
@@ -1268,6 +1287,14 @@ class Assembler : public AssemblerBase {
   void vsqrt(const DwVfpRegister dst,
              const DwVfpRegister src,
              const Condition cond = al);
+
+  // ARMv8 rounding instructions.
+  void vrinta(const DwVfpRegister dst, const DwVfpRegister src);
+  void vrintn(const DwVfpRegister dst, const DwVfpRegister src);
+  void vrintm(const DwVfpRegister dst, const DwVfpRegister src);
+  void vrintp(const DwVfpRegister dst, const DwVfpRegister src);
+  void vrintz(const DwVfpRegister dst, const DwVfpRegister src,
+              const Condition cond = al);
 
   // Support for NEON.
   // All these APIs support D0 to D31 and Q0 to Q15.
@@ -1483,8 +1510,6 @@ class Assembler : public AssemblerBase {
   // Generate the constant pool for the generated code.
   void PopulateConstantPool(ConstantPoolArray* constant_pool);
 
-  bool is_constant_pool_available() const { return constant_pool_available_; }
-
   bool use_extended_constant_pool() const {
     return constant_pool_builder_.current_section() ==
            ConstantPoolArray::EXTENDED_SECTION;
@@ -1542,10 +1567,6 @@ class Assembler : public AssemblerBase {
   bool is_const_pool_blocked() const {
     return (const_pool_blocked_nesting_ > 0) ||
            (pc_offset() < no_const_pool_before_);
-  }
-
-  void set_constant_pool_available(bool available) {
-    constant_pool_available_ = available;
   }
 
  private:
@@ -1610,10 +1631,6 @@ class Assembler : public AssemblerBase {
   // The bound position, before this we cannot do instruction elimination.
   int last_bound_pos_;
 
-  // Indicates whether the constant pool can be accessed, which is only possible
-  // if the pp register points to the current code object's constant pool.
-  bool constant_pool_available_;
-
   // Code emission
   inline void CheckBuffer();
   void GrowBuffer();
@@ -1649,9 +1666,6 @@ class Assembler : public AssemblerBase {
   friend class RelocInfo;
   friend class CodePatcher;
   friend class BlockConstPoolScope;
-  friend class FrameAndConstantPoolScope;
-  friend class ConstantPoolUnavailableScope;
-
   PositionsRecorder positions_recorder_;
   friend class PositionsRecorder;
   friend class EnsureSpace;

@@ -422,6 +422,7 @@ class MacroAssembler : public Assembler {
   inline void Frinta(const FPRegister& fd, const FPRegister& fn);
   inline void Frintm(const FPRegister& fd, const FPRegister& fn);
   inline void Frintn(const FPRegister& fd, const FPRegister& fn);
+  inline void Frintp(const FPRegister& fd, const FPRegister& fn);
   inline void Frintz(const FPRegister& fd, const FPRegister& fn);
   inline void Fsqrt(const FPRegister& fd, const FPRegister& fn);
   inline void Fsub(const FPRegister& fd,
@@ -489,6 +490,7 @@ class MacroAssembler : public Assembler {
   inline void Smulh(const Register& rd,
                     const Register& rn,
                     const Register& rm);
+  inline void Umull(const Register& rd, const Register& rn, const Register& rm);
   inline void Stnp(const CPURegister& rt,
                    const CPURegister& rt2,
                    const MemOperand& dst);
@@ -759,9 +761,9 @@ class MacroAssembler : public Assembler {
   // it can be evidence of a potential bug because the ABI forbids accesses
   // below csp.
   //
-  // If StackPointer() is the system stack pointer (csp) or ALWAYS_ALIGN_CSP is
-  // enabled, then csp will be dereferenced to  cause the processor
-  // (or simulator) to abort if it is not properly aligned.
+  // If StackPointer() is the system stack pointer (csp), then csp will be
+  // dereferenced to cause the processor (or simulator) to abort if it is not
+  // properly aligned.
   //
   // If emit_debug_code() is false, this emits no code.
   void AssertStackConsistency();
@@ -829,9 +831,7 @@ class MacroAssembler : public Assembler {
   inline void BumpSystemStackPointer(const Operand& space);
 
   // Re-synchronizes the system stack pointer (csp) with the current stack
-  // pointer (according to StackPointer()).  This function will ensure the
-  // new value of the system stack pointer is remains aligned to 16 bytes, and
-  // is lower than or equal to the value of the current stack pointer.
+  // pointer (according to StackPointer()).
   //
   // This method asserts that StackPointer() is not csp, since the call does
   // not make sense in that context.
@@ -1478,14 +1478,19 @@ class MacroAssembler : public Assembler {
                 Label* fail,
                 SmiCheckType smi_check_type);
 
-  // Check if the map of an object is equal to a specified map and branch to a
-  // specified target if equal. Skip the smi check if not required (object is
-  // known to be a heap object)
-  void DispatchMap(Register obj,
-                   Register scratch,
-                   Handle<Map> map,
-                   Handle<Code> success,
-                   SmiCheckType smi_check_type);
+  // Check if the map of an object is equal to a specified weak map and branch
+  // to a specified target if equal. Skip the smi check if not required
+  // (object is known to be a heap object)
+  void DispatchWeakMap(Register obj, Register scratch1, Register scratch2,
+                       Handle<WeakCell> cell, Handle<Code> success,
+                       SmiCheckType smi_check_type);
+
+  // Compare the given value and the value of weak cell.
+  void CmpWeakValue(Register value, Handle<WeakCell> cell, Register scratch);
+
+  // Load the value of the weak cell in the value register. Branch to the given
+  // miss label if the weak cell was cleared.
+  void LoadWeakValue(Register value, Handle<WeakCell> cell, Label* miss);
 
   // Test the bitfield of the heap object map with mask and set the condition
   // flags. The object register is preserved.
@@ -1627,6 +1632,7 @@ class MacroAssembler : public Assembler {
 
   // Activation support.
   void EnterFrame(StackFrame::Type type);
+  void EnterFrame(StackFrame::Type type, bool load_constant_pool_pointer_reg);
   void LeaveFrame(StackFrame::Type type);
 
   // Returns map with validated enum cache in object register.
@@ -1773,10 +1779,6 @@ class MacroAssembler : public Assembler {
                           const Register& scratch,
                           int mask,
                           Label* if_all_clear);
-
-  void CheckMapDeprecated(Handle<Map> map,
-                          Register scratch,
-                          Label* if_deprecated);
 
   // Check if object is in new space and jump accordingly.
   // Register 'object' is preserved.

@@ -14,7 +14,7 @@
 #include "src/isolate.h"
 #include "src/jsregexp.h"
 #include "src/regexp-macro-assembler.h"
-#include "src/runtime.h"
+#include "src/runtime/runtime.h"
 
 namespace v8 {
 namespace internal {
@@ -1412,6 +1412,11 @@ void JSEntryStub::Generate(MacroAssembler* masm) {
 void FunctionPrototypeStub::Generate(MacroAssembler* masm) {
   Label miss;
   Register receiver = LoadDescriptor::ReceiverRegister();
+  // Ensure that the vector and slot registers won't be clobbered before
+  // calling the miss handler.
+  DCHECK(!FLAG_vector_ics ||
+         !AreAliased(x10, x11, VectorLoadICDescriptor::VectorRegister(),
+                     VectorLoadICDescriptor::SlotRegister()));
 
   NamedLoadHandlerCompiler::GenerateLoadFunctionPrototype(masm, receiver, x10,
                                                           x11, &miss);
@@ -1419,6 +1424,40 @@ void FunctionPrototypeStub::Generate(MacroAssembler* masm) {
   __ Bind(&miss);
   PropertyAccessCompiler::TailCallBuiltin(
       masm, PropertyAccessCompiler::MissBuiltin(Code::LOAD_IC));
+}
+
+
+void LoadIndexedStringStub::Generate(MacroAssembler* masm) {
+  // Return address is in lr.
+  Label miss;
+
+  Register receiver = LoadDescriptor::ReceiverRegister();
+  Register index = LoadDescriptor::NameRegister();
+  Register result = x0;
+  Register scratch = x10;
+  DCHECK(!scratch.is(receiver) && !scratch.is(index));
+  DCHECK(!FLAG_vector_ics ||
+         (!scratch.is(VectorLoadICDescriptor::VectorRegister()) &&
+          result.is(VectorLoadICDescriptor::SlotRegister())));
+
+  // StringCharAtGenerator doesn't use the result register until it's passed
+  // the different miss possibilities. If it did, we would have a conflict
+  // when FLAG_vector_ics is true.
+  StringCharAtGenerator char_at_generator(receiver, index, scratch, result,
+                                          &miss,  // When not a string.
+                                          &miss,  // When not a number.
+                                          &miss,  // When index out of range.
+                                          STRING_INDEX_IS_ARRAY_INDEX,
+                                          RECEIVER_IS_STRING);
+  char_at_generator.GenerateFast(masm);
+  __ Ret();
+
+  StubRuntimeCallHelper call_helper;
+  char_at_generator.GenerateSlow(masm, call_helper);
+
+  __ Bind(&miss);
+  PropertyAccessCompiler::TailCallBuiltin(
+      masm, PropertyAccessCompiler::MissBuiltin(Code::KEYED_LOAD_IC));
 }
 
 
@@ -1569,7 +1608,7 @@ void InstanceofStub::Generate(MacroAssembler* masm) {
   __ Mov(result, res_false);
 
   // Null is not instance of anything.
-  __ Cmp(object_type, Operand(isolate()->factory()->null_value()));
+  __ Cmp(object, Operand(isolate()->factory()->null_value()));
   __ B(ne, &object_not_null);
   __ Ret();
 
@@ -2683,13 +2722,13 @@ static void GenerateRecordCallTarget(MacroAssembler* masm,
 
   // A monomorphic miss (i.e, here the cache is not uninitialized) goes
   // megamorphic.
-  __ JumpIfRoot(scratch1, Heap::kUninitializedSymbolRootIndex, &initialize);
+  __ JumpIfRoot(scratch1, Heap::kuninitialized_symbolRootIndex, &initialize);
   // MegamorphicSentinel is an immortal immovable object (undefined) so no
   // write-barrier is needed.
   __ Bind(&megamorphic);
   __ Add(scratch1, feedback_vector,
          Operand::UntagSmiAndScale(index, kPointerSizeLog2));
-  __ LoadRoot(scratch2, Heap::kMegamorphicSymbolRootIndex);
+  __ LoadRoot(scratch2, Heap::kmegamorphic_symbolRootIndex);
   __ Str(scratch2, FieldMemOperand(scratch1, FixedArray::kHeaderSize));
   __ B(&done);
 
@@ -2988,6 +3027,10 @@ void CallICStub::Generate(MacroAssembler* masm) {
 
   // x1 - function
   // x3 - slot id (Smi)
+  const int with_types_offset =
+      FixedArray::OffsetOfElementAt(TypeFeedbackVector::kWithTypesIndex);
+  const int generic_offset =
+      FixedArray::OffsetOfElementAt(TypeFeedbackVector::kGenericCountIndex);
   Label extra_checks_or_miss, slow_start;
   Label slow, non_function, wrap, cont;
   Label have_js_function;
@@ -3036,24 +3079,72 @@ void CallICStub::Generate(MacroAssembler* masm) {
   }
 
   __ bind(&extra_checks_or_miss);
-  Label miss;
+  Label uninitialized, miss;
 
-  __ JumpIfRoot(x4, Heap::kMegamorphicSymbolRootIndex, &slow_start);
-  __ JumpIfRoot(x4, Heap::kUninitializedSymbolRootIndex, &miss);
+  __ JumpIfRoot(x4, Heap::kmegamorphic_symbolRootIndex, &slow_start);
 
-  if (!FLAG_trace_ic) {
-    // We are going megamorphic. If the feedback is a JSFunction, it is fine
-    // to handle it here. More complex cases are dealt with in the runtime.
-    __ AssertNotSmi(x4);
-    __ JumpIfNotObjectType(x4, x5, x5, JS_FUNCTION_TYPE, &miss);
-    __ Add(x4, feedback_vector,
-           Operand::UntagSmiAndScale(index, kPointerSizeLog2));
-    __ LoadRoot(x5, Heap::kMegamorphicSymbolRootIndex);
-    __ Str(x5, FieldMemOperand(x4, FixedArray::kHeaderSize));
-    __ B(&slow_start);
+  // The following cases attempt to handle MISS cases without going to the
+  // runtime.
+  if (FLAG_trace_ic) {
+    __ jmp(&miss);
   }
 
-  // We are here because tracing is on or we are going monomorphic.
+  __ JumpIfRoot(x4, Heap::kuninitialized_symbolRootIndex, &miss);
+
+  // We are going megamorphic. If the feedback is a JSFunction, it is fine
+  // to handle it here. More complex cases are dealt with in the runtime.
+  __ AssertNotSmi(x4);
+  __ JumpIfNotObjectType(x4, x5, x5, JS_FUNCTION_TYPE, &miss);
+  __ Add(x4, feedback_vector,
+         Operand::UntagSmiAndScale(index, kPointerSizeLog2));
+  __ LoadRoot(x5, Heap::kmegamorphic_symbolRootIndex);
+  __ Str(x5, FieldMemOperand(x4, FixedArray::kHeaderSize));
+  // We have to update statistics for runtime profiling.
+  __ Ldr(x4, FieldMemOperand(feedback_vector, with_types_offset));
+  __ Subs(x4, x4, Operand(Smi::FromInt(1)));
+  __ Str(x4, FieldMemOperand(feedback_vector, with_types_offset));
+  __ Ldr(x4, FieldMemOperand(feedback_vector, generic_offset));
+  __ Adds(x4, x4, Operand(Smi::FromInt(1)));
+  __ Str(x4, FieldMemOperand(feedback_vector, generic_offset));
+  __ B(&slow_start);
+
+  __ bind(&uninitialized);
+
+  // We are going monomorphic, provided we actually have a JSFunction.
+  __ JumpIfSmi(function, &miss);
+
+  // Goto miss case if we do not have a function.
+  __ JumpIfNotObjectType(function, x5, x5, JS_FUNCTION_TYPE, &miss);
+
+  // Make sure the function is not the Array() function, which requires special
+  // behavior on MISS.
+  __ LoadGlobalFunction(Context::ARRAY_FUNCTION_INDEX, x5);
+  __ Cmp(function, x5);
+  __ B(eq, &miss);
+
+  // Update stats.
+  __ Ldr(x4, FieldMemOperand(feedback_vector, with_types_offset));
+  __ Adds(x4, x4, Operand(Smi::FromInt(1)));
+  __ Str(x4, FieldMemOperand(feedback_vector, with_types_offset));
+
+  // Store the function.
+  __ Add(x4, feedback_vector,
+         Operand::UntagSmiAndScale(index, kPointerSizeLog2));
+  __ Str(function, FieldMemOperand(x4, FixedArray::kHeaderSize));
+
+  __ Add(x4, feedback_vector,
+         Operand::UntagSmiAndScale(index, kPointerSizeLog2));
+  __ Add(x4, x4, FixedArray::kHeaderSize - kHeapObjectTag);
+  __ Str(function, MemOperand(x4, 0));
+
+  // Update the write barrier.
+  __ Mov(x5, function);
+  __ RecordWrite(feedback_vector, x4, x5, kLRHasNotBeenSaved, kDontSaveFPRegs,
+                 EMIT_REMEMBERED_SET, OMIT_SMI_CHECK);
+  __ B(&have_js_function);
+
+  // We are here because tracing is on or we encountered a MISS case we can't
+  // handle here.
   __ bind(&miss);
   GenerateMiss(masm);
 
@@ -3097,14 +3188,16 @@ void CallICStub::GenerateMiss(MacroAssembler* masm) {
 
 void StringCharCodeAtGenerator::GenerateFast(MacroAssembler* masm) {
   // If the receiver is a smi trigger the non-string case.
-  __ JumpIfSmi(object_, receiver_not_string_);
+  if (check_mode_ == RECEIVER_IS_UNKNOWN) {
+    __ JumpIfSmi(object_, receiver_not_string_);
 
-  // Fetch the instance type of the receiver into result register.
-  __ Ldr(result_, FieldMemOperand(object_, HeapObject::kMapOffset));
-  __ Ldrb(result_, FieldMemOperand(result_, Map::kInstanceTypeOffset));
+    // Fetch the instance type of the receiver into result register.
+    __ Ldr(result_, FieldMemOperand(object_, HeapObject::kMapOffset));
+    __ Ldrb(result_, FieldMemOperand(result_, Map::kInstanceTypeOffset));
 
-  // If the receiver is not a string trigger the non-string case.
-  __ TestAndBranchIfAnySet(result_, kIsNotStringMask, receiver_not_string_);
+    // If the receiver is not a string trigger the non-string case.
+    __ TestAndBranchIfAnySet(result_, kIsNotStringMask, receiver_not_string_);
+  }
 
   // If the index is non-smi trigger the non-smi case.
   __ JumpIfNotSmi(index_, &index_not_smi_);
@@ -3782,13 +3875,56 @@ void SubStringStub::Generate(MacroAssembler* masm) {
   // x12: input_type
   // x15: from (untagged)
   __ SmiTag(from);
-  StringCharAtGenerator generator(
-      input_string, from, result_length, x0,
-      &runtime, &runtime, &runtime, STRING_INDEX_IS_NUMBER);
+  StringCharAtGenerator generator(input_string, from, result_length, x0,
+                                  &runtime, &runtime, &runtime,
+                                  STRING_INDEX_IS_NUMBER, RECEIVER_IS_STRING);
   generator.GenerateFast(masm);
   __ Drop(3);
   __ Ret();
   generator.SkipSlow(masm, &runtime);
+}
+
+
+void ToNumberStub::Generate(MacroAssembler* masm) {
+  // The ToNumber stub takes one argument in x0.
+  Label not_smi;
+  __ JumpIfNotSmi(x0, &not_smi);
+  __ Ret();
+  __ Bind(&not_smi);
+
+  Label not_heap_number;
+  __ Ldr(x1, FieldMemOperand(x0, HeapObject::kMapOffset));
+  __ Ldrb(x1, FieldMemOperand(x1, Map::kInstanceTypeOffset));
+  // x0: object
+  // x1: instance type
+  __ Cmp(x1, HEAP_NUMBER_TYPE);
+  __ B(ne, &not_heap_number);
+  __ Ret();
+  __ Bind(&not_heap_number);
+
+  Label not_string, slow_string;
+  __ Cmp(x1, FIRST_NONSTRING_TYPE);
+  __ B(hs, &not_string);
+  // Check if string has a cached array index.
+  __ Ldr(x2, FieldMemOperand(x0, String::kHashFieldOffset));
+  __ Tst(x2, Operand(String::kContainsCachedArrayIndexMask));
+  __ B(ne, &slow_string);
+  __ IndexFromHash(x2, x0);
+  __ Ret();
+  __ Bind(&slow_string);
+  __ Push(x0);  // Push argument.
+  __ TailCallRuntime(Runtime::kStringToNumber, 1, 1);
+  __ Bind(&not_string);
+
+  Label not_oddball;
+  __ Cmp(x1, ODDBALL_TYPE);
+  __ B(ne, &not_oddball);
+  __ Ldr(x0, FieldMemOperand(x0, Oddball::kToNumberOffset));
+  __ Ret();
+  __ Bind(&not_oddball);
+
+  __ Push(x0);  // Push argument.
+  __ InvokeBuiltin(Builtins::TO_NUMBER, JUMP_FUNCTION);
 }
 
 
@@ -4236,18 +4372,10 @@ void KeyedLoadICTrampolineStub::Generate(MacroAssembler* masm) {
 }
 
 
-static unsigned int GetProfileEntryHookCallSize(MacroAssembler* masm) {
-  // The entry hook is a "BumpSystemStackPointer" instruction (sub),
-  // followed by a "Push lr" instruction, followed by a call.
-  unsigned int size =
-      Assembler::kCallSizeWithRelocation + (2 * kInstructionSize);
-  if (CpuFeatures::IsSupported(ALWAYS_ALIGN_CSP)) {
-    // If ALWAYS_ALIGN_CSP then there will be an extra bic instruction in
-    // "BumpSystemStackPointer".
-    size += kInstructionSize;
-  }
-  return size;
-}
+// The entry hook is a "BumpSystemStackPointer" instruction (sub), followed by
+// a "Push lr" instruction, followed by a call.
+static const unsigned int kProfileEntryHookCallSize =
+    Assembler::kCallSizeWithRelocation + (2 * kInstructionSize);
 
 
 void ProfileEntryHookStub::MaybeCallEntryHook(MacroAssembler* masm) {
@@ -4260,7 +4388,7 @@ void ProfileEntryHookStub::MaybeCallEntryHook(MacroAssembler* masm) {
     __ Push(lr);
     __ CallStub(&stub);
     DCHECK(masm->SizeOfCodeGeneratedSince(&entry_hook_call_start) ==
-           GetProfileEntryHookCallSize(masm));
+           kProfileEntryHookCallSize);
 
     __ Pop(lr);
   }
@@ -4278,7 +4406,7 @@ void ProfileEntryHookStub::Generate(MacroAssembler* masm) {
   const int kNumSavedRegs = kCallerSaved.Count();
 
   // Compute the function's address as the first argument.
-  __ Sub(x0, lr, GetProfileEntryHookCallSize(masm));
+  __ Sub(x0, lr, kProfileEntryHookCallSize);
 
 #if V8_HOST_ARCH_ARM64
   uintptr_t entry_hook =

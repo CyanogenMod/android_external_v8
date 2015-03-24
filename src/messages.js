@@ -9,9 +9,8 @@ var kMessages = {
   cyclic_proto:                  ["Cyclic __proto__ value"],
   code_gen_from_strings:         ["%0"],
   constructor_special_method:    ["Class constructor may not be an accessor"],
-  generator_running:             ["Generator is already running"],
-  generator_finished:            ["Generator has already finished"],
   // TypeError
+  generator_running:             ["Generator is already running"],
   unexpected_token:              ["Unexpected token ", "%0"],
   unexpected_token_number:       ["Unexpected number"],
   unexpected_token_string:       ["Unexpected string"],
@@ -19,8 +18,12 @@ var kMessages = {
   unexpected_reserved:           ["Unexpected reserved word"],
   unexpected_strict_reserved:    ["Unexpected strict mode reserved word"],
   unexpected_eos:                ["Unexpected end of input"],
+  unexpected_template_string:    ["Unexpected template string"],
   malformed_regexp:              ["Invalid regular expression: /", "%0", "/: ", "%1"],
+  malformed_regexp_flags:        ["Invalid regular expression flags"],
   unterminated_regexp:           ["Invalid regular expression: missing /"],
+  unterminated_template:         ["Unterminated template literal"],
+  unterminated_template_expr:    ["Missing } in template expression"],
   regexp_flags:                  ["Cannot supply flags when constructing one RegExp from another"],
   incompatible_method_receiver:  ["Method ", "%0", " called on incompatible receiver ", "%1"],
   multiple_defaults_in_switch:   ["More than one default clause in switch statement"],
@@ -49,6 +52,7 @@ var kMessages = {
   apply_wrong_args:              ["Function.prototype.apply: Arguments list has wrong type"],
   toMethod_non_function:         ["Function.prototype.toMethod was called on ", "%0", ", which is a ", "%1", " and not a function"],
   toMethod_non_object:           ["Function.prototype.toMethod: home object ", "%0", " is not an object"],
+  flags_getter_non_object:       ["RegExp.prototype.flags getter called on non-object ", "%0"],
   invalid_in_operator_use:       ["Cannot use 'in' operator to search for '", "%0", "' in ", "%1"],
   instanceof_function_expected:  ["Expecting a function in instanceof check, but got ", "%0"],
   instanceof_nonobject_proto:    ["Function has non-object prototype '", "%0", "' in instanceof check"],
@@ -150,6 +154,7 @@ var kMessages = {
   too_many_variables:            ["Too many variables declared (only 4194303 allowed)"],
   strict_param_dupe:             ["Strict mode function may not have duplicate parameter names"],
   strict_octal_literal:          ["Octal literals are not allowed in strict mode."],
+  template_octal_literal:        ["Octal literals are not allowed in template strings."],
   strict_duplicate_property:     ["Duplicate data property in object literal not allowed in strict mode"],
   accessor_data_property:        ["Object literal may not have data and accessor property with the same name"],
   accessor_get_set:              ["Object literal may not have multiple get/set accessors with the same name"],
@@ -174,7 +179,12 @@ var kMessages = {
   invalid_module_path:           ["Module does not export '", "%0", "', or export is not itself a module"],
   module_type_error:             ["Module '", "%0", "' used improperly"],
   module_export_undefined:       ["Export '", "%0", "' is not defined in module"],
-  unexpected_super:              ["'super' keyword unexpected here"]
+  unexpected_super:              ["'super' keyword unexpected here"],
+  extends_value_not_a_function:  ["Class extends value ", "%0", " is not a function or null"],
+  prototype_parent_not_an_object: ["Class extends value does not have valid prototype property ", "%0"],
+  duplicate_constructor:         ["A class may only have one constructor"],
+  sloppy_lexical:                ["Block-scoped declarations (let, const, function, class) not yet supported outside strict mode"],
+  super_constructor_call:        ["A 'super' constructor call may only appear as the first statement of a function, and its arguments may not access 'this'. Other forms are not yet supported."]
 };
 
 
@@ -221,7 +231,8 @@ function NoSideEffectToString(obj) {
     return str;
   }
   if (IS_SYMBOL(obj)) return %_CallFunction(obj, SymbolToString);
-  if (IS_OBJECT(obj) && %GetDataProperty(obj, "toString") === ObjectToString) {
+  if (IS_OBJECT(obj)
+      && %GetDataProperty(obj, "toString") === DefaultObjectToString) {
     var constructor = %GetDataProperty(obj, "constructor");
     if (typeof constructor == "function") {
       var constructorName = constructor.name;
@@ -233,7 +244,8 @@ function NoSideEffectToString(obj) {
   if (CanBeSafelyTreatedAsAnErrorObject(obj)) {
     return %_CallFunction(obj, ErrorToString);
   }
-  return %_CallFunction(obj, ObjectToString);
+
+  return %_CallFunction(obj, NoSideEffectsObjectToString);
 }
 
 // To determine whether we can safely stringify an object using ErrorToString
@@ -272,7 +284,7 @@ function ToStringCheckErrorObject(obj) {
 
 
 function ToDetailString(obj) {
-  if (obj != null && IS_OBJECT(obj) && obj.toString === ObjectToString) {
+  if (obj != null && IS_OBJECT(obj) && obj.toString === DefaultObjectToString) {
     var constructor = obj.constructor;
     if (typeof constructor == "function") {
       var constructorName = constructor.name;
@@ -362,6 +374,23 @@ function MakeError(type, args) {
   return MakeGenericError($Error, type, args);
 }
 
+
+// The embedded versions are called from unoptimized code, with embedded
+// arguments. Those arguments cannot be arrays, which are context-dependent.
+function MakeTypeErrorEmbedded(type, arg) {
+  return MakeGenericError($TypeError, type, [arg]);
+}
+
+
+function MakeSyntaxErrorEmbedded(type, arg) {
+  return MakeGenericError($SyntaxError, type, [arg]);
+}
+
+
+function MakeReferenceErrorEmbedded(type, arg) {
+  return MakeGenericError($ReferenceError, type, [arg]);
+}
+
 /**
  * Find a line number given a specific source position.
  * @param {number} position The source position.
@@ -369,34 +398,26 @@ function MakeError(type, args) {
        else the line number.
  */
 function ScriptLineFromPosition(position) {
-  var lower = 0;
-  var upper = this.lineCount() - 1;
   var line_ends = this.line_ends;
+  var upper = line_ends.length - 1;
+  if (upper < 0) return -1;
 
   // We'll never find invalid positions so bail right away.
-  if (position > line_ends[upper]) {
-    return -1;
-  }
+  if (position > line_ends[upper]) return -1;
+  if (position <= line_ends[0]) return 0;
 
-  // This means we don't have to safe-guard indexing line_ends[i - 1].
-  if (position <= line_ends[0]) {
-    return 0;
-  }
-
-  // Binary search to find line # from position range.
-  while (upper >= 1) {
-    var i = (lower + upper) >> 1;
-
-    if (position > line_ends[i]) {
-      lower = i + 1;
-    } else if (position <= line_ends[i - 1]) {
-      upper = i - 1;
+  var lower = 1;
+  // Binary search.
+  while (true) {
+    var mid = (upper + lower) >> 1;
+    if (position <= line_ends[mid - 1]) {
+      upper = mid - 1;
+    } else if (position > line_ends[mid]){
+      lower = mid + 1;
     } else {
-      return i;
+      return mid;
     }
   }
-
-  return -1;
 }
 
 /**
@@ -1103,12 +1124,12 @@ function GetTypeName(receiver, requireConstructor) {
   var constructor = receiver.constructor;
   if (!constructor) {
     return requireConstructor ? null :
-        %_CallFunction(receiver, ObjectToString);
+        %_CallFunction(receiver, NoSideEffectsObjectToString);
   }
   var constructorName = constructor.name;
   if (!constructorName) {
     return requireConstructor ? null :
-        %_CallFunction(receiver, ObjectToString);
+        %_CallFunction(receiver, NoSideEffectsObjectToString);
   }
   return constructorName;
 }
@@ -1132,7 +1153,7 @@ var StackTraceGetter = function() {
       if (IS_UNDEFINED(stack_trace)) {
         // Neither formatted nor structured stack trace available.
         // Look further up the prototype chain.
-        holder = %GetPrototype(holder);
+        holder = %_GetPrototype(holder);
         continue;
       }
       formatted_stack_trace = FormatStackTrace(holder, stack_trace);
@@ -1198,14 +1219,13 @@ function SetUpError() {
     %AddNamedProperty(f.prototype, "name", name, DONT_ENUM);
     %SetCode(f, function(m) {
       if (%_IsConstructCall()) {
+        try { captureStackTrace(this, f); } catch (e) { }
         // Define all the expected properties directly on the error
         // object. This avoids going through getters and setters defined
         // on prototype objects.
-        %AddNamedProperty(this, 'stack', UNDEFINED, DONT_ENUM);
         if (!IS_UNDEFINED(m)) {
           %AddNamedProperty(this, 'message', ToString(m), DONT_ENUM);
         }
-        try { captureStackTrace(this, f); } catch (e) { }
       } else {
         return new f(m);
       }
@@ -1237,7 +1257,7 @@ function GetPropertyWithoutInvokingMonkeyGetters(error, name) {
   var current = error;
   // Climb the prototype chain until we find the holder.
   while (current && !%HasOwnProperty(current, name)) {
-    current = %GetPrototype(current);
+    current = %_GetPrototype(current);
   }
   if (IS_NULL(current)) return UNDEFINED;
   if (!IS_OBJECT(current)) return error[name];

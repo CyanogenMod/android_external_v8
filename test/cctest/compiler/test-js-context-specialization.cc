@@ -7,7 +7,6 @@
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/node-properties-inl.h"
 #include "src/compiler/source-position.h"
-#include "src/compiler/typer.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/compiler/function-tester.h"
 #include "test/cctest/compiler/graph-builder-tester.h"
@@ -22,10 +21,9 @@ class ContextSpecializationTester : public HandleAndZoneScope,
       : DirectGraphBuilder(new (main_zone()) Graph(main_zone())),
         common_(main_zone()),
         javascript_(main_zone()),
-        machine_(),
+        machine_(main_zone()),
         simplified_(main_zone()),
-        typer_(main_zone()),
-        jsgraph_(graph(), common(), &javascript_, &typer_, &machine_),
+        jsgraph_(graph(), common(), &javascript_, &machine_),
         info_(main_isolate(), main_zone()) {}
 
   Factory* factory() { return main_isolate()->factory(); }
@@ -40,7 +38,6 @@ class ContextSpecializationTester : public HandleAndZoneScope,
   JSOperatorBuilder javascript_;
   MachineOperatorBuilder machine_;
   SimplifiedOperatorBuilder simplified_;
-  Typer typer_;
   JSGraph jsgraph_;
   CompilationInfo info_;
 };
@@ -95,8 +92,8 @@ TEST(ReduceJSLoadContext) {
     HeapObjectMatcher<Context> match(new_context_input);
     CHECK_EQ(*native, *match.Value().handle());
     ContextAccess access = OpParameter<ContextAccess>(r.replacement());
-    CHECK_EQ(Context::GLOBAL_EVAL_FUN_INDEX, access.index());
-    CHECK_EQ(0, access.depth());
+    CHECK_EQ(Context::GLOBAL_EVAL_FUN_INDEX, static_cast<int>(access.index()));
+    CHECK_EQ(0, static_cast<int>(access.depth()));
     CHECK_EQ(false, access.immutable());
   }
 
@@ -175,8 +172,8 @@ TEST(ReduceJSStoreContext) {
     HeapObjectMatcher<Context> match(new_context_input);
     CHECK_EQ(*native, *match.Value().handle());
     ContextAccess access = OpParameter<ContextAccess>(r.replacement());
-    CHECK_EQ(Context::GLOBAL_EVAL_FUN_INDEX, access.index());
-    CHECK_EQ(0, access.depth());
+    CHECK_EQ(Context::GLOBAL_EVAL_FUN_INDEX, static_cast<int>(access.index()));
+    CHECK_EQ(0, static_cast<int>(access.depth()));
     CHECK_EQ(false, access.immutable());
   }
 }
@@ -206,7 +203,7 @@ TEST(SpecializeToContext) {
   JSContextSpecializer spec(t.info(), t.jsgraph(), const_context);
 
   {
-    // Check that SpecializeToContext() replaces values and forwards effects
+    // Check that specialization replaces values and forwards effects
     // correctly, and folds values from constant and non-constant contexts
     Node* effect_in = start;
     Node* load = t.NewNode(t.javascript()->LoadContext(0, slot, true),
@@ -232,8 +229,10 @@ TEST(SpecializeToContext) {
     CheckEffectInput(effect_in, load);
     CheckEffectInput(load, effect_use);
 
-    // Perform the substitution on the entire graph.
-    spec.SpecializeToContext();
+    // Perform the reduction on the entire graph.
+    GraphReducer graph_reducer(t.graph(), t.main_zone());
+    graph_reducer.AddReducer(&spec);
+    graph_reducer.ReduceGraph();
 
     // Effects should have been forwarded (not replaced with a value).
     CheckEffectInput(effect_in, effect_use);

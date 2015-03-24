@@ -16,6 +16,8 @@ namespace compiler {
   V(Arm64Add32)                    \
   V(Arm64And)                      \
   V(Arm64And32)                    \
+  V(Arm64Bic)                      \
+  V(Arm64Bic32)                    \
   V(Arm64Cmp)                      \
   V(Arm64Cmp32)                    \
   V(Arm64Cmn)                      \
@@ -24,12 +26,24 @@ namespace compiler {
   V(Arm64Tst32)                    \
   V(Arm64Or)                       \
   V(Arm64Or32)                     \
-  V(Arm64Xor)                      \
-  V(Arm64Xor32)                    \
+  V(Arm64Orn)                      \
+  V(Arm64Orn32)                    \
+  V(Arm64Eor)                      \
+  V(Arm64Eor32)                    \
+  V(Arm64Eon)                      \
+  V(Arm64Eon32)                    \
   V(Arm64Sub)                      \
   V(Arm64Sub32)                    \
   V(Arm64Mul)                      \
   V(Arm64Mul32)                    \
+  V(Arm64Smull)                    \
+  V(Arm64Umull)                    \
+  V(Arm64Madd)                     \
+  V(Arm64Madd32)                   \
+  V(Arm64Msub)                     \
+  V(Arm64Msub32)                   \
+  V(Arm64Mneg)                     \
+  V(Arm64Mneg32)                   \
   V(Arm64Idiv)                     \
   V(Arm64Idiv32)                   \
   V(Arm64Udiv)                     \
@@ -42,16 +56,23 @@ namespace compiler {
   V(Arm64Not32)                    \
   V(Arm64Neg)                      \
   V(Arm64Neg32)                    \
-  V(Arm64Shl)                      \
-  V(Arm64Shl32)                    \
-  V(Arm64Shr)                      \
-  V(Arm64Shr32)                    \
-  V(Arm64Sar)                      \
-  V(Arm64Sar32)                    \
+  V(Arm64Lsl)                      \
+  V(Arm64Lsl32)                    \
+  V(Arm64Lsr)                      \
+  V(Arm64Lsr32)                    \
+  V(Arm64Asr)                      \
+  V(Arm64Asr32)                    \
   V(Arm64Ror)                      \
   V(Arm64Ror32)                    \
   V(Arm64Mov32)                    \
+  V(Arm64Sxtb32)                   \
+  V(Arm64Sxth32)                   \
   V(Arm64Sxtw)                     \
+  V(Arm64Ubfx)                     \
+  V(Arm64Ubfx32)                   \
+  V(Arm64TestAndBranch32)          \
+  V(Arm64TestAndBranch)            \
+  V(Arm64CompareAndBranch32)       \
   V(Arm64Claim)                    \
   V(Arm64Poke)                     \
   V(Arm64PokePairZero)             \
@@ -63,6 +84,12 @@ namespace compiler {
   V(Arm64Float64Div)               \
   V(Arm64Float64Mod)               \
   V(Arm64Float64Sqrt)              \
+  V(Arm64Float64Floor)             \
+  V(Arm64Float64Ceil)              \
+  V(Arm64Float64RoundTruncate)     \
+  V(Arm64Float64RoundTiesAway)     \
+  V(Arm64Float32ToFloat64)         \
+  V(Arm64Float64ToFloat32)         \
   V(Arm64Float64ToInt32)           \
   V(Arm64Float64ToUint32)          \
   V(Arm64Int32ToFloat64)           \
@@ -97,9 +124,13 @@ namespace compiler {
 // I = immediate (handle, external, int32)
 // MRI = [register + immediate]
 // MRR = [register + register]
-#define TARGET_ADDRESSING_MODE_LIST(V) \
-  V(MRI) /* [%r0 + K] */               \
-  V(MRR) /* [%r0 + %r1] */
+#define TARGET_ADDRESSING_MODE_LIST(V)  \
+  V(MRI)              /* [%r0 + K] */   \
+  V(MRR)              /* [%r0 + %r1] */ \
+  V(Operand2_R_LSL_I) /* %r0 LSL K */   \
+  V(Operand2_R_LSR_I) /* %r0 LSR K */   \
+  V(Operand2_R_ASR_I) /* %r0 ASR K */   \
+  V(Operand2_R_ROR_I) /* %r0 ROR K */
 
 }  // namespace internal
 }  // namespace compiler

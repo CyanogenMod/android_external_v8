@@ -36,7 +36,7 @@ import urllib
 from common_includes import *
 import push_to_trunk
 
-PUSH_MESSAGE_RE = re.compile(r".* \(based on bleeding_edge revision r(\d+)\)$")
+PUSH_MESSAGE_RE = re.compile(r".* \(based on ([a-fA-F0-9]+)\)$")
 
 class Preparation(Step):
   MESSAGE = "Preparation."
@@ -70,13 +70,12 @@ class CheckTreeStatus(Step):
                % self["tree_message"])
 
 
-class FetchLKGR(Step):
-  MESSAGE = "Fetching V8 LKGR."
+class FetchCandidate(Step):
+  MESSAGE = "Fetching V8 roll candidate ref."
 
   def RunStep(self):
-    lkgr_url = "https://v8-status.appspot.com/lkgr"
-    # Retry several times since app engine might have issues.
-    self["lkgr"] = self.ReadURL(lkgr_url, wait_plan=[5, 20, 300, 300])
+    self.Git("fetch origin +refs/heads/candidate:refs/heads/candidate")
+    self["candidate"] = self.Git("show-ref -s refs/heads/candidate").strip()
 
 
 class CheckLastPush(Step):
@@ -94,28 +93,30 @@ class CheckLastPush(Step):
       self.Die("Could not retrieve bleeding edge revision for trunk push %s"
                % last_push)
 
-    # TODO(machenbach): This metric counts all revisions. It could be
-    # improved by counting only the revisions on bleeding_edge.
-    if int(self["lkgr"]) - int(last_push_be) < 10:  # pragma: no cover
-      # This makes sure the script doesn't push twice in a row when the cron
-      # job retries several times.
-      self.Die("Last push too recently: %s" % last_push_be)
+    if self["candidate"] == last_push_be:
+      print "Already pushed current candidate %s" % last_push_be
+      return True
 
 
-class PushToTrunk(Step):
-  MESSAGE = "Pushing to trunk if specified."
+class PushToCandidates(Step):
+  MESSAGE = "Pushing to candidates if specified."
 
   def RunStep(self):
-    print "Pushing lkgr %s to trunk." % self["lkgr"]
+    print "Pushing candidate %s to candidates." % self["candidate"]
+
+    args = [
+      "--author", self._options.author,
+      "--reviewer", self._options.reviewer,
+      "--revision", self["candidate"],
+      "--force",
+    ]
+
+    if self._options.work_dir:
+      args.extend(["--work-dir", self._options.work_dir])
 
     # TODO(machenbach): Update the script before calling it.
     if self._options.push:
-      self._side_effect_handler.Call(
-          push_to_trunk.PushToTrunk().Run,
-          ["--author", self._options.author,
-           "--reviewer", self._options.reviewer,
-           "--revision", self["lkgr"],
-           "--force"])
+      self._side_effect_handler.Call(push_to_trunk.PushToTrunk().Run, args)
 
 
 class AutoPush(ScriptsBase):
@@ -142,9 +143,9 @@ class AutoPush(ScriptsBase):
       Preparation,
       CheckAutoPushSettings,
       CheckTreeStatus,
-      FetchLKGR,
+      FetchCandidate,
       CheckLastPush,
-      PushToTrunk,
+      PushToCandidates,
     ]
 
 

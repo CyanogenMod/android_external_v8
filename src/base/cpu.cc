@@ -7,11 +7,17 @@
 #if V8_LIBC_MSVCRT
 #include <intrin.h>  // __cpuid()
 #endif
-#if V8_OS_POSIX
-#include <unistd.h>  // sysconf()
+#if V8_OS_LINUX
+#include <linux/auxvec.h>  // AT_HWCAP
+#endif
+#if V8_GLIBC_PREREQ(2, 16)
+#include <sys/auxv.h>  // getauxval()
 #endif
 #if V8_OS_QNX
 #include <sys/syspage.h>  // cpuinfo
+#endif
+#if V8_OS_POSIX
+#include <unistd.h>  // sysconf()
 #endif
 
 #include <ctype.h>
@@ -29,7 +35,9 @@
 namespace v8 {
 namespace base {
 
-#if V8_HOST_ARCH_IA32 || V8_HOST_ARCH_X64
+#if defined(__pnacl__)
+// Portable host shouldn't do feature detection.
+#elif V8_HOST_ARCH_IA32 || V8_HOST_ARCH_X64
 
 // Define __cpuid() for non-MSVC libraries.
 #if !V8_LIBC_MSVCRT
@@ -90,11 +98,12 @@ static V8_INLINE void __cpuid(int cpu_info[4], int info_type) {
 #define HWCAP_IDIV  (HWCAP_IDIVA | HWCAP_IDIVT)
 #define HWCAP_LPAE  (1 << 20)
 
-#define AT_HWCAP 16
-
-// Read the ELF HWCAP flags by parsing /proc/self/auxv.
 static uint32_t ReadELFHWCaps() {
   uint32_t result = 0;
+#if V8_GLIBC_PREREQ(2, 16)
+  result = static_cast<uint32_t>(getauxval(AT_HWCAP));
+#else
+  // Read the ELF HWCAP flags by parsing /proc/self/auxv.
   FILE* fp = fopen("/proc/self/auxv", "r");
   if (fp != NULL) {
     struct { uint32_t tag; uint32_t value; } entry;
@@ -110,6 +119,7 @@ static uint32_t ReadELFHWCaps() {
     }
     fclose(fp);
   }
+#endif
   return result;
 }
 
@@ -281,34 +291,42 @@ static bool HasListItem(const char* list, const char* item) {
 
 #endif  // V8_HOST_ARCH_IA32 || V8_HOST_ARCH_X64
 
-CPU::CPU() : stepping_(0),
-             model_(0),
-             ext_model_(0),
-             family_(0),
-             ext_family_(0),
-             type_(0),
-             implementer_(0),
-             architecture_(0),
-             part_(0),
-             has_fpu_(false),
-             has_cmov_(false),
-             has_sahf_(false),
-             has_mmx_(false),
-             has_sse_(false),
-             has_sse2_(false),
-             has_sse3_(false),
-             has_ssse3_(false),
-             has_sse41_(false),
-             has_sse42_(false),
-             has_idiva_(false),
-             has_neon_(false),
-             has_thumb2_(false),
-             has_vfp_(false),
-             has_vfp3_(false),
-             has_vfp3_d32_(false),
-             is_fp64_mode_(false) {
+CPU::CPU()
+    : stepping_(0),
+      model_(0),
+      ext_model_(0),
+      family_(0),
+      ext_family_(0),
+      type_(0),
+      implementer_(0),
+      architecture_(0),
+      variant_(-1),
+      part_(0),
+      has_fpu_(false),
+      has_cmov_(false),
+      has_sahf_(false),
+      has_mmx_(false),
+      has_sse_(false),
+      has_sse2_(false),
+      has_sse3_(false),
+      has_ssse3_(false),
+      has_sse41_(false),
+      has_sse42_(false),
+      has_avx_(false),
+      has_fma3_(false),
+      has_idiva_(false),
+      has_neon_(false),
+      has_thumb2_(false),
+      has_vfp_(false),
+      has_vfp3_(false),
+      has_vfp3_d32_(false),
+      is_fp64_mode_(false) {
   memcpy(vendor_, "Unknown", 8);
-#if V8_HOST_ARCH_IA32 || V8_HOST_ARCH_X64
+#if V8_OS_NACL
+// Portable host shouldn't do feature detection.
+// TODO(jfb): Remove the hardcoded ARM simulator flags in the build, and
+// hardcode them here instead.
+#elif V8_HOST_ARCH_IA32 || V8_HOST_ARCH_X64
   int cpu_info[4];
 
   // __cpuid with an InfoType argument of 0 returns the number of
@@ -342,6 +360,8 @@ CPU::CPU() : stepping_(0),
     has_ssse3_ = (cpu_info[2] & 0x00000200) != 0;
     has_sse41_ = (cpu_info[2] & 0x00080000) != 0;
     has_sse42_ = (cpu_info[2] & 0x00100000) != 0;
+    has_avx_ = (cpu_info[2] & 0x10000000) != 0;
+    if (has_avx_) has_fma3_ = (cpu_info[2] & 0x00001000) != 0;
   }
 
 #if V8_HOST_ARCH_IA32
@@ -369,7 +389,7 @@ CPU::CPU() : stepping_(0),
   // Extract implementor from the "CPU implementer" field.
   char* implementer = cpu_info.ExtractField("CPU implementer");
   if (implementer != NULL) {
-    char* end ;
+    char* end;
     implementer_ = strtol(implementer, &end, 0);
     if (end == implementer) {
       implementer_ = 0;
@@ -377,10 +397,20 @@ CPU::CPU() : stepping_(0),
     delete[] implementer;
   }
 
+  char* variant = cpu_info.ExtractField("CPU variant");
+  if (variant != NULL) {
+    char* end;
+    variant_ = strtol(variant, &end, 0);
+    if (end == variant) {
+      variant_ = -1;
+    }
+    delete[] variant;
+  }
+
   // Extract part number from the "CPU part" field.
   char* part = cpu_info.ExtractField("CPU part");
   if (part != NULL) {
-    char* end ;
+    char* end;
     part_ = strtol(part, &end, 0);
     if (end == part) {
       part_ = 0;
@@ -408,13 +438,22 @@ CPU::CPU() : stepping_(0),
     //
     // See http://code.google.com/p/android/issues/detail?id=10812
     //
-    // We try to correct this by looking at the 'elf_format'
+    // We try to correct this by looking at the 'elf_platform'
     // field reported by the 'Processor' field, which is of the
     // form of "(v7l)" for an ARMv7-based CPU, and "(v6l)" for
     // an ARMv6-one. For example, the Raspberry Pi is one popular
     // ARMv6 device that reports architecture 7.
     if (architecture_ == 7) {
       char* processor = cpu_info.ExtractField("Processor");
+      if (HasListItem(processor, "(v6l)")) {
+        architecture_ = 6;
+      }
+      delete[] processor;
+    }
+
+    // elf_platform moved to the model name field in Linux v3.8.
+    if (architecture_ == 7) {
+      char* processor = cpu_info.ExtractField("model name");
       if (HasListItem(processor, "(v6l)")) {
         architecture_ = 6;
       }
@@ -521,7 +560,7 @@ CPU::CPU() : stepping_(0),
   // Extract implementor from the "CPU implementer" field.
   char* implementer = cpu_info.ExtractField("CPU implementer");
   if (implementer != NULL) {
-    char* end ;
+    char* end;
     implementer_ = strtol(implementer, &end, 0);
     if (end == implementer) {
       implementer_ = 0;
@@ -529,10 +568,20 @@ CPU::CPU() : stepping_(0),
     delete[] implementer;
   }
 
+  char* variant = cpu_info.ExtractField("CPU variant");
+  if (variant != NULL) {
+    char* end;
+    variant_ = strtol(variant, &end, 0);
+    if (end == variant) {
+      variant_ = -1;
+    }
+    delete[] variant;
+  }
+
   // Extract part number from the "CPU part" field.
   char* part = cpu_info.ExtractField("CPU part");
   if (part != NULL) {
-    char* end ;
+    char* end;
     part_ = strtol(part, &end, 0);
     if (end == part) {
       part_ = 0;

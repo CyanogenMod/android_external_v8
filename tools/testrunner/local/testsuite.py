@@ -34,6 +34,17 @@ from . import statusfile
 from . import utils
 from ..objects import testcase
 
+# Use this to run several variants of the tests.
+VARIANT_FLAGS = {
+    "default": [],
+    "stress": ["--stress-opt", "--always-opt"],
+    "turbofan": ["--turbo-asm", "--turbo-filter=*", "--always-opt"],
+    "nocrankshaft": ["--nocrankshaft"]}
+
+FAST_VARIANT_FLAGS = [
+    f for v, f in VARIANT_FLAGS.iteritems() if v in ["default", "turbofan"]
+]
+
 class TestSuite(object):
 
   @staticmethod
@@ -81,6 +92,8 @@ class TestSuite(object):
   def VariantFlags(self, testcase, default_flags):
     if testcase.outcomes and statusfile.OnlyStandardVariant(testcase.outcomes):
       return [[]]
+    if testcase.outcomes and statusfile.OnlyFastVariants(testcase.outcomes):
+      return filter(lambda flags: flags in FAST_VARIANT_FLAGS, default_flags)
     return default_flags
 
   def DownloadData(self):
@@ -123,6 +136,9 @@ class TestSuite(object):
         t.outcomes = self.rules[testname]
         if statusfile.DoSkip(t.outcomes):
           continue  # Don't add skipped tests to |filtered|.
+        for outcome in t.outcomes:
+          if outcome.startswith('Flags: '):
+            t.flags += outcome[7:].split()
         flaky = statusfile.IsFlaky(t.outcomes)
         slow = statusfile.IsSlow(t.outcomes)
         pass_fail = statusfile.IsPassOrFail(t.outcomes)
@@ -234,7 +250,7 @@ class GoogleTestSuite(TestSuite):
     if output.exit_code != 0:
       print output.stdout
       print output.stderr
-      return []
+      raise Exception("Test executable failed to list the tests.")
     tests = []
     test_case = ''
     for line in output.stdout.splitlines():

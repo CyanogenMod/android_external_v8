@@ -96,16 +96,6 @@ function WeakMapDelete(key) {
 }
 
 
-function WeakMapClear() {
-  if (!IS_WEAKMAP(this)) {
-    throw MakeTypeError('incompatible_method_receiver',
-                        ['WeakMap.prototype.clear', this]);
-  }
-  // Replace the internal table with a new empty table.
-  %WeakCollectionInitialize(this);
-}
-
-
 // -------------------------------------------------------------------
 
 function SetUpWeakMap() {
@@ -114,14 +104,15 @@ function SetUpWeakMap() {
   %SetCode($WeakMap, WeakMapConstructor);
   %FunctionSetPrototype($WeakMap, new $Object());
   %AddNamedProperty($WeakMap.prototype, "constructor", $WeakMap, DONT_ENUM);
+  %AddNamedProperty(
+      $WeakMap.prototype, symbolToStringTag, "WeakMap", DONT_ENUM | READ_ONLY);
 
   // Set up the non-enumerable functions on the WeakMap prototype object.
   InstallFunctions($WeakMap.prototype, DONT_ENUM, $Array(
     "get", WeakMapGet,
     "set", WeakMapSet,
     "has", WeakMapHas,
-    "delete", WeakMapDelete,
-    "clear", WeakMapClear
+    "delete", WeakMapDelete
   ));
 }
 
@@ -196,16 +187,6 @@ function WeakSetDelete(value) {
 }
 
 
-function WeakSetClear() {
-  if (!IS_WEAKSET(this)) {
-    throw MakeTypeError('incompatible_method_receiver',
-                        ['WeakSet.prototype.clear', this]);
-  }
-  // Replace the internal table with a new empty table.
-  %WeakCollectionInitialize(this);
-}
-
-
 // -------------------------------------------------------------------
 
 function SetUpWeakSet() {
@@ -214,13 +195,14 @@ function SetUpWeakSet() {
   %SetCode($WeakSet, WeakSetConstructor);
   %FunctionSetPrototype($WeakSet, new $Object());
   %AddNamedProperty($WeakSet.prototype, "constructor", $WeakSet, DONT_ENUM);
+  %AddNamedProperty(
+      $WeakSet.prototype, symbolToStringTag, "WeakSet", DONT_ENUM | READ_ONLY);
 
   // Set up the non-enumerable functions on the WeakSet prototype object.
   InstallFunctions($WeakSet.prototype, DONT_ENUM, $Array(
     "add", WeakSetAdd,
     "has", WeakSetHas,
-    "delete", WeakSetDelete,
-    "clear", WeakSetClear
+    "delete", WeakSetDelete
   ));
 }
 

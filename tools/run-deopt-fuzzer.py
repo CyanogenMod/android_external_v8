@@ -160,6 +160,9 @@ def BuildOptions():
   result.add_option("--buildbot",
                     help="Adapt to path structure used on buildbots",
                     default=False, action="store_true")
+  result.add_option("--dcheck-always-on",
+                    help="Indicates that V8 was compiled with DCHECKs enabled",
+                    default=False, action="store_true")
   result.add_option("--command-prefix",
                     help="Prepended to each shell command used to run a test",
                     default="")
@@ -389,6 +392,8 @@ def Execute(arch, mode, args, options, suites, workspace):
     "simulator": utils.UseSimulator(arch),
     "system": utils.GuessOS(),
     "tsan": False,
+    "msan": False,
+    "dcheck_always_on": options.dcheck_always_on,
   }
   all_tests = []
   num_tests = 0

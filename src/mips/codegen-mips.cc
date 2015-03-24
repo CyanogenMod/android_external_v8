@@ -896,9 +896,23 @@ void ElementsTransitionGenerator::GenerateDoubleToObject(
         FixedDoubleArray::kHeaderSize - kHeapObjectTag
         + Register::kExponentOffset));
   __ Addu(dst_elements, array, Operand(FixedArray::kHeaderSize));
-  __ Addu(array, array, Operand(kHeapObjectTag));
   __ sll(dst_end, dst_end, 1);
   __ Addu(dst_end, dst_elements, dst_end);
+
+  // Allocating heap numbers in the loop below can fail and cause a jump to
+  // gc_required. We can't leave a partly initialized FixedArray behind,
+  // so pessimistically fill it with holes now.
+  Label initialization_loop, initialization_loop_entry;
+  __ LoadRoot(scratch, Heap::kTheHoleValueRootIndex);
+  __ Branch(&initialization_loop_entry);
+  __ bind(&initialization_loop);
+  __ sw(scratch, MemOperand(dst_elements));
+  __ Addu(dst_elements, dst_elements, Operand(kPointerSize));
+  __ bind(&initialization_loop_entry);
+  __ Branch(&initialization_loop, lt, dst_elements, Operand(dst_end));
+
+  __ Addu(dst_elements, array, Operand(FixedArray::kHeaderSize));
+  __ Addu(array, array, Operand(kHeapObjectTag));
   __ LoadRoot(heap_number_map, Heap::kHeapNumberMapRootIndex);
   // Using offsetted addresses.
   // dst_elements: begin of destination FixedArray element fields, not tagged
@@ -1131,7 +1145,7 @@ void MathExpGenerator::EmitMathExp(MacroAssembler* masm,
   // Mov 1 in double_scratch2 as math_exp_constants_array[8] == 1.
   DCHECK(*reinterpret_cast<double*>
          (ExternalReference::math_exp_constants(8).address()) == 1);
-  __ Move(double_scratch2, 1);
+  __ Move(double_scratch2, 1.);
   __ add_d(result, result, double_scratch2);
   __ srl(temp1, temp2, 11);
   __ Ext(temp2, temp2, 0, 11);

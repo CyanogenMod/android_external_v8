@@ -21,7 +21,6 @@ namespace internal {
   ICU(CallIC_Customization_Miss)       \
   ICU(StoreIC_Miss)                    \
   ICU(StoreIC_Slow)                    \
-  ICU(SharedStoreIC_ExtendStorage)     \
   ICU(KeyedStoreIC_Miss)               \
   ICU(KeyedStoreIC_Slow)               \
   /* Utilities for IC stubs. */        \
@@ -60,7 +59,8 @@ class IC {
 
   // Construct the IC structure with the given number of extra
   // JavaScript frames on the stack.
-  IC(FrameDepth depth, Isolate* isolate);
+  IC(FrameDepth depth, Isolate* isolate, FeedbackNexus* nexus = NULL,
+     bool for_queries_only = false);
   virtual ~IC() {}
 
   State state() const { return state_; }
@@ -72,16 +72,9 @@ class IC {
   bool IsNameCompatibleWithPrototypeFailure(Handle<Object> name);
   void MarkPrototypeFailure(Handle<Object> name) {
     DCHECK(IsNameCompatibleWithPrototypeFailure(name));
+    old_state_ = state_;
     state_ = PROTOTYPE_FAILURE;
   }
-
-  // If the stub contains weak maps then this function adds the stub to
-  // the dependent code array of each weak map.
-  static void RegisterWeakMapDependency(Handle<Code> stub);
-
-  // This function is called when a weak map in the stub is dying,
-  // invalidates the stub by setting maps in it to undefined.
-  static void InvalidateMaps(Code* stub);
 
   // Clear the inline cache to initial state.
   static void Clear(Isolate* isolate, Address address,
@@ -114,6 +107,11 @@ class IC {
     return state == UNINITIALIZED || state == PREMONOMORPHIC;
   }
 
+  static bool IsCleared(FeedbackNexus* nexus) {
+    InlineCacheState state = nexus->StateFromFeedback();
+    return state == UNINITIALIZED || state == PREMONOMORPHIC;
+  }
+
   // Utility functions to convert maps to types and back. There are two special
   // cases:
   // - The heap_number_map is used as a marker which includes heap numbers as
@@ -126,6 +124,12 @@ class IC {
 
   static Handle<HeapType> CurrentTypeOf(Handle<Object> object,
                                         Isolate* isolate);
+
+  static bool ICUseVector(Code::Kind kind) {
+    return (FLAG_vector_ics &&
+            (kind == Code::LOAD_IC || kind == Code::KEYED_LOAD_IC)) ||
+           kind == Code::CALL_IC;
+  }
 
  protected:
   // Get the call-site target; used for determining the state.
@@ -146,6 +150,22 @@ class IC {
   inline void set_target(Code* code);
   bool is_target_set() { return target_set_; }
 
+  bool UseVector() const {
+    bool use = ICUseVector(kind());
+    // If we are supposed to use the nexus, verify the nexus is non-null.
+    DCHECK(!use || nexus_ != NULL);
+    return use;
+  }
+
+  // Configure for most states.
+  void ConfigureVectorState(IC::State new_state);
+  // Configure the vector for MONOMORPHIC.
+  void ConfigureVectorState(Handle<Name> name, Handle<HeapType> type,
+                            Handle<Code> handler);
+  // Configure the vector for POLYMORPHIC.
+  void ConfigureVectorState(Handle<Name> name, TypeHandleList* types,
+                            CodeHandleList* handlers);
+
   char TransitionMarkFromState(IC::State state);
   void TraceIC(const char* type, Handle<Object> name);
   void TraceIC(const char* type, Handle<Object> name, State old_state,
@@ -163,6 +183,10 @@ class IC {
   static void OnTypeFeedbackChanged(Isolate* isolate, Address address,
                                     State old_state, State new_state,
                                     bool target_remains_ic_stub);
+  // As a vector-based IC, type feedback must be updated differently.
+  static void OnTypeFeedbackChanged(Isolate* isolate, Code* host,
+                                    TypeFeedbackVector* vector, State old_state,
+                                    State new_state);
   static void PostPatching(Address address, Code* target, Code* old_target);
 
   // Compute the handler either by compiling or by retrieving a cached version.
@@ -224,8 +248,21 @@ class IC {
     return target_maps_.length() > 0 ? *target_maps_.at(0) : NULL;
   }
 
- protected:
   inline void UpdateTarget();
+
+  Handle<TypeFeedbackVector> vector() const { return nexus()->vector_handle(); }
+  FeedbackVectorICSlot slot() const { return nexus()->slot(); }
+  State saved_state() const {
+    return state() == PROTOTYPE_FAILURE ? old_state_ : state();
+  }
+
+  template <class NexusClass>
+  NexusClass* casted_nexus() {
+    return static_cast<NexusClass*>(nexus_);
+  }
+  FeedbackNexus* nexus() const { return nexus_; }
+
+  inline Code* get_host();
 
  private:
   inline Code* raw_target() const;
@@ -235,11 +272,15 @@ class IC {
   void FindTargetMaps() {
     if (target_maps_set_) return;
     target_maps_set_ = true;
-    if (state_ == MONOMORPHIC) {
-      Map* map = target_->FindFirstMap();
-      if (map != NULL) target_maps_.Add(handle(map));
-    } else if (state_ != UNINITIALIZED && state_ != PREMONOMORPHIC) {
-      target_->FindAllMaps(&target_maps_);
+    if (UseVector()) {
+      nexus()->ExtractMaps(&target_maps_);
+    } else {
+      if (state_ == MONOMORPHIC) {
+        Map* map = target_->FindFirstMap();
+        if (map != NULL) target_maps_.Add(handle(map));
+      } else if (state_ != UNINITIALIZED && state_ != PREMONOMORPHIC) {
+        target_->FindAllMaps(&target_maps_);
+      }
     }
   }
 
@@ -261,6 +302,7 @@ class IC {
   // The original code target that missed.
   Handle<Code> target_;
   bool target_set_;
+  State old_state_;  // For saving if we marked as prototype failure.
   State state_;
   Code::Kind kind_;
   Handle<HeapType> receiver_type_;
@@ -269,6 +311,8 @@ class IC {
   ExtraICState extra_ic_state_;
   MapHandleList target_maps_;
   bool target_maps_set_;
+
+  FeedbackNexus* nexus_;
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(IC);
 };
@@ -293,29 +337,24 @@ class IC_Utility {
 
 class CallIC : public IC {
  public:
-  explicit CallIC(Isolate* isolate) : IC(EXTRA_CALL_FRAME, isolate) {}
+  CallIC(Isolate* isolate, CallICNexus* nexus)
+      : IC(EXTRA_CALL_FRAME, isolate, nexus) {
+    DCHECK(nexus != NULL);
+  }
 
-  void PatchMegamorphic(Handle<Object> function,
-                        Handle<TypeFeedbackVector> vector, Handle<Smi> slot);
+  void PatchMegamorphic(Handle<Object> function);
 
-  void HandleMiss(Handle<Object> receiver, Handle<Object> function,
-                  Handle<TypeFeedbackVector> vector, Handle<Smi> slot);
+  void HandleMiss(Handle<Object> receiver, Handle<Object> function);
 
   // Returns true if a custom handler was installed.
   bool DoCustomHandler(Handle<Object> receiver, Handle<Object> function,
-                       Handle<TypeFeedbackVector> vector, Handle<Smi> slot,
-                       const CallICState& state);
+                       const CallICState& callic_state);
 
   // Code generator routines.
   static Handle<Code> initialize_stub(Isolate* isolate, int argc,
                                       CallICState::CallType call_type);
 
-  static void Clear(Isolate* isolate, Address address, Code* target,
-                    ConstantPoolArray* constant_pool);
-
- private:
-  inline IC::State FeedbackToState(Handle<TypeFeedbackVector> vector,
-                                   Handle<Smi> slot) const;
+  static void Clear(Isolate* isolate, Code* host, CallICNexus* nexus);
 };
 
 
@@ -329,7 +368,18 @@ class LoadIC : public IC {
     return LoadICState::GetContextualMode(extra_ic_state());
   }
 
-  explicit LoadIC(FrameDepth depth, Isolate* isolate) : IC(depth, isolate) {
+  LoadIC(FrameDepth depth, Isolate* isolate, FeedbackNexus* nexus = NULL)
+      : IC(depth, isolate, nexus) {
+    DCHECK(!FLAG_vector_ics || nexus != NULL);
+    DCHECK(IsLoadStub());
+  }
+
+  // TODO(mvstanton): The for_queries_only is because we have a case where we
+  // construct an IC only to gather the contextual mode, and we don't have
+  // vector/slot information. for_queries_only is a temporary hack to enable the
+  // strong DCHECK protection around vector/slot.
+  LoadIC(FrameDepth depth, Isolate* isolate, bool for_queries_only)
+      : IC(depth, isolate, NULL, for_queries_only) {
     DCHECK(IsLoadStub());
   }
 
@@ -355,9 +405,13 @@ class LoadIC : public IC {
 
   static Handle<Code> initialize_stub(Isolate* isolate,
                                       ExtraICState extra_state);
+  static Handle<Code> initialize_stub_in_optimized_code(
+      Isolate* isolate, ExtraICState extra_state);
 
   MUST_USE_RESULT MaybeHandle<Object> Load(Handle<Object> object,
                                            Handle<Name> name);
+
+  static void Clear(Isolate* isolate, Code* host, LoadICNexus* nexus);
 
  protected:
   inline void set_target(Code* code);
@@ -371,7 +425,7 @@ class LoadIC : public IC {
     }
   }
 
-  virtual Handle<Code> megamorphic_stub() OVERRIDE;
+  Handle<Code> megamorphic_stub() OVERRIDE;
 
   // Update the inline cache and the global stub cache based on the
   // lookup result.
@@ -379,7 +433,7 @@ class LoadIC : public IC {
 
   virtual Handle<Code> CompileHandler(LookupIterator* lookup,
                                       Handle<Object> unused,
-                                      CacheHolderFlag cache_holder);
+                                      CacheHolderFlag cache_holder) OVERRIDE;
 
  private:
   virtual Handle<Code> pre_monomorphic_stub() const;
@@ -397,8 +451,23 @@ class LoadIC : public IC {
 
 class KeyedLoadIC : public LoadIC {
  public:
-  explicit KeyedLoadIC(FrameDepth depth, Isolate* isolate)
-      : LoadIC(depth, isolate) {
+  // ExtraICState bits (building on IC)
+  class IcCheckTypeField : public BitField<IcCheckType, 1, 1> {};
+
+  static ExtraICState ComputeExtraICState(ContextualMode contextual_mode,
+                                          IcCheckType key_type) {
+    return LoadICState(contextual_mode).GetExtraICState() |
+           IcCheckTypeField::encode(key_type);
+  }
+
+  static IcCheckType GetKeyType(ExtraICState extra_state) {
+    return IcCheckTypeField::decode(extra_state);
+  }
+
+  KeyedLoadIC(FrameDepth depth, Isolate* isolate,
+              KeyedLoadICNexus* nexus = NULL)
+      : LoadIC(depth, isolate, nexus) {
+    DCHECK(!FLAG_vector_ics || nexus != NULL);
     DCHECK(target()->is_keyed_load_stub());
   }
 
@@ -413,7 +482,6 @@ class KeyedLoadIC : public LoadIC {
     GenerateMiss(masm);
   }
   static void GenerateGeneric(MacroAssembler* masm);
-  static void GenerateString(MacroAssembler* masm);
 
   // Bit mask to be tested against bit field for the cases when
   // generic stub should go into slow case.
@@ -422,20 +490,22 @@ class KeyedLoadIC : public LoadIC {
   static const int kSlowCaseBitFieldMask =
       (1 << Map::kIsAccessCheckNeeded) | (1 << Map::kHasIndexedInterceptor);
 
+  static Handle<Code> initialize_stub(Isolate* isolate);
+  static Handle<Code> initialize_stub_in_optimized_code(Isolate* isolate);
   static Handle<Code> generic_stub(Isolate* isolate);
   static Handle<Code> pre_monomorphic_stub(Isolate* isolate);
 
+  static void Clear(Isolate* isolate, Code* host, KeyedLoadICNexus* nexus);
+
  protected:
-  Handle<Code> LoadElementStub(Handle<JSObject> receiver);
+  // receiver is HeapObject because it could be a String or a JSObject
+  Handle<Code> LoadElementStub(Handle<HeapObject> receiver);
   virtual Handle<Code> pre_monomorphic_stub() const {
     return pre_monomorphic_stub(isolate());
   }
 
  private:
   Handle<Code> generic_stub() const { return generic_stub(isolate()); }
-  Handle<Code> string_stub() {
-    return isolate()->builtins()->KeyedLoadIC_String();
-  }
 
   static void Clear(Isolate* isolate, Address address, Code* target,
                     ConstantPoolArray* constant_pool);
@@ -489,7 +559,7 @@ class StoreIC : public IC {
                       JSReceiver::StoreFromKeyed store_mode);
 
  protected:
-  virtual Handle<Code> megamorphic_stub() OVERRIDE;
+  Handle<Code> megamorphic_stub() OVERRIDE;
 
   // Stub accessors.
   Handle<Code> generic_stub() const;
@@ -509,7 +579,7 @@ class StoreIC : public IC {
                     JSReceiver::StoreFromKeyed store_mode);
   virtual Handle<Code> CompileHandler(LookupIterator* lookup,
                                       Handle<Object> value,
-                                      CacheHolderFlag cache_holder);
+                                      CacheHolderFlag cache_holder) OVERRIDE;
 
  private:
   inline void set_target(Code* code);
@@ -534,15 +604,22 @@ class KeyedStoreIC : public StoreIC {
   class ExtraICStateKeyedAccessStoreMode
       : public BitField<KeyedAccessStoreMode, 2, 4> {};  // NOLINT
 
+  class IcCheckTypeField : public BitField<IcCheckType, 6, 1> {};
+
   static ExtraICState ComputeExtraICState(StrictMode flag,
                                           KeyedAccessStoreMode mode) {
     return StrictModeState::encode(flag) |
-           ExtraICStateKeyedAccessStoreMode::encode(mode);
+           ExtraICStateKeyedAccessStoreMode::encode(mode) |
+           IcCheckTypeField::encode(ELEMENT);
   }
 
   static KeyedAccessStoreMode GetKeyedAccessStoreMode(
       ExtraICState extra_state) {
     return ExtraICStateKeyedAccessStoreMode::decode(extra_state);
+  }
+
+  static IcCheckType GetKeyType(ExtraICState extra_state) {
+    return IcCheckTypeField::decode(extra_state);
   }
 
   KeyedStoreIC(FrameDepth depth, Isolate* isolate) : StoreIC(depth, isolate) {
@@ -560,6 +637,7 @@ class KeyedStoreIC : public StoreIC {
   }
   static void GenerateMiss(MacroAssembler* masm);
   static void GenerateSlow(MacroAssembler* masm);
+  static void GenerateMegamorphic(MacroAssembler* masm, StrictMode strict_mode);
   static void GenerateGeneric(MacroAssembler* masm, StrictMode strict_mode);
   static void GenerateSloppyArguments(MacroAssembler* masm);
 
@@ -681,8 +759,7 @@ DECLARE_RUNTIME_FUNCTION(BinaryOpIC_Miss);
 DECLARE_RUNTIME_FUNCTION(BinaryOpIC_MissWithAllocationSite);
 DECLARE_RUNTIME_FUNCTION(CompareNilIC_Miss);
 DECLARE_RUNTIME_FUNCTION(ToBooleanIC_Miss);
-DECLARE_RUNTIME_FUNCTION(VectorLoadIC_MissFromStubFailure);
-DECLARE_RUNTIME_FUNCTION(VectorKeyedLoadIC_MissFromStubFailure);
+DECLARE_RUNTIME_FUNCTION(LoadIC_MissFromStubFailure);
 
 // Support functions for callbacks handlers.
 DECLARE_RUNTIME_FUNCTION(StoreCallbackProperty);

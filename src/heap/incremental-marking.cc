@@ -19,19 +19,16 @@ namespace internal {
 IncrementalMarking::IncrementalMarking(Heap* heap)
     : heap_(heap),
       state_(STOPPED),
-      marking_deque_memory_(NULL),
-      marking_deque_memory_committed_(false),
       steps_count_(0),
       old_generation_space_available_at_start_of_incremental_(0),
       old_generation_space_used_at_start_of_incremental_(0),
       should_hurry_(false),
       marking_speed_(0),
       allocated_(0),
+      idle_marking_delay_counter_(0),
       no_marking_scope_depth_(0),
-      unscanned_bytes_of_large_object_(0) {}
-
-
-void IncrementalMarking::TearDown() { delete marking_deque_memory_; }
+      unscanned_bytes_of_large_object_(0),
+      was_activated_(false) {}
 
 
 void IncrementalMarking::RecordWriteSlow(HeapObject* obj, Object** slot,
@@ -194,11 +191,12 @@ class IncrementalMarkingMarkingVisitor
                                 HeapObject::RawField(object, end_offset));
         start_offset = end_offset;
         end_offset = Min(object_size, end_offset + kProgressBarScanningChunk);
-        scan_until_end = heap->incremental_marking()->marking_deque()->IsFull();
+        scan_until_end =
+            heap->mark_compact_collector()->marking_deque()->IsFull();
       } while (scan_until_end && start_offset < object_size);
       chunk->set_progress_bar(start_offset);
       if (start_offset < object_size) {
-        heap->incremental_marking()->marking_deque()->UnshiftGrey(object);
+        heap->mark_compact_collector()->marking_deque()->UnshiftGrey(object);
         heap->incremental_marking()->NotifyIncompleteScanOfObject(
             object_size - (start_offset - already_scanned_offset));
       }
@@ -426,6 +424,9 @@ bool IncrementalMarking::ShouldActivate() {
 }
 
 
+bool IncrementalMarking::WasActivated() { return was_activated_; }
+
+
 bool IncrementalMarking::WorthActivating() {
 #ifndef DEBUG
   static const intptr_t kActivationThreshold = 8 * MB;
@@ -439,8 +440,8 @@ bool IncrementalMarking::WorthActivating() {
   // 3) when we are currently not serializing or deserializing the heap.
   return FLAG_incremental_marking && FLAG_incremental_marking_steps &&
          heap_->gc_state() == Heap::NOT_IN_GC &&
+         heap_->deserialization_complete() &&
          !heap_->isolate()->serializer_enabled() &&
-         heap_->isolate()->IsInitialized() &&
          heap_->PromotedSpaceSizeOfObjects() > kActivationThreshold;
 }
 
@@ -481,32 +482,6 @@ static void PatchIncrementalMarkingRecordWriteStubs(
 }
 
 
-void IncrementalMarking::EnsureMarkingDequeIsCommitted() {
-  if (marking_deque_memory_ == NULL) {
-    marking_deque_memory_ = new base::VirtualMemory(4 * MB);
-  }
-  if (!marking_deque_memory_committed_) {
-    bool success = marking_deque_memory_->Commit(
-        reinterpret_cast<Address>(marking_deque_memory_->address()),
-        marking_deque_memory_->size(),
-        false);  // Not executable.
-    CHECK(success);
-    marking_deque_memory_committed_ = true;
-  }
-}
-
-
-void IncrementalMarking::UncommitMarkingDeque() {
-  if (state_ == STOPPED && marking_deque_memory_committed_) {
-    bool success = marking_deque_memory_->Uncommit(
-        reinterpret_cast<Address>(marking_deque_memory_->address()),
-        marking_deque_memory_->size());
-    CHECK(success);
-    marking_deque_memory_committed_ = false;
-  }
-}
-
-
 void IncrementalMarking::Start(CompactionFlag flag) {
   if (FLAG_trace_incremental_marking) {
     PrintF("[IncrementalMarking] Start\n");
@@ -516,9 +491,10 @@ void IncrementalMarking::Start(CompactionFlag flag) {
   DCHECK(state_ == STOPPED);
   DCHECK(heap_->gc_state() == Heap::NOT_IN_GC);
   DCHECK(!heap_->isolate()->serializer_enabled());
-  DCHECK(heap_->isolate()->IsInitialized());
 
   ResetStepCounters();
+
+  was_activated_ = true;
 
   if (!heap_->mark_compact_collector()->sweeping_in_progress()) {
     StartMarking(flag);
@@ -550,13 +526,7 @@ void IncrementalMarking::StartMarking(CompactionFlag flag) {
 
   PatchIncrementalMarkingRecordWriteStubs(heap_, mode);
 
-  EnsureMarkingDequeIsCommitted();
-
-  // Initialize marking stack.
-  Address addr = static_cast<Address>(marking_deque_memory_->address());
-  size_t size = marking_deque_memory_->size();
-  if (FLAG_force_marking_deque_overflows) size = 64 * kPointerSize;
-  marking_deque_.Initialize(addr, addr + size);
+  heap_->mark_compact_collector()->EnsureMarkingDequeIsCommittedAndInitialize();
 
   ActivateIncrementalWriteBarrier();
 
@@ -602,10 +572,12 @@ void IncrementalMarking::PrepareForScavenge() {
 void IncrementalMarking::UpdateMarkingDequeAfterScavenge() {
   if (!IsMarking()) return;
 
-  int current = marking_deque_.bottom();
-  int mask = marking_deque_.mask();
-  int limit = marking_deque_.top();
-  HeapObject** array = marking_deque_.array();
+  MarkingDeque* marking_deque =
+      heap_->mark_compact_collector()->marking_deque();
+  int current = marking_deque->bottom();
+  int mask = marking_deque->mask();
+  int limit = marking_deque->top();
+  HeapObject** array = marking_deque->array();
   int new_top = current;
 
   Map* filler_map = heap_->one_pointer_filler_map();
@@ -620,7 +592,7 @@ void IncrementalMarking::UpdateMarkingDequeAfterScavenge() {
         HeapObject* dest = map_word.ToForwardingAddress();
         array[new_top] = dest;
         new_top = ((new_top + 1) & mask);
-        DCHECK(new_top != marking_deque_.bottom());
+        DCHECK(new_top != marking_deque->bottom());
 #ifdef DEBUG
         MarkBit mark_bit = Marking::MarkBitFrom(obj);
         DCHECK(Marking::IsGrey(mark_bit) ||
@@ -632,7 +604,7 @@ void IncrementalMarking::UpdateMarkingDequeAfterScavenge() {
       // stack when we perform in place array shift.
       array[new_top] = obj;
       new_top = ((new_top + 1) & mask);
-      DCHECK(new_top != marking_deque_.bottom());
+      DCHECK(new_top != marking_deque->bottom());
 #ifdef DEBUG
       MarkBit mark_bit = Marking::MarkBitFrom(obj);
       MemoryChunk* chunk = MemoryChunk::FromAddress(obj->address());
@@ -643,7 +615,7 @@ void IncrementalMarking::UpdateMarkingDequeAfterScavenge() {
 #endif
     }
   }
-  marking_deque_.set_top(new_top);
+  marking_deque->set_top(new_top);
 }
 
 
@@ -670,8 +642,10 @@ void IncrementalMarking::VisitObject(Map* map, HeapObject* obj, int size) {
 intptr_t IncrementalMarking::ProcessMarkingDeque(intptr_t bytes_to_process) {
   intptr_t bytes_processed = 0;
   Map* filler_map = heap_->one_pointer_filler_map();
-  while (!marking_deque_.IsEmpty() && bytes_processed < bytes_to_process) {
-    HeapObject* obj = marking_deque_.Pop();
+  MarkingDeque* marking_deque =
+      heap_->mark_compact_collector()->marking_deque();
+  while (!marking_deque->IsEmpty() && bytes_processed < bytes_to_process) {
+    HeapObject* obj = marking_deque->Pop();
 
     // Explicitly skip one word fillers. Incremental markbit patterns are
     // correct only for objects that occupy at least two words.
@@ -692,8 +666,10 @@ intptr_t IncrementalMarking::ProcessMarkingDeque(intptr_t bytes_to_process) {
 
 void IncrementalMarking::ProcessMarkingDeque() {
   Map* filler_map = heap_->one_pointer_filler_map();
-  while (!marking_deque_.IsEmpty()) {
-    HeapObject* obj = marking_deque_.Pop();
+  MarkingDeque* marking_deque =
+      heap_->mark_compact_collector()->marking_deque();
+  while (!marking_deque->IsEmpty()) {
+    HeapObject* obj = marking_deque->Pop();
 
     // Explicitly skip one word fillers. Incremental markbit patterns are
     // correct only for objects that occupy at least two words.
@@ -793,7 +769,7 @@ void IncrementalMarking::Finalize() {
   PatchIncrementalMarkingRecordWriteStubs(heap_,
                                           RecordWriteStub::STORE_BUFFER_ONLY);
   DeactivateIncrementalWriteBarrier();
-  DCHECK(marking_deque_.IsEmpty());
+  DCHECK(heap_->mark_compact_collector()->marking_deque()->IsEmpty());
   heap_->isolate()->stack_guard()->ClearGC();
 }
 
@@ -813,6 +789,9 @@ void IncrementalMarking::MarkingComplete(CompletionAction action) {
     heap_->isolate()->stack_guard()->RequestGC();
   }
 }
+
+
+void IncrementalMarking::Epilogue() { was_activated_ = false; }
 
 
 void IncrementalMarking::OldSpaceStep(intptr_t allocated) {
@@ -892,24 +871,33 @@ void IncrementalMarking::SpeedUp() {
 }
 
 
-void IncrementalMarking::Step(intptr_t allocated_bytes, CompletionAction action,
-                              bool force_marking) {
+intptr_t IncrementalMarking::Step(intptr_t allocated_bytes,
+                                  CompletionAction action,
+                                  ForceMarkingAction marking,
+                                  ForceCompletionAction completion) {
   if (heap_->gc_state() != Heap::NOT_IN_GC || !FLAG_incremental_marking ||
       !FLAG_incremental_marking_steps ||
       (state_ != SWEEPING && state_ != MARKING)) {
-    return;
+    return 0;
   }
 
   allocated_ += allocated_bytes;
 
-  if (!force_marking && allocated_ < kAllocatedThreshold &&
+  if (marking == DO_NOT_FORCE_MARKING && allocated_ < kAllocatedThreshold &&
       write_barriers_invoked_since_last_step_ <
           kWriteBarriersInvokedThreshold) {
-    return;
+    return 0;
   }
 
-  if (state_ == MARKING && no_marking_scope_depth_ > 0) return;
+  // If an idle notification happened recently, we delay marking steps.
+  if (marking == DO_NOT_FORCE_MARKING &&
+      heap_->RecentIdleNotificationHappened()) {
+    return 0;
+  }
 
+  if (state_ == MARKING && no_marking_scope_depth_ > 0) return 0;
+
+  intptr_t bytes_processed = 0;
   {
     HistogramTimerScope incremental_marking_scope(
         heap_->isolate()->counters()->gc_incremental_marking());
@@ -930,11 +918,11 @@ void IncrementalMarking::Step(intptr_t allocated_bytes, CompletionAction action,
     write_barriers_invoked_since_last_step_ = 0;
 
     bytes_scanned_ += bytes_to_process;
-    intptr_t bytes_processed = 0;
 
     if (state_ == SWEEPING) {
       if (heap_->mark_compact_collector()->sweeping_in_progress() &&
-          heap_->mark_compact_collector()->IsSweepingCompleted()) {
+          (heap_->mark_compact_collector()->IsSweepingCompleted() ||
+           !FLAG_concurrent_sweeping)) {
         heap_->mark_compact_collector()->EnsureSweepingCompleted();
       }
       if (!heap_->mark_compact_collector()->sweeping_in_progress()) {
@@ -943,7 +931,14 @@ void IncrementalMarking::Step(intptr_t allocated_bytes, CompletionAction action,
       }
     } else if (state_ == MARKING) {
       bytes_processed = ProcessMarkingDeque(bytes_to_process);
-      if (marking_deque_.IsEmpty()) MarkingComplete(action);
+      if (heap_->mark_compact_collector()->marking_deque()->IsEmpty()) {
+        if (completion == FORCE_COMPLETION ||
+            IsIdleMarkingDelayCounterLimitReached()) {
+          MarkingComplete(action);
+        } else {
+          IncrementIdleMarkingDelayCounter();
+        }
+      }
     }
 
     steps_count_++;
@@ -959,6 +954,7 @@ void IncrementalMarking::Step(intptr_t allocated_bytes, CompletionAction action,
     // process the marking deque.
     heap_->tracer()->AddIncrementalMarkingStep(duration, bytes_processed);
   }
+  return bytes_processed;
 }
 
 
@@ -977,6 +973,21 @@ void IncrementalMarking::ResetStepCounters() {
 
 int64_t IncrementalMarking::SpaceLeftInOldSpace() {
   return heap_->MaxOldGenerationSize() - heap_->PromotedSpaceSizeOfObjects();
+}
+
+
+bool IncrementalMarking::IsIdleMarkingDelayCounterLimitReached() {
+  return idle_marking_delay_counter_ > kMaxIdleMarkingDelayCounter;
+}
+
+
+void IncrementalMarking::IncrementIdleMarkingDelayCounter() {
+  idle_marking_delay_counter_++;
+}
+
+
+void IncrementalMarking::ClearIdleMarkingDelayCounter() {
+  idle_marking_delay_counter_ = 0;
 }
 }
 }  // namespace v8::internal

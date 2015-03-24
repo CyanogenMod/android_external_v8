@@ -115,46 +115,61 @@ TEST(Int64Constant_hits) {
 }
 
 
-TEST(PtrConstant_back_to_back) {
-  GraphTester graph;
-  PtrNodeCache cache;
-  int32_t buffer[50];
+static bool Contains(NodeVector* nodes, Node* n) {
+  for (size_t i = 0; i < nodes->size(); i++) {
+    if (nodes->at(i) == n) return true;
+  }
+  return false;
+}
 
-  for (int32_t* p = buffer;
-       (p - buffer) < static_cast<ptrdiff_t>(arraysize(buffer)); p++) {
-    Node** pos = cache.Find(graph.zone(), p);
-    CHECK_NE(NULL, pos);
-    for (int j = 0; j < 3; j++) {
-      Node** npos = cache.Find(graph.zone(), p);
-      CHECK_EQ(pos, npos);
+
+TEST(NodeCache_GetCachedNodes_int32) {
+  GraphTester graph;
+  Int32NodeCache cache;
+  CommonOperatorBuilder common(graph.zone());
+
+  int32_t constants[] = {0, 311, 12,  13,  14,  555, -555, -44, -33, -22, -11,
+                         0, 311, 311, 412, 412, 11,  11,   -33, -33, -22, -11};
+
+  for (size_t i = 0; i < arraysize(constants); i++) {
+    int32_t k = constants[i];
+    Node** pos = cache.Find(graph.zone(), k);
+    if (*pos != NULL) {
+      NodeVector nodes(graph.zone());
+      cache.GetCachedNodes(&nodes);
+      CHECK(Contains(&nodes, *pos));
+    } else {
+      NodeVector nodes(graph.zone());
+      Node* n = graph.NewNode(common.Int32Constant(k));
+      *pos = n;
+      cache.GetCachedNodes(&nodes);
+      CHECK(Contains(&nodes, n));
     }
   }
 }
 
 
-TEST(PtrConstant_hits) {
+TEST(NodeCache_GetCachedNodes_int64) {
   GraphTester graph;
-  PtrNodeCache cache;
-  const int32_t kSize = 50;
-  int32_t buffer[kSize];
-  Node* nodes[kSize];
+  Int64NodeCache cache;
   CommonOperatorBuilder common(graph.zone());
 
-  for (size_t i = 0; i < arraysize(buffer); i++) {
-    int k = static_cast<int>(i);
-    int32_t* p = &buffer[i];
-    nodes[i] = graph.NewNode(common.Int32Constant(k));
-    *cache.Find(graph.zone(), p) = nodes[i];
-  }
+  int64_t constants[] = {0, 311, 12,  13,  14,  555, -555, -44, -33, -22, -11,
+                         0, 311, 311, 412, 412, 11,  11,   -33, -33, -22, -11};
 
-  int hits = 0;
-  for (size_t i = 0; i < arraysize(buffer); i++) {
-    int32_t* p = &buffer[i];
-    Node** pos = cache.Find(graph.zone(), p);
+  for (size_t i = 0; i < arraysize(constants); i++) {
+    int64_t k = constants[i];
+    Node** pos = cache.Find(graph.zone(), k);
     if (*pos != NULL) {
-      CHECK_EQ(nodes[i], *pos);
-      hits++;
+      NodeVector nodes(graph.zone());
+      cache.GetCachedNodes(&nodes);
+      CHECK(Contains(&nodes, *pos));
+    } else {
+      NodeVector nodes(graph.zone());
+      Node* n = graph.NewNode(common.Int64Constant(k));
+      *pos = n;
+      cache.GetCachedNodes(&nodes);
+      CHECK(Contains(&nodes, n));
     }
   }
-  CHECK_LT(4, hits);
 }

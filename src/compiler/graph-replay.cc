@@ -9,7 +9,7 @@
 #include "src/compiler/graph-inl.h"
 #include "src/compiler/node.h"
 #include "src/compiler/operator.h"
-#include "src/compiler/operator-properties-inl.h"
+#include "src/compiler/operator-properties.h"
 
 namespace v8 {
 namespace internal {
@@ -24,14 +24,13 @@ void GraphReplayPrinter::PrintReplay(Graph* graph) {
 }
 
 
-GenericGraphVisit::Control GraphReplayPrinter::Pre(Node* node) {
+void GraphReplayPrinter::Pre(Node* node) {
   PrintReplayOpCreator(node->op());
   PrintF("  Node* n%d = graph.NewNode(op", node->id());
   for (int i = 0; i < node->InputCount(); ++i) {
     PrintF(", nil");
   }
   PrintF("); USE(n%d);\n", node->id());
-  return GenericGraphVisit::CONTINUE;
 }
 
 
@@ -60,14 +59,14 @@ void GraphReplayPrinter::PrintReplayOpCreator(const Operator* op) {
       PrintF("unique_constant");
       break;
     case IrOpcode::kPhi:
-      PrintF("%d", op->InputCount());
+      PrintF("%d", op->ValueInputCount());
       break;
     case IrOpcode::kEffectPhi:
-      PrintF("%d", OperatorProperties::GetEffectInputCount(op));
+      PrintF("%d", op->EffectInputCount());
       break;
     case IrOpcode::kLoop:
     case IrOpcode::kMerge:
-      PrintF("%d", OperatorProperties::GetControlInputCount(op));
+      PrintF("%d", op->ControlInputCount());
       break;
     default:
       break;

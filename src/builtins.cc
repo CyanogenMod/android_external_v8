@@ -182,23 +182,24 @@ static void MoveDoubleElements(FixedDoubleArray* dst, int dst_index,
 }
 
 
-static bool ArrayPrototypeHasNoElements(Heap* heap,
-                                        Context* native_context,
-                                        JSObject* array_proto) {
+static bool ArrayPrototypeHasNoElements(Heap* heap, PrototypeIterator* iter) {
   DisallowHeapAllocation no_gc;
-  // This method depends on non writability of Object and Array prototype
-  // fields.
-  if (array_proto->elements() != heap->empty_fixed_array()) return false;
-  // Object.prototype
-  PrototypeIterator iter(heap->isolate(), array_proto);
-  if (iter.IsAtEnd()) {
-    return false;
+  for (; !iter->IsAtEnd(); iter->Advance()) {
+    if (iter->GetCurrent()->IsJSProxy()) return false;
+    if (JSObject::cast(iter->GetCurrent())->elements() !=
+        heap->empty_fixed_array()) {
+      return false;
+    }
   }
-  array_proto = JSObject::cast(iter.GetCurrent());
-  if (array_proto != native_context->initial_object_prototype()) return false;
-  if (array_proto->elements() != heap->empty_fixed_array()) return false;
-  iter.Advance();
-  return iter.IsAtEnd();
+  return true;
+}
+
+
+static inline bool IsJSArrayFastElementMovingAllowed(Heap* heap,
+                                                     JSArray* receiver) {
+  DisallowHeapAllocation no_gc;
+  PrototypeIterator iter(heap->isolate(), receiver);
+  return ArrayPrototypeHasNoElements(heap, &iter);
 }
 
 
@@ -213,13 +214,13 @@ static inline MaybeHandle<FixedArrayBase> EnsureJSArrayWithWritableFastElements(
   Handle<JSArray> array = Handle<JSArray>::cast(receiver);
   // If there may be elements accessors in the prototype chain, the fast path
   // cannot be used if there arguments to add to the array.
-  if (args != NULL && array->map()->DictionaryElementsInPrototypeChainOnly()) {
+  Heap* heap = isolate->heap();
+  if (args != NULL && !IsJSArrayFastElementMovingAllowed(heap, *array)) {
     return MaybeHandle<FixedArrayBase>();
   }
   if (array->map()->is_observed()) return MaybeHandle<FixedArrayBase>();
   if (!array->map()->is_extensible()) return MaybeHandle<FixedArrayBase>();
   Handle<FixedArrayBase> elms(array->elements(), isolate);
-  Heap* heap = isolate->heap();
   Map* map = elms->map();
   if (map == heap->fixed_array_map()) {
     if (args == NULL || array->HasFastObjectElements()) return elms;
@@ -261,19 +262,6 @@ static inline MaybeHandle<FixedArrayBase> EnsureJSArrayWithWritableFastElements(
     return handle(array->elements(), isolate);
   }
   return elms;
-}
-
-
-static inline bool IsJSArrayFastElementMovingAllowed(Heap* heap,
-                                                     JSArray* receiver) {
-  if (!FLAG_clever_optimizations) return false;
-  DisallowHeapAllocation no_gc;
-  Context* native_context = heap->isolate()->context()->native_context();
-  JSObject* array_proto =
-      JSObject::cast(native_context->array_function()->prototype());
-  PrototypeIterator iter(heap->isolate(), receiver);
-  return iter.GetCurrent() == array_proto &&
-         ArrayPrototypeHasNoElements(heap, native_context, array_proto);
 }
 
 
@@ -431,6 +419,10 @@ BUILTIN(ArrayPop) {
   int len = Smi::cast(array->length())->value();
   if (len == 0) return isolate->heap()->undefined_value();
 
+  if (JSArray::HasReadOnlyLength(array)) {
+    return CallJsBuiltin(isolate, "ArrayPop", args);
+  }
+
   ElementsAccessor* accessor = array->GetElementsAccessor();
   int new_length = len - 1;
   Handle<Object> element =
@@ -453,8 +445,7 @@ BUILTIN(ArrayShift) {
       EnsureJSArrayWithWritableFastElements(isolate, receiver, NULL, 0);
   Handle<FixedArrayBase> elms_obj;
   if (!maybe_elms_obj.ToHandle(&elms_obj) ||
-      !IsJSArrayFastElementMovingAllowed(heap,
-                                         *Handle<JSArray>::cast(receiver))) {
+      !IsJSArrayFastElementMovingAllowed(heap, JSArray::cast(*receiver))) {
     return CallJsBuiltin(isolate, "ArrayShift", args);
   }
   Handle<JSArray> array = Handle<JSArray>::cast(receiver);
@@ -462,6 +453,10 @@ BUILTIN(ArrayShift) {
 
   int len = Smi::cast(array->length())->value();
   if (len == 0) return heap->undefined_value();
+
+  if (JSArray::HasReadOnlyLength(array)) {
+    return CallJsBuiltin(isolate, "ArrayShift", args);
+  }
 
   // Get first element
   ElementsAccessor* accessor = array->GetElementsAccessor();
@@ -499,11 +494,9 @@ BUILTIN(ArrayUnshift) {
   Heap* heap = isolate->heap();
   Handle<Object> receiver = args.receiver();
   MaybeHandle<FixedArrayBase> maybe_elms_obj =
-      EnsureJSArrayWithWritableFastElements(isolate, receiver, NULL, 0);
+      EnsureJSArrayWithWritableFastElements(isolate, receiver, &args, 1);
   Handle<FixedArrayBase> elms_obj;
-  if (!maybe_elms_obj.ToHandle(&elms_obj) ||
-      !IsJSArrayFastElementMovingAllowed(heap,
-                                         *Handle<JSArray>::cast(receiver))) {
+  if (!maybe_elms_obj.ToHandle(&elms_obj)) {
     return CallJsBuiltin(isolate, "ArrayUnshift", args);
   }
   Handle<JSArray> array = Handle<JSArray>::cast(receiver);
@@ -523,9 +516,6 @@ BUILTIN(ArrayUnshift) {
   }
 
   Handle<FixedArray> elms = Handle<FixedArray>::cast(elms_obj);
-
-  JSObject::EnsureCanContainElements(array, &args, 1, to_add,
-                                     DONT_ALLOW_DOUBLE_ELEMENTS);
 
   if (new_length > elms->length()) {
     // New backing storage is needed.
@@ -708,9 +698,7 @@ BUILTIN(ArraySplice) {
   MaybeHandle<FixedArrayBase> maybe_elms_obj =
       EnsureJSArrayWithWritableFastElements(isolate, receiver, &args, 3);
   Handle<FixedArrayBase> elms_obj;
-  if (!maybe_elms_obj.ToHandle(&elms_obj) ||
-      !IsJSArrayFastElementMovingAllowed(heap,
-                                         *Handle<JSArray>::cast(receiver))) {
+  if (!maybe_elms_obj.ToHandle(&elms_obj)) {
     return CallJsBuiltin(isolate, "ArraySplice", args);
   }
   Handle<JSArray> array = Handle<JSArray>::cast(receiver);
@@ -772,6 +760,11 @@ BUILTIN(ArraySplice) {
 
   // For double mode we do not support changing the length.
   if (new_length > len && IsFastDoubleElementsKind(elements_kind)) {
+    return CallJsBuiltin(isolate, "ArraySplice", args);
+  }
+
+  if (new_length != len && JSArray::HasReadOnlyLength(array)) {
+    AllowHeapAllocation allow_allocation;
     return CallJsBuiltin(isolate, "ArraySplice", args);
   }
 
@@ -928,9 +921,10 @@ BUILTIN(ArrayConcat) {
     DisallowHeapAllocation no_gc;
     Heap* heap = isolate->heap();
     Context* native_context = isolate->context()->native_context();
-    JSObject* array_proto =
-        JSObject::cast(native_context->array_function()->prototype());
-    if (!ArrayPrototypeHasNoElements(heap, native_context, array_proto)) {
+    Object* array_proto = native_context->array_function()->prototype();
+    PrototypeIterator iter(isolate, array_proto,
+                           PrototypeIterator::START_AT_RECEIVER);
+    if (!ArrayPrototypeHasNoElements(heap, &iter)) {
       AllowHeapAllocation allow_allocation;
       return CallJsBuiltin(isolate, "ArrayConcatJS", args);
     }
@@ -987,12 +981,12 @@ BUILTIN(ArrayConcat) {
   Handle<FixedArrayBase> storage(result_array->elements(), isolate);
   ElementsAccessor* accessor = ElementsAccessor::ForKind(elements_kind);
   for (int i = 0; i < n_arguments; i++) {
-    // TODO(ishell): It is crucial to keep |array| as a raw pointer to avoid
-    // performance degradation. Revisit this later.
+    // It is crucial to keep |array| in a raw pointer form to avoid performance
+    // degradation.
     JSArray* array = JSArray::cast(args[i]);
     int len = Smi::cast(array->length())->value();
-    ElementsKind from_kind = array->GetElementsKind();
     if (len > 0) {
+      ElementsKind from_kind = array->GetElementsKind();
       accessor->CopyElements(array, 0, from_kind, storage, j, len);
       j += len;
     }
@@ -1279,11 +1273,6 @@ static void Generate_KeyedLoadIC_Generic(MacroAssembler* masm) {
 }
 
 
-static void Generate_KeyedLoadIC_String(MacroAssembler* masm) {
-  KeyedLoadIC::GenerateString(masm);
-}
-
-
 static void Generate_KeyedLoadIC_PreMonomorphic(MacroAssembler* masm) {
   KeyedLoadIC::GeneratePreMonomorphic(masm);
 }
@@ -1311,6 +1300,16 @@ static void Generate_KeyedStoreIC_Slow(MacroAssembler* masm) {
 
 static void Generate_StoreIC_Setter_ForDeopt(MacroAssembler* masm) {
   NamedStoreHandlerCompiler::GenerateStoreViaSetterForDeopt(masm);
+}
+
+
+static void Generate_KeyedStoreIC_Megamorphic(MacroAssembler* masm) {
+  KeyedStoreIC::GenerateMegamorphic(masm, SLOPPY);
+}
+
+
+static void Generate_KeyedStoreIC_Megamorphic_Strict(MacroAssembler* masm) {
+  KeyedStoreIC::GenerateMegamorphic(masm, STRICT);
 }
 
 
@@ -1562,14 +1561,14 @@ void Builtins::SetUp(Isolate* isolate, bool create_heap_objects) {
       // Move the code into the object heap.
       CodeDesc desc;
       masm.GetCode(&desc);
-      Code::Flags flags =  functions[i].flags;
+      Code::Flags flags = functions[i].flags;
       Handle<Code> code =
           isolate->factory()->NewCode(desc, flags, masm.CodeObject());
       // Log the event and add the code to the builtins array.
       PROFILE(isolate,
               CodeCreateEvent(Logger::BUILTIN_TAG, *code, functions[i].s_name));
       builtins_[i] = *code;
-      if (code->kind() == Code::BUILTIN) code->set_builtin_index(i);
+      code->set_builtin_index(i);
 #ifdef ENABLE_DISASSEMBLER
       if (FLAG_print_builtin_code) {
         CodeTracer::Scope trace_scope(isolate->GetCodeTracer());

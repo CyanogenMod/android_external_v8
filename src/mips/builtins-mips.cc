@@ -12,7 +12,7 @@
 #include "src/debug.h"
 #include "src/deoptimizer.h"
 #include "src/full-codegen.h"
-#include "src/runtime.h"
+#include "src/runtime/runtime.h"
 
 
 namespace v8 {
@@ -45,11 +45,9 @@ void Builtins::Generate_Adaptor(MacroAssembler* masm,
     DCHECK(extra_args == NO_EXTRA_ARGUMENTS);
   }
 
-  // JumpToExternalReference expects s0 to contain the number of arguments
+  // JumpToExternalReference expects a0 to contain the number of arguments
   // including the receiver and the extra arguments.
-  __ Addu(s0, a0, num_extra_args + 1);
-  __ sll(s1, s0, kPointerSizeLog2);
-  __ Subu(s1, s1, kPointerSize);
+  __ Addu(a0, a0, num_extra_args + 1);
   __ JumpToExternalReference(ExternalReference(id, masm->isolate()));
 }
 
@@ -384,21 +382,21 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
         MemOperand bit_field3 = FieldMemOperand(a2, Map::kBitField3Offset);
         // Check if slack tracking is enabled.
         __ lw(t0, bit_field3);
-        __ DecodeField<Map::ConstructionCount>(t2, t0);
-        __ Branch(&allocate, eq, t2, Operand(JSFunction::kNoSlackTracking));
+        __ DecodeField<Map::Counter>(t2, t0);
+        __ Branch(&allocate, lt, t2, Operand(Map::kSlackTrackingCounterEnd));
         // Decrease generous allocation count.
-        __ Subu(t0, t0, Operand(1 << Map::ConstructionCount::kShift));
-        __ Branch(USE_DELAY_SLOT,
-            &allocate, ne, t2, Operand(JSFunction::kFinishSlackTracking));
+        __ Subu(t0, t0, Operand(1 << Map::Counter::kShift));
+        __ Branch(USE_DELAY_SLOT, &allocate, ne, t2,
+                  Operand(Map::kSlackTrackingCounterEnd));
         __ sw(t0, bit_field3);  // In delay slot.
 
         __ Push(a1, a2, a1);  // a1 = Constructor.
         __ CallRuntime(Runtime::kFinalizeInstanceSize, 1);
 
         __ Pop(a1, a2);
-        // Slack tracking counter is kNoSlackTracking after runtime call.
-        DCHECK(JSFunction::kNoSlackTracking == 0);
-        __ mov(t2, zero_reg);
+        // Slack tracking counter is Map::kSlackTrackingCounterEnd after runtime
+        // call.
+        __ li(t2, Map::kSlackTrackingCounterEnd);
 
         __ bind(&allocate);
       }
@@ -445,8 +443,8 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
         Label no_inobject_slack_tracking;
 
         // Check if slack tracking is enabled.
-        __ Branch(&no_inobject_slack_tracking,
-            eq, t2, Operand(JSFunction::kNoSlackTracking));
+        __ Branch(&no_inobject_slack_tracking, lt, t2,
+                  Operand(Map::kSlackTrackingCounterEnd));
 
         // Allocate object with a slack.
         __ lbu(a0, FieldMemOperand(a2, Map::kPreAllocatedPropertyFieldsOffset));

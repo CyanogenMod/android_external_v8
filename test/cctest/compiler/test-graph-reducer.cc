@@ -5,7 +5,6 @@
 #include "src/v8.h"
 
 #include "graph-tester.h"
-#include "src/compiler/generic-node-inl.h"
 #include "src/compiler/graph-reducer.h"
 
 using namespace v8::internal;
@@ -21,15 +20,15 @@ const uint8_t OPCODE_C0 = 30;
 const uint8_t OPCODE_C1 = 31;
 const uint8_t OPCODE_C2 = 32;
 
-static SimpleOperator OPA0(OPCODE_A0, Operator::kNoWrite, 0, 0, "opa0");
-static SimpleOperator OPA1(OPCODE_A1, Operator::kNoWrite, 1, 0, "opa1");
-static SimpleOperator OPA2(OPCODE_A2, Operator::kNoWrite, 2, 0, "opa2");
-static SimpleOperator OPB0(OPCODE_B0, Operator::kNoWrite, 0, 0, "opa0");
-static SimpleOperator OPB1(OPCODE_B1, Operator::kNoWrite, 1, 0, "opa1");
-static SimpleOperator OPB2(OPCODE_B2, Operator::kNoWrite, 2, 0, "opa2");
-static SimpleOperator OPC0(OPCODE_C0, Operator::kNoWrite, 0, 0, "opc0");
-static SimpleOperator OPC1(OPCODE_C1, Operator::kNoWrite, 1, 0, "opc1");
-static SimpleOperator OPC2(OPCODE_C2, Operator::kNoWrite, 2, 0, "opc2");
+static Operator OPA0(OPCODE_A0, Operator::kNoWrite, "opa0", 0, 0, 0, 0, 0, 0);
+static Operator OPA1(OPCODE_A1, Operator::kNoWrite, "opa1", 1, 0, 0, 0, 0, 0);
+static Operator OPA2(OPCODE_A2, Operator::kNoWrite, "opa2", 2, 0, 0, 0, 0, 0);
+static Operator OPB0(OPCODE_B0, Operator::kNoWrite, "opa0", 0, 0, 0, 0, 0, 0);
+static Operator OPB1(OPCODE_B1, Operator::kNoWrite, "opa1", 1, 0, 0, 0, 0, 0);
+static Operator OPB2(OPCODE_B2, Operator::kNoWrite, "opa2", 2, 0, 0, 0, 0, 0);
+static Operator OPC0(OPCODE_C0, Operator::kNoWrite, "opc0", 0, 0, 0, 0, 0, 0);
+static Operator OPC1(OPCODE_C1, Operator::kNoWrite, "opc1", 1, 0, 0, 0, 0, 0);
+static Operator OPC2(OPCODE_C2, Operator::kNoWrite, "opc2", 2, 0, 0, 0, 0, 0);
 
 
 // Replaces all "A" operators with "B" operators without creating new nodes.
@@ -202,7 +201,7 @@ TEST(ReduceGraphFromEnd1) {
   Node* end = graph.NewNode(&OPA1, n1);
   graph.SetEnd(end);
 
-  GraphReducer reducer(&graph);
+  GraphReducer reducer(&graph, graph.zone());
   ReducerRecorder recorder(graph.zone());
   reducer.AddReducer(&recorder);
   reducer.ReduceGraph();
@@ -220,7 +219,7 @@ TEST(ReduceGraphFromEnd2) {
   Node* end = graph.NewNode(&OPA2, n2, n3);
   graph.SetEnd(end);
 
-  GraphReducer reducer(&graph);
+  GraphReducer reducer(&graph, graph.zone());
   ReducerRecorder recorder(graph.zone());
   reducer.AddReducer(&recorder);
   reducer.ReduceGraph();
@@ -238,7 +237,7 @@ TEST(ReduceInPlace1) {
   Node* end = graph.NewNode(&OPA1, n1);
   graph.SetEnd(end);
 
-  GraphReducer reducer(&graph);
+  GraphReducer reducer(&graph, graph.zone());
   InPlaceABReducer r;
   reducer.AddReducer(&r);
 
@@ -263,7 +262,7 @@ TEST(ReduceInPlace2) {
   Node* end = graph.NewNode(&OPA2, n2, n3);
   graph.SetEnd(end);
 
-  GraphReducer reducer(&graph);
+  GraphReducer reducer(&graph, graph.zone());
   InPlaceABReducer r;
   reducer.AddReducer(&r);
 
@@ -293,7 +292,7 @@ TEST(ReduceNew1) {
   Node* end = graph.NewNode(&OPA2, n2, n3);
   graph.SetEnd(end);
 
-  GraphReducer reducer(&graph);
+  GraphReducer reducer(&graph, graph.zone());
   NewABReducer r(&graph);
   reducer.AddReducer(&r);
 
@@ -330,7 +329,7 @@ TEST(Wrapping1) {
   graph.SetEnd(end);
   CHECK_EQ(1, graph.NodeCount());
 
-  GraphReducer reducer(&graph);
+  GraphReducer reducer(&graph, graph.zone());
   A0Wrapper r(&graph);
   reducer.AddReducer(&r);
 
@@ -352,7 +351,7 @@ TEST(Wrapping2) {
   graph.SetEnd(end);
   CHECK_EQ(1, graph.NodeCount());
 
-  GraphReducer reducer(&graph);
+  GraphReducer reducer(&graph, graph.zone());
   B0Wrapper r(&graph);
   reducer.AddReducer(&r);
 
@@ -379,7 +378,7 @@ TEST(Forwarding1) {
   Node* end = graph.NewNode(&OPA1, n1);
   graph.SetEnd(end);
 
-  GraphReducer reducer(&graph);
+  GraphReducer reducer(&graph, graph.zone());
   A1Forwarder r;
   reducer.AddReducer(&r);
 
@@ -403,7 +402,7 @@ TEST(Forwarding2) {
   Node* end = graph.NewNode(&OPA2, n2, n3);
   graph.SetEnd(end);
 
-  GraphReducer reducer(&graph);
+  GraphReducer reducer(&graph, graph.zone());
   A1Forwarder r;
   reducer.AddReducer(&r);
 
@@ -434,7 +433,7 @@ TEST(Forwarding3) {
     }
     graph.SetEnd(end);
 
-    GraphReducer reducer(&graph);
+    GraphReducer reducer(&graph, graph.zone());
     A1Forwarder r;
     reducer.AddReducer(&r);
 
@@ -458,7 +457,7 @@ TEST(ReduceForward1) {
   Node* end = graph.NewNode(&OPA2, n2, n3);
   graph.SetEnd(end);
 
-  GraphReducer reducer(&graph);
+  GraphReducer reducer(&graph, graph.zone());
   InPlaceABReducer r;
   B1Forwarder f;
   reducer.AddReducer(&r);
@@ -501,7 +500,7 @@ TEST(Sorter1) {
 
     graph.SetEnd(end);
 
-    GraphReducer reducer(&graph);
+    GraphReducer reducer(&graph, graph.zone());
     reducer.AddReducer(&r);
 
     int before = graph.NodeCount();
@@ -560,7 +559,7 @@ TEST(SortForwardReduce) {
 
         GenDAG(&graph, p3, p2, p1);
 
-        GraphReducer reducer(&graph);
+        GraphReducer reducer(&graph, graph.zone());
         AB2Sorter r1;
         A1Forwarder r2;
         InPlaceABReducer r3;
@@ -599,7 +598,7 @@ TEST(Order) {
     Node* end = graph.NewNode(&OPA1, n1);
     graph.SetEnd(end);
 
-    GraphReducer reducer(&graph);
+    GraphReducer reducer(&graph, graph.zone());
     InPlaceABReducer abr;
     InPlaceBCReducer bcr;
     if (i == 0) {
@@ -620,42 +619,4 @@ TEST(Order) {
       CHECK_EQ(n1, end->InputAt(0));
     }
   }
-}
-
-
-// Tests that a reducer is only applied once.
-class OneTimeReducer : public Reducer {
- public:
-  OneTimeReducer(Reducer* reducer, Zone* zone)
-      : reducer_(reducer),
-        nodes_(NodeSet::key_compare(), NodeSet::allocator_type(zone)) {}
-  virtual Reduction Reduce(Node* node) {
-    CHECK_EQ(0, static_cast<int>(nodes_.count(node)));
-    nodes_.insert(node);
-    return reducer_->Reduce(node);
-  }
-  Reducer* reducer_;
-  NodeSet nodes_;
-};
-
-
-TEST(OneTimeReduce1) {
-  GraphTester graph;
-
-  Node* n1 = graph.NewNode(&OPA0);
-  Node* end = graph.NewNode(&OPA1, n1);
-  graph.SetEnd(end);
-
-  GraphReducer reducer(&graph);
-  InPlaceABReducer r;
-  OneTimeReducer once(&r, graph.zone());
-  reducer.AddReducer(&once);
-
-  // Tests A* => B* with in-place updates. Should only be applied once.
-  int before = graph.NodeCount();
-  reducer.ReduceGraph();
-  CHECK_EQ(before, graph.NodeCount());
-  CHECK_EQ(&OPB0, n1->op());
-  CHECK_EQ(&OPB1, end->op());
-  CHECK_EQ(n1, end->InputAt(0));
 }

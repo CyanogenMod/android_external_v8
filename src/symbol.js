@@ -8,6 +8,14 @@
 // in runtime.js:
 // var $Array = global.Array;
 
+// And requires following symbols to be set in the bootstrapper during genesis:
+// - symbolHasInstance
+// - symbolIsConcatSpreadable
+// - symbolIsRegExp
+// - symbolIterator
+// - symbolToStringTag
+// - symbolUnscopables
+
 var $Symbol = global.Symbol;
 
 // -------------------------------------------------------------------
@@ -40,15 +48,6 @@ function SymbolValueOf() {
 }
 
 
-function InternalSymbol(key) {
-  var internal_registry = %SymbolRegistry().for_intern;
-  if (IS_UNDEFINED(internal_registry[key])) {
-    internal_registry[key] = %CreateSymbol(key);
-  }
-  return internal_registry[key];
-}
-
-
 function SymbolFor(key) {
   key = TO_STRING_INLINE(key);
   var registry = %SymbolRegistry();
@@ -69,26 +68,12 @@ function SymbolKeyFor(symbol) {
 
 // ES6 19.1.2.8
 function ObjectGetOwnPropertySymbols(obj) {
-  if (!IS_SPEC_OBJECT(obj)) {
-    throw MakeTypeError("called_on_non_object",
-                        ["Object.getOwnPropertySymbols"]);
-  }
+  obj = ToObject(obj);
 
   // TODO(arv): Proxies use a shared trap for String and Symbol keys.
 
-  return ObjectGetOwnPropertyKeys(obj, true);
+  return ObjectGetOwnPropertyKeys(obj, PROPERTY_ATTRIBUTES_STRING);
 }
-
-
-//-------------------------------------------------------------------
-
-var symbolHasInstance = InternalSymbol("Symbol.hasInstance");
-var symbolIsConcatSpreadable = InternalSymbol("Symbol.isConcatSpreadable");
-var symbolIsRegExp = InternalSymbol("Symbol.isRegExp");
-var symbolIterator = InternalSymbol("Symbol.iterator");
-var symbolToStringTag = InternalSymbol("Symbol.toStringTag");
-var symbolUnscopables = InternalSymbol("Symbol.unscopables");
-
 
 //-------------------------------------------------------------------
 
@@ -104,6 +89,8 @@ function SetUpSymbol() {
     // "isConcatSpreadable", symbolIsConcatSpreadable,
     // "isRegExp", symbolIsRegExp,
     "iterator", symbolIterator,
+    // TODO(dslomov, caitp): Currently defined in harmony-tostring.js ---
+    // Move here when shipping
     // "toStringTag", symbolToStringTag,
     "unscopables", symbolUnscopables
   ));
@@ -113,6 +100,8 @@ function SetUpSymbol() {
   ));
 
   %AddNamedProperty($Symbol.prototype, "constructor", $Symbol, DONT_ENUM);
+  %AddNamedProperty(
+      $Symbol.prototype, symbolToStringTag, "Symbol", DONT_ENUM | READ_ONLY);
   InstallFunctions($Symbol.prototype, DONT_ENUM, $Array(
     "toString", SymbolToString,
     "valueOf", SymbolValueOf

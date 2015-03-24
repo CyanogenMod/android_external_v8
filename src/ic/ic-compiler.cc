@@ -57,6 +57,16 @@ Handle<Code> PropertyICCompiler::ComputeMonomorphic(
 
   CacheHolderFlag flag;
   Handle<Map> stub_holder = IC::GetICCacheHolder(*type, isolate, &flag);
+  if (kind == Code::KEYED_STORE_IC) {
+    // Always set the "property" bit.
+    extra_ic_state =
+        KeyedStoreIC::IcCheckTypeField::update(extra_ic_state, PROPERTY);
+    DCHECK(STANDARD_STORE ==
+           KeyedStoreIC::GetKeyedAccessStoreMode(extra_ic_state));
+  } else if (kind == Code::KEYED_LOAD_IC) {
+    extra_ic_state = KeyedLoadIC::IcCheckTypeField::update(extra_ic_state,
+                                                           PROPERTY);
+  }
 
   Handle<Code> ic;
   // There are multiple string maps that all use the same prototype. That
@@ -67,13 +77,6 @@ Handle<Code> PropertyICCompiler::ComputeMonomorphic(
     ic = Find(name, stub_holder, kind, extra_ic_state, flag);
     if (!ic.is_null()) return ic;
   }
-
-#ifdef DEBUG
-  if (kind == Code::KEYED_STORE_IC) {
-    DCHECK(STANDARD_STORE ==
-           KeyedStoreIC::GetKeyedAccessStoreMode(extra_ic_state));
-  }
-#endif
 
   PropertyICCompiler ic_compiler(isolate, kind, extra_ic_state, flag);
   ic = ic_compiler.CompileMonomorphic(type, handler, name, PROPERTY);
@@ -86,16 +89,34 @@ Handle<Code> PropertyICCompiler::ComputeMonomorphic(
 Handle<Code> PropertyICCompiler::ComputeKeyedLoadMonomorphic(
     Handle<Map> receiver_map) {
   Isolate* isolate = receiver_map->GetIsolate();
+  DCHECK(KeyedLoadIC::GetKeyType(kNoExtraICState) == ELEMENT);
   Code::Flags flags = Code::ComputeMonomorphicFlags(Code::KEYED_LOAD_IC);
   Handle<Name> name = isolate->factory()->KeyedLoadMonomorphic_string();
 
   Handle<Object> probe(receiver_map->FindInCodeCache(*name, flags), isolate);
   if (probe->IsCode()) return Handle<Code>::cast(probe);
 
+  Handle<Code> stub = ComputeKeyedLoadMonomorphicHandler(receiver_map);
+  PropertyICCompiler compiler(isolate, Code::KEYED_LOAD_IC);
+  Handle<Code> code =
+      compiler.CompileMonomorphic(HeapType::Class(receiver_map, isolate), stub,
+                                  isolate->factory()->empty_string(), ELEMENT);
+
+  Map::UpdateCodeCache(receiver_map, name, code);
+  return code;
+}
+
+
+Handle<Code> PropertyICCompiler::ComputeKeyedLoadMonomorphicHandler(
+    Handle<Map> receiver_map) {
+  Isolate* isolate = receiver_map->GetIsolate();
   ElementsKind elements_kind = receiver_map->elements_kind();
   Handle<Code> stub;
   if (receiver_map->has_indexed_interceptor()) {
     stub = LoadIndexedInterceptorStub(isolate).GetCode();
+  } else if (receiver_map->IsStringMap()) {
+    // We have a string.
+    stub = LoadIndexedStringStub(isolate).GetCode();
   } else if (receiver_map->has_sloppy_arguments_elements()) {
     stub = KeyedLoadSloppyArgumentsStub(isolate).GetCode();
   } else if (receiver_map->has_fast_elements() ||
@@ -107,13 +128,7 @@ Handle<Code> PropertyICCompiler::ComputeKeyedLoadMonomorphic(
   } else {
     stub = LoadDictionaryElementStub(isolate).GetCode();
   }
-  PropertyICCompiler compiler(isolate, Code::KEYED_LOAD_IC);
-  Handle<Code> code =
-      compiler.CompileMonomorphic(HeapType::Class(receiver_map, isolate), stub,
-                                  isolate->factory()->empty_string(), ELEMENT);
-
-  Map::UpdateCodeCache(receiver_map, name, code);
-  return code;
+  return stub;
 }
 
 
@@ -229,7 +244,8 @@ Handle<Code> PropertyICCompiler::ComputeCompareNil(Handle<Map> receiver_map,
   }
 
   Code::FindAndReplacePattern pattern;
-  pattern.Add(isolate->factory()->meta_map(), receiver_map);
+  Handle<WeakCell> cell = Map::WeakCellForMap(receiver_map);
+  pattern.Add(isolate->factory()->meta_map(), cell);
   Handle<Code> ic = stub->GetCodeCopy(pattern);
 
   if (!receiver_map->is_dictionary_map()) {
@@ -244,6 +260,7 @@ Handle<Code> PropertyICCompiler::ComputeCompareNil(Handle<Map> receiver_map,
 Handle<Code> PropertyICCompiler::ComputeKeyedLoadPolymorphic(
     MapHandleList* receiver_maps) {
   Isolate* isolate = receiver_maps->at(0)->GetIsolate();
+  DCHECK(KeyedLoadIC::GetKeyType(kNoExtraICState) == ELEMENT);
   Code::Flags flags = Code::ComputeFlags(Code::KEYED_LOAD_IC, POLYMORPHIC);
   Handle<PolymorphicCodeCache> cache =
       isolate->factory()->polymorphic_code_cache();
@@ -363,7 +380,6 @@ Handle<Code> PropertyICCompiler::GetCode(Code::Kind kind, Code::StubType type,
   Code::Flags flags =
       Code::ComputeFlags(kind, state, extra_ic_state_, type, cache_holder());
   Handle<Code> code = GetCodeWithFlags(flags, name);
-  IC::RegisterWeakMapDependency(code);
   PROFILE(isolate(), CodeCreateEvent(log_kind(code), *code, *name));
   return code;
 }
@@ -434,7 +450,10 @@ Handle<Code> PropertyICCompiler::CompileKeyedStoreMonomorphic(
     stub = StoreElementStub(isolate(), elements_kind).GetCode();
   }
 
-  __ DispatchMap(receiver(), scratch1(), receiver_map, stub, DO_SMI_CHECK);
+  Handle<WeakCell> cell = Map::WeakCellForMap(receiver_map);
+
+  __ DispatchWeakMap(receiver(), scratch1(), scratch2(), cell, stub,
+                     DO_SMI_CHECK);
 
   TailCallBuiltin(masm(), Builtins::kKeyedStoreIC_Miss);
 

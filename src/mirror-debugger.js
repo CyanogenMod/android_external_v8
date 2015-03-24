@@ -1,6 +1,7 @@
 // Copyright 2006-2012 the V8 project authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
+"use strict";
 
 // Handle id counters.
 var next_handle_ = 0;
@@ -44,7 +45,7 @@ function MakeMirror(value, opt_transient) {
 
   // Look for non transient mirrors in the mirror cache.
   if (!opt_transient && mirror_cache_enabled_) {
-    for (id in mirror_cache_) {
+    for (var id in mirror_cache_) {
       mirror = mirror_cache_[id];
       if (mirror.value() === value) {
         return mirror;
@@ -85,6 +86,8 @@ function MakeMirror(value, opt_transient) {
     mirror = new MapMirror(value);
   } else if (IS_SET(value) || IS_WEAKSET(value)) {
     mirror = new SetMirror(value);
+  } else if (IS_MAP_ITERATOR(value) || IS_SET_ITERATOR(value)) {
+    mirror = new IteratorMirror(value);
   } else if (ObjectIsPromise(value)) {
     mirror = new PromiseMirror(value);
   } else if (IS_GENERATOR(value)) {
@@ -163,6 +166,7 @@ var SCOPE_TYPE = 'scope';
 var PROMISE_TYPE = 'promise';
 var MAP_TYPE = 'map';
 var SET_TYPE = 'set';
+var ITERATOR_TYPE = 'iterator';
 var GENERATOR_TYPE = 'generator';
 
 // Maximum length when sending strings through the JSON protocol.
@@ -176,9 +180,8 @@ PropertyKind.Indexed = 2;
 
 // A copy of the PropertyType enum from property-details.h
 var PropertyType = {};
-PropertyType.Normal                  = 0;
-PropertyType.Field                   = 1;
-PropertyType.Constant                = 2;
+PropertyType.Field                   = 0;
+PropertyType.Constant                = 1;
 PropertyType.Callbacks               = 3;
 
 
@@ -190,13 +193,16 @@ PropertyAttribute.DontEnum   = DONT_ENUM;
 PropertyAttribute.DontDelete = DONT_DELETE;
 
 
-// A copy of the scope types from runtime.cc.
+// A copy of the scope types from runtime-debug.cc.
+// NOTE: these constants should be backward-compatible, so
+// add new ones to the end of this list.
 var ScopeType = { Global: 0,
                   Local: 1,
                   With: 2,
                   Closure: 3,
                   Catch: 4,
-                  Block: 5 };
+                  Block: 5,
+                  Script: 6 };
 
 
 // Mirror hierarchy:
@@ -217,6 +223,7 @@ var ScopeType = { Global: 0,
 //         - PromiseMirror
 //         - MapMirror
 //         - SetMirror
+//         - IteratorMirror
 //         - GeneratorMirror
 //     - PropertyMirror
 //     - InternalPropertyMirror
@@ -452,6 +459,15 @@ Mirror.prototype.isMap = function() {
  */
 Mirror.prototype.isSet = function() {
   return this instanceof SetMirror;
+};
+
+
+/**
+ * Check whether the mirror reflects an iterator.
+ * @returns {boolean} True if the mirror reflects an iterator
+ */
+Mirror.prototype.isIterator = function() {
+  return this instanceof IteratorMirror;
 };
 
 
@@ -906,13 +922,37 @@ ObjectMirror.GetInternalProperties = function(value) {
       result.push(new InternalPropertyMirror("[[BoundArgs]]", boundArgs));
     }
     return result;
-  } else if (ObjectIsPromise(value)) {
-    var result = [];
-    result.push(new InternalPropertyMirror("[[PromiseStatus]]",
-                                           PromiseGetStatus_(value)));
-    result.push(new InternalPropertyMirror("[[PromiseValue]]",
-                                           PromiseGetValue_(value)));
+  } else if (IS_MAP_ITERATOR(value) || IS_SET_ITERATOR(value)) {
+    var details = IS_MAP_ITERATOR(value) ? %MapIteratorDetails(value)
+                                         : %SetIteratorDetails(value);
+    var kind;
+    switch (details[2]) {
+      case 1: kind = "keys"; break;
+      case 2: kind = "values"; break;
+      case 3: kind = "entries"; break;
+    }
+    var result = [
+      new InternalPropertyMirror("[[IteratorHasMore]]", details[0]),
+      new InternalPropertyMirror("[[IteratorIndex]]", details[1])
+    ];
+    if (kind) {
+      result.push(new InternalPropertyMirror("[[IteratorKind]]", kind));
+    }
     return result;
+  } else if (IS_GENERATOR(value)) {
+    return [
+      new InternalPropertyMirror("[[GeneratorStatus]]",
+                                 GeneratorGetStatus_(value)),
+      new InternalPropertyMirror("[[GeneratorFunction]]",
+                                 %GeneratorGetFunction(value)),
+      new InternalPropertyMirror("[[GeneratorReceiver]]",
+                                 %GeneratorGetReceiver(value))
+    ];
+  } else if (ObjectIsPromise(value)) {
+    return [
+      new InternalPropertyMirror("[[PromiseStatus]]", PromiseGetStatus_(value)),
+      new InternalPropertyMirror("[[PromiseValue]]", PromiseGetValue_(value))
+    ];
   }
   return [];
 }
@@ -1256,11 +1296,11 @@ ErrorMirror.prototype.toText = function() {
   // Use the same text representation as in messages.js.
   var text;
   try {
-    str = %_CallFunction(this.value_, builtins.ErrorToString);
+    text = %_CallFunction(this.value_, builtins.ErrorToString);
   } catch (e) {
-    str = '#<Error>';
+    text = '#<Error>';
   }
-  return str;
+  return text;
 };
 
 
@@ -1309,13 +1349,14 @@ inherits(MapMirror, ObjectMirror);
  * Returns an array of key/value pairs of a map.
  * This will keep keys alive for WeakMaps.
  *
+ * @param {number=} opt_limit Max elements to return.
  * @returns {Array.<Object>} Array of key/value pairs of a map.
  */
-MapMirror.prototype.entries = function() {
+MapMirror.prototype.entries = function(opt_limit) {
   var result = [];
 
   if (IS_WEAKMAP(this.value_)) {
-    var entries = %GetWeakMapEntries(this.value_);
+    var entries = %GetWeakMapEntries(this.value_, opt_limit || 0);
     for (var i = 0; i < entries.length; i += 2) {
       result.push({
         key: entries[i],
@@ -1327,7 +1368,8 @@ MapMirror.prototype.entries = function() {
 
   var iter = %_CallFunction(this.value_, builtins.MapEntries);
   var next;
-  while (!(next = iter.next()).done) {
+  while ((!opt_limit || result.length < opt_limit) &&
+         !(next = iter.next()).done) {
     result.push({
       key: next.value[0],
       value: next.value[1]
@@ -1343,24 +1385,57 @@ function SetMirror(value) {
 inherits(SetMirror, ObjectMirror);
 
 
+function IteratorGetValues_(iter, next_function, opt_limit) {
+  var result = [];
+  var next;
+  while ((!opt_limit || result.length < opt_limit) &&
+         !(next = %_CallFunction(iter, next_function)).done) {
+    result.push(next.value);
+  }
+  return result;
+}
+
+
 /**
  * Returns an array of elements of a set.
  * This will keep elements alive for WeakSets.
  *
+ * @param {number=} opt_limit Max elements to return.
  * @returns {Array.<Object>} Array of elements of a set.
  */
-SetMirror.prototype.values = function() {
+SetMirror.prototype.values = function(opt_limit) {
   if (IS_WEAKSET(this.value_)) {
-    return %GetWeakSetValues(this.value_);
+    return %GetWeakSetValues(this.value_, opt_limit || 0);
   }
 
-  var result = [];
   var iter = %_CallFunction(this.value_, builtins.SetValues);
-  var next;
-  while (!(next = iter.next()).done) {
-    result.push(next.value);
+  return IteratorGetValues_(iter, builtins.SetIteratorNextJS, opt_limit);
+};
+
+
+function IteratorMirror(value) {
+  %_CallFunction(this, value, ITERATOR_TYPE, ObjectMirror);
+}
+inherits(IteratorMirror, ObjectMirror);
+
+
+/**
+ * Returns a preview of elements of an iterator.
+ * Does not change the backing iterator state.
+ *
+ * @param {number=} opt_limit Max elements to return.
+ * @returns {Array.<Object>} Array of elements of an iterator.
+ */
+IteratorMirror.prototype.preview = function(opt_limit) {
+  if (IS_MAP_ITERATOR(this.value_)) {
+    return IteratorGetValues_(%MapIteratorClone(this.value_),
+                              builtins.MapIteratorNextJS,
+                              opt_limit);
+  } else if (IS_SET_ITERATOR(this.value_)) {
+    return IteratorGetValues_(%SetIteratorClone(this.value_),
+                              builtins.SetIteratorNextJS,
+                              opt_limit);
   }
-  return result;
 };
 
 
@@ -1376,11 +1451,16 @@ function GeneratorMirror(value) {
 inherits(GeneratorMirror, ObjectMirror);
 
 
-GeneratorMirror.prototype.status = function() {
-  var continuation = %GeneratorGetContinuation(this.value_);
+function GeneratorGetStatus_(value) {
+  var continuation = %GeneratorGetContinuation(value);
   if (continuation < 0) return "running";
   if (continuation == 0) return "closed";
   return "suspended";
+}
+
+
+GeneratorMirror.prototype.status = function() {
+  return GeneratorGetStatus_(this.value_);
 };
 
 
@@ -2245,11 +2325,12 @@ ScopeMirror.prototype.scopeType = function() {
 
 
 ScopeMirror.prototype.scopeObject = function() {
-  // For local and closure scopes create a transient mirror as these objects are
-  // created on the fly materializing the local or closure scopes and
-  // therefore will not preserve identity.
+  // For local, closure and script scopes create a transient mirror
+  // as these objects are created on the fly materializing the local
+  // or closure scopes and therefore will not preserve identity.
   var transient = this.scopeType() == ScopeType.Local ||
-                  this.scopeType() == ScopeType.Closure;
+                  this.scopeType() == ScopeType.Closure ||
+                  this.scopeType() == ScopeType.Script;
   return MakeMirror(this.details_.object(), transient);
 };
 
@@ -2834,10 +2915,9 @@ function serializeLocationFields (location, content) {
  *    "ref":<number>}
  *
  * If the attribute for the property is PropertyAttribute.None it is not added.
- * If the propertyType for the property is PropertyType.Normal it is not added.
  * Here are a couple of examples.
  *
- *   {"name":"hello","ref":1}
+ *   {"name":"hello","propertyType":0,"ref":1}
  *   {"name":"length","attributes":7,"propertyType":3,"ref":2}
  *
  * @param {PropertyMirror} propertyMirror The property to serialize.
@@ -2854,9 +2934,7 @@ JSONProtocolSerializer.prototype.serializeProperty_ = function(propertyMirror) {
     if (propertyMirror.attributes() != PropertyAttribute.None) {
       result.attributes = propertyMirror.attributes();
     }
-    if (propertyMirror.propertyType() != PropertyType.Normal) {
-      result.propertyType = propertyMirror.propertyType();
-    }
+    result.propertyType = propertyMirror.propertyType();
     result.ref = propertyValue.handle();
   }
   return result;

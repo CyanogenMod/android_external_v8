@@ -45,7 +45,7 @@ GIT_SVN_ID_FOOTER_KEY = 'git-svn-id'
 
 # e.g., git-svn-id: https://v8.googlecode.com/svn/trunk@23117
 #     ce2b1a6d-e550-0410-aec6-3dcde31c8c00
-GIT_SVN_ID_RE = re.compile(r'((?:\w+)://[^@]+)@(\d+)\s+(?:[a-zA-Z0-9\-]+)')
+GIT_SVN_ID_RE = re.compile(r'[^@]+@(\d+)\s+(?:[a-zA-Z0-9\-]+)')
 
 
 # Copied from bot_update.py.
@@ -80,7 +80,11 @@ class GitFailedException(Exception):
 
 def Strip(f):
   def new_f(*args, **kwargs):
-    return f(*args, **kwargs).strip()
+    result = f(*args, **kwargs)
+    if result is None:
+      return result
+    else:
+      return result.strip()
   return new_f
 
 
@@ -101,9 +105,10 @@ class GitRecipesMixin(object):
   def GitBranch(self, **kwargs):
     return self.Git("branch", **kwargs)
 
-  def GitCreateBranch(self, name, branch="", **kwargs):
+  def GitCreateBranch(self, name, remote="", **kwargs):
     assert name
-    self.Git(MakeArgs(["checkout -b", name, branch]), **kwargs)
+    remote_args = ["--upstream", remote] if remote else []
+    self.Git(MakeArgs(["new-branch", name] + remote_args), **kwargs)
 
   def GitDeleteBranch(self, name, **kwargs):
     assert name
@@ -194,7 +199,7 @@ class GitRecipesMixin(object):
     self.Git(MakeArgs(args), **kwargs)
 
   def GitUpload(self, reviewer="", author="", force=False, cq=False,
-                bypass_hooks=False, **kwargs):
+                bypass_hooks=False, cc="", **kwargs):
     args = ["cl upload --send-mail"]
     if author:
       args += ["--email", Quoted(author)]
@@ -206,6 +211,8 @@ class GitRecipesMixin(object):
       args.append("--use-commit-queue")
     if bypass_hooks:
       args.append("--bypass-hooks")
+    if cc:
+      args += ["--cc", Quoted(cc)]
     # TODO(machenbach): Check output in forced mode. Verify that all required
     # base files were uploaded, if not retry.
     self.Git(MakeArgs(args), pipe=False, **kwargs)
@@ -224,9 +231,9 @@ class GitRecipesMixin(object):
   def GitPresubmit(self, **kwargs):
     self.Git("cl presubmit", "PRESUBMIT_TREE_CHECK=\"skip\"", **kwargs)
 
-  def GitDCommit(self, **kwargs):
+  def GitCLLand(self, **kwargs):
     self.Git(
-        "cl dcommit -f --bypass-hooks", retry_on=lambda x: x is None, **kwargs)
+        "cl land -f --bypass-hooks", retry_on=lambda x: x is None, **kwargs)
 
   def GitDiff(self, loc1, loc2, **kwargs):
     return self.Git(MakeArgs(["diff", loc1, loc2]), **kwargs)
@@ -236,17 +243,6 @@ class GitRecipesMixin(object):
 
   def GitFetchOrigin(self, **kwargs):
     self.Git("fetch origin", **kwargs)
-
-  def GitConvertToSVNRevision(self, git_hash, **kwargs):
-    result = self.Git(MakeArgs(["rev-list", "-n", "1", git_hash]), **kwargs)
-    if not result or not SHA1_RE.match(result):
-      raise GitFailedException("Git hash %s is unknown." % git_hash)
-    log = self.GitLog(n=1, format="%B", git_hash=git_hash, **kwargs)
-    for line in reversed(log.splitlines()):
-      match = ROLL_DEPS_GIT_SVN_ID_RE.match(line.strip())
-      if match:
-        return match.group(1)
-    raise GitFailedException("Couldn't convert %s to SVN." % git_hash)
 
   @Strip
   # Copied from bot_update.py and modified for svn-like numbers only.
@@ -274,36 +270,6 @@ class GitRecipesMixin(object):
     if value:
       match = GIT_SVN_ID_RE.match(value)
       if match:
-        return match.group(2)
-    return None
-
-  ### Git svn stuff
-
-  def GitSVNFetch(self, **kwargs):
-    self.Git("svn fetch", **kwargs)
-
-  def GitSVNRebase(self, **kwargs):
-    self.Git("svn rebase", **kwargs)
-
-  # TODO(machenbach): Unused? Remove.
-  @Strip
-  def GitSVNLog(self, **kwargs):
-    return self.Git("svn log -1 --oneline", **kwargs)
-
-  @Strip
-  def GitSVNFindGitHash(self, revision, branch="", **kwargs):
-    assert revision
-    return self.Git(
-        MakeArgs(["svn find-rev", "r%s" % revision, branch]), **kwargs)
-
-  @Strip
-  def GitSVNFindSVNRev(self, git_hash, branch="", **kwargs):
-    return self.Git(MakeArgs(["svn find-rev", git_hash, branch]), **kwargs)
-
-  def GitSVNDCommit(self, **kwargs):
-    return self.Git("svn dcommit 2>&1", retry_on=lambda x: x is None, **kwargs)
-
-  def GitSVNTag(self, version, **kwargs):
-    self.Git(("svn tag %s -m \"Tagging version %s\"" % (version, version)),
-             retry_on=lambda x: x is None,
-             **kwargs)
+        return match.group(1)
+    raise GitFailedException("Couldn't determine commit position for %s" %
+                             git_hash)

@@ -56,17 +56,6 @@ Handle<ExecutableAccessorInfo> Accessors::CloneAccessor(
 }
 
 
-template <class C>
-static C* FindInstanceOf(Isolate* isolate, Object* obj) {
-  for (PrototypeIterator iter(isolate, obj,
-                              PrototypeIterator::START_AT_RECEIVER);
-       !iter.IsAtEnd(); iter.Advance()) {
-    if (Is<C>(iter.GetCurrent())) return C::cast(iter.GetCurrent());
-  }
-  return NULL;
-}
-
-
 static V8_INLINE bool CheckForName(Handle<Name> name,
                                    Handle<String> property_name,
                                    int offset,
@@ -183,13 +172,16 @@ void Accessors::ArgumentsIteratorSetter(
   LookupIterator it(object, Utils::OpenHandle(*name));
   CHECK_EQ(LookupIterator::ACCESSOR, it.state());
   DCHECK(it.HolderIsReceiverOrHiddenPrototype());
-  Object::SetDataProperty(&it, value);
+
+  if (Object::SetDataProperty(&it, value).is_null()) {
+    isolate->OptionalRescheduleException(false);
+  }
 }
 
 
 Handle<AccessorInfo> Accessors::ArgumentsIteratorInfo(
     Isolate* isolate, PropertyAttributes attributes) {
-  Handle<Name> name(isolate->native_context()->iterator_symbol(), isolate);
+  Handle<Name> name = isolate->factory()->iterator_symbol();
   return MakeAccessor(isolate, name, &ArgumentsIteratorGetter,
                       &ArgumentsIteratorSetter, attributes);
 }
@@ -258,7 +250,7 @@ void Accessors::ArrayLengthSetter(
 
   if (uint32_v->Number() == number_v->Number()) {
     maybe = JSArray::SetElementsLength(array_handle, uint32_v);
-    maybe.Check();
+    if (maybe.is_null()) isolate->OptionalRescheduleException(false);
     return;
   }
 
@@ -327,6 +319,98 @@ Handle<AccessorInfo> Accessors::StringLengthInfo(
                       &StringLengthGetter,
                       &StringLengthSetter,
                       attributes);
+}
+
+
+template <typename Char>
+inline int CountRequiredEscapes(Handle<String> source) {
+  DisallowHeapAllocation no_gc;
+  int escapes = 0;
+  Vector<const Char> src = source->GetCharVector<Char>();
+  for (int i = 0; i < src.length(); i++) {
+    if (src[i] == '/' && (i == 0 || src[i - 1] != '\\')) escapes++;
+  }
+  return escapes;
+}
+
+
+template <typename Char, typename StringType>
+inline Handle<StringType> WriteEscapedRegExpSource(Handle<String> source,
+                                                   Handle<StringType> result) {
+  DisallowHeapAllocation no_gc;
+  Vector<const Char> src = source->GetCharVector<Char>();
+  Vector<Char> dst(result->GetChars(), result->length());
+  int s = 0;
+  int d = 0;
+  while (s < src.length()) {
+    if (src[s] == '/' && (s == 0 || src[s - 1] != '\\')) dst[d++] = '\\';
+    dst[d++] = src[s++];
+  }
+  DCHECK_EQ(result->length(), d);
+  return result;
+}
+
+
+MaybeHandle<String> EscapeRegExpSource(Isolate* isolate,
+                                       Handle<String> source) {
+  String::Flatten(source);
+  if (source->length() == 0) return isolate->factory()->query_colon_string();
+  bool one_byte = source->IsOneByteRepresentationUnderneath();
+  int escapes = one_byte ? CountRequiredEscapes<uint8_t>(source)
+                         : CountRequiredEscapes<uc16>(source);
+  if (escapes == 0) return source;
+  int length = source->length() + escapes;
+  if (one_byte) {
+    Handle<SeqOneByteString> result;
+    ASSIGN_RETURN_ON_EXCEPTION(isolate, result,
+                               isolate->factory()->NewRawOneByteString(length),
+                               String);
+    return WriteEscapedRegExpSource<uint8_t>(source, result);
+  } else {
+    Handle<SeqTwoByteString> result;
+    ASSIGN_RETURN_ON_EXCEPTION(isolate, result,
+                               isolate->factory()->NewRawTwoByteString(length),
+                               String);
+    return WriteEscapedRegExpSource<uc16>(source, result);
+  }
+}
+
+
+// Implements ECMA262 ES6 draft 21.2.5.9
+void Accessors::RegExpSourceGetter(
+    v8::Local<v8::Name> name, const v8::PropertyCallbackInfo<v8::Value>& info) {
+  i::Isolate* isolate = reinterpret_cast<i::Isolate*>(info.GetIsolate());
+  HandleScope scope(isolate);
+
+  Handle<Object> holder =
+      Utils::OpenHandle(*v8::Local<v8::Value>(info.Holder()));
+  Handle<JSRegExp> regexp = Handle<JSRegExp>::cast(holder);
+  Handle<String> result;
+  if (regexp->TypeTag() == JSRegExp::NOT_COMPILED) {
+    result = isolate->factory()->empty_string();
+  } else {
+    Handle<String> pattern(regexp->Pattern(), isolate);
+    MaybeHandle<String> maybe = EscapeRegExpSource(isolate, pattern);
+    if (!maybe.ToHandle(&result)) {
+      isolate->OptionalRescheduleException(false);
+      return;
+    }
+  }
+  info.GetReturnValue().Set(Utils::ToLocal(result));
+}
+
+
+void Accessors::RegExpSourceSetter(v8::Local<v8::Name> name,
+                                   v8::Local<v8::Value> value,
+                                   const v8::PropertyCallbackInfo<void>& info) {
+  UNREACHABLE();
+}
+
+
+Handle<AccessorInfo> Accessors::RegExpSourceInfo(
+    Isolate* isolate, PropertyAttributes attributes) {
+  return MakeAccessor(isolate, isolate->factory()->source_string(),
+                      &RegExpSourceGetter, &RegExpSourceSetter, attributes);
 }
 
 
@@ -892,9 +976,8 @@ static Handle<Object> GetFunctionPrototype(Isolate* isolate,
 }
 
 
-static Handle<Object> SetFunctionPrototype(Isolate* isolate,
-                                           Handle<JSFunction> function,
-                                           Handle<Object> value) {
+MUST_USE_RESULT static MaybeHandle<Object> SetFunctionPrototype(
+    Isolate* isolate, Handle<JSFunction> function, Handle<Object> value) {
   Handle<Object> old_value;
   bool is_observed = function->map()->is_observed();
   if (is_observed) {
@@ -908,21 +991,17 @@ static Handle<Object> SetFunctionPrototype(Isolate* isolate,
   DCHECK(function->prototype() == *value);
 
   if (is_observed && !old_value->SameValue(*value)) {
-    JSObject::EnqueueChangeRecord(
+    MaybeHandle<Object> result = JSObject::EnqueueChangeRecord(
         function, "update", isolate->factory()->prototype_string(), old_value);
+    if (result.is_null()) return MaybeHandle<Object>();
   }
 
   return function;
 }
 
 
-Handle<Object> Accessors::FunctionGetPrototype(Handle<JSFunction> function) {
-  return GetFunctionPrototype(function->GetIsolate(), function);
-}
-
-
-Handle<Object> Accessors::FunctionSetPrototype(Handle<JSFunction> function,
-                                               Handle<Object> prototype) {
+MaybeHandle<Object> Accessors::FunctionSetPrototype(Handle<JSFunction> function,
+                                                    Handle<Object> prototype) {
   DCHECK(function->should_have_prototype());
   Isolate* isolate = function->GetIsolate();
   return SetFunctionPrototype(isolate, function, prototype);
@@ -953,7 +1032,9 @@ void Accessors::FunctionPrototypeSetter(
   }
   Handle<JSFunction> object =
       Handle<JSFunction>::cast(Utils::OpenHandle(*info.Holder()));
-  SetFunctionPrototype(isolate, object, value);
+  if (SetFunctionPrototype(isolate, object, value).is_null()) {
+    isolate->OptionalRescheduleException(false);
+  }
 }
 
 

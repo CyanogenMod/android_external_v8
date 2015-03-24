@@ -2,8 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "src/compiler/diamond.h"
 #include "src/compiler/graph-inl.h"
 #include "src/compiler/js-builtin-reducer.h"
+#include "src/compiler/js-graph.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/node-properties-inl.h"
 #include "src/types.h"
@@ -80,7 +82,7 @@ class JSCallReduction {
   int GetJSCallArity() {
     DCHECK_EQ(IrOpcode::kJSCallFunction, node_->opcode());
     // Skip first (i.e. callee) and second (i.e. receiver) operand.
-    return OperatorProperties::GetValueInputCount(node_->op()) - 2;
+    return node_->op()->ValueInputCount() - 2;
   }
 
   Node* GetJSCallInput(int index) {
@@ -93,6 +95,30 @@ class JSCallReduction {
  private:
   Node* node_;
 };
+
+
+JSBuiltinReducer::JSBuiltinReducer(JSGraph* jsgraph)
+    : jsgraph_(jsgraph), simplified_(jsgraph->zone()) {}
+
+
+// ECMA-262, section 15.8.2.1.
+Reduction JSBuiltinReducer::ReduceMathAbs(Node* node) {
+  JSCallReduction r(node);
+  if (r.InputsMatchOne(Type::Unsigned32())) {
+    // Math.abs(a:uint32) -> a
+    return Replace(r.left());
+  }
+  if (r.InputsMatchOne(Type::Number())) {
+    // Math.abs(a:number) -> (a > 0 ? a : 0 - a)
+    Node* const value = r.left();
+    Node* const zero = jsgraph()->ZeroConstant();
+    return Replace(graph()->NewNode(
+        common()->Select(kMachNone),
+        graph()->NewNode(simplified()->NumberLessThan(), zero, value), value,
+        graph()->NewNode(simplified()->NumberSubtract(), zero, value)));
+  }
+  return NoChange();
+}
 
 
 // ECMA-262, section 15.8.2.17.
@@ -122,16 +148,11 @@ Reduction JSBuiltinReducer::ReduceMathMax(Node* node) {
     // Math.max(a:int32, b:int32, ...)
     Node* value = r.GetJSCallInput(0);
     for (int i = 1; i < r.GetJSCallArity(); i++) {
-      Node* p = r.GetJSCallInput(i);
-      Node* control = graph()->start();
-      Node* tag = graph()->NewNode(simplified()->NumberLessThan(), value, p);
-
-      Node* branch = graph()->NewNode(common()->Branch(), tag, control);
-      Node* if_true = graph()->NewNode(common()->IfTrue(), branch);
-      Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
-      Node* merge = graph()->NewNode(common()->Merge(2), if_true, if_false);
-
-      value = graph()->NewNode(common()->Phi(kMachNone, 2), p, value, merge);
+      Node* const input = r.GetJSCallInput(i);
+      value = graph()->NewNode(
+          common()->Select(kMachNone),
+          graph()->NewNode(simplified()->NumberLessThan(), input, value), input,
+          value);
     }
     return Replace(value);
   }
@@ -151,22 +172,82 @@ Reduction JSBuiltinReducer::ReduceMathImul(Node* node) {
 }
 
 
+// ES6 draft 08-24-14, section 20.2.2.17.
+Reduction JSBuiltinReducer::ReduceMathFround(Node* node) {
+  JSCallReduction r(node);
+  if (r.InputsMatchOne(Type::Number())) {
+    // Math.fround(a:number) -> TruncateFloat64ToFloat32(a)
+    Node* value =
+        graph()->NewNode(machine()->TruncateFloat64ToFloat32(), r.left());
+    return Replace(value);
+  }
+  return NoChange();
+}
+
+
+// ES6 draft 10-14-14, section 20.2.2.16.
+Reduction JSBuiltinReducer::ReduceMathFloor(Node* node) {
+  if (!machine()->HasFloat64Floor()) return NoChange();
+  JSCallReduction r(node);
+  if (r.InputsMatchOne(Type::Number())) {
+    // Math.floor(a:number) -> Float64Floor(a)
+    Node* value = graph()->NewNode(machine()->Float64Floor(), r.left());
+    return Replace(value);
+  }
+  return NoChange();
+}
+
+
+// ES6 draft 10-14-14, section 20.2.2.10.
+Reduction JSBuiltinReducer::ReduceMathCeil(Node* node) {
+  if (!machine()->HasFloat64Ceil()) return NoChange();
+  JSCallReduction r(node);
+  if (r.InputsMatchOne(Type::Number())) {
+    // Math.ceil(a:number) -> Float64Ceil(a)
+    Node* value = graph()->NewNode(machine()->Float64Ceil(), r.left());
+    return Replace(value);
+  }
+  return NoChange();
+}
+
+
 Reduction JSBuiltinReducer::Reduce(Node* node) {
   JSCallReduction r(node);
 
   // Dispatch according to the BuiltinFunctionId if present.
   if (!r.HasBuiltinFunctionId()) return NoChange();
   switch (r.GetBuiltinFunctionId()) {
+    case kMathAbs:
+      return ReplaceWithPureReduction(node, ReduceMathAbs(node));
     case kMathSqrt:
       return ReplaceWithPureReduction(node, ReduceMathSqrt(node));
     case kMathMax:
       return ReplaceWithPureReduction(node, ReduceMathMax(node));
     case kMathImul:
       return ReplaceWithPureReduction(node, ReduceMathImul(node));
+    case kMathFround:
+      return ReplaceWithPureReduction(node, ReduceMathFround(node));
+    case kMathFloor:
+      return ReplaceWithPureReduction(node, ReduceMathFloor(node));
+    case kMathCeil:
+      return ReplaceWithPureReduction(node, ReduceMathCeil(node));
     default:
       break;
   }
   return NoChange();
+}
+
+
+Graph* JSBuiltinReducer::graph() const { return jsgraph()->graph(); }
+
+
+CommonOperatorBuilder* JSBuiltinReducer::common() const {
+  return jsgraph()->common();
+}
+
+
+MachineOperatorBuilder* JSBuiltinReducer::machine() const {
+  return jsgraph()->machine();
 }
 
 }  // namespace compiler

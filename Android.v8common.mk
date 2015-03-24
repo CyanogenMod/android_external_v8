@@ -9,6 +9,8 @@ LOCAL_SRC_FILES := \
 	src/arguments.cc \
 	src/assembler.cc \
 	src/assert-scope.cc \
+	src/ast-numbering.cc \
+	src/ast-this-access-visitor.cc \
 	src/ast-value-factory.cc \
 	src/ast.cc \
 	src/background-parsing-task.cc \
@@ -16,6 +18,7 @@ LOCAL_SRC_FILES := \
 	src/base/bits.cc \
 	src/base/cpu.cc \
 	src/base/division-by-constant.cc \
+	src/base/functional.cc \
 	src/base/logging.cc \
 	src/base/once.cc \
 	src/base/platform/condition-variable.cc \
@@ -24,24 +27,33 @@ LOCAL_SRC_FILES := \
 	src/base/platform/time.cc \
 	src/base/sys-info.cc \
 	src/base/utils/random-number-generator.cc \
+	src/basic-block-profiler.cc \
 	src/bignum-dtoa.cc \
 	src/bignum.cc \
+	src/bit-vector.cc \
 	src/bootstrapper.cc \
 	src/builtins.cc \
 	src/cached-powers.cc \
+	src/char-predicates.cc \
 	src/checks.cc \
 	src/code-factory.cc \
 	src/code-stubs-hydrogen.cc \
 	src/code-stubs.cc \
 	src/codegen.cc \
 	src/compilation-cache.cc \
+	src/compilation-statistics.cc \
 	src/compiler.cc \
 	src/compiler/access-builder.cc \
 	src/compiler/ast-graph-builder.cc \
+	src/compiler/ast-loop-assignment-analyzer.cc \
+	src/compiler/basic-block-instrumentor.cc \
 	src/compiler/change-lowering.cc \
 	src/compiler/code-generator.cc \
+	src/compiler/common-node-cache.cc \
 	src/compiler/common-operator.cc \
+	src/compiler/common-operator-reducer.cc \
 	src/compiler/control-builders.cc \
+	src/compiler/control-reducer.cc \
 	src/compiler/gap-resolver.cc \
 	src/compiler/graph-builder.cc \
 	src/compiler/graph-reducer.cc \
@@ -55,19 +67,31 @@ LOCAL_SRC_FILES := \
 	src/compiler/js-generic-lowering.cc \
 	src/compiler/js-graph.cc \
 	src/compiler/js-inlining.cc \
+	src/compiler/js-intrinsic-builder.cc \
+	src/compiler/js-operator.cc \
 	src/compiler/js-typed-lowering.cc \
+	src/compiler/jump-threading.cc \
 	src/compiler/linkage.cc \
+	src/compiler/load-elimination.cc \
+	src/compiler/loop-analysis.cc \
 	src/compiler/machine-operator-reducer.cc \
 	src/compiler/machine-operator.cc \
 	src/compiler/machine-type.cc \
+	src/compiler/move-optimizer.cc \
 	src/compiler/node-cache.cc \
 	src/compiler/node.cc \
+	src/compiler/opcodes.cc \
 	src/compiler/operator.cc \
+	src/compiler/operator-properties.cc \
 	src/compiler/pipeline.cc \
+	src/compiler/pipeline-statistics.cc \
 	src/compiler/raw-machine-assembler.cc \
 	src/compiler/register-allocator.cc \
+	src/compiler/register-allocator-verifier.cc \
+	src/compiler/register-configuration.cc \
 	src/compiler/schedule.cc \
 	src/compiler/scheduler.cc \
+	src/compiler/select-lowering.cc \
 	src/compiler/simplified-lowering.cc \
 	src/compiler/simplified-operator-reducer.cc \
 	src/compiler/simplified-operator.cc \
@@ -75,11 +99,11 @@ LOCAL_SRC_FILES := \
 	src/compiler/typer.cc \
 	src/compiler/value-numbering-reducer.cc \
 	src/compiler/verifier.cc \
+	src/compiler/zone-pool.cc \
 	src/contexts.cc \
 	src/conversions.cc \
 	src/counters.cc \
 	src/cpu-profiler.cc \
-	src/data-flow.cc \
 	src/date.cc \
 	src/dateparser.cc \
 	src/debug.cc \
@@ -115,7 +139,6 @@ LOCAL_SRC_FILES := \
 	src/heap/objects-visiting.cc \
 	src/heap/spaces.cc \
 	src/heap/store-buffer.cc \
-	src/heap/sweeper-thread.cc \
 	src/hydrogen-bce.cc \
 	src/hydrogen-bch.cc \
 	src/hydrogen-canonicalize.cc \
@@ -155,6 +178,7 @@ LOCAL_SRC_FILES := \
 	src/interpreter-irregexp.cc \
 	src/isolate.cc \
 	src/jsregexp.cc \
+	src/layout-descriptor.cc \
 	src/libplatform/default-platform.cc \
 	src/libplatform/task-queue.cc \
 	src/libplatform/worker-thread.cc \
@@ -179,8 +203,34 @@ LOCAL_SRC_FILES := \
 	src/regexp-macro-assembler.cc \
 	src/regexp-stack.cc \
 	src/rewriter.cc \
+	src/runtime/runtime-api.cc \
+	src/runtime/runtime-array.cc \
+	src/runtime/runtime.cc \
+	src/runtime/runtime-classes.cc \
+	src/runtime/runtime-collections.cc \
+	src/runtime/runtime-compiler.cc \
+	src/runtime/runtime-date.cc \
+	src/runtime/runtime-debug.cc \
+	src/runtime/runtime-function.cc \
+	src/runtime/runtime-generator.cc \
+	src/runtime/runtime-i18n.cc \
+	src/runtime/runtime-internal.cc \
+	src/runtime/runtime-json.cc \
+	src/runtime/runtime-literals.cc \
+	src/runtime/runtime-liveedit.cc \
+	src/runtime/runtime-maths.cc \
+	src/runtime/runtime-numbers.cc \
+	src/runtime/runtime-object.cc \
+	src/runtime/runtime-observe.cc \
+	src/runtime/runtime-proxy.cc \
+	src/runtime/runtime-regexp.cc \
+	src/runtime/runtime-scopes.cc \
+	src/runtime/runtime-strings.cc \
+	src/runtime/runtime-symbol.cc \
+	src/runtime/runtime-test.cc \
+	src/runtime/runtime-typedarray.cc \
+	src/runtime/runtime-uri.cc \
 	src/runtime-profiler.cc \
-	src/runtime.cc \
 	src/safepoint-table.cc \
 	src/sampler.cc \
 	src/scanner-character-streams.cc \
@@ -190,6 +240,7 @@ LOCAL_SRC_FILES := \
 	src/serialize.cc \
 	src/snapshot-common.cc \
 	src/snapshot-source-sink.cc \
+	src/string-builder.cc \
 	src/string-search.cc \
 	src/string-stream.cc \
 	src/strtod.cc \
@@ -200,6 +251,7 @@ LOCAL_SRC_FILES := \
 	src/types.cc \
 	src/typing.cc \
 	src/unicode.cc \
+	src/unicode-decoder.cc \
 	src/utils.cc \
 	src/v8.cc \
 	src/v8threads.cc \
@@ -208,7 +260,7 @@ LOCAL_SRC_FILES := \
 	src/zone.cc
 
 LOCAL_SRC_FILES += \
-	third_party/fdlibm/fdlibm.cc
+	src/third_party/fdlibm/fdlibm.cc
 
 v8_local_src_files_arm := \
 		src/arm/assembler-arm.cc \
@@ -271,6 +323,9 @@ v8_local_src_files_arm64 := \
 		src/ic/arm64/stub-cache-arm64.cc
 
 v8_local_src_files_mips := \
+		src/compiler/mips/code-generator-mips.cc \
+		src/compiler/mips/instruction-selector-mips.cc \
+		src/compiler/mips/linkage-mips.cc \
 		src/ic/mips/access-compiler-mips.cc\
 		src/ic/mips/handler-compiler-mips.cc \
 		src/ic/mips/ic-compiler-mips.cc \
@@ -296,6 +351,9 @@ v8_local_src_files_mips := \
 		src/mips/simulator-mips.cc
 
 v8_local_src_files_mips64 := \
+		src/compiler/mips64/code-generator-mips64.cc \
+		src/compiler/mips64/instruction-selector-mips64.cc \
+		src/compiler/mips64/linkage-mips64.cc \
 		src/ic/mips64/access-compiler-mips64.cc \
 		src/ic/mips64/handler-compiler-mips64.cc \
 		src/ic/mips64/ic-compiler-mips64.cc \
@@ -394,7 +452,7 @@ V8_LOCAL_JS_LIBRARY_FILES := \
 	src/string.js \
 	src/array.js \
 	src/uri.js \
-	third_party/fdlibm/fdlibm.js \
+	src/third_party/fdlibm/fdlibm.js \
 	src/math.js \
 	src/apinatives.js \
 	src/date.js \
@@ -423,4 +481,10 @@ V8_LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES := \
 	src/proxy.js \
 	src/harmony-string.js \
 	src/harmony-array.js \
-	src/harmony-classes.js
+	src/harmony-array-includes.js \
+	src/harmony-classes.js \
+	src/harmony-regexp.js \
+	src/harmony-templates.js \
+	src/harmony-tostring.js \
+	src/harmony-typedarray.js
+

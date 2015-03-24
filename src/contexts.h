@@ -98,28 +98,10 @@ enum BindingFlags {
   V(TO_INTEGER_FUN_INDEX, JSFunction, to_integer_fun)                          \
   V(TO_UINT32_FUN_INDEX, JSFunction, to_uint32_fun)                            \
   V(TO_INT32_FUN_INDEX, JSFunction, to_int32_fun)                              \
+  V(TO_LENGTH_FUN_INDEX, JSFunction, to_length_fun)                            \
   V(GLOBAL_EVAL_FUN_INDEX, JSFunction, global_eval_fun)                        \
   V(INSTANTIATE_FUN_INDEX, JSFunction, instantiate_fun)                        \
   V(CONFIGURE_INSTANCE_FUN_INDEX, JSFunction, configure_instance_fun)          \
-  V(MATH_ABS_FUN_INDEX, JSFunction, math_abs_fun)                              \
-  V(MATH_ACOS_FUN_INDEX, JSFunction, math_acos_fun)                            \
-  V(MATH_ASIN_FUN_INDEX, JSFunction, math_asin_fun)                            \
-  V(MATH_ATAN_FUN_INDEX, JSFunction, math_atan_fun)                            \
-  V(MATH_ATAN2_FUN_INDEX, JSFunction, math_atan2_fun)                          \
-  V(MATH_CEIL_FUN_INDEX, JSFunction, math_ceil_fun)                            \
-  V(MATH_COS_FUN_INDEX, JSFunction, math_cos_fun)                              \
-  V(MATH_EXP_FUN_INDEX, JSFunction, math_exp_fun)                              \
-  V(MATH_FLOOR_FUN_INDEX, JSFunction, math_floor_fun)                          \
-  V(MATH_IMUL_FUN_INDEX, JSFunction, math_imul_fun)                            \
-  V(MATH_LOG_FUN_INDEX, JSFunction, math_log_fun)                              \
-  V(MATH_MAX_FUN_INDEX, JSFunction, math_max_fun)                              \
-  V(MATH_MIN_FUN_INDEX, JSFunction, math_min_fun)                              \
-  V(MATH_POW_FUN_INDEX, JSFunction, math_pow_fun)                              \
-  V(MATH_RANDOM_FUN_INDEX, JSFunction, math_random_fun)                        \
-  V(MATH_ROUND_FUN_INDEX, JSFunction, math_round_fun)                          \
-  V(MATH_SIN_FUN_INDEX, JSFunction, math_sin_fun)                              \
-  V(MATH_SQRT_FUN_INDEX, JSFunction, math_sqrt_fun)                            \
-  V(MATH_TAN_FUN_INDEX, JSFunction, math_tan_fun)                              \
   V(ARRAY_BUFFER_FUN_INDEX, JSFunction, array_buffer_fun)                      \
   V(UINT8_ARRAY_FUN_INDEX, JSFunction, uint8_array_fun)                        \
   V(INT8_ARRAY_FUN_INDEX, JSFunction, int8_array_fun)                          \
@@ -200,9 +182,63 @@ enum BindingFlags {
   V(ITERATOR_RESULT_MAP_INDEX, Map, iterator_result_map)                       \
   V(MAP_ITERATOR_MAP_INDEX, Map, map_iterator_map)                             \
   V(SET_ITERATOR_MAP_INDEX, Map, set_iterator_map)                             \
-  V(ITERATOR_SYMBOL_INDEX, Symbol, iterator_symbol)                            \
-  V(UNSCOPABLES_SYMBOL_INDEX, Symbol, unscopables_symbol)                      \
-  V(ARRAY_VALUES_ITERATOR_INDEX, JSFunction, array_values_iterator)
+  V(ARRAY_VALUES_ITERATOR_INDEX, JSFunction, array_values_iterator)            \
+  V(SCRIPT_CONTEXT_TABLE_INDEX, ScriptContextTable, script_context_table)
+
+
+// A table of all script contexts. Every loaded top-level script with top-level
+// lexical declarations contributes its ScriptContext into this table.
+//
+// The table is a fixed array, its first slot is the current used count and
+// the subsequent slots 1..used contain ScriptContexts.
+class ScriptContextTable : public FixedArray {
+ public:
+  // Conversions.
+  static ScriptContextTable* cast(Object* context) {
+    DCHECK(context->IsScriptContextTable());
+    return reinterpret_cast<ScriptContextTable*>(context);
+  }
+
+  struct LookupResult {
+    int context_index;
+    int slot_index;
+    VariableMode mode;
+    InitializationFlag init_flag;
+    MaybeAssignedFlag maybe_assigned_flag;
+  };
+
+  int used() const { return Smi::cast(get(kUsedSlot))->value(); }
+
+  void set_used(int used) { set(kUsedSlot, Smi::FromInt(used)); }
+
+  static Handle<Context> GetContext(Handle<ScriptContextTable> table, int i) {
+    DCHECK(i < table->used());
+    return Handle<Context>::cast(FixedArray::get(table, i + 1));
+  }
+
+  // Lookup a variable `name` in a ScriptContextTable.
+  // If it returns true, the variable is found and `result` contains
+  // valid information about its location.
+  // If it returns false, `result` is untouched.
+  MUST_USE_RESULT
+  static bool Lookup(Handle<ScriptContextTable> table, Handle<String> name,
+                     LookupResult* result);
+
+  MUST_USE_RESULT
+  static Handle<ScriptContextTable> Extend(Handle<ScriptContextTable> table,
+                                           Handle<Context> script_context);
+
+  static int GetContextOffset(int context_index) {
+    return kFirstContextOffset + context_index * kPointerSize;
+  }
+
+ private:
+  static const int kUsedSlot = 0;
+  static const int kFirstContextOffset =
+      FixedArray::kHeaderSize + (kUsedSlot + 1) * kPointerSize;
+
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ScriptContextTable);
+};
 
 // JSFunctions are pairs (context, function code), sometimes also called
 // closures. A Context object is used to represent function contexts and
@@ -247,7 +283,9 @@ enum BindingFlags {
 // properties.
 //
 // Finally, with Harmony scoping, the JSFunction representing a top level
-// script will have the GlobalContext rather than a FunctionContext.
+// script will have the ScriptContext rather than a FunctionContext.
+// Script contexts from all top-level scripts are gathered in
+// ScriptContextTable.
 
 class Context: public FixedArray {
  public:
@@ -312,25 +350,6 @@ class Context: public FixedArray {
     GLOBAL_EVAL_FUN_INDEX,
     INSTANTIATE_FUN_INDEX,
     CONFIGURE_INSTANCE_FUN_INDEX,
-    MATH_ABS_FUN_INDEX,
-    MATH_ACOS_FUN_INDEX,
-    MATH_ASIN_FUN_INDEX,
-    MATH_ATAN_FUN_INDEX,
-    MATH_ATAN2_FUN_INDEX,
-    MATH_CEIL_FUN_INDEX,
-    MATH_COS_FUN_INDEX,
-    MATH_EXP_FUN_INDEX,
-    MATH_FLOOR_FUN_INDEX,
-    MATH_IMUL_FUN_INDEX,
-    MATH_LOG_FUN_INDEX,
-    MATH_MAX_FUN_INDEX,
-    MATH_MIN_FUN_INDEX,
-    MATH_POW_FUN_INDEX,
-    MATH_RANDOM_FUN_INDEX,
-    MATH_ROUND_FUN_INDEX,
-    MATH_SIN_FUN_INDEX,
-    MATH_SQRT_FUN_INDEX,
-    MATH_TAN_FUN_INDEX,
     ARRAY_BUFFER_FUN_INDEX,
     UINT8_ARRAY_FUN_INDEX,
     INT8_ARRAY_FUN_INDEX,
@@ -395,16 +414,16 @@ class Context: public FixedArray {
     ITERATOR_RESULT_MAP_INDEX,
     MAP_ITERATOR_MAP_INDEX,
     SET_ITERATOR_MAP_INDEX,
-    ITERATOR_SYMBOL_INDEX,
-    UNSCOPABLES_SYMBOL_INDEX,
     ARRAY_VALUES_ITERATOR_INDEX,
+    SCRIPT_CONTEXT_TABLE_INDEX,
+    MAP_CACHE_INDEX,
+    TO_LENGTH_FUN_INDEX,
 
     // Properties from here are treated as weak references by the full GC.
     // Scavenge treats them as strong references.
     OPTIMIZED_FUNCTIONS_LIST,  // Weak.
     OPTIMIZED_CODE_LIST,       // Weak.
     DEOPTIMIZED_CODE_LIST,     // Weak.
-    MAP_CACHE_INDEX,           // Weak.
     NEXT_CONTEXT_LINK,         // Weak.
 
     // Total number of slots.
@@ -450,8 +469,8 @@ class Context: public FixedArray {
   // The builtins object.
   JSBuiltinsObject* builtins();
 
-  // Get the innermost global context by traversing the context chain.
-  Context* global_context();
+  // Get the script context by traversing the context chain.
+  Context* script_context();
 
   // Compute the native context by traversing the context chain.
   Context* native_context();
@@ -483,9 +502,9 @@ class Context: public FixedArray {
     Map* map = this->map();
     return map == map->GetHeap()->module_context_map();
   }
-  bool IsGlobalContext() {
+  bool IsScriptContext() {
     Map* map = this->map();
-    return map == map->GetHeap()->global_context_map();
+    return map == map->GetHeap()->script_context_map();
   }
 
   bool HasSameSecurityTokenAs(Context* that) {

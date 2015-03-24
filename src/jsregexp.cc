@@ -18,8 +18,9 @@
 #include "src/regexp-macro-assembler-irregexp.h"
 #include "src/regexp-macro-assembler-tracer.h"
 #include "src/regexp-stack.h"
-#include "src/runtime.h"
+#include "src/runtime/runtime.h"
 #include "src/string-search.h"
+#include "src/unicode-decoder.h"
 
 #ifndef V8_INTERPRETED_REGEXP
 #if V8_TARGET_ARCH_IA32
@@ -54,28 +55,6 @@ MaybeHandle<Object> RegExpImpl::CreateRegExpLiteral(
   // Call the construct code with 2 arguments.
   Handle<Object> argv[] = { pattern, flags };
   return Execution::New(constructor, arraysize(argv), argv);
-}
-
-
-static JSRegExp::Flags RegExpFlagsFromString(Handle<String> str) {
-  int flags = JSRegExp::NONE;
-  for (int i = 0; i < str->length(); i++) {
-    switch (str->Get(i)) {
-      case 'i':
-        flags |= JSRegExp::IGNORE_CASE;
-        break;
-      case 'g':
-        flags |= JSRegExp::GLOBAL;
-        break;
-      case 'm':
-        flags |= JSRegExp::MULTILINE;
-        break;
-      case 'y':
-        if (FLAG_harmony_regexps) flags |= JSRegExp::STICKY;
-        break;
-    }
-  }
-  return JSRegExp::Flags(flags);
 }
 
 
@@ -155,10 +134,9 @@ static bool HasFewDifferentCharacters(Handle<String> pattern) {
 
 MaybeHandle<Object> RegExpImpl::Compile(Handle<JSRegExp> re,
                                         Handle<String> pattern,
-                                        Handle<String> flag_str) {
+                                        JSRegExp::Flags flags) {
   Isolate* isolate = re->GetIsolate();
   Zone zone(isolate);
-  JSRegExp::Flags flags = RegExpFlagsFromString(flag_str);
   CompilationCache* compilation_cache = isolate->compilation_cache();
   MaybeHandle<FixedArray> maybe_cached =
       compilation_cache->LookupRegExp(pattern, flags);
@@ -1026,6 +1004,8 @@ class RegExpCompiler {
 
   inline bool ignore_case() { return ignore_case_; }
   inline bool one_byte() { return one_byte_; }
+  inline bool optimize() { return optimize_; }
+  inline void set_optimize(bool value) { optimize_ = value; }
   FrequencyCollator* frequency_collator() { return &frequency_collator_; }
 
   int current_expansion_factor() { return current_expansion_factor_; }
@@ -1046,6 +1026,7 @@ class RegExpCompiler {
   bool ignore_case_;
   bool one_byte_;
   bool reg_exp_too_big_;
+  bool optimize_;
   int current_expansion_factor_;
   FrequencyCollator frequency_collator_;
   Zone* zone_;
@@ -1078,6 +1059,7 @@ RegExpCompiler::RegExpCompiler(int capture_count, bool ignore_case,
       ignore_case_(ignore_case),
       one_byte_(one_byte),
       reg_exp_too_big_(false),
+      optimize_(FLAG_regexp_optimization),
       current_expansion_factor_(1),
       frequency_collator_(),
       zone_(zone) {
@@ -1092,16 +1074,6 @@ RegExpEngine::CompilationResult RegExpCompiler::Assemble(
     int capture_count,
     Handle<String> pattern) {
   Heap* heap = pattern->GetHeap();
-
-  bool use_slow_safe_regexp_compiler = false;
-  if (heap->total_regexp_code_generated() >
-          RegExpImpl::kRegWxpCompiledLimit &&
-      heap->isolate()->memory_allocator()->SizeExecutable() >
-          RegExpImpl::kRegExpExecutableMemoryLimit) {
-    use_slow_safe_regexp_compiler = true;
-  }
-
-  macro_assembler->set_slow_safe(use_slow_safe_regexp_compiler);
 
 #ifdef DEBUG
   if (FLAG_trace_regexp_assembler)
@@ -1126,12 +1098,14 @@ RegExpEngine::CompilationResult RegExpCompiler::Assemble(
   Handle<HeapObject> code = macro_assembler_->GetCode(pattern);
   heap->IncreaseTotalRegexpCodeGenerated(code->Size());
   work_list_ = NULL;
-#ifdef DEBUG
+#ifdef ENABLE_DISASSEMBLER
   if (FLAG_print_code) {
     CodeTracer::Scope trace_scope(heap->isolate()->GetCodeTracer());
     OFStream os(trace_scope.file());
     Handle<Code>::cast(code)->Disassemble(pattern->ToCString().get(), os);
   }
+#endif
+#ifdef DEBUG
   if (FLAG_trace_regexp_assembler) {
     delete macro_assembler_;
   }
@@ -2256,8 +2230,7 @@ RegExpNode::LimitResult RegExpNode::LimitVersions(RegExpCompiler* compiler,
   // We are being asked to make a non-generic version.  Keep track of how many
   // non-generic versions we generate so as not to overdo it.
   trace_count_++;
-  if (FLAG_regexp_optimization &&
-      trace_count_ < kMaxCopiesCodeGenerated &&
+  if (compiler->optimize() && trace_count_ < kMaxCopiesCodeGenerated &&
       compiler->recursion_depth() <= RegExpCompiler::kMaxRecursion) {
     return CONTINUE;
   }
@@ -4136,15 +4109,12 @@ void ChoiceNode::EmitChoices(RegExpCompiler* compiler,
     }
     alt_gen->expects_preload = preload->preload_is_current_;
     bool generate_full_check_inline = false;
-    if (FLAG_regexp_optimization &&
+    if (compiler->optimize() &&
         try_to_emit_quick_check_for_alternative(i == 0) &&
-        alternative.node()->EmitQuickCheck(compiler,
-                                           trace,
-                                           &new_trace,
-                                           preload->preload_has_checked_bounds_,
-                                           &alt_gen->possible_success,
-                                           &alt_gen->quick_check_details,
-                                           fall_through_on_failure)) {
+        alternative.node()->EmitQuickCheck(
+            compiler, trace, &new_trace, preload->preload_has_checked_bounds_,
+            &alt_gen->possible_success, &alt_gen->quick_check_details,
+            fall_through_on_failure)) {
       // Quick check was generated for this choice.
       preload->preload_is_current_ = true;
       preload->preload_has_checked_bounds_ = true;
@@ -4386,7 +4356,7 @@ void BackReferenceNode::Emit(RegExpCompiler* compiler, Trace* trace) {
 
 class DotPrinter: public NodeVisitor {
  public:
-  DotPrinter(OStream& os, bool ignore_case)  // NOLINT
+  DotPrinter(std::ostream& os, bool ignore_case)  // NOLINT
       : os_(os),
         ignore_case_(ignore_case) {}
   void PrintNode(const char* label, RegExpNode* node);
@@ -4398,7 +4368,7 @@ class DotPrinter: public NodeVisitor {
 FOR_EACH_NODE_TYPE(DECLARE_VISIT)
 #undef DECLARE_VISIT
  private:
-  OStream& os_;
+  std::ostream& os_;
   bool ignore_case_;
 };
 
@@ -4420,7 +4390,7 @@ void DotPrinter::PrintNode(const char* label, RegExpNode* node) {
   }
   os_ << "\"];\n";
   Visit(node);
-  os_ << "}" << endl;
+  os_ << "}" << std::endl;
 }
 
 
@@ -4439,7 +4409,7 @@ void DotPrinter::PrintOnFailure(RegExpNode* from, RegExpNode* on_failure) {
 
 class TableEntryBodyPrinter {
  public:
-  TableEntryBodyPrinter(OStream& os, ChoiceNode* choice)  // NOLINT
+  TableEntryBodyPrinter(std::ostream& os, ChoiceNode* choice)  // NOLINT
       : os_(os),
         choice_(choice) {}
   void Call(uc16 from, DispatchTable::Entry entry) {
@@ -4453,14 +4423,14 @@ class TableEntryBodyPrinter {
   }
  private:
   ChoiceNode* choice() { return choice_; }
-  OStream& os_;
+  std::ostream& os_;
   ChoiceNode* choice_;
 };
 
 
 class TableEntryHeaderPrinter {
  public:
-  explicit TableEntryHeaderPrinter(OStream& os)  // NOLINT
+  explicit TableEntryHeaderPrinter(std::ostream& os)  // NOLINT
       : first_(true),
         os_(os) {}
   void Call(uc16 from, DispatchTable::Entry entry) {
@@ -4484,13 +4454,13 @@ class TableEntryHeaderPrinter {
 
  private:
   bool first_;
-  OStream& os_;
+  std::ostream& os_;
 };
 
 
 class AttributePrinter {
  public:
-  explicit AttributePrinter(OStream& os)  // NOLINT
+  explicit AttributePrinter(std::ostream& os)  // NOLINT
       : os_(os),
         first_(true) {}
   void PrintSeparator() {
@@ -4512,7 +4482,7 @@ class AttributePrinter {
   }
 
  private:
-  OStream& os_;
+  std::ostream& os_;
   bool first_;
 };
 
@@ -4681,10 +4651,10 @@ void DotPrinter::VisitAction(ActionNode* that) {
 
 class DispatchTableDumper {
  public:
-  explicit DispatchTableDumper(OStream& os) : os_(os) {}
+  explicit DispatchTableDumper(std::ostream& os) : os_(os) {}
   void Call(uc16 key, DispatchTable::Entry entry);
  private:
-  OStream& os_;
+  std::ostream& os_;
 };
 
 
@@ -4942,7 +4912,7 @@ RegExpNode* RegExpQuantifier::ToNode(int min,
 
   if (body_can_be_empty) {
     body_start_reg = compiler->AllocateRegister();
-  } else if (FLAG_regexp_optimization && !needs_capture_clearing) {
+  } else if (compiler->optimize() && !needs_capture_clearing) {
     // Only unroll if there are no captures and the body can't be
     // empty.
     {
@@ -6040,6 +6010,8 @@ RegExpEngine::CompilationResult RegExpEngine::Compile(
   }
   RegExpCompiler compiler(data->capture_count, ignore_case, is_one_byte, zone);
 
+  compiler.set_optimize(!TooMuchRegExpCode(pattern));
+
   // Sample some characters from the middle of the string.
   static const int kSampleSize = 128;
 
@@ -6142,6 +6114,8 @@ RegExpEngine::CompilationResult RegExpEngine::Compile(
   RegExpMacroAssemblerIrregexp macro_assembler(codes, zone);
 #endif  // V8_INTERPRETED_REGEXP
 
+  macro_assembler.set_slow_safe(TooMuchRegExpCode(pattern));
+
   // Inserted here, instead of in Assembler, because it depends on information
   // in the AST that isn't replicated in the Node structure.
   static const int kMaxBacksearchLimit = 1024;
@@ -6165,4 +6139,14 @@ RegExpEngine::CompilationResult RegExpEngine::Compile(
 }
 
 
+bool RegExpEngine::TooMuchRegExpCode(Handle<String> pattern) {
+  Heap* heap = pattern->GetHeap();
+  bool too_much = pattern->length() > RegExpImpl::kRegExpTooLargeToOptimize;
+  if (heap->total_regexp_code_generated() > RegExpImpl::kRegExpCompiledLimit &&
+      heap->isolate()->memory_allocator()->SizeExecutable() >
+          RegExpImpl::kRegExpExecutableMemoryLimit) {
+    too_much = true;
+  }
+  return too_much;
+}
 }}  // namespace v8::internal

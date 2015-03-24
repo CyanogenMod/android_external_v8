@@ -14,7 +14,6 @@ namespace v8 {
 namespace internal {
 namespace compiler {
 
-
 // Base class for all control builders. Also provides a common interface for
 // control builders to handle 'break' and 'continue' statements when they are
 // used to model breakable statements.
@@ -32,7 +31,7 @@ class ControlBuilder {
   typedef StructuredGraphBuilder Builder;
   typedef StructuredGraphBuilder::Environment Environment;
 
-  Zone* zone() const { return builder_->zone(); }
+  Zone* zone() const { return builder_->local_zone(); }
   Environment* environment() { return builder_->environment(); }
   void set_environment(Environment* env) { builder_->set_environment(env); }
 
@@ -41,7 +40,7 @@ class ControlBuilder {
 
 
 // Tracks control flow for a conditional statement.
-class IfBuilder : public ControlBuilder {
+class IfBuilder FINAL : public ControlBuilder {
  public:
   explicit IfBuilder(StructuredGraphBuilder* builder)
       : ControlBuilder(builder),
@@ -49,7 +48,7 @@ class IfBuilder : public ControlBuilder {
         else_environment_(NULL) {}
 
   // Primitive control commands.
-  void If(Node* condition);
+  void If(Node* condition, BranchHint hint = BranchHint::kNone);
   void Then();
   void Else();
   void End();
@@ -61,7 +60,7 @@ class IfBuilder : public ControlBuilder {
 
 
 // Tracks control flow for an iteration statement.
-class LoopBuilder : public ControlBuilder {
+class LoopBuilder FINAL : public ControlBuilder {
  public:
   explicit LoopBuilder(StructuredGraphBuilder* builder)
       : ControlBuilder(builder),
@@ -70,13 +69,13 @@ class LoopBuilder : public ControlBuilder {
         break_environment_(NULL) {}
 
   // Primitive control commands.
-  void BeginLoop();
+  void BeginLoop(BitVector* assigned);
   void EndBody();
   void EndLoop();
 
   // Primitive support for break and continue.
-  virtual void Continue();
-  virtual void Break();
+  void Continue() FINAL;
+  void Break() FINAL;
 
   // Compound control command for conditional break.
   void BreakUnless(Node* condition);
@@ -89,7 +88,7 @@ class LoopBuilder : public ControlBuilder {
 
 
 // Tracks control flow for a switch statement.
-class SwitchBuilder : public ControlBuilder {
+class SwitchBuilder FINAL : public ControlBuilder {
  public:
   explicit SwitchBuilder(StructuredGraphBuilder* builder, int case_count)
       : ControlBuilder(builder),
@@ -108,21 +107,21 @@ class SwitchBuilder : public ControlBuilder {
   void EndSwitch();
 
   // Primitive support for break.
-  virtual void Break();
+  void Break() FINAL;
 
   // The number of cases within a switch is statically known.
-  int case_count() const { return body_environments_.capacity(); }
+  size_t case_count() const { return body_environments_.size(); }
 
  private:
   Environment* body_environment_;   // Environment after last case body.
   Environment* label_environment_;  // Environment for next label condition.
   Environment* break_environment_;  // Environment after the switch exits.
-  ZoneList<Environment*> body_environments_;
+  ZoneVector<Environment*> body_environments_;
 };
 
 
 // Tracks control flow for a block statement.
-class BlockBuilder : public ControlBuilder {
+class BlockBuilder FINAL : public ControlBuilder {
  public:
   explicit BlockBuilder(StructuredGraphBuilder* builder)
       : ControlBuilder(builder), break_environment_(NULL) {}
@@ -132,13 +131,14 @@ class BlockBuilder : public ControlBuilder {
   void EndBlock();
 
   // Primitive support for break.
-  virtual void Break();
+  void Break() FINAL;
 
  private:
   Environment* break_environment_;  // Environment after the block exits.
 };
-}
-}
-}  // namespace v8::internal::compiler
+
+}  // namespace compiler
+}  // namespace internal
+}  // namespace v8
 
 #endif  // V8_COMPILER_CONTROL_BUILDERS_H_
