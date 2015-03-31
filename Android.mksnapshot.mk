@@ -80,7 +80,7 @@ LOCAL_CFLAGS := \
 	-Wno-unused-parameter \
 	-std=gnu++0x
 
-LOCAL_CFLAGS_v8_target_arm += -DV8_TARGET_ARCH_ARM
+LOCAL_CFLAGS_v8_target_arm += -DV8_TARGET_ARCH_ARM -O0
 LOCAL_CFLAGS_v8_target_arm64 += -DV8_TARGET_ARCH_ARM64
 
 ifeq ($(ARCH_ARM_HAVE_VFP),true)
