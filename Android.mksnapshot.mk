@@ -119,6 +119,8 @@ LOCAL_SHARED_LIBRARIES := libicuuc-host libicui18n-host
 
 LOCAL_STATIC_LIBRARIES := liblog
 
+LOCAL_SANITIZE_RECOVER := shift-exponent
+
 include $(BUILD_HOST_EXECUTABLE)
 else
 $(warning mksnapshot.$(mksnapshot_arch): architecture $(mksnapshot_arch) not supported)
