@@ -10,7 +10,7 @@
 #include "src/debug.h"
 #include "src/deoptimizer.h"
 #include "src/full-codegen.h"
-#include "src/runtime.h"
+#include "src/runtime/runtime.h"
 
 namespace v8 {
 namespace internal {
@@ -156,7 +156,7 @@ void Builtins::Generate_StringConstructCode(MacroAssembler* masm) {
   __ Cbz(argc, &no_arguments);
   // First args = sp[(argc - 1) * 8].
   __ Sub(argc, argc, 1);
-  __ Claim(argc, kXRegSize);
+  __ Drop(argc, kXRegSize);
   // jssp now point to args[0], load and drop args[0] + receiver.
   Register arg = argc;
   __ Ldr(arg, MemOperand(jssp, 2 * kPointerSize, PostIndex));
@@ -367,13 +367,13 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
             FieldMemOperand(init_map, Map::kBitField3Offset);
         // Check if slack tracking is enabled.
         __ Ldr(x4, bit_field3);
-        __ DecodeField<Map::ConstructionCount>(constructon_count, x4);
-        __ Cmp(constructon_count, Operand(JSFunction::kNoSlackTracking));
-        __ B(eq, &allocate);
+        __ DecodeField<Map::Counter>(constructon_count, x4);
+        __ Cmp(constructon_count, Operand(Map::kSlackTrackingCounterEnd));
+        __ B(lt, &allocate);
         // Decrease generous allocation count.
-        __ Subs(x4, x4, Operand(1 << Map::ConstructionCount::kShift));
+        __ Subs(x4, x4, Operand(1 << Map::Counter::kShift));
         __ Str(x4, bit_field3);
-        __ Cmp(constructon_count, Operand(JSFunction::kFinishSlackTracking));
+        __ Cmp(constructon_count, Operand(Map::kSlackTrackingCounterEnd));
         __ B(ne, &allocate);
 
         // Push the constructor and map to the stack, and the constructor again
@@ -381,7 +381,7 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
         __ Push(constructor, init_map, constructor);
         __ CallRuntime(Runtime::kFinalizeInstanceSize, 1);
         __ Pop(init_map, constructor);
-        __ Mov(constructon_count, Operand(JSFunction::kNoSlackTracking));
+        __ Mov(constructon_count, Operand(Map::kSlackTrackingCounterEnd - 1));
         __ Bind(&allocate);
       }
 
@@ -434,8 +434,8 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
         Label no_inobject_slack_tracking;
 
         // Check if slack tracking is enabled.
-        __ Cmp(constructon_count, Operand(JSFunction::kNoSlackTracking));
-        __ B(eq, &no_inobject_slack_tracking);
+        __ Cmp(constructon_count, Operand(Map::kSlackTrackingCounterEnd));
+        __ B(lt, &no_inobject_slack_tracking);
         constructon_count = NoReg;
 
         // Fill the pre-allocated fields with undef.

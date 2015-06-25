@@ -637,7 +637,7 @@ Code* Deoptimizer::FindOptimizedCode(JSFunction* function,
 
 void Deoptimizer::PrintFunctionName() {
   if (function_->IsJSFunction()) {
-    function_->PrintName(trace_scope_->file());
+    function_->ShortPrint(trace_scope_->file());
   } else {
     PrintF(trace_scope_->file(),
            "%s", Code::Kind2String(compiled_code_->kind()));
@@ -693,8 +693,7 @@ int Deoptimizer::GetDeoptimizationId(Isolate* isolate,
   DeoptimizerData* data = isolate->deoptimizer_data();
   MemoryChunk* base = data->deopt_entry_code_[type];
   Address start = base->area_start();
-  if (base == NULL ||
-      addr < start ||
+  if (addr < start ||
       addr >= start + (kMaxNumberOfEntries * table_entry_size_)) {
     return kNotDeoptimizationEntry;
   }
@@ -719,7 +718,7 @@ int Deoptimizer::GetOutputInfo(DeoptimizationOutputData* data,
   OFStream os(stderr);
   os << "[couldn't find pc offset for node=" << id.ToInt() << "]\n"
      << "[method: " << shared->DebugName()->ToCString().get() << "]\n"
-     << "[source:\n" << SourceCodeOf(shared) << "\n]" << endl;
+     << "[source:\n" << SourceCodeOf(shared) << "\n]" << std::endl;
 
   FATAL("unable to find pc offset during deoptimization");
   return -1;
@@ -762,10 +761,8 @@ void Deoptimizer::DoComputeOutputFrames() {
 
   if (trace_scope_ != NULL) {
     timer.Start();
-    PrintF(trace_scope_->file(),
-           "[deoptimizing (DEOPT %s): begin 0x%08" V8PRIxPTR " ",
-           MessageFor(bailout_type_),
-           reinterpret_cast<intptr_t>(function_));
+    PrintF(trace_scope_->file(), "[deoptimizing (DEOPT %s): begin ",
+           MessageFor(bailout_type_));
     PrintFunctionName();
     PrintF(trace_scope_->file(),
            " (opt #%d) @%d, FP to SP delta: %d]\n",
@@ -851,11 +848,8 @@ void Deoptimizer::DoComputeOutputFrames() {
   if (trace_scope_ != NULL) {
     double ms = timer.Elapsed().InMillisecondsF();
     int index = output_count_ - 1;  // Index of the topmost frame.
-    JSFunction* function = output_[index]->GetFunction();
-    PrintF(trace_scope_->file(),
-           "[deoptimizing (%s): end 0x%08" V8PRIxPTR " ",
-           MessageFor(bailout_type_),
-           reinterpret_cast<intptr_t>(function));
+    PrintF(trace_scope_->file(), "[deoptimizing (%s): end ",
+           MessageFor(bailout_type_));
     PrintFunctionName();
     PrintF(trace_scope_->file(),
            " @%d => node=%d, pc=0x%08" V8PRIxPTR ", state=%s, alignment=%s,"

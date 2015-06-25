@@ -19,12 +19,19 @@ namespace internal {
  */
 class SnapshotByteSource FINAL {
  public:
-  SnapshotByteSource(const byte* array, int length);
-  ~SnapshotByteSource();
+  SnapshotByteSource(const char* data, int length)
+      : data_(reinterpret_cast<const byte*>(data)),
+        length_(length),
+        position_(0) {}
+
+  explicit SnapshotByteSource(Vector<const byte> payload)
+      : data_(payload.start()), length_(payload.length()), position_(0) {}
+
+  ~SnapshotByteSource() {}
 
   bool HasMore() { return position_ < length_; }
 
-  int Get() {
+  byte Get() {
     DCHECK(position_ < length_);
     return data_[position_++];
   }
@@ -39,7 +46,7 @@ class SnapshotByteSource FINAL {
     // This way of variable-length encoding integers does not suffer from branch
     // mispredictions.
     uint32_t answer = GetUnalignedInt();
-    int bytes = answer & 3;
+    int bytes = (answer & 3) + 1;
     Advance(bytes);
     uint32_t mask = 0xffffffffu;
     mask >>= 32 - (bytes << 3);
@@ -70,53 +77,26 @@ class SnapshotByteSource FINAL {
  */
 class SnapshotByteSink {
  public:
-  virtual ~SnapshotByteSink() { }
-  virtual void Put(byte b, const char* description) = 0;
-  virtual void PutSection(int b, const char* description) {
+  SnapshotByteSink() {}
+  explicit SnapshotByteSink(int initial_size) : data_(initial_size) {}
+
+  ~SnapshotByteSink() {}
+
+  void Put(byte b, const char* description) { data_.Add(b); }
+
+  void PutSection(int b, const char* description) {
     DCHECK_LE(b, kMaxUInt8);
     Put(static_cast<byte>(b), description);
   }
+
   void PutInt(uintptr_t integer, const char* description);
-  void PutRaw(byte* data, int number_of_bytes, const char* description);
-  void PutBlob(byte* data, int number_of_bytes, const char* description);
-  virtual int Position() = 0;
-};
+  void PutRaw(const byte* data, int number_of_bytes, const char* description);
+  int Position() { return data_.length(); }
 
-
-class DummySnapshotSink : public SnapshotByteSink {
- public:
-  DummySnapshotSink() : length_(0) {}
-  virtual ~DummySnapshotSink() {}
-  virtual void Put(byte b, const char* description) { length_++; }
-  virtual int Position() { return length_; }
+  const List<byte>& data() const { return data_; }
 
  private:
-  int length_;
-};
-
-
-// Wrap a SnapshotByteSink into a DebugSnapshotSink to get debugging output.
-class DebugSnapshotSink : public SnapshotByteSink {
- public:
-  explicit DebugSnapshotSink(SnapshotByteSink* chained) : sink_(chained) {}
-  virtual void Put(byte b, const char* description) OVERRIDE;
-  virtual int Position() OVERRIDE { return sink_->Position(); }
-
- private:
-  SnapshotByteSink* sink_;
-};
-
-
-class ListSnapshotSink : public i::SnapshotByteSink {
- public:
-  explicit ListSnapshotSink(i::List<byte>* data) : data_(data) {}
-  virtual void Put(byte b, const char* description) OVERRIDE {
-    data_->Add(b);
-  }
-  virtual int Position() OVERRIDE { return data_->length(); }
-
- private:
-  i::List<byte>* data_;
+  List<byte> data_;
 };
 
 }  // namespace v8::internal

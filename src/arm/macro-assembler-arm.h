@@ -200,10 +200,6 @@ class MacroAssembler: public Assembler {
                      Condition cc,
                      Label* condition_met);
 
-  void CheckMapDeprecated(Handle<Map> map,
-                          Register scratch,
-                          Label* if_deprecated);
-
   // Check if object is in new space.  Jumps if the object is not in new space.
   // The register scratch can be object itself, but scratch will be clobbered.
   void JumpIfNotInNewSpace(Register object,
@@ -918,15 +914,19 @@ class MacroAssembler: public Assembler {
                 SmiCheckType smi_check_type);
 
 
-  // Check if the map of an object is equal to a specified map and branch to a
-  // specified target if equal. Skip the smi check if not required (object is
-  // known to be a heap object)
-  void DispatchMap(Register obj,
-                   Register scratch,
-                   Handle<Map> map,
-                   Handle<Code> success,
-                   SmiCheckType smi_check_type);
+  // Check if the map of an object is equal to a specified weak map and branch
+  // to a specified target if equal. Skip the smi check if not required
+  // (object is known to be a heap object)
+  void DispatchWeakMap(Register obj, Register scratch1, Register scratch2,
+                       Handle<WeakCell> cell, Handle<Code> success,
+                       SmiCheckType smi_check_type);
 
+  // Compare the given value and the value of weak cell.
+  void CmpWeakValue(Register value, Handle<WeakCell> cell, Register scratch);
+
+  // Load the value of the weak cell in the value register. Branch to the given
+  // miss label if the weak cell was cleared.
+  void LoadWeakValue(Register value, Handle<WeakCell> cell, Label* miss);
 
   // Compare the object in a register to a value from the root list.
   // Uses the ip register as scratch.
@@ -1401,7 +1401,8 @@ class MacroAssembler: public Assembler {
   }
 
   // Activation support.
-  void EnterFrame(StackFrame::Type type, bool load_constant_pool = false);
+  void EnterFrame(StackFrame::Type type,
+                  bool load_constant_pool_pointer_reg = false);
   // Returns the pc offset at which the frame ends.
   int LeaveFrame(StackFrame::Type type);
 
@@ -1527,71 +1528,6 @@ class CodePatcher {
   int size_;  // Number of bytes of the expected patch size.
   MacroAssembler masm_;  // Macro assembler used to generate the code.
   FlushICache flush_cache_;  // Whether to flush the I cache after patching.
-};
-
-
-class FrameAndConstantPoolScope {
- public:
-  FrameAndConstantPoolScope(MacroAssembler* masm, StackFrame::Type type)
-      : masm_(masm),
-        type_(type),
-        old_has_frame_(masm->has_frame()),
-        old_constant_pool_available_(masm->is_constant_pool_available())  {
-    // We only want to enable constant pool access for non-manual frame scopes
-    // to ensure the constant pool pointer is valid throughout the scope.
-    DCHECK(type_ != StackFrame::MANUAL && type_ != StackFrame::NONE);
-    masm->set_has_frame(true);
-    masm->set_constant_pool_available(true);
-    masm->EnterFrame(type, !old_constant_pool_available_);
-  }
-
-  ~FrameAndConstantPoolScope() {
-    masm_->LeaveFrame(type_);
-    masm_->set_has_frame(old_has_frame_);
-    masm_->set_constant_pool_available(old_constant_pool_available_);
-  }
-
-  // Normally we generate the leave-frame code when this object goes
-  // out of scope.  Sometimes we may need to generate the code somewhere else
-  // in addition.  Calling this will achieve that, but the object stays in
-  // scope, the MacroAssembler is still marked as being in a frame scope, and
-  // the code will be generated again when it goes out of scope.
-  void GenerateLeaveFrame() {
-    DCHECK(type_ != StackFrame::MANUAL && type_ != StackFrame::NONE);
-    masm_->LeaveFrame(type_);
-  }
-
- private:
-  MacroAssembler* masm_;
-  StackFrame::Type type_;
-  bool old_has_frame_;
-  bool old_constant_pool_available_;
-
-  DISALLOW_IMPLICIT_CONSTRUCTORS(FrameAndConstantPoolScope);
-};
-
-
-// Class for scoping the the unavailability of constant pool access.
-class ConstantPoolUnavailableScope {
- public:
-  explicit ConstantPoolUnavailableScope(MacroAssembler* masm)
-     : masm_(masm),
-       old_constant_pool_available_(masm->is_constant_pool_available()) {
-    if (FLAG_enable_ool_constant_pool) {
-      masm_->set_constant_pool_available(false);
-    }
-  }
-  ~ConstantPoolUnavailableScope() {
-    if (FLAG_enable_ool_constant_pool) {
-     masm_->set_constant_pool_available(old_constant_pool_available_);
-    }
-  }
-
- private:
-  MacroAssembler* masm_;
-  int old_constant_pool_available_;
-
-  DISALLOW_IMPLICIT_CONSTRUCTORS(ConstantPoolUnavailableScope);
 };
 
 

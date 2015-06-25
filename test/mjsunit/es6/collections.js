@@ -25,7 +25,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Flags: --expose-gc --allow-natives-syntax
+// Flags: --expose-gc --allow-natives-syntax --harmony-tostring
 
 
 function assertSize(expected, collection) {
@@ -266,7 +266,6 @@ assertTrue(WeakMap.prototype.set instanceof Function)
 assertTrue(WeakMap.prototype.get instanceof Function)
 assertTrue(WeakMap.prototype.has instanceof Function)
 assertTrue(WeakMap.prototype.delete instanceof Function)
-assertTrue(WeakMap.prototype.clear instanceof Function)
 
 
 // Test some common JavaScript idioms for WeakSets
@@ -275,7 +274,6 @@ assertTrue(s instanceof WeakSet);
 assertTrue(WeakSet.prototype.add instanceof Function)
 assertTrue(WeakSet.prototype.has instanceof Function)
 assertTrue(WeakSet.prototype.delete instanceof Function)
-assertTrue(WeakSet.prototype.clear instanceof Function)
 
 
 // Test class of instance and prototype.
@@ -300,7 +298,7 @@ assertEquals("WeakSet", WeakSet.name);
 function TestPrototype(C) {
   assertTrue(C.prototype instanceof Object);
   assertEquals({
-    value: {},
+    value: C.prototype,
     writable: false,
     enumerable: false,
     configurable: false
@@ -468,30 +466,6 @@ for (var i = 9; i >= 0; i--) {
   m.clear();
   assertFalse(m.has(42));
   assertEquals(0, m.size);
-})();
-
-
-// Test WeakMap clear
-(function() {
-  var k = new Object();
-  var w = new WeakMap();
-  w.set(k, 23);
-  assertTrue(w.has(k));
-  assertEquals(23, w.get(k));
-  w.clear();
-  assertFalse(w.has(k));
-  assertEquals(undefined, w.get(k));
-})();
-
-
-// Test WeakSet clear
-(function() {
-  var k = new Object();
-  var w = new WeakSet();
-  w.add(k);
-  assertTrue(w.has(k));
-  w.clear();
-  assertFalse(w.has(k));
 })();
 
 
@@ -690,6 +664,33 @@ for (var i = 9; i >= 0; i--) {
   });
   assertEquals(4950, accumulated);
 })();
+
+
+(function TestSetForEachReceiverAsObject() {
+  var set = new Set(["1", "2"]);
+
+  // Create a new object in each function call when receiver is a
+  // primitive value. See ECMA-262, Annex C.
+  var a = [];
+  set.forEach(function() { a.push(this) }, "");
+  assertTrue(a[0] !== a[1]);
+
+  // Do not create a new object otherwise.
+  a = [];
+  set.forEach(function() { a.push(this); }, {});
+  assertEquals(a[0], a[1]);
+})();
+
+
+(function TestSetForEachReceiverAsObjectInStrictMode() {
+  var set = new Set(["1", "2"]);
+
+  // In strict mode primitive values should not be coerced to an object.
+  var a = [];
+  set.forEach(function() { 'use strict'; a.push(this); }, "");
+  assertTrue(a[0] === "" && a[0] === a[1]);
+})();
+
 
 (function TestMapForEachInvalidTypes() {
   assertThrows(function() {
@@ -995,6 +996,36 @@ for (var i = 9; i >= 0; i--) {
   });
 
   assertArrayEquals([0, 1, 2, 3, 4], buffer);
+})();
+
+
+(function TestMapForEachReceiverAsObject() {
+  var map = new Map();
+  map.set("key1", "value1");
+  map.set("key2", "value2");
+
+  // Create a new object in each function call when receiver is a
+  // primitive value. See ECMA-262, Annex C.
+  var a = [];
+  map.forEach(function() { a.push(this) }, "");
+  assertTrue(a[0] !== a[1]);
+
+  // Do not create a new object otherwise.
+  a = [];
+  map.forEach(function() { a.push(this); }, {});
+  assertEquals(a[0], a[1]);
+})();
+
+
+(function TestMapForEachReceiverAsObjectInStrictMode() {
+  var map = new Map();
+  map.set("key1", "value1");
+  map.set("key2", "value2");
+
+  // In strict mode primitive values should not be coerced to an object.
+  var a = [];
+  map.forEach(function() { 'use strict'; a.push(this); }, "");
+  assertTrue(a[0] === "" && a[0] === a[1]);
 })();
 
 
@@ -1366,3 +1397,12 @@ function TestMapConstructorIterableValue(ctor) {
 }
 TestMapConstructorIterableValue(Map);
 TestMapConstructorIterableValue(WeakMap);
+
+function TestCollectionToString(C) {
+  assertEquals("[object " + C.name + "]",
+      Object.prototype.toString.call(new C()));
+}
+TestCollectionToString(Map);
+TestCollectionToString(Set);
+TestCollectionToString(WeakMap);
+TestCollectionToString(WeakSet);

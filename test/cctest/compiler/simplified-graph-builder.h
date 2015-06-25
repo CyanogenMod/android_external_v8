@@ -45,8 +45,8 @@ class SimplifiedGraphBuilder : public GraphBuilder {
   Node* Int32Constant(int32_t value) {
     return NewNode(common()->Int32Constant(value));
   }
-  Node* HeapConstant(Handle<Object> object) {
-    Unique<Object> val = Unique<Object>::CreateUninitialized(object);
+  Node* HeapConstant(Handle<HeapObject> object) {
+    Unique<HeapObject> val = Unique<HeapObject>::CreateUninitialized(object);
     return NewNode(common()->HeapConstant(val));
   }
 
@@ -127,19 +127,17 @@ class SimplifiedGraphBuilder : public GraphBuilder {
   Node* StoreField(const FieldAccess& access, Node* object, Node* value) {
     return NewNode(simplified()->StoreField(access), object, value);
   }
-  Node* LoadElement(const ElementAccess& access, Node* object, Node* index,
-                    Node* length) {
-    return NewNode(simplified()->LoadElement(access), object, index, length);
+  Node* LoadElement(const ElementAccess& access, Node* object, Node* index) {
+    return NewNode(simplified()->LoadElement(access), object, index);
   }
   Node* StoreElement(const ElementAccess& access, Node* object, Node* index,
-                     Node* length, Node* value) {
-    return NewNode(simplified()->StoreElement(access), object, index, length,
-                   value);
+                     Node* value) {
+    return NewNode(simplified()->StoreElement(access), object, index, value);
   }
 
  protected:
   virtual Node* MakeNode(const Operator* op, int value_input_count,
-                         Node** value_inputs) FINAL;
+                         Node** value_inputs, bool incomplete) FINAL;
 
  private:
   Node* effect_;

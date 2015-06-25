@@ -12,7 +12,7 @@
 #include "src/debug.h"
 #include "src/deoptimizer.h"
 #include "src/full-codegen.h"
-#include "src/runtime.h"
+#include "src/runtime/runtime.h"
 
 namespace v8 {
 namespace internal {
@@ -44,11 +44,9 @@ void Builtins::Generate_Adaptor(MacroAssembler* masm,
     DCHECK(extra_args == NO_EXTRA_ARGUMENTS);
   }
 
-  // JumpToExternalReference expects s0 to contain the number of arguments
+  // JumpToExternalReference expects a0 to contain the number of arguments
   // including the receiver and the extra arguments.
-  __ Daddu(s0, a0, num_extra_args + 1);
-  __ dsll(s1, s0, kPointerSizeLog2);
-  __ Dsubu(s1, s1, kPointerSize);
+  __ Daddu(a0, a0, num_extra_args + 1);
   __ JumpToExternalReference(ExternalReference(id, masm->isolate()));
 }
 
@@ -384,24 +382,22 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
         MemOperand bit_field3 = FieldMemOperand(a2, Map::kBitField3Offset);
         // Check if slack tracking is enabled.
         __ lwu(a4, bit_field3);
-        __ DecodeField<Map::ConstructionCount>(a6, a4);
-        __ Branch(&allocate,
-                  eq,
-                  a6,
-                  Operand(static_cast<int64_t>(JSFunction::kNoSlackTracking)));
+        __ DecodeField<Map::Counter>(a6, a4);
+        __ Branch(&allocate, lt, a6,
+                  Operand(static_cast<int64_t>(Map::kSlackTrackingCounterEnd)));
         // Decrease generous allocation count.
-        __ Dsubu(a4, a4, Operand(1 << Map::ConstructionCount::kShift));
-        __ Branch(USE_DELAY_SLOT,
-            &allocate, ne, a6, Operand(JSFunction::kFinishSlackTracking));
+        __ Dsubu(a4, a4, Operand(1 << Map::Counter::kShift));
+        __ Branch(USE_DELAY_SLOT, &allocate, ne, a6,
+                  Operand(Map::kSlackTrackingCounterEnd));
         __ sw(a4, bit_field3);  // In delay slot.
 
         __ Push(a1, a2, a1);  // a1 = Constructor.
         __ CallRuntime(Runtime::kFinalizeInstanceSize, 1);
 
         __ Pop(a1, a2);
-        // Slack tracking counter is kNoSlackTracking after runtime call.
-        DCHECK(JSFunction::kNoSlackTracking == 0);
-        __ mov(a6, zero_reg);
+        // Slack tracking counter is Map::kSlackTrackingCounterEnd after runtime
+        // call.
+        __ li(a6, Map::kSlackTrackingCounterEnd);
 
         __ bind(&allocate);
       }
@@ -448,10 +444,8 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
         Label no_inobject_slack_tracking;
 
         // Check if slack tracking is enabled.
-        __ Branch(&no_inobject_slack_tracking,
-                  eq,
-                  a6,
-                  Operand(static_cast<int64_t>(JSFunction::kNoSlackTracking)));
+        __ Branch(&no_inobject_slack_tracking, lt, a6,
+                  Operand(static_cast<int64_t>(Map::kSlackTrackingCounterEnd)));
 
         // Allocate object with a slack.
         __ lwu(a0, FieldMemOperand(a2, Map::kInstanceSizesOffset));
@@ -782,11 +776,6 @@ static void Generate_JSEntryTrampolineHelper(MacroAssembler* masm,
     // a3: argc
     // s0: argv, i.e. points to first arg
     Label loop, entry;
-    // TODO(plind): At least on simulator, argc in a3 is an int32_t with junk
-    //    in upper bits. Should fix the root cause, rather than use below
-    //    workaround to clear upper bits.
-    __ dsll32(a3, a3, 0);  // int32_t -> int64_t.
-    __ dsrl32(a3, a3, 0);
     __ dsll(a4, a3, kPointerSizeLog2);
     __ daddu(a6, s0, a4);
     __ b(&entry);
@@ -1044,7 +1033,7 @@ void Builtins::Generate_OnStackReplacement(MacroAssembler* masm) {
 
   // Load deoptimization data from the code object.
   // <deopt_data> = <code>[#deoptimization_data_offset]
-  __ Uld(a1, MemOperand(v0, Code::kDeoptimizationDataOffset - kHeapObjectTag));
+  __ ld(a1, MemOperand(v0, Code::kDeoptimizationDataOffset - kHeapObjectTag));
 
   // Load the OSR entrypoint offset from the deoptimization data.
   // <osr_offset> = <deopt_data>[#header_size + #osr_pc_offset]

@@ -14,16 +14,26 @@ namespace v8 {
 namespace internal {
 namespace compiler {
 
-class SimplifiedLowering {
+// Forward declarations.
+class RepresentationChanger;
+
+
+class SimplifiedLowering FINAL {
  public:
-  explicit SimplifiedLowering(JSGraph* jsgraph) : jsgraph_(jsgraph) {}
-  virtual ~SimplifiedLowering() {}
+  SimplifiedLowering(JSGraph* jsgraph, Zone* zone)
+      : jsgraph_(jsgraph), zone_(zone) {}
+  ~SimplifiedLowering() {}
 
   void LowerAllNodes();
 
   // TODO(titzer): These are exposed for direct testing. Use a friend class.
   void DoLoadField(Node* node);
   void DoStoreField(Node* node);
+  // TODO(turbofan): The output_type can be removed once the result of the
+  // representation analysis is stored in the node bounds.
+  void DoLoadBuffer(Node* node, MachineType output_type,
+                    RepresentationChanger* changer);
+  void DoStoreBuffer(Node* node);
   void DoLoadElement(Node* node);
   void DoStoreElement(Node* node);
   void DoStringAdd(Node* node);
@@ -32,14 +42,19 @@ class SimplifiedLowering {
   void DoStringLessThanOrEqual(Node* node);
 
  private:
-  JSGraph* jsgraph_;
+  JSGraph* const jsgraph_;
+  Zone* const zone_;
 
   Node* SmiTag(Node* node);
   Node* IsTagged(Node* node);
   Node* Untag(Node* node);
   Node* OffsetMinusTagConstant(int32_t offset);
-  Node* ComputeIndex(const ElementAccess& access, Node* index);
+  Node* ComputeIndex(const ElementAccess& access, Node* const key);
   Node* StringComparison(Node* node, bool requires_ordering);
+  Node* Int32Div(Node* const node);
+  Node* Int32Mod(Node* const node);
+  Node* Uint32Div(Node* const node);
+  Node* Uint32Mod(Node* const node);
 
   friend class RepresentationSelector;
 

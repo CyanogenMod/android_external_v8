@@ -265,18 +265,35 @@ void LoadIC::GenerateNormal(MacroAssembler* masm) {
 static const Register LoadIC_TempRegister() { return r3; }
 
 
+static void LoadIC_PushArgs(MacroAssembler* masm) {
+  Register receiver = LoadDescriptor::ReceiverRegister();
+  Register name = LoadDescriptor::NameRegister();
+  if (FLAG_vector_ics) {
+    Register slot = VectorLoadICDescriptor::SlotRegister();
+    Register vector = VectorLoadICDescriptor::VectorRegister();
+
+    __ Push(receiver, name, slot, vector);
+  } else {
+    __ Push(receiver, name);
+  }
+}
+
+
 void LoadIC::GenerateMiss(MacroAssembler* masm) {
   // The return address is in lr.
   Isolate* isolate = masm->isolate();
 
-  __ IncrementCounter(isolate->counters()->load_miss(), 1, r3, r4);
+  DCHECK(!FLAG_vector_ics ||
+         !AreAliased(r4, r5, VectorLoadICDescriptor::SlotRegister(),
+                     VectorLoadICDescriptor::VectorRegister()));
+  __ IncrementCounter(isolate->counters()->load_miss(), 1, r4, r5);
 
-  __ mov(LoadIC_TempRegister(), LoadDescriptor::ReceiverRegister());
-  __ Push(LoadIC_TempRegister(), LoadDescriptor::NameRegister());
+  LoadIC_PushArgs(masm);
 
   // Perform tail call to the entry.
   ExternalReference ref = ExternalReference(IC_Utility(kLoadIC_Miss), isolate);
-  __ TailCallExternalReference(ref, 2, 1);
+  int arg_count = FLAG_vector_ics ? 4 : 2;
+  __ TailCallExternalReference(ref, arg_count, 1);
 }
 
 
@@ -403,15 +420,18 @@ void KeyedLoadIC::GenerateMiss(MacroAssembler* masm) {
   // The return address is in lr.
   Isolate* isolate = masm->isolate();
 
-  __ IncrementCounter(isolate->counters()->keyed_load_miss(), 1, r3, r4);
+  DCHECK(!FLAG_vector_ics ||
+         !AreAliased(r4, r5, VectorLoadICDescriptor::SlotRegister(),
+                     VectorLoadICDescriptor::VectorRegister()));
+  __ IncrementCounter(isolate->counters()->keyed_load_miss(), 1, r4, r5);
 
-  __ Push(LoadDescriptor::ReceiverRegister(), LoadDescriptor::NameRegister());
+  LoadIC_PushArgs(masm);
 
   // Perform tail call to the entry.
   ExternalReference ref =
       ExternalReference(IC_Utility(kKeyedLoadIC_Miss), isolate);
-
-  __ TailCallExternalReference(ref, 2, 1);
+  int arg_count = FLAG_vector_ics ? 4 : 2;
+  __ TailCallExternalReference(ref, arg_count, 1);
 }
 
 
@@ -587,32 +607,6 @@ void KeyedLoadIC::GenerateGeneric(MacroAssembler* masm) {
 }
 
 
-void KeyedLoadIC::GenerateString(MacroAssembler* masm) {
-  // Return address is in lr.
-  Label miss;
-
-  Register receiver = LoadDescriptor::ReceiverRegister();
-  Register index = LoadDescriptor::NameRegister();
-  Register scratch = r3;
-  Register result = r0;
-  DCHECK(!scratch.is(receiver) && !scratch.is(index));
-
-  StringCharAtGenerator char_at_generator(receiver, index, scratch, result,
-                                          &miss,  // When not a string.
-                                          &miss,  // When not a number.
-                                          &miss,  // When index out of range.
-                                          STRING_INDEX_IS_ARRAY_INDEX);
-  char_at_generator.GenerateFast(masm);
-  __ Ret();
-
-  StubRuntimeCallHelper call_helper;
-  char_at_generator.GenerateSlow(masm, call_helper);
-
-  __ bind(&miss);
-  GenerateMiss(masm);
-}
-
-
 void KeyedStoreIC::GenerateMiss(MacroAssembler* masm) {
   // Push receiver, key and value for runtime call.
   __ Push(StoreDescriptor::ReceiverRegister(), StoreDescriptor::NameRegister(),
@@ -624,7 +618,7 @@ void KeyedStoreIC::GenerateMiss(MacroAssembler* masm) {
 }
 
 
-static void KeyedStoreGenerateGenericHelper(
+static void KeyedStoreGenerateMegamorphicHelper(
     MacroAssembler* masm, Label* fast_object, Label* fast_double, Label* slow,
     KeyedStoreCheckMap check_map, KeyedStoreIncrementLength increment_length,
     Register value, Register key, Register receiver, Register receiver_map,
@@ -765,8 +759,8 @@ static void KeyedStoreGenerateGenericHelper(
 }
 
 
-void KeyedStoreIC::GenerateGeneric(MacroAssembler* masm,
-                                   StrictMode strict_mode) {
+void KeyedStoreIC::GenerateMegamorphic(MacroAssembler* masm,
+                                       StrictMode strict_mode) {
   // ---------- S t a t e --------------
   //  -- r0     : value
   //  -- r1     : key
@@ -775,7 +769,7 @@ void KeyedStoreIC::GenerateGeneric(MacroAssembler* masm,
   // -----------------------------------
   Label slow, fast_object, fast_object_grow;
   Label fast_double, fast_double_grow;
-  Label array, extra, check_if_double_array;
+  Label array, extra, check_if_double_array, maybe_name_key, miss;
 
   // Register usage.
   Register value = StoreDescriptor::ValueRegister();
@@ -790,7 +784,7 @@ void KeyedStoreIC::GenerateGeneric(MacroAssembler* masm,
   // r4 and r5 are used as general scratch registers.
 
   // Check that the key is a smi.
-  __ JumpIfNotSmi(key, &slow);
+  __ JumpIfNotSmi(key, &maybe_name_key);
   // Check that the object isn't a smi.
   __ JumpIfSmi(receiver, &slow);
   // Get the map of the object.
@@ -822,6 +816,18 @@ void KeyedStoreIC::GenerateGeneric(MacroAssembler* masm,
   // r1: key.
   // r2: receiver.
   PropertyICCompiler::GenerateRuntimeSetProperty(masm, strict_mode);
+  // Never returns to here.
+
+  __ bind(&maybe_name_key);
+  __ ldr(r4, FieldMemOperand(key, HeapObject::kMapOffset));
+  __ ldrb(r4, FieldMemOperand(r4, Map::kInstanceTypeOffset));
+  __ JumpIfNotUniqueNameInstanceType(r4, &slow);
+  Code::Flags flags = Code::RemoveTypeAndHolderFromFlags(
+      Code::ComputeHandlerFlags(Code::STORE_IC));
+  masm->isolate()->stub_cache()->GenerateProbe(
+      masm, Code::STORE_IC, flags, false, receiver, key, r3, r4, r5, r6);
+  // Cache miss.
+  __ b(&miss);
 
   // Extra capacity case: Check if there is extra capacity to
   // perform the store and update the length. Used for adding one
@@ -856,13 +862,16 @@ void KeyedStoreIC::GenerateGeneric(MacroAssembler* masm,
   __ cmp(key, Operand(ip));
   __ b(hs, &extra);
 
-  KeyedStoreGenerateGenericHelper(
+  KeyedStoreGenerateMegamorphicHelper(
       masm, &fast_object, &fast_double, &slow, kCheckMap, kDontIncrementLength,
       value, key, receiver, receiver_map, elements_map, elements);
-  KeyedStoreGenerateGenericHelper(masm, &fast_object_grow, &fast_double_grow,
-                                  &slow, kDontCheckMap, kIncrementLength, value,
-                                  key, receiver, receiver_map, elements_map,
-                                  elements);
+  KeyedStoreGenerateMegamorphicHelper(masm, &fast_object_grow,
+                                      &fast_double_grow, &slow, kDontCheckMap,
+                                      kIncrementLength, value, key, receiver,
+                                      receiver_map, elements_map, elements);
+
+  __ bind(&miss);
+  GenerateMiss(masm);
 }
 
 
@@ -877,8 +886,8 @@ void StoreIC::GenerateMegamorphic(MacroAssembler* masm) {
   Code::Flags flags = Code::RemoveTypeAndHolderFromFlags(
       Code::ComputeHandlerFlags(Code::STORE_IC));
 
-  masm->isolate()->stub_cache()->GenerateProbe(masm, flags, false, receiver,
-                                               name, r3, r4, r5, r6);
+  masm->isolate()->stub_cache()->GenerateProbe(
+      masm, Code::STORE_IC, flags, false, receiver, name, r3, r4, r5, r6);
 
   // Cache miss: Jump to runtime.
   GenerateMiss(masm);

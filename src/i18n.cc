@@ -631,6 +631,8 @@ icu::BreakIterator* CreateICUBreakIterator(
     return NULL;
   }
 
+  isolate->CountUsage(v8::Isolate::UseCounterFeature::kBreakIterator);
+
   return break_iterator;
 }
 
@@ -701,6 +703,10 @@ icu::SimpleDateFormat* DateFormat::InitializeDateTimeFormat(
     // Remove extensions and try again.
     icu::Locale no_extension_locale(icu_locale.getBaseName());
     date_format = CreateICUDateFormat(isolate, no_extension_locale, options);
+
+    if (!date_format) {
+      FATAL("Failed to create ICU date format, are ICU data files missing?");
+    }
 
     // Set resolved settings (pattern, numbering system, calendar).
     SetResolvedDateSettings(
@@ -778,6 +784,10 @@ icu::DecimalFormat* NumberFormat::InitializeNumberFormat(
     number_format = CreateICUNumberFormat(
         isolate, no_extension_locale, options);
 
+    if (!number_format) {
+      FATAL("Failed to create ICU number format, are ICU data files missing?");
+    }
+
     // Set resolved settings (pattern, numbering system).
     SetResolvedNumberSettings(
         isolate, no_extension_locale, number_format, resolved);
@@ -837,6 +847,10 @@ icu::Collator* Collator::InitializeCollator(
     icu::Locale no_extension_locale(icu_locale.getBaseName());
     collator = CreateICUCollator(isolate, no_extension_locale, options);
 
+    if (!collator) {
+      FATAL("Failed to create ICU collator, are ICU data files missing?");
+    }
+
     // Set resolved settings (pattern, numbering system).
     SetResolvedCollatorSettings(
         isolate, no_extension_locale, collator, resolved);
@@ -895,6 +909,10 @@ icu::BreakIterator* BreakIterator::InitializeBreakIterator(
     icu::Locale no_extension_locale(icu_locale.getBaseName());
     break_iterator = CreateICUBreakIterator(
         isolate, no_extension_locale, options);
+
+    if (!break_iterator) {
+      FATAL("Failed to create ICU break iterator, are ICU data files missing?");
+    }
 
     // Set resolved settings (locale).
     SetResolvedBreakIteratorSettings(

@@ -5,6 +5,8 @@
 #ifndef V8_COMPILER_SIMPLIFIED_OPERATOR_H_
 #define V8_COMPILER_SIMPLIFIED_OPERATOR_H_
 
+#include <iosfwd>
+
 #include "src/compiler/machine-type.h"
 #include "src/handles.h"
 
@@ -23,12 +25,36 @@ namespace compiler {
 
 // Forward declarations.
 class Operator;
-struct SimplifiedOperatorBuilderImpl;
+struct SimplifiedOperatorGlobalCache;
 
 
 enum BaseTaggedness { kUntaggedBase, kTaggedBase };
 
-OStream& operator<<(OStream&, BaseTaggedness);
+std::ostream& operator<<(std::ostream&, BaseTaggedness);
+
+
+// An access descriptor for loads/stores of array buffers.
+class BufferAccess FINAL {
+ public:
+  explicit BufferAccess(ExternalArrayType external_array_type)
+      : external_array_type_(external_array_type) {}
+
+  ExternalArrayType external_array_type() const { return external_array_type_; }
+  MachineType machine_type() const;
+
+ private:
+  ExternalArrayType const external_array_type_;
+};
+
+bool operator==(BufferAccess, BufferAccess);
+bool operator!=(BufferAccess, BufferAccess);
+
+size_t hash_value(BufferAccess);
+
+std::ostream& operator<<(std::ostream&, BufferAccess);
+
+BufferAccess const BufferAccessOf(const Operator* op) WARN_UNUSED_RESULT;
+
 
 // An access descriptor for loads/stores of fixed structures like field
 // accesses of heap objects. Accesses from either tagged or untagged base
@@ -36,12 +62,21 @@ OStream& operator<<(OStream&, BaseTaggedness);
 struct FieldAccess {
   BaseTaggedness base_is_tagged;  // specifies if the base pointer is tagged.
   int offset;                     // offset of the field, without tag.
-  Handle<Name> name;              // debugging only.
+  MaybeHandle<Name> name;         // debugging only.
   Type* type;                     // type of the field.
   MachineType machine_type;       // machine type of the field.
 
   int tag() const { return base_is_tagged == kTaggedBase ? kHeapObjectTag : 0; }
 };
+
+bool operator==(FieldAccess const&, FieldAccess const&);
+bool operator!=(FieldAccess const&, FieldAccess const&);
+
+size_t hash_value(FieldAccess const&);
+
+std::ostream& operator<<(std::ostream&, FieldAccess const&);
+
+FieldAccess const& FieldAccessOf(const Operator* op) WARN_UNUSED_RESULT;
 
 
 // An access descriptor for loads/stores of indexed structures like characters
@@ -57,18 +92,14 @@ struct ElementAccess {
   int tag() const { return base_is_tagged == kTaggedBase ? kHeapObjectTag : 0; }
 };
 
-bool operator==(ElementAccess const& lhs, ElementAccess const& rhs);
-bool operator!=(ElementAccess const& lhs, ElementAccess const& rhs);
+bool operator==(ElementAccess const&, ElementAccess const&);
+bool operator!=(ElementAccess const&, ElementAccess const&);
 
-OStream& operator<<(OStream&, ElementAccess const&);
+size_t hash_value(ElementAccess const&);
 
+std::ostream& operator<<(std::ostream&, ElementAccess const&);
 
-// If the accessed object is not a heap object, add this to the header_size.
-static const int kNonHeapObjectHeaderSize = kHeapObjectTag;
-
-
-const FieldAccess& FieldAccessOf(const Operator* op) WARN_UNUSED_RESULT;
-const ElementAccess& ElementAccessOf(const Operator* op) WARN_UNUSED_RESULT;
+ElementAccess const& ElementAccessOf(const Operator* op) WARN_UNUSED_RESULT;
 
 
 // Interface for building simplified operators, which represent the
@@ -96,6 +127,8 @@ const ElementAccess& ElementAccessOf(const Operator* op) WARN_UNUSED_RESULT;
 class SimplifiedOperatorBuilder FINAL {
  public:
   explicit SimplifiedOperatorBuilder(Zone* zone);
+
+  const Operator* AnyToBoolean();
 
   const Operator* BooleanNot();
   const Operator* BooleanToNumber();
@@ -127,8 +160,17 @@ class SimplifiedOperatorBuilder FINAL {
   const Operator* ChangeBoolToBit();
   const Operator* ChangeBitToBool();
 
-  const Operator* LoadField(const FieldAccess&);
-  const Operator* StoreField(const FieldAccess&);
+  const Operator* ObjectIsSmi();
+  const Operator* ObjectIsNonNegativeSmi();
+
+  const Operator* LoadField(FieldAccess const&);
+  const Operator* StoreField(FieldAccess const&);
+
+  // load-buffer buffer, offset, length
+  const Operator* LoadBuffer(BufferAccess);
+
+  // store-buffer buffer, offset, length, value
+  const Operator* StoreBuffer(BufferAccess);
 
   // load-element [base + index], length
   const Operator* LoadElement(ElementAccess const&);
@@ -139,7 +181,7 @@ class SimplifiedOperatorBuilder FINAL {
  private:
   Zone* zone() const { return zone_; }
 
-  const SimplifiedOperatorBuilderImpl& impl_;
+  const SimplifiedOperatorGlobalCache& cache_;
   Zone* const zone_;
 
   DISALLOW_COPY_AND_ASSIGN(SimplifiedOperatorBuilder);

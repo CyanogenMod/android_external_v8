@@ -144,7 +144,7 @@ function MathPow(x, y) {
 // ECMA 262 - 15.8.2.14
 var rngstate;  // Initialized to a Uint32Array during genesis.
 function MathRandom() {
-  var r0 = (MathImul(18273, rngstate[0] & 0xFFFF) + (rngstate[0] >>> 16)) | 0;
+  var r0 = (MathImul(18030, rngstate[0] & 0xFFFF) + (rngstate[0] >>> 16)) | 0;
   rngstate[0] = r0;
   var r1 = (MathImul(36969, rngstate[1] & 0xFFFF) + (rngstate[1] >>> 16)) | 0;
   rngstate[1] = r1;
@@ -225,17 +225,6 @@ function MathAtanh(x) {
   // Returns NaN for NaN and +/- Infinity.
   if (!NUMBER_IS_FINITE(x)) return NAN;
   return 0.5 * MathLog((1 + x) / (1 - x));
-}
-
-// ES6 draft 09-27-13, section 20.2.2.21.
-function MathLog10(x) {
-  return MathLog(x) * 0.434294481903251828;  // log10(x) = log(x)/log(10).
-}
-
-
-// ES6 draft 09-27-13, section 20.2.2.22.
-function MathLog2(x) {
-  return MathLog(x) * 1.442695040888963407;  // log2(x) = log(x)/log(2).
 }
 
 // ES6 draft 09-27-13, section 20.2.2.17.
@@ -321,6 +310,8 @@ function SetUpMath() {
   %AddNamedProperty(global, "Math", $Math, DONT_ENUM);
   %FunctionSetInstanceClassName(MathConstructor, 'Math');
 
+  %AddNamedProperty($Math, symbolToStringTag, "Math", READ_ONLY | DONT_ENUM);
+
   // Set up math constants.
   InstallConstants($Math, $Array(
     // ECMA-262, section 15.8.1.1.
@@ -367,8 +358,8 @@ function SetUpMath() {
     "asinh", MathAsinh,
     "acosh", MathAcosh,
     "atanh", MathAtanh,
-    "log10", MathLog10,
-    "log2", MathLog2,
+    "log10", MathLog10,   // implemented by third_party/fdlibm
+    "log2", MathLog2,     // implemented by third_party/fdlibm
     "hypot", MathHypot,
     "fround", MathFroundJS,
     "clz32", MathClz32,

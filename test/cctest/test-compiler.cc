@@ -306,12 +306,15 @@ TEST(FeedbackVectorPreservedAcrossRecompiles) {
   // We shouldn't have deoptimization support. We want to recompile and
   // verify that our feedback vector preserves information.
   CHECK(!f->shared()->has_deoptimization_support());
-  Handle<FixedArray> feedback_vector(f->shared()->feedback_vector());
+  Handle<TypeFeedbackVector> feedback_vector(f->shared()->feedback_vector());
 
   // Verify that we gathered feedback.
-  int expected_count = FLAG_vector_ics ? 2 : 1;
-  CHECK_EQ(expected_count, feedback_vector->length());
-  CHECK(feedback_vector->get(expected_count - 1)->IsJSFunction());
+  int expected_slots = 0;
+  int expected_ic_slots = 1;
+  CHECK_EQ(expected_slots, feedback_vector->Slots());
+  CHECK_EQ(expected_ic_slots, feedback_vector->ICSlots());
+  FeedbackVectorICSlot slot_for_a(0);
+  CHECK(feedback_vector->Get(slot_for_a)->IsJSFunction());
 
   CompileRun("%OptimizeFunctionOnNextCall(f); f(fun1);");
 
@@ -319,8 +322,7 @@ TEST(FeedbackVectorPreservedAcrossRecompiles) {
   // of the full code.
   CHECK(f->IsOptimized());
   CHECK(f->shared()->has_deoptimization_support());
-  CHECK(f->shared()->feedback_vector()->
-        get(expected_count - 1)->IsJSFunction());
+  CHECK(f->shared()->feedback_vector()->Get(slot_for_a)->IsJSFunction());
 }
 
 
@@ -346,16 +348,19 @@ TEST(FeedbackVectorUnaffectedByScopeChanges) {
           *v8::Handle<v8::Function>::Cast(
               CcTest::global()->Get(v8_str("morphing_call"))));
 
-  int expected_count = FLAG_vector_ics ? 2 : 1;
-  CHECK_EQ(expected_count, f->shared()->feedback_vector()->length());
-  // And yet it's not compiled.
+  // Not compiled, and so no feedback vector allocated yet.
   CHECK(!f->shared()->is_compiled());
+  CHECK_EQ(0, f->shared()->feedback_vector()->Slots());
+  CHECK_EQ(0, f->shared()->feedback_vector()->ICSlots());
 
   CompileRun("morphing_call();");
 
-  // The vector should have the same size despite the new scoping.
-  CHECK_EQ(expected_count, f->shared()->feedback_vector()->length());
+  // Now a feedback vector is allocated.
   CHECK(f->shared()->is_compiled());
+  int expected_slots = 0;
+  int expected_ic_slots = FLAG_vector_ics ? 2 : 1;
+  CHECK_EQ(expected_slots, f->shared()->feedback_vector()->Slots());
+  CHECK_EQ(expected_ic_slots, f->shared()->feedback_vector()->ICSlots());
 }
 
 

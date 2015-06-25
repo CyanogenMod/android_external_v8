@@ -33,6 +33,8 @@
   'includes': ['toolchain.gypi'],
   'variables': {
     'component%': 'static_library',
+    'make_clang_dir%': '../third_party/llvm-build/Release+Asserts',
+    'clang_xcode%': 0,
     'asan%': 0,
     'tsan%': 0,
     'visibility%': 'hidden',
@@ -91,6 +93,12 @@
     #     near-release speeds.
     'v8_optimized_debug%': 0,
 
+    # Use external files for startup data blobs:
+    # the JS builtins sources and the start snapshot.
+    # Embedders that don't use standalone.gypi will need to add
+    # their own default value.
+    'v8_use_external_startup_data%': 0,
+
     # Relative path to icu.gyp from this file.
     'icu_gyp_path': '../third_party/icu/icu.gyp',
 
@@ -146,6 +154,14 @@
     'configurations': {
       'DebugBaseCommon': {
         'cflags': [ '-g', '-O0' ],
+        'conditions': [
+          ['(v8_target_arch=="ia32" or v8_target_arch=="x87") and \
+            OS=="linux"', {
+            'defines': [
+              '_GLIBCXX_DEBUG'
+            ],
+          }],
+        ],
       },
       'Optdebug': {
         'inherit_from': [ 'DebugBaseCommon', 'DebugBase2' ],
@@ -323,9 +339,15 @@
           },
           'VCLibrarianTool': {
             'AdditionalOptions': ['/ignore:4221'],
+            'conditions': [
+              ['v8_target_arch=="x64"', {
+                'TargetMachine': '17',  # x64
+              }, {
+                'TargetMachine': '1',  # ia32
+              }],
+            ],
           },
           'VCLinkerTool': {
-            'MinimumRequiredVersion': '5.01',  # XP.
             'AdditionalDependencies': [
               'ws2_32.lib',
             ],
@@ -350,6 +372,13 @@
                   'advapi32.lib',
                 ],
               }],
+              ['v8_target_arch=="x64"', {
+                'MinimumRequiredVersion': '5.02',  # Server 2003.
+                'TargetMachine': '17',  # x64
+              }, {
+                'MinimumRequiredVersion': '5.01',  # XP.
+                'TargetMachine': '1',  # ia32
+              }],
             ],
           },
         },
@@ -357,6 +386,7 @@
     }],  # OS=="win"
     ['OS=="mac"', {
       'xcode_settings': {
+        'SDKROOT': 'macosx',
         'SYMROOT': '<(DEPTH)/xcodebuild',
       },
       'target_defaults': {
@@ -411,5 +441,20 @@
         ],  # target_conditions
       },  # target_defaults
     }],  # OS=="mac"
+    ['clang==1 and ((OS!="mac" and OS!="ios") or clang_xcode==0) '
+        'and OS!="win"', {
+      'make_global_settings': [
+        ['CC', '<(make_clang_dir)/bin/clang'],
+        ['CXX', '<(make_clang_dir)/bin/clang++'],
+        ['CC.host', '$(CC)'],
+        ['CXX.host', '$(CXX)'],
+      ],
+    }],
+    ['clang==1 and OS=="win"', {
+      'make_global_settings': [
+        # On Windows, gyp's ninja generator only looks at CC.
+        ['CC', '<(make_clang_dir)/bin/clang-cl'],
+      ],
+    }],
   ],
 }

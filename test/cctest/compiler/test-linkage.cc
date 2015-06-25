@@ -8,7 +8,6 @@
 #include "src/zone.h"
 
 #include "src/compiler/common-operator.h"
-#include "src/compiler/generic-node-inl.h"
 #include "src/compiler/graph.h"
 #include "src/compiler/linkage.h"
 #include "src/compiler/machine-operator.h"
@@ -23,8 +22,8 @@
 using namespace v8::internal;
 using namespace v8::internal::compiler;
 
-static SimpleOperator dummy_operator(IrOpcode::kParameter, Operator::kNoWrite,
-                                     0, 0, "dummy");
+static Operator dummy_operator(IrOpcode::kParameter, Operator::kNoWrite,
+                               "dummy", 0, 0, 0, 0, 0, 0);
 
 // So we can get a real JS function.
 static Handle<JSFunction> Compile(const char* source) {
@@ -45,7 +44,7 @@ TEST(TestLinkageCreate) {
   InitializedHandleScope handles;
   Handle<JSFunction> function = Compile("a + b");
   CompilationInfoWithZone info(function);
-  Linkage linkage(&info);
+  Linkage linkage(info.zone(), &info);
 }
 
 
@@ -60,13 +59,13 @@ TEST(TestLinkageJSFunctionIncoming) {
     Handle<JSFunction> function = v8::Utils::OpenHandle(
         *v8::Handle<v8::Function>::Cast(CompileRun(sources[i])));
     CompilationInfoWithZone info(function);
-    Linkage linkage(&info);
+    Linkage linkage(info.zone(), &info);
 
     CallDescriptor* descriptor = linkage.GetIncomingDescriptor();
     CHECK_NE(NULL, descriptor);
 
-    CHECK_EQ(1 + i, descriptor->JSParameterCount());
-    CHECK_EQ(1, descriptor->ReturnCount());
+    CHECK_EQ(1 + i, static_cast<int>(descriptor->JSParameterCount()));
+    CHECK_EQ(1, static_cast<int>(descriptor->ReturnCount()));
     CHECK_EQ(Operator::kNoProperties, descriptor->properties());
     CHECK_EQ(true, descriptor->IsJSFunctionCall());
   }
@@ -76,7 +75,7 @@ TEST(TestLinkageJSFunctionIncoming) {
 TEST(TestLinkageCodeStubIncoming) {
   Isolate* isolate = CcTest::InitIsolateOnce();
   CompilationInfoWithZone info(static_cast<HydrogenCodeStub*>(NULL), isolate);
-  Linkage linkage(&info);
+  Linkage linkage(info.zone(), &info);
   // TODO(titzer): test linkage creation with a bonafide code stub.
   // this just checks current behavior.
   CHECK_EQ(NULL, linkage.GetIncomingDescriptor());
@@ -87,13 +86,14 @@ TEST(TestLinkageJSCall) {
   HandleAndZoneScope handles;
   Handle<JSFunction> function = Compile("a + c");
   CompilationInfoWithZone info(function);
-  Linkage linkage(&info);
+  Linkage linkage(info.zone(), &info);
 
   for (int i = 0; i < 32; i++) {
-    CallDescriptor* descriptor = linkage.GetJSCallDescriptor(i);
+    CallDescriptor* descriptor =
+        linkage.GetJSCallDescriptor(i, CallDescriptor::kNoFlags);
     CHECK_NE(NULL, descriptor);
-    CHECK_EQ(i, descriptor->JSParameterCount());
-    CHECK_EQ(1, descriptor->ReturnCount());
+    CHECK_EQ(i, static_cast<int>(descriptor->JSParameterCount()));
+    CHECK_EQ(1, static_cast<int>(descriptor->ReturnCount()));
     CHECK_EQ(Operator::kNoProperties, descriptor->properties());
     CHECK_EQ(true, descriptor->IsJSFunctionCall());
   }

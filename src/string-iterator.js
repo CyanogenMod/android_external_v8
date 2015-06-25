@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-'use strict';
+"use strict";
 
 
 // This file relies on the fact that the following declaration has been made
@@ -87,6 +87,8 @@ function SetUpStringIterator() {
   %FunctionSetName(StringIteratorIterator, '[Symbol.iterator]');
   %AddNamedProperty(StringIterator.prototype, symbolIterator,
                     StringIteratorIterator, DONT_ENUM);
+  %AddNamedProperty(StringIterator.prototype, symbolToStringTag,
+                    "String Iterator", READ_ONLY | DONT_ENUM);
 }
 SetUpStringIterator();
 

@@ -5,9 +5,11 @@
 #include "test/cctest/cctest.h"
 
 #include "src/base/utils/random-number-generator.h"
+#include "src/codegen.h"
 #include "src/compiler/graph-inl.h"
 #include "src/compiler/js-graph.h"
 #include "src/compiler/machine-operator-reducer.h"
+#include "src/compiler/operator-properties.h"
 #include "src/compiler/typer.h"
 #include "test/cctest/compiler/value-helper.h"
 
@@ -49,15 +51,18 @@ double ValueOfOperator<double>(const Operator* op) {
 
 class ReducerTester : public HandleAndZoneScope {
  public:
-  explicit ReducerTester(int num_parameters = 0)
+  explicit ReducerTester(
+      int num_parameters = 0,
+      MachineOperatorBuilder::Flags flags = MachineOperatorBuilder::kNoFlags)
       : isolate(main_isolate()),
         binop(NULL),
         unop(NULL),
+        machine(main_zone(), kMachPtr, flags),
         common(main_zone()),
         graph(main_zone()),
         javascript(main_zone()),
-        typer(main_zone()),
-        jsgraph(&graph, &common, &javascript, &typer, &machine),
+        typer(&graph, MaybeHandle<Context>()),
+        jsgraph(&graph, &common, &javascript, &machine),
         maxuint32(Constant<int32_t>(kMaxUInt32)) {
     Node* s = graph.NewNode(common.Start(num_parameters));
     graph.SetStart(s);
@@ -96,7 +101,7 @@ class ReducerTester : public HandleAndZoneScope {
   template <typename T>
   void CheckFoldBinop(volatile T expect, Node* a, Node* b) {
     CHECK_NE(NULL, binop);
-    Node* n = graph.NewNode(binop, a, b);
+    Node* n = CreateBinopNode(a, b);
     MachineOperatorReducer reducer(&jsgraph);
     Reduction reduction = reducer.Reduce(n);
     CHECK(reduction.Changed());
@@ -108,7 +113,7 @@ class ReducerTester : public HandleAndZoneScope {
   // the {expect} node.
   void CheckBinop(Node* expect, Node* a, Node* b) {
     CHECK_NE(NULL, binop);
-    Node* n = graph.NewNode(binop, a, b);
+    Node* n = CreateBinopNode(a, b);
     MachineOperatorReducer reducer(&jsgraph);
     Reduction reduction = reducer.Reduce(n);
     CHECK(reduction.Changed());
@@ -120,7 +125,7 @@ class ReducerTester : public HandleAndZoneScope {
   void CheckFoldBinop(Node* left_expect, Node* right_expect, Node* left,
                       Node* right) {
     CHECK_NE(NULL, binop);
-    Node* n = graph.NewNode(binop, left, right);
+    Node* n = CreateBinopNode(left, right);
     MachineOperatorReducer reducer(&jsgraph);
     Reduction reduction = reducer.Reduce(n);
     CHECK(reduction.Changed());
@@ -135,7 +140,7 @@ class ReducerTester : public HandleAndZoneScope {
   void CheckFoldBinop(volatile T left_expect, const Operator* op_expect,
                       Node* right_expect, Node* left, Node* right) {
     CHECK_NE(NULL, binop);
-    Node* n = graph.NewNode(binop, left, right);
+    Node* n = CreateBinopNode(left, right);
     MachineOperatorReducer reducer(&jsgraph);
     Reduction r = reducer.Reduce(n);
     CHECK(r.Changed());
@@ -150,11 +155,13 @@ class ReducerTester : public HandleAndZoneScope {
   void CheckFoldBinop(Node* left_expect, const Operator* op_expect,
                       volatile T right_expect, Node* left, Node* right) {
     CHECK_NE(NULL, binop);
-    Node* n = graph.NewNode(binop, left, right);
+    Node* n = CreateBinopNode(left, right);
     MachineOperatorReducer reducer(&jsgraph);
     Reduction r = reducer.Reduce(n);
     CHECK(r.Changed());
     CHECK_EQ(op_expect->opcode(), r.replacement()->op()->opcode());
+    CHECK_EQ(OperatorProperties::GetTotalInputCount(op_expect),
+             r.replacement()->InputCount());
     CHECK_EQ(left_expect, r.replacement()->InputAt(0));
     CHECK_EQ(right_expect, ValueOf<T>(r.replacement()->InputAt(1)->op()));
   }
@@ -167,7 +174,7 @@ class ReducerTester : public HandleAndZoneScope {
     Node* p = Parameter();
     Node* k = Constant<T>(constant);
     {
-      Node* n = graph.NewNode(binop, k, p);
+      Node* n = CreateBinopNode(k, p);
       MachineOperatorReducer reducer(&jsgraph);
       Reduction reduction = reducer.Reduce(n);
       CHECK(!reduction.Changed() || reduction.replacement() == n);
@@ -175,7 +182,7 @@ class ReducerTester : public HandleAndZoneScope {
       CHECK_EQ(k, n->InputAt(1));
     }
     {
-      Node* n = graph.NewNode(binop, p, k);
+      Node* n = CreateBinopNode(p, k);
       MachineOperatorReducer reducer(&jsgraph);
       Reduction reduction = reducer.Reduce(n);
       CHECK(!reduction.Changed());
@@ -191,7 +198,7 @@ class ReducerTester : public HandleAndZoneScope {
     CHECK(!binop->HasProperty(Operator::kCommutative));
     Node* p = Parameter();
     Node* k = Constant<T>(constant);
-    Node* n = graph.NewNode(binop, k, p);
+    Node* n = CreateBinopNode(k, p);
     MachineOperatorReducer reducer(&jsgraph);
     Reduction reduction = reducer.Reduce(n);
     CHECK(!reduction.Changed());
@@ -201,6 +208,15 @@ class ReducerTester : public HandleAndZoneScope {
 
   Node* Parameter(int32_t index = 0) {
     return graph.NewNode(common.Parameter(index), graph.start());
+  }
+
+ private:
+  Node* CreateBinopNode(Node* left, Node* right) {
+    if (binop->ControlInputCount() > 0) {
+      return graph.NewNode(binop, left, right, graph.start());
+    } else {
+      return graph.NewNode(binop, left, right);
+    }
   }
 };
 
@@ -343,7 +359,36 @@ TEST(ReduceWord32Sar) {
 }
 
 
-TEST(ReduceWord32Equal) {
+static void CheckJsShift(ReducerTester* R) {
+  DCHECK(R->machine.Word32ShiftIsSafe());
+
+  Node* x = R->Parameter(0);
+  Node* y = R->Parameter(1);
+  Node* thirty_one = R->Constant<int32_t>(0x1f);
+  Node* y_and_thirty_one =
+      R->graph.NewNode(R->machine.Word32And(), y, thirty_one);
+
+  // If the underlying machine shift instructions 'and' their right operand
+  // with 0x1f then:  x << (y & 0x1f) => x << y
+  R->CheckFoldBinop(x, y, x, y_and_thirty_one);
+}
+
+
+TEST(ReduceJsShifts) {
+  ReducerTester R(0, MachineOperatorBuilder::kWord32ShiftIsSafe);
+
+  R.binop = R.machine.Word32Shl();
+  CheckJsShift(&R);
+
+  R.binop = R.machine.Word32Shr();
+  CheckJsShift(&R);
+
+  R.binop = R.machine.Word32Sar();
+  CheckJsShift(&R);
+}
+
+
+TEST(Word32Equal) {
   ReducerTester R;
   R.binop = R.machine.Word32Equal();
 
@@ -476,9 +521,9 @@ TEST(ReduceInt32Div) {
 }
 
 
-TEST(ReduceInt32UDiv) {
+TEST(ReduceUint32Div) {
   ReducerTester R;
-  R.binop = R.machine.Int32UDiv();
+  R.binop = R.machine.Uint32Div();
 
   FOR_UINT32_INPUTS(pl) {
     FOR_UINT32_INPUTS(pr) {
@@ -529,9 +574,9 @@ TEST(ReduceInt32Mod) {
 }
 
 
-TEST(ReduceInt32UMod) {
+TEST(ReduceUint32Mod) {
   ReducerTester R;
-  R.binop = R.machine.Int32UMod();
+  R.binop = R.machine.Uint32Mod();
 
   FOR_INT32_INPUTS(pl) {
     FOR_INT32_INPUTS(pr) {
@@ -687,9 +732,9 @@ static void CheckNans(ReducerTester* R) {
          pr != nans.end(); ++pr) {
       Node* nan1 = R->Constant<double>(*pl);
       Node* nan2 = R->Constant<double>(*pr);
-      R->CheckBinop(nan1, x, nan1);     // x % NaN => NaN
-      R->CheckBinop(nan1, nan1, x);     // NaN % x => NaN
-      R->CheckBinop(nan1, nan2, nan1);  // NaN % NaN => NaN
+      R->CheckBinop(nan1, x, nan1);     // x op NaN => NaN
+      R->CheckBinop(nan1, nan1, x);     // NaN op x => NaN
+      R->CheckBinop(nan1, nan2, nan1);  // NaN op NaN => NaN
     }
   }
 }
@@ -706,8 +751,15 @@ TEST(ReduceFloat64Add) {
     }
   }
 
-  FOR_FLOAT64_INPUTS(i) { R.CheckPutConstantOnRight(*i); }
-  // TODO(titzer): CheckNans(&R);
+  FOR_FLOAT64_INPUTS(i) {
+    Double tmp(*i);
+    if (!tmp.IsSpecial() || tmp.IsInfinite()) {
+      // Don't check NaNs as they are reduced more.
+      R.CheckPutConstantOnRight(*i);
+    }
+  }
+
+  CheckNans(&R);
 }
 
 
@@ -721,7 +773,13 @@ TEST(ReduceFloat64Sub) {
       R.CheckFoldBinop<double>(x - y, x, y);
     }
   }
-  // TODO(titzer): CheckNans(&R);
+
+  Node* zero = R.Constant<double>(0.0);
+  Node* x = R.Parameter();
+
+  R.CheckBinop(x, x, zero);  // x - 0.0 => x
+
+  CheckNans(&R);
 }
 
 
@@ -783,6 +841,11 @@ TEST(ReduceFloat64Mod) {
     }
   }
 
+  Node* x = R.Parameter();
+  Node* zero = R.Constant<double>(0.0);
+
+  R.CheckFoldBinop<double>(v8::base::OS::nan_value(), x, zero);
+
   CheckNans(&R);
 }
 
@@ -800,9 +863,9 @@ TEST(ReduceFloat64Mod) {
 // TODO(titzer): test MachineOperatorReducer for Int64Mul
 // TODO(titzer): test MachineOperatorReducer for Int64UMul
 // TODO(titzer): test MachineOperatorReducer for Int64Div
-// TODO(titzer): test MachineOperatorReducer for Int64UDiv
+// TODO(titzer): test MachineOperatorReducer for Uint64Div
 // TODO(titzer): test MachineOperatorReducer for Int64Mod
-// TODO(titzer): test MachineOperatorReducer for Int64UMod
+// TODO(titzer): test MachineOperatorReducer for Uint64Mod
 // TODO(titzer): test MachineOperatorReducer for Int64Neg
 // TODO(titzer): test MachineOperatorReducer for ChangeInt32ToFloat64
 // TODO(titzer): test MachineOperatorReducer for ChangeFloat64ToInt32

@@ -9,8 +9,8 @@ namespace internal {
 namespace compiler {
 
 
-void IfBuilder::If(Node* condition) {
-  builder_->NewBranch(condition);
+void IfBuilder::If(Node* condition, BranchHint hint) {
+  builder_->NewBranch(condition, hint);
   else_environment_ = environment()->CopyForConditional();
 }
 
@@ -32,9 +32,9 @@ void IfBuilder::End() {
 }
 
 
-void LoopBuilder::BeginLoop() {
+void LoopBuilder::BeginLoop(BitVector* assigned) {
   builder_->NewLoop();
-  loop_environment_ = environment()->CopyForLoop();
+  loop_environment_ = environment()->CopyForLoop(assigned);
   continue_environment_ = environment()->CopyAsUnreachable();
   break_environment_ = environment()->CopyAsUnreachable();
 }
@@ -78,7 +78,6 @@ void SwitchBuilder::BeginSwitch() {
   body_environment_ = environment()->CopyAsUnreachable();
   label_environment_ = environment()->CopyAsUnreachable();
   break_environment_ = environment()->CopyAsUnreachable();
-  body_environments_.AddBlock(NULL, case_count(), zone());
 }
 
 

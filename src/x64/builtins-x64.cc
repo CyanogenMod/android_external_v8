@@ -158,22 +158,20 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
       // rax: initial map
       __ CmpInstanceType(rax, JS_FUNCTION_TYPE);
       __ j(equal, &rt_call);
-
       if (!is_api_function) {
         Label allocate;
         // The code below relies on these assumptions.
-        STATIC_ASSERT(JSFunction::kNoSlackTracking == 0);
-        STATIC_ASSERT(Map::ConstructionCount::kShift +
-                      Map::ConstructionCount::kSize == 32);
+        STATIC_ASSERT(Map::Counter::kShift + Map::Counter::kSize == 32);
         // Check if slack tracking is enabled.
         __ movl(rsi, FieldOperand(rax, Map::kBitField3Offset));
-        __ shrl(rsi, Immediate(Map::ConstructionCount::kShift));
-        __ j(zero, &allocate);  // JSFunction::kNoSlackTracking
+        __ shrl(rsi, Immediate(Map::Counter::kShift));
+        __ cmpl(rsi, Immediate(Map::kSlackTrackingCounterEnd));
+        __ j(less, &allocate);
         // Decrease generous allocation count.
         __ subl(FieldOperand(rax, Map::kBitField3Offset),
-                Immediate(1 << Map::ConstructionCount::kShift));
+                Immediate(1 << Map::Counter::kShift));
 
-        __ cmpl(rsi, Immediate(JSFunction::kFinishSlackTracking));
+        __ cmpl(rsi, Immediate(Map::kSlackTrackingCounterEnd));
         __ j(not_equal, &allocate);
 
         __ Push(rax);
@@ -184,7 +182,7 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
 
         __ Pop(rdi);
         __ Pop(rax);
-        __ xorl(rsi, rsi);  // JSFunction::kNoSlackTracking
+        __ movl(rsi, Immediate(Map::kSlackTrackingCounterEnd - 1));
 
         __ bind(&allocate);
       }
@@ -222,8 +220,8 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
         Label no_inobject_slack_tracking;
 
         // Check if slack tracking is enabled.
-        __ cmpl(rsi, Immediate(JSFunction::kNoSlackTracking));
-        __ j(equal, &no_inobject_slack_tracking);
+        __ cmpl(rsi, Immediate(Map::kSlackTrackingCounterEnd));
+        __ j(less, &no_inobject_slack_tracking);
 
         // Allocate object with a slack.
         __ movzxbp(rsi,
@@ -1075,14 +1073,19 @@ void Builtins::Generate_FunctionApply(MacroAssembler* masm) {
 
     // Use inline caching to speed up access to arguments.
     if (FLAG_vector_ics) {
-      __ Move(VectorLoadICDescriptor::SlotRegister(), Smi::FromInt(0));
+      // TODO(mvstanton): Vector-based ics need additional infrastructure to
+      // be embedded here. For now, just call the runtime.
+      __ Push(receiver);
+      __ Push(key);
+      __ CallRuntime(Runtime::kGetProperty, 2);
+    } else {
+      Handle<Code> ic = CodeFactory::KeyedLoadIC(masm->isolate()).code();
+      __ Call(ic, RelocInfo::CODE_TARGET);
+      // It is important that we do not have a test instruction after the
+      // call.  A test instruction after the call is used to indicate that
+      // we have generated an inline version of the keyed load.  In this
+      // case, we know that we are not generating a test instruction next.
     }
-    Handle<Code> ic = CodeFactory::KeyedLoadIC(masm->isolate()).code();
-    __ Call(ic, RelocInfo::CODE_TARGET);
-    // It is important that we do not have a test instruction after the
-    // call.  A test instruction after the call is used to indicate that
-    // we have generated an inline version of the keyed load.  In this
-    // case, we know that we are not generating a test instruction next.
 
     // Push the nth argument.
     __ Push(rax);

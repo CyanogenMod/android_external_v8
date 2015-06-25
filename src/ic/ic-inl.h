@@ -96,6 +96,12 @@ Code* IC::GetTargetAtAddress(Address address,
 void IC::SetTargetAtAddress(Address address, Code* target,
                             ConstantPoolArray* constant_pool) {
   DCHECK(target->is_inline_cache_stub() || target->is_compare_ic_stub());
+
+  // Don't use this for load_ics when --vector-ics is turned on.
+  DCHECK(!(FLAG_vector_ics && target->is_inline_cache_stub()) ||
+         (target->kind() != Code::LOAD_IC &&
+          target->kind() != Code::KEYED_LOAD_IC));
+
   Heap* heap = target->GetHeap();
   Code* old_target = GetTargetAtAddress(address, constant_pool);
 #ifdef DEBUG
@@ -119,9 +125,6 @@ void IC::SetTargetAtAddress(Address address, Code* target,
 
 
 void IC::set_target(Code* code) {
-#ifdef VERIFY_HEAP
-  code->VerifyEmbeddedObjectsDependency();
-#endif
   SetTargetAtAddress(address(), code, constant_pool());
   target_set_ = true;
 }
@@ -208,20 +211,11 @@ Handle<Map> IC::GetICCacheHolder(HeapType* type, Isolate* isolate,
 }
 
 
-IC::State CallIC::FeedbackToState(Handle<TypeFeedbackVector> vector,
-                                  Handle<Smi> slot) const {
-  IC::State state = UNINITIALIZED;
-  Object* feedback = vector->get(slot->value());
-
-  if (feedback == *TypeFeedbackVector::MegamorphicSentinel(isolate())) {
-    state = GENERIC;
-  } else if (feedback->IsAllocationSite() || feedback->IsJSFunction()) {
-    state = MONOMORPHIC;
-  } else {
-    CHECK(feedback == *TypeFeedbackVector::UninitializedSentinel(isolate()));
-  }
-
-  return state;
+inline Code* IC::get_host() {
+  return isolate()
+      ->inner_pointer_to_code_cache()
+      ->GetCacheEntry(address())
+      ->code;
 }
 }
 }  // namespace v8::internal

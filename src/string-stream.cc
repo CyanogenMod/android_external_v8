@@ -295,8 +295,7 @@ bool StringStream::Put(String* str) {
 
 
 bool StringStream::Put(String* str, int start, int end) {
-  ConsStringIteratorOp op;
-  StringCharacterStream stream(str, &op, start);
+  StringCharacterStream stream(str, start);
   for (int i = start; i < end && stream.HasMore(); i++) {
     uint16_t c = stream.GetNext();
     if (c >= 127 || c < 32) {
@@ -352,8 +351,13 @@ void StringStream::PrintUsingMap(JSObject* js_object) {
         }
         Add(": ");
         FieldIndex index = FieldIndex::ForDescriptor(map, i);
-        Object* value = js_object->RawFastPropertyAt(index);
-        Add("%o\n", value);
+        if (js_object->IsUnboxedDoubleField(index)) {
+          double value = js_object->RawFastDoublePropertyAt(index);
+          Add("<unboxed double> %.16g\n", FmtElm(value));
+        } else {
+          Object* value = js_object->RawFastPropertyAt(index);
+          Add("%o\n", value);
+        }
       }
     }
   }

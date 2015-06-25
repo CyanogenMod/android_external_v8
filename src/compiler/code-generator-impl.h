@@ -5,15 +5,12 @@
 #ifndef V8_COMPILER_CODE_GENERATOR_IMPL_H_
 #define V8_COMPILER_CODE_GENERATOR_IMPL_H_
 
+#include "src/code-stubs.h"
 #include "src/compiler/code-generator.h"
-#include "src/compiler/common-operator.h"
-#include "src/compiler/generic-graph.h"
 #include "src/compiler/instruction.h"
 #include "src/compiler/linkage.h"
-#include "src/compiler/machine-operator.h"
-#include "src/compiler/node.h"
 #include "src/compiler/opcodes.h"
-#include "src/compiler/operator.h"
+#include "src/macro-assembler.h"
 
 namespace v8 {
 namespace internal {
@@ -27,6 +24,8 @@ class InstructionOperandConverter {
  public:
   InstructionOperandConverter(CodeGenerator* gen, Instruction* instr)
       : gen_(gen), instr_(instr) {}
+
+  // -- Instruction operand accesses with conversions --------------------------
 
   Register InputRegister(int index) {
     return ToRegister(instr_->InputAt(index));
@@ -60,27 +59,31 @@ class InstructionOperandConverter {
     return ToHeapObject(instr_->InputAt(index));
   }
 
-  Label* InputLabel(int index) {
-    return gen_->code()->GetLabel(InputBlock(index));
-  }
+  Label* InputLabel(int index) { return ToLabel(instr_->InputAt(index)); }
 
-  BasicBlock* InputBlock(int index) {
-    NodeId block_id = static_cast<NodeId>(InputInt32(index));
-    // operand should be a block id.
-    DCHECK(block_id >= 0);
-    DCHECK(block_id < gen_->schedule()->BasicBlockCount());
-    return gen_->schedule()->GetBlockById(block_id);
+  BasicBlock::RpoNumber InputRpo(int index) {
+    return ToRpoNumber(instr_->InputAt(index));
   }
 
   Register OutputRegister(int index = 0) {
     return ToRegister(instr_->OutputAt(index));
   }
 
+  Register TempRegister(int index) { return ToRegister(instr_->TempAt(index)); }
+
   DoubleRegister OutputDoubleRegister() {
     return ToDoubleRegister(instr_->Output());
   }
 
-  Register TempRegister(int index) { return ToRegister(instr_->TempAt(index)); }
+  // -- Conversions for operands -----------------------------------------------
+
+  Label* ToLabel(InstructionOperand* op) {
+    return gen_->GetLabel(ToRpoNumber(op));
+  }
+
+  BasicBlock::RpoNumber ToRpoNumber(InstructionOperand* op) {
+    return ToConstant(op).ToRpoNumber();
+  }
 
   Register ToRegister(InstructionOperand* op) {
     DCHECK(op->IsRegister());
@@ -92,19 +95,17 @@ class InstructionOperandConverter {
     return DoubleRegister::FromAllocationIndex(op->index());
   }
 
-  Constant ToConstant(InstructionOperand* operand) {
-    if (operand->IsImmediate()) {
-      return gen_->code()->GetImmediate(operand->index());
+  Constant ToConstant(InstructionOperand* op) {
+    if (op->IsImmediate()) {
+      return gen_->code()->GetImmediate(op->index());
     }
-    return gen_->code()->GetConstant(operand->index());
+    return gen_->code()->GetConstant(op->index());
   }
 
-  double ToDouble(InstructionOperand* operand) {
-    return ToConstant(operand).ToFloat64();
-  }
+  double ToDouble(InstructionOperand* op) { return ToConstant(op).ToFloat64(); }
 
-  Handle<HeapObject> ToHeapObject(InstructionOperand* operand) {
-    return ToConstant(operand).ToHeapObject();
+  Handle<HeapObject> ToHeapObject(InstructionOperand* op) {
+    return ToConstant(op).ToHeapObject();
   }
 
   Frame* frame() const { return gen_->frame(); }
@@ -114,6 +115,27 @@ class InstructionOperandConverter {
  protected:
   CodeGenerator* gen_;
   Instruction* instr_;
+};
+
+
+// Generator for out-of-line code that is emitted after the main code is done.
+class OutOfLineCode : public ZoneObject {
+ public:
+  explicit OutOfLineCode(CodeGenerator* gen);
+  virtual ~OutOfLineCode();
+
+  virtual void Generate() = 0;
+
+  Label* entry() { return &entry_; }
+  Label* exit() { return &exit_; }
+  MacroAssembler* masm() const { return masm_; }
+  OutOfLineCode* next() const { return next_; }
+
+ private:
+  Label entry_;
+  Label exit_;
+  MacroAssembler* const masm_;
+  OutOfLineCode* const next_;
 };
 
 

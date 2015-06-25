@@ -191,6 +191,8 @@ void StaticMarkingVisitor<StaticVisitor>::Initialize() {
 
   table_.Register(kVisitPropertyCell, &VisitPropertyCell);
 
+  table_.Register(kVisitWeakCell, &VisitWeakCell);
+
   table_.template RegisterSpecializations<DataObjectVisitor, kVisitDataObject,
                                           kVisitDataObjectGeneric>();
 
@@ -260,12 +262,10 @@ void StaticMarkingVisitor<StaticVisitor>::VisitCodeTarget(Heap* heap,
   // when they might be keeping a Context alive, or when the heap is about
   // to be serialized.
   if (FLAG_cleanup_code_caches_at_gc && target->is_inline_cache_stub() &&
-      (target->ic_state() == MEGAMORPHIC || target->ic_state() == GENERIC ||
-       target->ic_state() == POLYMORPHIC ||
-       (heap->flush_monomorphic_ics() && !target->is_weak_stub()) ||
+      !target->is_call_stub() &&
+      ((heap->flush_monomorphic_ics() && !target->embeds_maps_weakly()) ||
        heap->isolate()->serializer_enabled() ||
-       target->ic_age() != heap->global_ic_age() ||
-       target->is_invalidated_weak_stub())) {
+       target->ic_age() != heap->global_ic_age())) {
     ICUtility::Clear(heap->isolate(), rinfo->pc(),
                      rinfo->host()->constant_pool());
     target = Code::GetCodeFromTargetAddress(rinfo->target_address());
@@ -346,6 +346,22 @@ void StaticMarkingVisitor<StaticVisitor>::VisitPropertyCell(
       heap,
       HeapObject::RawField(object, PropertyCell::kPointerFieldsBeginOffset),
       HeapObject::RawField(object, PropertyCell::kPointerFieldsEndOffset));
+}
+
+
+template <typename StaticVisitor>
+void StaticMarkingVisitor<StaticVisitor>::VisitWeakCell(Map* map,
+                                                        HeapObject* object) {
+  Heap* heap = map->GetHeap();
+  WeakCell* weak_cell = reinterpret_cast<WeakCell*>(object);
+  Object* undefined = heap->undefined_value();
+  // Enqueue weak cell in linked list of encountered weak collections.
+  // We can ignore weak cells with cleared values because they will always
+  // contain smi zero.
+  if (weak_cell->next() == undefined && !weak_cell->cleared()) {
+    weak_cell->set_next(heap->encountered_weak_cells());
+    heap->set_encountered_weak_cells(weak_cell);
+  }
 }
 
 
@@ -491,10 +507,7 @@ void StaticMarkingVisitor<StaticVisitor>::VisitConstantPoolArray(
     bool is_weak_object =
         (array->get_weak_object_state() ==
              ConstantPoolArray::WEAK_OBJECTS_IN_OPTIMIZED_CODE &&
-         Code::IsWeakObjectInOptimizedCode(object)) ||
-        (array->get_weak_object_state() ==
-             ConstantPoolArray::WEAK_OBJECTS_IN_IC &&
-         Code::IsWeakObjectInIC(object));
+         Code::IsWeakObjectInOptimizedCode(object));
     if (!is_weak_object) {
       StaticVisitor::MarkObject(heap, object);
     }

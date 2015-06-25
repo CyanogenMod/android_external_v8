@@ -211,6 +211,10 @@ struct FPURegister {
 
   inline static int NumRegisters();
   inline static int NumAllocatableRegisters();
+
+  // TODO(turbofan): Proper support for float32.
+  inline static int NumAllocatableAliasedRegisters();
+
   inline static int ToAllocationIndex(FPURegister reg);
   static const char* AllocationIndexToString(int index);
 
@@ -882,6 +886,7 @@ class Assembler : public AssemblerBase {
   void clz(Register rd, Register rs);
   void ins_(Register rt, Register rs, uint16_t pos, uint16_t size);
   void ext_(Register rt, Register rs, uint16_t pos, uint16_t size);
+  void dext_(Register rt, Register rs, uint16_t pos, uint16_t size);
 
   // --------Coprocessor-instructions----------------
 

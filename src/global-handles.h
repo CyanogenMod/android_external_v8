@@ -97,6 +97,13 @@ struct ObjectGroupRetainerInfo {
 };
 
 
+enum WeaknessType {
+  NORMAL_WEAK,          // Embedder gets a handle to the dying object.
+  PHANTOM_WEAK,         // Embedder gets the parameter they passed in earlier.
+  INTERNAL_FIELDS_WEAK  // Embedder gets 2 internal fields from dying object.
+};
+
+
 class GlobalHandles {
  public:
   ~GlobalHandles();
@@ -112,15 +119,34 @@ class GlobalHandles {
 
   typedef WeakCallbackData<v8::Value, void>::Callback WeakCallback;
 
+  // For a phantom weak reference, the callback does not have access to the
+  // dying object.  Phantom weak references are preferred because they allow
+  // memory to be reclaimed in one GC cycle rather than two.  However, for
+  // historical reasons the default is non-phantom.
+  enum PhantomState { Nonphantom, Phantom };
+
   // Make the global handle weak and set the callback parameter for the
   // handle.  When the garbage collector recognizes that only weak global
-  // handles point to an object the handles are cleared and the callback
-  // function is invoked (for each handle) with the handle and corresponding
-  // parameter as arguments.  Note: cleared means set to Smi::FromInt(0). The
-  // reason is that Smi::FromInt(0) does not change during garage collection.
-  static void MakeWeak(Object** location,
-                       void* parameter,
+  // handles point to an object the callback function is invoked (for each
+  // handle) with the handle and corresponding parameter as arguments.  By
+  // default the handle still contains a pointer to the object that is being
+  // collected.  For this reason the object is not collected until the next
+  // GC.  For a phantom weak handle the handle is cleared (set to a Smi)
+  // before the callback is invoked, but the handle can still be identified
+  // in the callback by using the location() of the handle.
+  static void MakeWeak(Object** location, void* parameter,
                        WeakCallback weak_callback);
+
+  // It would be nice to template this one, but it's really hard to get
+  // the template instantiator to work right if you do.
+  static void MakePhantom(Object** location, void* parameter,
+                          PhantomCallbackData<void>::Callback weak_callback);
+
+  static void MakePhantom(
+      Object** location,
+      v8::InternalFieldsCallbackData<void, void>::Callback weak_callback,
+      int16_t internal_field_index1,
+      int16_t internal_field_index2 = v8::Object::kNoInternalFieldIndex);
 
   void RecordStats(HeapStats* stats);
 
@@ -135,6 +161,10 @@ class GlobalHandles {
   int global_handles_count() const {
     return number_of_global_handles_;
   }
+
+  // Collect up data for the weak handle callbacks after GC has completed, but
+  // before memory is reclaimed.
+  void CollectPhantomCallbackData();
 
   // Clear the weakness of a global handle.
   static void* ClearWeakness(Object** location);
@@ -261,10 +291,18 @@ class GlobalHandles {
   // don't assign any initial capacity.
   static const int kObjectGroupConnectionsCapacity = 20;
 
+  // Helpers for PostGarbageCollectionProcessing.
+  int PostScavengeProcessing(int initial_post_gc_processing_count);
+  int PostMarkSweepProcessing(int initial_post_gc_processing_count);
+  int DispatchPendingPhantomCallbacks();
+  void UpdateListOfNewSpaceNodes();
+
   // Internal node structures.
   class Node;
   class NodeBlock;
   class NodeIterator;
+  class PendingPhantomCallback;
+  class PendingInternalFieldsCallback;
 
   Isolate* isolate_;
 
@@ -297,9 +335,43 @@ class GlobalHandles {
   List<ObjectGroupRetainerInfo> retainer_infos_;
   List<ObjectGroupConnection> implicit_ref_connections_;
 
+  List<PendingPhantomCallback> pending_phantom_callbacks_;
+  List<PendingInternalFieldsCallback> pending_internal_fields_callbacks_;
+
   friend class Isolate;
 
   DISALLOW_COPY_AND_ASSIGN(GlobalHandles);
+};
+
+
+class GlobalHandles::PendingPhantomCallback {
+ public:
+  typedef PhantomCallbackData<void> Data;
+  PendingPhantomCallback(Node* node, Data data, Data::Callback callback)
+      : node_(node), data_(data), callback_(callback) {}
+
+  void invoke();
+
+  Node* node() { return node_; }
+
+ private:
+  Node* node_;
+  Data data_;
+  Data::Callback callback_;
+};
+
+
+class GlobalHandles::PendingInternalFieldsCallback {
+ public:
+  typedef InternalFieldsCallbackData<void, void> Data;
+  PendingInternalFieldsCallback(Data data, Data::Callback callback)
+      : data_(data), callback_(callback) {}
+
+  void invoke() { callback_(data_); }
+
+ private:
+  Data data_;
+  Data::Callback callback_;
 };
 
 

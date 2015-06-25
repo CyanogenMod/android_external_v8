@@ -7,13 +7,14 @@
 
 // Opcodes for control operators.
 #define INNER_CONTROL_OP_LIST(V) \
-  V(Dead)                  \
-  V(Loop)                  \
-  V(Branch)                \
-  V(IfTrue)                \
-  V(IfFalse)               \
-  V(Merge)                 \
-  V(Return)                \
+  V(Dead)                        \
+  V(Loop)                        \
+  V(Branch)                      \
+  V(IfTrue)                      \
+  V(IfFalse)                     \
+  V(Merge)                       \
+  V(Return)                      \
+  V(Terminate)                   \
   V(Throw)
 
 #define CONTROL_OP_LIST(V) \
@@ -32,9 +33,9 @@
   V(HeapConstant)
 
 #define INNER_OP_LIST(V) \
+  V(Select)              \
   V(Phi)                 \
   V(EffectPhi)           \
-  V(ControlEffect)       \
   V(ValueEffect)         \
   V(Finish)              \
   V(FrameState)          \
@@ -113,7 +114,7 @@
   V(JSCreateWithContext)      \
   V(JSCreateBlockContext)     \
   V(JSCreateModuleContext)    \
-  V(JSCreateGlobalContext)
+  V(JSCreateScriptContext)
 
 #define JS_OTHER_OP_LIST(V) \
   V(JSCallConstruct)        \
@@ -131,6 +132,7 @@
 
 // Opcodes for VirtuaMachine-level operators.
 #define SIMPLIFIED_OP_LIST(V) \
+  V(AnyToBoolean)             \
   V(BooleanNot)               \
   V(BooleanToNumber)          \
   V(NumberEqual)              \
@@ -157,9 +159,13 @@
   V(ChangeBoolToBit)          \
   V(ChangeBitToBool)          \
   V(LoadField)                \
+  V(LoadBuffer)               \
   V(LoadElement)              \
   V(StoreField)               \
-  V(StoreElement)
+  V(StoreBuffer)              \
+  V(StoreElement)             \
+  V(ObjectIsSmi)              \
+  V(ObjectIsNonNegativeSmi)
 
 // Opcodes for Machine-level operators.
 #define MACHINE_OP_LIST(V)    \
@@ -186,23 +192,26 @@
   V(Int32Sub)                 \
   V(Int32SubWithOverflow)     \
   V(Int32Mul)                 \
+  V(Int32MulHigh)             \
   V(Int32Div)                 \
-  V(Int32UDiv)                \
   V(Int32Mod)                 \
-  V(Int32UMod)                \
   V(Int32LessThan)            \
   V(Int32LessThanOrEqual)     \
+  V(Uint32Div)                \
   V(Uint32LessThan)           \
   V(Uint32LessThanOrEqual)    \
+  V(Uint32Mod)                \
+  V(Uint32MulHigh)            \
   V(Int64Add)                 \
   V(Int64Sub)                 \
   V(Int64Mul)                 \
   V(Int64Div)                 \
-  V(Int64UDiv)                \
   V(Int64Mod)                 \
-  V(Int64UMod)                \
   V(Int64LessThan)            \
   V(Int64LessThanOrEqual)     \
+  V(Uint64Div)                \
+  V(Uint64LessThan)           \
+  V(Uint64Mod)                \
   V(ChangeFloat32ToFloat64)   \
   V(ChangeFloat64ToInt32)     \
   V(ChangeFloat64ToUint32)    \
@@ -221,7 +230,14 @@
   V(Float64Sqrt)              \
   V(Float64Equal)             \
   V(Float64LessThan)          \
-  V(Float64LessThanOrEqual)
+  V(Float64LessThanOrEqual)   \
+  V(Float64Floor)             \
+  V(Float64Ceil)              \
+  V(Float64RoundTruncate)     \
+  V(Float64RoundTiesAway)     \
+  V(LoadStackPointer)         \
+  V(CheckedLoad)              \
+  V(CheckedStore)
 
 #define VALUE_OP_LIST(V) \
   COMMON_OP_LIST(V)      \
@@ -253,20 +269,11 @@ class IrOpcode {
   };
 
   // Returns the mnemonic name of an opcode.
-  static const char* Mnemonic(Value val) {
-    switch (val) {
-#define RETURN_NAME(x) \
-  case k##x:           \
-    return #x;
-      ALL_OP_LIST(RETURN_NAME)
-#undef RETURN_NAME
-      default:
-        return "UnknownOpcode";
-    }
-  }
+  static char const* Mnemonic(Value value);
 
   static bool IsJsOpcode(Value val) {
     switch (val) {
+// TODO(turbofan): make this a range check.
 #define RETURN_NAME(x) \
   case k##x:           \
     return true;
@@ -279,6 +286,7 @@ class IrOpcode {
 
   static bool IsControlOpcode(Value val) {
     switch (val) {
+// TODO(turbofan): make this a range check.
 #define RETURN_NAME(x) \
   case k##x:           \
     return true;
@@ -289,8 +297,22 @@ class IrOpcode {
     }
   }
 
+  static bool IsLeafOpcode(Value val) {
+    switch (val) {
+// TODO(turbofan): make this a table lookup.
+#define RETURN_NAME(x) \
+  case k##x:           \
+    return true;
+      LEAF_OP_LIST(RETURN_NAME)
+#undef RETURN_NAME
+      default:
+        return false;
+    }
+  }
+
   static bool IsCommonOpcode(Value val) {
     switch (val) {
+// TODO(turbofan): make this a table lookup or a range check.
 #define RETURN_NAME(x) \
   case k##x:           \
     return true;

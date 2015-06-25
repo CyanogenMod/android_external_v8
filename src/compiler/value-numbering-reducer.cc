@@ -4,6 +4,9 @@
 
 #include "src/compiler/value-numbering-reducer.h"
 
+#include <cstring>
+
+#include "src/base/functional.h"
 #include "src/compiler/node.h"
 
 namespace v8 {
@@ -12,7 +15,13 @@ namespace compiler {
 
 namespace {
 
-size_t HashCode(Node* node) { return node->op()->HashCode(); }
+size_t HashCode(Node* node) {
+  size_t h = base::hash_combine(node->op()->HashCode(), node->InputCount());
+  for (int j = 0; j < node->InputCount(); ++j) {
+    h = base::hash_combine(h, node->InputAt(j)->id());
+  }
+  return h;
+}
 
 
 bool Equals(Node* a, Node* b) {
@@ -33,40 +42,121 @@ bool Equals(Node* a, Node* b) {
 }  // namespace
 
 
-class ValueNumberingReducer::Entry FINAL : public ZoneObject {
- public:
-  Entry(Node* node, Entry* next) : node_(node), next_(next) {}
-
-  Node* node() const { return node_; }
-  Entry* next() const { return next_; }
-
- private:
-  Node* node_;
-  Entry* next_;
-};
-
-
-ValueNumberingReducer::ValueNumberingReducer(Zone* zone) : zone_(zone) {
-  for (size_t i = 0; i < arraysize(buckets_); ++i) {
-    buckets_[i] = NULL;
-  }
-}
+ValueNumberingReducer::ValueNumberingReducer(Zone* zone)
+    : entries_(nullptr), capacity_(0), size_(0), zone_(zone) {}
 
 
 ValueNumberingReducer::~ValueNumberingReducer() {}
 
 
 Reduction ValueNumberingReducer::Reduce(Node* node) {
-  Entry** head = &buckets_[HashCode(node) % arraysize(buckets_)];
-  for (Entry* entry = *head; entry; entry = entry->next()) {
-    if (entry->node()->IsDead()) continue;
-    if (entry->node() == node) return NoChange();
-    if (Equals(node, entry->node())) {
-      return Replace(entry->node());
+  if (!node->op()->HasProperty(Operator::kEliminatable)) return NoChange();
+
+  const size_t hash = HashCode(node);
+  if (!entries_) {
+    DCHECK(size_ == 0);
+    DCHECK(capacity_ == 0);
+    // Allocate the initial entries and insert the first entry.
+    capacity_ = kInitialCapacity;
+    entries_ = zone()->NewArray<Node*>(kInitialCapacity);
+    memset(entries_, 0, sizeof(*entries_) * kInitialCapacity);
+    entries_[hash & (kInitialCapacity - 1)] = node;
+    size_ = 1;
+    return NoChange();
+  }
+
+  DCHECK(size_ < capacity_);
+  DCHECK(size_ * kCapacityToSizeRatio < capacity_);
+
+  const size_t mask = capacity_ - 1;
+  size_t dead = capacity_;
+
+  for (size_t i = hash & mask;; i = (i + 1) & mask) {
+    Node* entry = entries_[i];
+    if (!entry) {
+      if (dead != capacity_) {
+        // Reuse dead entry that we discovered on the way.
+        entries_[dead] = node;
+      } else {
+        // Have to insert a new entry.
+        entries_[i] = node;
+        size_++;
+
+        // Resize to keep load factor below 1/kCapacityToSizeRatio.
+        if (size_ * kCapacityToSizeRatio >= capacity_) Grow();
+      }
+      DCHECK(size_ * kCapacityToSizeRatio < capacity_);
+      return NoChange();
+    }
+
+    if (entry == node) {
+      // We need to check for a certain class of collisions here. Imagine the
+      // following scenario:
+      //
+      //  1. We insert node1 with op1 and certain inputs at index i.
+      //  2. We insert node2 with op2 and certain inputs at index i+1.
+      //  3. Some other reducer changes node1 to op2 and the inputs from node2.
+      //
+      // Now we are called again to reduce node1, and we would return NoChange
+      // in this case because we find node1 first, but what we should actually
+      // do is return Replace(node2) instead.
+      for (size_t j = (i + 1) & mask;; j = (j + 1) & mask) {
+        Node* entry = entries_[j];
+        if (!entry) {
+          // No collision, {node} is fine.
+          return NoChange();
+        }
+        if (entry->IsDead()) {
+          continue;
+        }
+        if (Equals(entry, node)) {
+          // Overwrite the colliding entry with the actual entry.
+          entries_[i] = entry;
+          return Replace(entry);
+        }
+      }
+    }
+
+    // Skip dead entries, but remember their indices so we can reuse them.
+    if (entry->IsDead()) {
+      dead = i;
+      continue;
+    }
+    if (Equals(entry, node)) {
+      return Replace(entry);
     }
   }
-  *head = new (zone()) Entry(node, *head);
-  return NoChange();
+}
+
+
+void ValueNumberingReducer::Grow() {
+  // Allocate a new block of entries kCapacityToSizeRatio times the previous
+  // capacity.
+  Node** const old_entries = entries_;
+  size_t const old_capacity = capacity_;
+  capacity_ *= kCapacityToSizeRatio;
+  entries_ = zone()->NewArray<Node*>(static_cast<int>(capacity_));
+  memset(entries_, 0, sizeof(*entries_) * capacity_);
+  size_ = 0;
+  size_t const mask = capacity_ - 1;
+
+  // Insert the old entries into the new block (skipping dead nodes).
+  for (size_t i = 0; i < old_capacity; ++i) {
+    Node* const old_entry = old_entries[i];
+    if (!old_entry || old_entry->IsDead()) continue;
+    for (size_t j = HashCode(old_entry) & mask;; j = (j + 1) & mask) {
+      Node* const entry = entries_[j];
+      if (entry == old_entry) {
+        // Skip duplicate of the old entry.
+        break;
+      }
+      if (!entry) {
+        entries_[j] = old_entry;
+        size_++;
+        break;
+      }
+    }
+  }
 }
 
 }  // namespace compiler

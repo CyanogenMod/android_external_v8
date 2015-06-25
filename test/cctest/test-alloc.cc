@@ -86,7 +86,7 @@ static AllocationResult AllocateAfterFailures() {
       Builtins::kIllegal)).ToObjectChecked();
 
   // Return success.
-  return Smi::FromInt(42);
+  return heap->true_value();
 }
 
 
@@ -100,7 +100,7 @@ TEST(StressHandles) {
   v8::Handle<v8::Context> env = v8::Context::New(CcTest::isolate());
   env->Enter();
   Handle<Object> o = Test();
-  CHECK(o->IsSmi() && Smi::cast(*o)->value() == 42);
+  CHECK(o->IsTrue());
   env->Exit();
 }
 
@@ -162,7 +162,7 @@ TEST(StressJS) {
   // Call the accessor through JavaScript.
   v8::Handle<v8::Value> result = v8::Script::Compile(
       v8::String::NewFromUtf8(CcTest::isolate(), "(new Foo).get"))->Run();
-  CHECK_EQ(42, result->Int32Value());
+  CHECK_EQ(true, result->BooleanValue());
   env->Exit();
 }
 
@@ -198,7 +198,8 @@ TEST(CodeRange) {
   const size_t code_range_size = 32*MB;
   CcTest::InitializeVM();
   CodeRange code_range(reinterpret_cast<Isolate*>(CcTest::isolate()));
-  code_range.SetUp(code_range_size);
+  code_range.SetUp(code_range_size +
+                   kReservedCodeRangePages * v8::base::OS::CommitPageSize());
   size_t current_allocated = 0;
   size_t total_allocated = 0;
   List< ::Block> blocks(1000);

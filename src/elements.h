@@ -146,9 +146,10 @@ class ElementsAccessor {
       uint32_t destination_start,
       int copy_size) = 0;
 
-  // TODO(ishell): Keeping |source_holder| parameter in a non-handlified form
-  // helps avoiding ArrayConcat() builtin performance degradation.
-  // Revisit this later.
+  // NOTE: this method violates the handlified function signature convention:
+  // raw pointer parameter |source_holder| in the function that allocates.
+  // This is done intentionally to avoid ArrayConcat() builtin performance
+  // degradation.
   virtual void CopyElements(
       JSObject* source_holder,
       uint32_t source_start,
@@ -166,22 +167,19 @@ class ElementsAccessor {
   }
 
   MUST_USE_RESULT virtual MaybeHandle<FixedArray> AddElementsToFixedArray(
-      Handle<Object> receiver,
-      Handle<JSObject> holder,
-      Handle<FixedArray> to,
-      Handle<FixedArrayBase> from) = 0;
+      Handle<Object> receiver, Handle<JSObject> holder, Handle<FixedArray> to,
+      Handle<FixedArrayBase> from, FixedArray::KeyFilter filter) = 0;
 
   MUST_USE_RESULT inline MaybeHandle<FixedArray> AddElementsToFixedArray(
-      Handle<Object> receiver,
-      Handle<JSObject> holder,
-      Handle<FixedArray> to) {
-    return AddElementsToFixedArray(
-        receiver, holder, to, handle(holder->elements()));
+      Handle<Object> receiver, Handle<JSObject> holder, Handle<FixedArray> to,
+      FixedArray::KeyFilter filter) {
+    return AddElementsToFixedArray(receiver, holder, to,
+                                   handle(holder->elements()), filter);
   }
 
   // Returns a shared ElementsAccessor for the specified ElementsKind.
   static ElementsAccessor* ForKind(ElementsKind elements_kind) {
-    DCHECK(elements_kind < kElementsKindCount);
+    DCHECK(static_cast<int>(elements_kind) < kElementsKindCount);
     return elements_accessors_[elements_kind];
   }
 

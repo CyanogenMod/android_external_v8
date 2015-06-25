@@ -30,7 +30,7 @@ $(D8_GEN): SCRIPT := $(generated_sources)/js2c.py
 $(D8_GEN): $(LOCAL_JS_D8_FILES) $(JS2C_PY)
 	@echo "Generating d8-js.cc"
 	@mkdir -p $(dir $@)
-	python $(SCRIPT) $@ D8 off $(LOCAL_JS_D8_FILES)
+	python $(SCRIPT) $@ D8 $(LOCAL_JS_D8_FILES)
 LOCAL_GENERATED_SOURCES += $(D8_GEN)
 
 LOCAL_CPP_EXTENSION := .cc

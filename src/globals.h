@@ -5,7 +5,8 @@
 #ifndef V8_GLOBALS_H_
 #define V8_GLOBALS_H_
 
-#include "include/v8stdint.h"
+#include <stddef.h>
+#include <stdint.h>
 
 #include "src/base/build_config.h"
 #include "src/base/logging.h"
@@ -25,13 +26,14 @@
 # define V8_INFINITY INFINITY
 #endif
 
-#if V8_TARGET_ARCH_IA32 || V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_ARM || \
-    V8_TARGET_ARCH_ARM64
+#if V8_TARGET_ARCH_IA32 || (V8_TARGET_ARCH_X64 && !V8_TARGET_ARCH_32_BIT) || \
+    V8_TARGET_ARCH_ARM || V8_TARGET_ARCH_ARM64 || V8_TARGET_ARCH_MIPS ||     \
+    V8_TARGET_ARCH_MIPS64
 #define V8_TURBOFAN_BACKEND 1
 #else
 #define V8_TURBOFAN_BACKEND 0
 #endif
-#if V8_TURBOFAN_BACKEND && !(V8_OS_WIN && V8_TARGET_ARCH_X64)
+#if V8_TURBOFAN_BACKEND
 #define V8_TURBOFAN_TARGET 1
 #else
 #define V8_TURBOFAN_TARGET 0
@@ -80,22 +82,13 @@ namespace internal {
 #endif
 
 
-// Support for alternative bool type. This is only enabled if the code is
-// compiled with USE_MYBOOL defined. This catches some nasty type bugs.
-// For instance, 'bool b = "false";' results in b == true! This is a hidden
-// source of bugs.
-// However, redefining the bool type does have some negative impact on some
-// platforms. It gives rise to compiler warnings (i.e. with
-// MSVC) in the API header files when mixing code that uses the standard
-// bool with code that uses the redefined version.
-// This does not actually belong in the platform code, but needs to be
-// defined here because the platform code uses bool, and platform.h is
-// include very early in the main include file.
-
-#ifdef USE_MYBOOL
-typedef unsigned int __my_bool__;
-#define bool __my_bool__  // use 'indirection' to avoid name clashes
+// Determine whether double field unboxing feature is enabled.
+#if (V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_ARM64)
+#define V8_DOUBLE_FIELDS_UNBOXING 0
+#else
+#define V8_DOUBLE_FIELDS_UNBOXING 0
 #endif
+
 
 typedef uint8_t byte;
 typedef byte* Address;
@@ -143,6 +136,13 @@ const intptr_t kIntptrSignBit = V8_INT64_C(0x8000000000000000);
 const uintptr_t kUintptrAllBitsSet = V8_UINT64_C(0xFFFFFFFFFFFFFFFF);
 const bool kRequiresCodeRange = true;
 const size_t kMaximalCodeRangeSize = 512 * MB;
+#if V8_OS_WIN
+const size_t kMinimumCodeRangeSize = 4 * MB;
+const size_t kReservedCodeRangePages = 1;
+#else
+const size_t kMinimumCodeRangeSize = 3 * MB;
+const size_t kReservedCodeRangePages = 0;
+#endif
 #else
 const int kPointerSizeLog2 = 2;
 const intptr_t kIntptrSignBit = 0x80000000;
@@ -151,9 +151,13 @@ const uintptr_t kUintptrAllBitsSet = 0xFFFFFFFFu;
 // x32 port also requires code range.
 const bool kRequiresCodeRange = true;
 const size_t kMaximalCodeRangeSize = 256 * MB;
+const size_t kMinimumCodeRangeSize = 3 * MB;
+const size_t kReservedCodeRangePages = 0;
 #else
 const bool kRequiresCodeRange = false;
 const size_t kMaximalCodeRangeSize = 0 * MB;
+const size_t kMinimumCodeRangeSize = 0 * MB;
+const size_t kReservedCodeRangePages = 0;
 #endif
 #endif
 
@@ -276,6 +280,7 @@ const uint32_t kFreeListZapValue = 0xfeed1eaf;
 #endif
 
 const int kCodeZapValue = 0xbadc0de;
+const uint32_t kPhantomReferenceZap = 0xca11bac;
 
 // On Intel architecture, cache line size is 64 bytes.
 // On ARM it may be less (32 bytes), but as far this constant is
@@ -339,8 +344,10 @@ class Smi;
 template <typename Config, class Allocator = FreeStoreAllocationPolicy>
     class SplayTree;
 class String;
+class Symbol;
 class Name;
 class Struct;
+class Symbol;
 class Variable;
 class RelocInfo;
 class Deserializer;
@@ -355,6 +362,7 @@ typedef bool (*WeakSlotCallbackWithHeap)(Heap* heap, Object** pointer);
 
 // NOTE: SpaceIterator depends on AllocationSpace enumeration values being
 // consecutive.
+// Keep this enum in sync with the ObjectSpace enum in v8.h
 enum AllocationSpace {
   NEW_SPACE,            // Semispaces collected with copying collector.
   OLD_POINTER_SPACE,    // May contain pointers to new space.
@@ -364,7 +372,6 @@ enum AllocationSpace {
   CELL_SPACE,           // Only and all cell objects.
   PROPERTY_CELL_SPACE,  // Only and all global property cell objects.
   LO_SPACE,             // Promoted large objects.
-  INVALID_SPACE,        // Only used in AllocationResult to signal success.
 
   FIRST_SPACE = NEW_SPACE,
   LAST_SPACE = LO_SPACE,
@@ -547,22 +554,6 @@ struct AccessorDescriptor {
 };
 
 
-// Logging and profiling.  A StateTag represents a possible state of
-// the VM. The logger maintains a stack of these. Creating a VMState
-// object enters a state by pushing on the stack, and destroying a
-// VMState object leaves a state by popping the current state from the
-// stack.
-
-enum StateTag {
-  JS,
-  GC,
-  COMPILER,
-  OTHER,
-  EXTERNAL,
-  IDLE
-};
-
-
 // -----------------------------------------------------------------------------
 // Macros
 
@@ -609,28 +600,32 @@ enum StateTag {
 
 // CPU feature flags.
 enum CpuFeature {
-    // x86
-    SSE4_1,
-    SSE3,
-    SAHF,
-    // ARM
-    VFP3,
-    ARMv7,
-    SUDIV,
-    MLS,
-    UNALIGNED_ACCESSES,
-    MOVW_MOVT_IMMEDIATE_LOADS,
-    VFP32DREGS,
-    NEON,
-    // MIPS, MIPS64
-    FPU,
-    FP64FPU,
-    MIPSr1,
-    MIPSr2,
-    MIPSr6,
-    // ARM64
-    ALWAYS_ALIGN_CSP,
-    NUMBER_OF_CPU_FEATURES
+  // x86
+  SSE4_1,
+  SSE3,
+  SAHF,
+  AVX,
+  FMA3,
+  // ARM
+  VFP3,
+  ARMv7,
+  ARMv8,
+  SUDIV,
+  MLS,
+  UNALIGNED_ACCESSES,
+  MOVW_MOVT_IMMEDIATE_LOADS,
+  VFP32DREGS,
+  NEON,
+  // MIPS, MIPS64
+  FPU,
+  FP64FPU,
+  MIPSr1,
+  MIPSr2,
+  MIPSr6,
+  // ARM64
+  ALWAYS_ALIGN_CSP,
+  COHERENT_CACHE,
+  NUMBER_OF_CPU_FEATURES
 };
 
 
@@ -646,10 +641,11 @@ enum ScopeType {
   EVAL_SCOPE,      // The top-level scope for an eval source.
   FUNCTION_SCOPE,  // The top-level scope for a function.
   MODULE_SCOPE,    // The scope introduced by a module literal
-  GLOBAL_SCOPE,    // The top-level scope for a program or a top-level eval.
+  SCRIPT_SCOPE,    // The top-level scope for a script or a top-level eval.
   CATCH_SCOPE,     // The scope introduced by catch.
   BLOCK_SCOPE,     // The scope introduced by a new block.
-  WITH_SCOPE       // The scope introduced by with.
+  WITH_SCOPE,      // The scope introduced by with.
+  ARROW_SCOPE      // The top-level scope for an arrow function literal.
 };
 
 
@@ -777,7 +773,8 @@ enum FunctionKind {
   kArrowFunction = 1,
   kGeneratorFunction = 2,
   kConciseMethod = 4,
-  kConciseGeneratorMethod = kGeneratorFunction | kConciseMethod
+  kConciseGeneratorMethod = kGeneratorFunction | kConciseMethod,
+  kDefaultConstructor = 8
 };
 
 
@@ -786,7 +783,8 @@ inline bool IsValidFunctionKind(FunctionKind kind) {
          kind == FunctionKind::kArrowFunction ||
          kind == FunctionKind::kGeneratorFunction ||
          kind == FunctionKind::kConciseMethod ||
-         kind == FunctionKind::kConciseGeneratorMethod;
+         kind == FunctionKind::kConciseGeneratorMethod ||
+         kind == FunctionKind::kDefaultConstructor;
 }
 
 
@@ -806,6 +804,14 @@ inline bool IsConciseMethod(FunctionKind kind) {
   DCHECK(IsValidFunctionKind(kind));
   return kind & FunctionKind::kConciseMethod;
 }
+
+
+inline bool IsDefaultConstructor(FunctionKind kind) {
+  DCHECK(IsValidFunctionKind(kind));
+  return kind & FunctionKind::kDefaultConstructor;
+}
+
+
 } }  // namespace v8::internal
 
 namespace i = v8::internal;
