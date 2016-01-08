@@ -80,26 +80,26 @@ LOCAL_CFLAGS := \
 	-Wno-unused-parameter \
 	-std=gnu++0x
 
-LOCAL_CFLAGS_v8_target_arm += -DV8_TARGET_ARCH_ARM -O0
-LOCAL_CFLAGS_v8_target_arm64 += -DV8_TARGET_ARCH_ARM64
+LOCAL_CFLAGS_v8_target_arm := -DV8_TARGET_ARCH_ARM -O0
+LOCAL_CFLAGS_v8_target_arm64 := -DV8_TARGET_ARCH_ARM64
 
 ifeq ($(ARCH_ARM_HAVE_VFP),true)
     LOCAL_CFLAGS_v8_target_arm += -DCAN_USE_VFP_INSTRUCTIONS -DCAN_USE_ARMV7_INSTRUCTIONS
 endif
 
-LOCAL_CFLAGS_v8_target_mips += -DV8_TARGET_ARCH_MIPS \
+LOCAL_CFLAGS_v8_target_mips := -DV8_TARGET_ARCH_MIPS \
 	-DCAN_USE_FPU_INSTRUCTIONS \
 	-Umips \
 	-finline-limit=64 \
 	-fno-strict-aliasing
 
-LOCAL_CFLAGS_v8_target_mips64 += -DV8_TARGET_ARCH_MIPS64 \
+LOCAL_CFLAGS_v8_target_mips64 := -DV8_TARGET_ARCH_MIPS64 \
 	-Umips \
 	-finline-limit=64 \
 	-fno-strict-aliasing
 
-LOCAL_CFLAGS_v8_target_x86 += -DV8_TARGET_ARCH_IA32
-LOCAL_CFLAGS_v8_target_x86_64 += -DV8_TARGET_ARCH_X64
+LOCAL_CFLAGS_v8_target_x86 := -DV8_TARGET_ARCH_IA32
+LOCAL_CFLAGS_v8_target_x86_64 := -DV8_TARGET_ARCH_X64
 
 ifeq ($(DEBUG_V8),true)
 	LOCAL_CFLAGS += -DDEBUG -UNDEBUG
@@ -122,6 +122,7 @@ LOCAL_STATIC_LIBRARIES := liblog
 LOCAL_SANITIZE_RECOVER := shift-exponent
 
 include $(BUILD_HOST_EXECUTABLE)
+
 else
 $(warning mksnapshot.$(mksnapshot_arch): architecture $(mksnapshot_arch) not supported)
 endif
