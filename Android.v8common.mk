@@ -126,7 +126,6 @@ LOCAL_SRC_FILES := \
 	src/frames.cc \
 	src/full-codegen.cc \
 	src/func-name-inferrer.cc \
-	src/generator.js \
 	src/global-handles.cc \
 	src/handles.cc \
 	src/heap-profiler.cc \
