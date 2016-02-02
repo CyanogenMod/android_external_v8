@@ -27,7 +27,7 @@ endif
 
 # Build libv8 and d8
 
-ENABLE_V8_SNAPSHOT = true
+ENABLE_V8_SNAPSHOT = false
 mksnapshot_arch := $(TARGET_ARCH)
 ifeq ($(HOST_IS_64_BIT),true)
 ifeq ($(TARGET_IS_64_BIT),true)
