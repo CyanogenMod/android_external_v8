@@ -81,7 +81,7 @@ class SnapshotWriter {
   }
 
   void WriteData(const i::Vector<const i::byte>& blob) const {
-    fprintf(fp_, "static const byte blob_data[] = {\n");
+    fprintf(fp_, "static const byte blob_data[] __attribute__((aligned(8))) = {\n");
     WriteSnapshotData(blob);
     fprintf(fp_, "};\n");
     fprintf(fp_, "static const int blob_size = %d;\n", blob.length());
