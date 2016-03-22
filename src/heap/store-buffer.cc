@@ -2,13 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "src/heap/store-buffer.h"
+
 #include <algorithm>
 
-#include "src/v8.h"
-
-#include "src/base/atomicops.h"
 #include "src/counters.h"
+#include "src/heap/incremental-marking.h"
 #include "src/heap/store-buffer-inl.h"
+#include "src/isolate.h"
+#include "src/objects-inl.h"
+#include "src/v8.h"
 
 namespace v8 {
 namespace internal {
@@ -34,6 +37,9 @@ StoreBuffer::StoreBuffer(Heap* heap)
 
 
 void StoreBuffer::SetUp() {
+  // Allocate 3x the buffer size, so that we can start the new store buffer
+  // aligned to 2x the size.  This lets us use a bit test to detect the end of
+  // the area.
   virtual_memory_ = new base::VirtualMemory(kStoreBufferSize * 3);
   uintptr_t start_as_int =
       reinterpret_cast<uintptr_t>(virtual_memory_->address());
@@ -41,23 +47,30 @@ void StoreBuffer::SetUp() {
       reinterpret_cast<Address*>(RoundUp(start_as_int, kStoreBufferSize * 2));
   limit_ = start_ + (kStoreBufferSize / kPointerSize);
 
+  // Reserve space for the larger old buffer.
   old_virtual_memory_ =
       new base::VirtualMemory(kOldStoreBufferLength * kPointerSize);
   old_top_ = old_start_ =
       reinterpret_cast<Address*>(old_virtual_memory_->address());
   // Don't know the alignment requirements of the OS, but it is certainly not
   // less than 0xfff.
-  DCHECK((reinterpret_cast<uintptr_t>(old_start_) & 0xfff) == 0);
-  int initial_length =
-      static_cast<int>(base::OS::CommitPageSize() / kPointerSize);
-  DCHECK(initial_length > 0);
-  DCHECK(initial_length <= kOldStoreBufferLength);
+  CHECK((reinterpret_cast<uintptr_t>(old_start_) & 0xfff) == 0);
+  CHECK(kStoreBufferSize >= base::OS::CommitPageSize());
+  // Initial size of the old buffer is as big as the buffer for new pointers.
+  // This means even if we later fail to enlarge the old buffer due to OOM from
+  // the OS, we will still be able to empty the new pointer buffer into the old
+  // buffer.
+  int initial_length = static_cast<int>(kStoreBufferSize / kPointerSize);
+  CHECK(initial_length > 0);
+  CHECK(initial_length <= kOldStoreBufferLength);
   old_limit_ = old_start_ + initial_length;
   old_reserved_limit_ = old_start_ + kOldStoreBufferLength;
 
-  CHECK(old_virtual_memory_->Commit(reinterpret_cast<void*>(old_start_),
-                                    (old_limit_ - old_start_) * kPointerSize,
-                                    false));
+  if (!old_virtual_memory_->Commit(reinterpret_cast<void*>(old_start_),
+                                   (old_limit_ - old_start_) * kPointerSize,
+                                   false)) {
+    V8::FatalProcessOutOfMemory("StoreBuffer::SetUp");
+  }
 
   DCHECK(reinterpret_cast<Address>(start_) >= virtual_memory_->address());
   DCHECK(reinterpret_cast<Address>(limit_) >= virtual_memory_->address());
@@ -71,10 +84,12 @@ void StoreBuffer::SetUp() {
   DCHECK((reinterpret_cast<uintptr_t>(limit_ - 1) & kStoreBufferOverflowBit) ==
          0);
 
-  CHECK(virtual_memory_->Commit(reinterpret_cast<Address>(start_),
-                                kStoreBufferSize,
-                                false));  // Not executable.
-  heap_->public_set_store_buffer_top(start_);
+  if (!virtual_memory_->Commit(reinterpret_cast<Address>(start_),
+                               kStoreBufferSize,
+                               false)) {  // Not executable.
+    V8::FatalProcessOutOfMemory("StoreBuffer::SetUp");
+  }
+  heap_->set_store_buffer_top(reinterpret_cast<Smi*>(start_));
 
   hash_set_1_ = new uintptr_t[kHashSetLength];
   hash_set_2_ = new uintptr_t[kHashSetLength];
@@ -91,33 +106,13 @@ void StoreBuffer::TearDown() {
   delete[] hash_set_2_;
   old_start_ = old_top_ = old_limit_ = old_reserved_limit_ = NULL;
   start_ = limit_ = NULL;
-  heap_->public_set_store_buffer_top(start_);
+  heap_->set_store_buffer_top(reinterpret_cast<Smi*>(start_));
 }
 
 
 void StoreBuffer::StoreBufferOverflow(Isolate* isolate) {
   isolate->heap()->store_buffer()->Compact();
   isolate->counters()->store_buffer_overflows()->Increment();
-}
-
-
-void StoreBuffer::Uniq() {
-  // Remove adjacent duplicates and cells that do not point at new space.
-  Address previous = NULL;
-  Address* write = old_start_;
-  DCHECK(may_move_store_buffer_entries_);
-  for (Address* read = old_start_; read < old_top_; read++) {
-    Address current = *read;
-    if (current != previous) {
-      Object* object = reinterpret_cast<Object*>(
-          base::NoBarrier_Load(reinterpret_cast<base::AtomicWord*>(current)));
-      if (heap_->InNewSpace(object)) {
-        *write++ = current;
-      }
-    }
-    previous = current;
-  }
-  old_top_ = write;
 }
 
 
@@ -130,9 +125,12 @@ void StoreBuffer::EnsureSpace(intptr_t space_needed) {
   while (old_limit_ - old_top_ < space_needed &&
          old_limit_ < old_reserved_limit_) {
     size_t grow = old_limit_ - old_start_;  // Double size.
-    CHECK(old_virtual_memory_->Commit(reinterpret_cast<void*>(old_limit_),
-                                      grow * kPointerSize, false));
-    old_limit_ += grow;
+    if (old_virtual_memory_->Commit(reinterpret_cast<void*>(old_limit_),
+                                    grow * kPointerSize, false)) {
+      old_limit_ += grow;
+    } else {
+      break;
+    }
   }
 
   if (SpaceAvailable(space_needed)) return;
@@ -209,6 +207,8 @@ void StoreBuffer::ExemptPopularPages(int prime_sample_step, int threshold) {
   }
   if (created_new_scan_on_scavenge_pages) {
     Filter(MemoryChunk::SCAN_ON_SCAVENGE);
+    heap_->isolate()->CountUsage(
+        v8::Isolate::UseCounterFeature::kStoreBufferOverflow);
   }
   old_buffer_is_filtered_ = true;
 }
@@ -238,20 +238,6 @@ void StoreBuffer::Filter(int flag) {
 }
 
 
-void StoreBuffer::SortUniq() {
-  Compact();
-  if (old_buffer_is_sorted_) return;
-  std::sort(old_start_, old_top_);
-  Uniq();
-
-  old_buffer_is_sorted_ = true;
-
-  // Filtering hash sets are inconsistent with the store buffer after this
-  // operation.
-  ClearFilteringHashSets();
-}
-
-
 bool StoreBuffer::PrepareForIteration() {
   Compact();
   PointerChunkIterator it(heap_);
@@ -274,41 +260,6 @@ bool StoreBuffer::PrepareForIteration() {
 
   return page_has_scan_on_scavenge_flag;
 }
-
-
-#ifdef DEBUG
-void StoreBuffer::Clean() {
-  ClearFilteringHashSets();
-  Uniq();  // Also removes things that no longer point to new space.
-  EnsureSpace(kStoreBufferSize / 2);
-}
-
-
-static Address* in_store_buffer_1_element_cache = NULL;
-
-
-bool StoreBuffer::CellIsInStoreBuffer(Address cell_address) {
-  if (!FLAG_enable_slow_asserts) return true;
-  if (in_store_buffer_1_element_cache != NULL &&
-      *in_store_buffer_1_element_cache == cell_address) {
-    return true;
-  }
-  Address* top = reinterpret_cast<Address*>(heap_->store_buffer_top());
-  for (Address* current = top - 1; current >= start_; current--) {
-    if (*current == cell_address) {
-      in_store_buffer_1_element_cache = current;
-      return true;
-    }
-  }
-  for (Address* current = old_top_ - 1; current >= old_start_; current--) {
-    if (*current == cell_address) {
-      in_store_buffer_1_element_cache = current;
-      return true;
-    }
-  }
-  return false;
-}
-#endif
 
 
 void StoreBuffer::ClearFilteringHashSets() {
@@ -341,8 +292,7 @@ void StoreBuffer::VerifyPointers(LargeObjectSpace* space) {
         // When we are not in GC the Heap::InNewSpace() predicate
         // checks that pointers which satisfy predicate point into
         // the active semispace.
-        Object* object = reinterpret_cast<Object*>(
-            base::NoBarrier_Load(reinterpret_cast<base::AtomicWord*>(slot)));
+        Object* object = *slot;
         heap_->InNewSpace(object);
         slot_address += kPointerSize;
       }
@@ -369,33 +319,40 @@ void StoreBuffer::GCEpilogue() {
 }
 
 
-void StoreBuffer::FindPointersToNewSpaceInRegion(
-    Address start, Address end, ObjectSlotCallback slot_callback,
-    bool clear_maps) {
-  for (Address slot_address = start; slot_address < end;
-       slot_address += kPointerSize) {
-    Object** slot = reinterpret_cast<Object**>(slot_address);
-    Object* object = reinterpret_cast<Object*>(
-        base::NoBarrier_Load(reinterpret_cast<base::AtomicWord*>(slot)));
-    if (heap_->InNewSpace(object)) {
-      HeapObject* heap_object = reinterpret_cast<HeapObject*>(object);
-      DCHECK(heap_object->IsHeapObject());
-      // The new space object was not promoted if it still contains a map
-      // pointer. Clear the map field now lazily.
-      if (clear_maps) ClearDeadObject(heap_object);
-      slot_callback(reinterpret_cast<HeapObject**>(slot), heap_object);
-      object = reinterpret_cast<Object*>(
-          base::NoBarrier_Load(reinterpret_cast<base::AtomicWord*>(slot)));
-      if (heap_->InNewSpace(object)) {
-        EnterDirectlyIntoStoreBuffer(slot_address);
-      }
+void StoreBuffer::ProcessOldToNewSlot(Address slot_address,
+                                      ObjectSlotCallback slot_callback) {
+  Object** slot = reinterpret_cast<Object**>(slot_address);
+  Object* object = *slot;
+
+  // If the object is not in from space, it must be a duplicate store buffer
+  // entry and the slot was already updated.
+  if (heap_->InFromSpace(object)) {
+    HeapObject* heap_object = reinterpret_cast<HeapObject*>(object);
+    DCHECK(heap_object->IsHeapObject());
+    slot_callback(reinterpret_cast<HeapObject**>(slot), heap_object);
+    object = *slot;
+    // If the object was in from space before and is after executing the
+    // callback in to space, the object is still live.
+    // Unfortunately, we do not know about the slot. It could be in a
+    // just freed free space object.
+    if (heap_->InToSpace(object)) {
+      EnterDirectlyIntoStoreBuffer(reinterpret_cast<Address>(slot));
     }
   }
 }
 
 
-void StoreBuffer::IteratePointersInStoreBuffer(ObjectSlotCallback slot_callback,
-                                               bool clear_maps) {
+void StoreBuffer::FindPointersToNewSpaceInRegion(
+    Address start, Address end, ObjectSlotCallback slot_callback) {
+  for (Address slot_address = start; slot_address < end;
+       slot_address += kPointerSize) {
+    ProcessOldToNewSlot(slot_address, slot_callback);
+  }
+}
+
+
+void StoreBuffer::IteratePointersInStoreBuffer(
+    ObjectSlotCallback slot_callback) {
   Address* limit = old_top_;
   old_top_ = old_start_;
   {
@@ -404,40 +361,78 @@ void StoreBuffer::IteratePointersInStoreBuffer(ObjectSlotCallback slot_callback,
 #ifdef DEBUG
       Address* saved_top = old_top_;
 #endif
-      Object** slot = reinterpret_cast<Object**>(*current);
-      Object* object = reinterpret_cast<Object*>(
-          base::NoBarrier_Load(reinterpret_cast<base::AtomicWord*>(slot)));
-      if (heap_->InFromSpace(object)) {
-        HeapObject* heap_object = reinterpret_cast<HeapObject*>(object);
-        // The new space object was not promoted if it still contains a map
-        // pointer. Clear the map field now lazily.
-        if (clear_maps) ClearDeadObject(heap_object);
-        slot_callback(reinterpret_cast<HeapObject**>(slot), heap_object);
-        object = reinterpret_cast<Object*>(
-            base::NoBarrier_Load(reinterpret_cast<base::AtomicWord*>(slot)));
-        if (heap_->InNewSpace(object)) {
-          EnterDirectlyIntoStoreBuffer(reinterpret_cast<Address>(slot));
-        }
-      }
+      ProcessOldToNewSlot(*current, slot_callback);
       DCHECK(old_top_ == saved_top + 1 || old_top_ == saved_top);
     }
   }
 }
 
 
+void StoreBuffer::ClearInvalidStoreBufferEntries() {
+  Compact();
+  Address* new_top = old_start_;
+  for (Address* current = old_start_; current < old_top_; current++) {
+    Address addr = *current;
+    Object** slot = reinterpret_cast<Object**>(addr);
+    Object* object = *slot;
+    if (heap_->InNewSpace(object) && object->IsHeapObject()) {
+      // If the target object is not black, the source slot must be part
+      // of a non-black (dead) object.
+      HeapObject* heap_object = HeapObject::cast(object);
+      if (Marking::IsBlack(Marking::MarkBitFrom(heap_object)) &&
+          heap_->mark_compact_collector()->IsSlotInLiveObject(addr)) {
+        *new_top++ = addr;
+      }
+    }
+  }
+  old_top_ = new_top;
+  ClearFilteringHashSets();
+
+  // Don't scan on scavenge dead large objects.
+  LargeObjectIterator it(heap_->lo_space());
+  for (HeapObject* object = it.Next(); object != NULL; object = it.Next()) {
+    MemoryChunk* chunk = MemoryChunk::FromAddress(object->address());
+    if (chunk->scan_on_scavenge() &&
+        Marking::IsWhite(Marking::MarkBitFrom(object))) {
+      chunk->set_scan_on_scavenge(false);
+    }
+  }
+}
+
+
+void StoreBuffer::VerifyValidStoreBufferEntries() {
+  for (Address* current = old_start_; current < old_top_; current++) {
+    Object** slot = reinterpret_cast<Object**>(*current);
+    Object* object = *slot;
+    CHECK(object->IsHeapObject());
+    CHECK(heap_->InNewSpace(object));
+    heap_->mark_compact_collector()->VerifyIsSlotInLiveObject(
+        reinterpret_cast<Address>(slot), HeapObject::cast(object));
+  }
+}
+
+
+class FindPointersToNewSpaceVisitor final : public ObjectVisitor {
+ public:
+  FindPointersToNewSpaceVisitor(StoreBuffer* store_buffer,
+                                ObjectSlotCallback callback)
+      : store_buffer_(store_buffer), callback_(callback) {}
+
+  V8_INLINE void VisitPointers(Object** start, Object** end) override {
+    store_buffer_->FindPointersToNewSpaceInRegion(
+        reinterpret_cast<Address>(start), reinterpret_cast<Address>(end),
+        callback_);
+  }
+
+  V8_INLINE void VisitCodeEntry(Address code_entry_slot) override {}
+
+ private:
+  StoreBuffer* store_buffer_;
+  ObjectSlotCallback callback_;
+};
+
+
 void StoreBuffer::IteratePointersToNewSpace(ObjectSlotCallback slot_callback) {
-  IteratePointersToNewSpace(slot_callback, false);
-}
-
-
-void StoreBuffer::IteratePointersToNewSpaceAndClearMaps(
-    ObjectSlotCallback slot_callback) {
-  IteratePointersToNewSpace(slot_callback, true);
-}
-
-
-void StoreBuffer::IteratePointersToNewSpace(ObjectSlotCallback slot_callback,
-                                            bool clear_maps) {
   // We do not sort or remove duplicated entries from the store buffer because
   // we expect that callback will rebuild the store buffer thus removing
   // all duplicates and pointers to old space.
@@ -446,7 +441,7 @@ void StoreBuffer::IteratePointersToNewSpace(ObjectSlotCallback slot_callback,
   // TODO(gc): we want to skip slots on evacuation candidates
   // but we can't simply figure that out from slot address
   // because slot can belong to a large object.
-  IteratePointersInStoreBuffer(slot_callback, clear_maps);
+  IteratePointersInStoreBuffer(slot_callback);
 
   // We are done scanning all the pointers that were in the store buffer, but
   // there may be some pages marked scan_on_scavenge that have pointers to new
@@ -463,6 +458,7 @@ void StoreBuffer::IteratePointersToNewSpace(ObjectSlotCallback slot_callback,
     }
     PointerChunkIterator it(heap_);
     MemoryChunk* chunk;
+    FindPointersToNewSpaceVisitor visitor(this, slot_callback);
     while ((chunk = it.next()) != NULL) {
       if (chunk->scan_on_scavenge()) {
         chunk->set_scan_on_scavenge(false);
@@ -475,13 +471,13 @@ void StoreBuffer::IteratePointersToNewSpace(ObjectSlotCallback slot_callback,
           DCHECK(array->IsFixedArray());
           Address start = array->address();
           Address end = start + array->Size();
-          FindPointersToNewSpaceInRegion(start, end, slot_callback, clear_maps);
+          FindPointersToNewSpaceInRegion(start, end, slot_callback);
         } else {
           Page* page = reinterpret_cast<Page*>(chunk);
           PagedSpace* owner = reinterpret_cast<PagedSpace*>(page->owner());
           if (owner == heap_->map_space()) {
             DCHECK(page->WasSwept());
-            HeapObjectIterator iterator(page, NULL);
+            HeapObjectIterator iterator(page);
             for (HeapObject* heap_object = iterator.Next(); heap_object != NULL;
                  heap_object = iterator.Next()) {
               // We skip free space objects.
@@ -490,56 +486,26 @@ void StoreBuffer::IteratePointersToNewSpace(ObjectSlotCallback slot_callback,
                 FindPointersToNewSpaceInRegion(
                     heap_object->address() + Map::kPointerFieldsBeginOffset,
                     heap_object->address() + Map::kPointerFieldsEndOffset,
-                    slot_callback, clear_maps);
+                    slot_callback);
               }
             }
           } else {
-            if (!page->SweepingCompleted()) {
-              heap_->mark_compact_collector()->SweepInParallel(page, owner);
-              if (!page->SweepingCompleted()) {
-                // We were not able to sweep that page, i.e., a concurrent
-                // sweeper thread currently owns this page.
-                // TODO(hpayer): This may introduce a huge pause here. We
-                // just care about finish sweeping of the scan on scavenge page.
-                heap_->mark_compact_collector()->EnsureSweepingCompleted();
-              }
-            }
-            CHECK(page->owner() == heap_->old_pointer_space());
-            HeapObjectIterator iterator(page, NULL);
-            for (HeapObject* heap_object = iterator.Next(); heap_object != NULL;
-                 heap_object = iterator.Next()) {
-              // We iterate over objects that contain new space pointers only.
-              bool may_contain_raw_values = heap_object->MayContainRawValues();
-              if (!may_contain_raw_values) {
-                Address obj_address = heap_object->address();
-                const int start_offset = HeapObject::kHeaderSize;
-                const int end_offset = heap_object->Size();
-#if V8_DOUBLE_FIELDS_UNBOXING
-                LayoutDescriptorHelper helper(heap_object->map());
-                bool has_only_tagged_fields = helper.all_fields_tagged();
-
-                if (!has_only_tagged_fields) {
-                  for (int offset = start_offset; offset < end_offset;) {
-                    int end_of_region_offset;
-                    if (helper.IsTagged(offset, end_offset,
-                                        &end_of_region_offset)) {
-                      FindPointersToNewSpaceInRegion(
-                          obj_address + offset,
-                          obj_address + end_of_region_offset, slot_callback,
-                          clear_maps);
-                    }
-                    offset = end_of_region_offset;
-                  }
-                } else {
-#endif
-                  Address start_address = obj_address + start_offset;
-                  Address end_address = obj_address + end_offset;
-                  // Object has only tagged fields.
-                  FindPointersToNewSpaceInRegion(start_address, end_address,
-                                                 slot_callback, clear_maps);
-#if V8_DOUBLE_FIELDS_UNBOXING
-                }
-#endif
+            if (page->IsFlagSet(Page::COMPACTION_WAS_ABORTED)) {
+              // Aborted pages require iterating using mark bits because they
+              // don't have an iterable object layout before sweeping (which can
+              // only happen later). Note that we can never reach an
+              // aborted page through the scavenger.
+              DCHECK_EQ(heap_->gc_state(), Heap::MARK_COMPACT);
+              heap_->mark_compact_collector()->VisitLiveObjectsBody(page,
+                                                                    &visitor);
+            } else {
+              heap_->mark_compact_collector()
+                  ->SweepOrWaitUntilSweepingCompleted(page);
+              HeapObjectIterator iterator(page);
+              for (HeapObject* heap_object = iterator.Next();
+                   heap_object != nullptr; heap_object = iterator.Next()) {
+                // We iterate over objects that contain new space pointers only.
+                heap_object->IterateBody(&visitor);
               }
             }
           }
@@ -561,7 +527,7 @@ void StoreBuffer::Compact() {
   // There's no check of the limit in the loop below so we check here for
   // the worst case (compaction doesn't eliminate any pointers).
   DCHECK(top <= limit_);
-  heap_->public_set_store_buffer_top(start_);
+  heap_->set_store_buffer_top(reinterpret_cast<Smi*>(start_));
   EnsureSpace(top - start_);
   DCHECK(may_move_store_buffer_entries_);
   // Goes through the addresses in the store buffer attempting to remove
@@ -570,9 +536,7 @@ void StoreBuffer::Compact() {
   // functions to reduce the number of unnecessary clashes.
   hash_sets_are_empty_ = false;  // Hash sets are in use.
   for (Address* current = start_; current < top; current++) {
-    DCHECK(!heap_->cell_space()->Contains(*current));
     DCHECK(!heap_->code_space()->Contains(*current));
-    DCHECK(!heap_->old_data_space()->Contains(*current));
     uintptr_t int_addr = reinterpret_cast<uintptr_t>(*current);
     // Shift out the last bits including any tags.
     int_addr >>= kPointerSizeLog2;
@@ -605,5 +569,56 @@ void StoreBuffer::Compact() {
   }
   heap_->isolate()->counters()->store_buffer_compactions()->Increment();
 }
+
+
+void StoreBufferRebuilder::Callback(MemoryChunk* page, StoreBufferEvent event) {
+  if (event == kStoreBufferStartScanningPagesEvent) {
+    start_of_current_page_ = NULL;
+    current_page_ = NULL;
+  } else if (event == kStoreBufferScanningPageEvent) {
+    if (current_page_ != NULL) {
+      // If this page already overflowed the store buffer during this iteration.
+      if (current_page_->scan_on_scavenge()) {
+        // Then we should wipe out the entries that have been added for it.
+        store_buffer_->SetTop(start_of_current_page_);
+      } else if (store_buffer_->Top() - start_of_current_page_ >=
+                 (store_buffer_->Limit() - store_buffer_->Top()) >> 2) {
+        // Did we find too many pointers in the previous page?  The heuristic is
+        // that no page can take more then 1/5 the remaining slots in the store
+        // buffer.
+        current_page_->set_scan_on_scavenge(true);
+        store_buffer_->SetTop(start_of_current_page_);
+      } else {
+        // In this case the page we scanned took a reasonable number of slots in
+        // the store buffer.  It has now been rehabilitated and is no longer
+        // marked scan_on_scavenge.
+        DCHECK(!current_page_->scan_on_scavenge());
+      }
+    }
+    start_of_current_page_ = store_buffer_->Top();
+    current_page_ = page;
+  } else if (event == kStoreBufferFullEvent) {
+    // The current page overflowed the store buffer again.  Wipe out its entries
+    // in the store buffer and mark it scan-on-scavenge again.  This may happen
+    // several times while scanning.
+    if (current_page_ == NULL) {
+      // Store Buffer overflowed while scanning promoted objects.  These are not
+      // in any particular page, though they are likely to be clustered by the
+      // allocation routines.
+      store_buffer_->EnsureSpace(StoreBuffer::kStoreBufferSize / 2);
+    } else {
+      // Store Buffer overflowed while scanning a particular old space page for
+      // pointers to new space.
+      DCHECK(current_page_ == page);
+      DCHECK(page != NULL);
+      current_page_->set_scan_on_scavenge(true);
+      DCHECK(start_of_current_page_ != store_buffer_->Top());
+      store_buffer_->SetTop(start_of_current_page_);
+    }
+  } else {
+    UNREACHABLE();
+  }
 }
-}  // namespace v8::internal
+
+}  // namespace internal
+}  // namespace v8

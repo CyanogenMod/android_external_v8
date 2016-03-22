@@ -28,45 +28,69 @@ class PrototypeIterator {
 
   enum WhereToEnd { END_AT_NULL, END_AT_NON_HIDDEN };
 
+  const int kProxyPrototypeLimit = 100 * 1000;
+
   PrototypeIterator(Isolate* isolate, Handle<Object> receiver,
                     WhereToStart where_to_start = START_AT_PROTOTYPE)
       : did_jump_to_prototype_chain_(false),
         object_(NULL),
         handle_(receiver),
-        isolate_(isolate) {
+        isolate_(isolate),
+        seen_proxies_(0) {
     CHECK(!handle_.is_null());
     if (where_to_start == START_AT_PROTOTYPE) {
       Advance();
     }
   }
+
   PrototypeIterator(Isolate* isolate, Object* receiver,
                     WhereToStart where_to_start = START_AT_PROTOTYPE)
       : did_jump_to_prototype_chain_(false),
         object_(receiver),
-        isolate_(isolate) {
+        isolate_(isolate),
+        seen_proxies_(0) {
     if (where_to_start == START_AT_PROTOTYPE) {
       Advance();
     }
   }
+
   explicit PrototypeIterator(Map* receiver_map)
       : did_jump_to_prototype_chain_(true),
         object_(receiver_map->prototype()),
         isolate_(receiver_map->GetIsolate()) {}
+
   explicit PrototypeIterator(Handle<Map> receiver_map)
       : did_jump_to_prototype_chain_(true),
         object_(NULL),
         handle_(handle(receiver_map->prototype(), receiver_map->GetIsolate())),
         isolate_(receiver_map->GetIsolate()) {}
+
   ~PrototypeIterator() {}
 
-  Object* GetCurrent() const {
+  bool HasAccess() const {
+    // We can only perform access check in the handlified version of the
+    // PrototypeIterator.
+    DCHECK(!handle_.is_null());
+    if (handle_->IsAccessCheckNeeded()) {
+      return isolate_->MayAccess(handle(isolate_->context()),
+                                 Handle<JSObject>::cast(handle_));
+    }
+    return true;
+  }
+
+  template <typename T = Object>
+  T* GetCurrent() const {
     DCHECK(handle_.is_null());
-    return object_;
+    return T::cast(object_);
   }
-  static Handle<Object> GetCurrent(const PrototypeIterator& iterator) {
+
+  template <typename T = Object>
+  static Handle<T> GetCurrent(const PrototypeIterator& iterator) {
     DCHECK(!iterator.handle_.is_null());
-    return iterator.handle_;
+    DCHECK(iterator.object_ == NULL);
+    return Handle<T>::cast(iterator.handle_);
   }
+
   void Advance() {
     if (handle_.is_null() && object_->IsJSProxy()) {
       did_jump_to_prototype_chain_ = true;
@@ -79,6 +103,7 @@ class PrototypeIterator {
     }
     AdvanceIgnoringProxies();
   }
+
   void AdvanceIgnoringProxies() {
     if (!did_jump_to_prototype_chain_) {
       did_jump_to_prototype_chain_ = true;
@@ -96,6 +121,34 @@ class PrototypeIterator {
       }
     }
   }
+
+  // Returns false iff a call to JSProxy::GetPrototype throws.
+  // TODO(neis): This should probably replace Advance().
+  bool AdvanceFollowingProxies() {
+    DCHECK(!(handle_.is_null() && object_->IsJSProxy()));
+    if (!HasAccess()) {
+      // Abort the lookup if we do not have access to the current object.
+      handle_ = isolate_->factory()->null_value();
+      return true;
+    }
+    if (handle_.is_null() || !handle_->IsJSProxy()) {
+      AdvanceIgnoringProxies();
+      return true;
+    }
+    // Due to possible __proto__ recursion limit the number of Proxies
+    // we visit to an arbitrarily chosen large number.
+    seen_proxies_++;
+    if (seen_proxies_ > kProxyPrototypeLimit) {
+      isolate_->Throw(
+          *isolate_->factory()->NewRangeError(MessageTemplate::kStackOverflow));
+      return false;
+    }
+    did_jump_to_prototype_chain_ = true;
+    MaybeHandle<Object> proto =
+        JSProxy::GetPrototype(Handle<JSProxy>::cast(handle_));
+    return proto.ToHandle(&handle_);
+  }
+
   bool IsAtEnd(WhereToEnd where_to_end = END_AT_NULL) const {
     if (handle_.is_null()) {
       return object_->IsNull() ||
@@ -109,10 +162,12 @@ class PrototypeIterator {
               !Handle<HeapObject>::cast(handle_)->map()->is_hidden_prototype());
     }
   }
+
   bool IsAtEnd(Object* final_object) {
     DCHECK(handle_.is_null());
     return object_->IsNull() || object_ == final_object;
   }
+
   bool IsAtEnd(Handle<Object> final_object) {
     DCHECK(!handle_.is_null());
     return handle_->IsNull() || *handle_ == *final_object;
@@ -123,6 +178,7 @@ class PrototypeIterator {
   Object* object_;
   Handle<Object> handle_;
   Isolate* isolate_;
+  int seen_proxies_;
 
   DISALLOW_COPY_AND_ASSIGN(PrototypeIterator);
 };

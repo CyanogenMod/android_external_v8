@@ -44,7 +44,7 @@ int SysInfo::NumberOfProcessors() {
   }
   return static_cast<int>(result);
 #elif V8_OS_WIN
-  SYSTEM_INFO system_info = {0};
+  SYSTEM_INFO system_info = {};
   ::GetNativeSystemInfo(&system_info);
   return static_cast<int>(system_info.dwNumberOfProcessors);
 #endif
@@ -88,6 +88,9 @@ int64_t SysInfo::AmountOfPhysicalMemory() {
 #elif V8_OS_NACL
   // No support for _SC_PHYS_PAGES, assume 2GB.
   return static_cast<int64_t>(1) << 31;
+#elif V8_OS_AIX
+  int64_t result = sysconf(_SC_AIX_REALMEM);
+  return static_cast<int64_t>(result) * 1024L;
 #elif V8_OS_POSIX
   long pages = sysconf(_SC_PHYS_PAGES);    // NOLINT(runtime/int)
   long page_size = sysconf(_SC_PAGESIZE);  // NOLINT(runtime/int)

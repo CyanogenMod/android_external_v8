@@ -5,6 +5,12 @@
 #ifndef V8_PPC_CONSTANTS_PPC_H_
 #define V8_PPC_CONSTANTS_PPC_H_
 
+#include <stdint.h>
+
+#include "src/base/logging.h"
+#include "src/base/macros.h"
+#include "src/globals.h"
+
 namespace v8 {
 namespace internal {
 
@@ -12,10 +18,14 @@ namespace internal {
 const int kNumRegisters = 32;
 
 // FP support.
-const int kNumFPDoubleRegisters = 32;
-const int kNumFPRegisters = kNumFPDoubleRegisters;
+const int kNumDoubleRegisters = 32;
 
 const int kNoRegister = -1;
+
+// Used in embedded constant pool builder - max reach in bits for
+// various load instructions (one less due to unsigned)
+const int kLoadPtrMaxReachBits = 15;
+const int kLoadDoubleMaxReachBits = 15;
 
 // sign-extend the least significant 16-bits of value <imm>
 #define SIGN_EXT_IMM16(imm) ((static_cast<int>(imm) << 16) >> 16)
@@ -163,6 +173,7 @@ enum OpcodeExt2 {
   SUBFCX = 8 << 1,
   ADDCX = 10 << 1,
   MULHWUX = 11 << 1,
+  ISEL = 15 << 1,
   MFCR = 19 << 1,
   LWARX = 20 << 1,
   LDX = 21 << 1,
@@ -192,17 +203,17 @@ enum OpcodeExt2 {
   STWX = 151 << 1,    // store word w/ x-form
   MTVSRD = 179 << 1,  // Move To VSR Doubleword
   STDUX = 181 << 1,
-  STWUX = 183 << 1,  // store word w/ update x-form
-                     /*
-    MTCRF
-    MTMSR
-    STWCXx
-    SUBFZEX
-  */
-  ADDZEX = 202 << 1,  // Add to Zero Extended
-                      /*
-    MTSR
-  */
+  STWUX = 183 << 1,    // store word w/ update x-form
+                       /*
+      MTCRF
+      MTMSR
+      STWCXx
+      SUBFZEX
+    */
+  ADDZEX = 202 << 1,   // Add to Zero Extended
+                       /*
+     MTSR
+   */
   MTVSRWA = 211 << 1,  // Move To VSR Word Algebraic
   STBX = 215 << 1,     // store byte w/ x-form
   MULLD = 233 << 1,    // Multiply Low Double Word
@@ -212,16 +223,22 @@ enum OpcodeExt2 {
   ADDX = 266 << 1,     // Add
   LHZX = 279 << 1,     // load half-word zero w/ x-form
   LHZUX = 311 << 1,    // load half-word zero w/ update x-form
+  LWAX = 341 << 1,     // load word algebraic w/ x-form
   LHAX = 343 << 1,     // load half-word algebraic w/ x-form
   LHAUX = 375 << 1,    // load half-word algebraic w/ update x-form
   XORX = 316 << 1,     // Exclusive OR
   MFSPR = 339 << 1,    // Move from Special-Purpose-Register
+  POPCNTW = 378 << 1,  // Population Count Words
   STHX = 407 << 1,     // store half-word w/ x-form
+  ORC = 412 << 1,      // Or with Complement
   STHUX = 439 << 1,    // store half-word w/ update x-form
   ORX = 444 << 1,      // Or
+  DIVDU = 457 << 1,    // Divide Double Word Unsigned
+  DIVWU = 459 << 1,    // Divide Word Unsigned
   MTSPR = 467 << 1,    // Move to Special-Purpose-Register
   DIVD = 489 << 1,     // Divide Double Word
   DIVW = 491 << 1,     // Divide Word
+  POPCNTD = 506 << 1,  // Population Count Doubleword
 
   // Below represent bits 10-1  (any value >= 512)
   LFSX = 535 << 1,    // load float-single w/ x-form
@@ -258,21 +275,29 @@ enum OpcodeExt4 {
   FMADD = 29 << 1,  // Floating Multiply-Add
 
   // Bits 10-1
-  FCMPU = 0 << 1,     // Floating Compare Unordered
-  FRSP = 12 << 1,     // Floating-Point Rounding
-  FCTIW = 14 << 1,    // Floating Convert to Integer Word X-form
-  FCTIWZ = 15 << 1,   // Floating Convert to Integer Word with Round to Zero
-  FNEG = 40 << 1,     // Floating Negate
-  MCRFS = 64 << 1,    // Move to Condition Register from FPSCR
-  FMR = 72 << 1,      // Floating Move Register
-  MTFSFI = 134 << 1,  // Move to FPSCR Field Immediate
-  FABS = 264 << 1,    // Floating Absolute Value
-  FRIM = 488 << 1,    // Floating Round to Integer Minus
-  MFFS = 583 << 1,    // move from FPSCR x-form
-  MTFSF = 711 << 1,   // move to FPSCR fields XFL-form
-  FCFID = 846 << 1,   // Floating convert from integer doubleword
-  FCTID = 814 << 1,   // Floating convert from integer doubleword
-  FCTIDZ = 815 << 1   // Floating convert from integer doubleword
+  FCMPU = 0 << 1,      // Floating Compare Unordered
+  FRSP = 12 << 1,      // Floating-Point Rounding
+  FCTIW = 14 << 1,     // Floating Convert to Integer Word X-form
+  FCTIWZ = 15 << 1,    // Floating Convert to Integer Word with Round to Zero
+  MTFSB1 = 38 << 1,    // Move to FPSCR Bit 1
+  FNEG = 40 << 1,      // Floating Negate
+  MCRFS = 64 << 1,     // Move to Condition Register from FPSCR
+  MTFSB0 = 70 << 1,    // Move to FPSCR Bit 0
+  FMR = 72 << 1,       // Floating Move Register
+  MTFSFI = 134 << 1,   // Move to FPSCR Field Immediate
+  FABS = 264 << 1,     // Floating Absolute Value
+  FRIN = 392 << 1,     // Floating Round to Integer Nearest
+  FRIZ = 424 << 1,     // Floating Round to Integer Toward Zero
+  FRIP = 456 << 1,     // Floating Round to Integer Plus
+  FRIM = 488 << 1,     // Floating Round to Integer Minus
+  MFFS = 583 << 1,     // move from FPSCR x-form
+  MTFSF = 711 << 1,    // move to FPSCR fields XFL-form
+  FCTID = 814 << 1,    // Floating convert to integer doubleword
+  FCTIDZ = 815 << 1,   // ^^^ with round toward zero
+  FCFID = 846 << 1,    // Floating convert from integer doubleword
+  FCTIDU = 942 << 1,   // Floating convert to integer doubleword unsigned
+  FCTIDUZ = 943 << 1,  // ^^^ with round toward zero
+  FCFIDU = 974 << 1    // Floating convert from integer doubleword unsigned
 };
 
 enum OpcodeExt5 {
@@ -323,7 +348,8 @@ enum {
   kBOfieldMask = 0x1f << 21,
   kOpcodeMask = 0x3f << 26,
   kExt1OpcodeMask = 0x3ff << 1,
-  kExt2OpcodeMask = 0x1f << 1,
+  kExt2OpcodeMask = 0x3ff << 1,
+  kExt2OpcodeVariant2Mask = 0x1ff << 2,
   kExt5OpcodeMask = 0x3 << 2,
   kBOMask = 0x1f << 21,
   kBIMask = 0x1F << 16,
@@ -334,26 +360,6 @@ enum {
   kTOMask = 0x1f << 21
 };
 
-// the following is to differentiate different faked opcodes for
-// the BOGUS PPC instruction we invented (when bit 25 is 0) or to mark
-// different stub code (when bit 25 is 1)
-//   - use primary opcode 1 for undefined instruction
-//   - use bit 25 to indicate whether the opcode is for fake-arm
-//     instr or stub-marker
-//   - use the least significant 6-bit to indicate FAKE_OPCODE_T or
-//     MARKER_T
-#define FAKE_OPCODE 1 << 26
-#define MARKER_SUBOPCODE_BIT 25
-#define MARKER_SUBOPCODE 1 << MARKER_SUBOPCODE_BIT
-#define FAKER_SUBOPCODE 0 << MARKER_SUBOPCODE_BIT
-
-enum FAKE_OPCODE_T {
-  fBKPT = 14,
-  fLastFaker  // can't be more than 128 (2^^7)
-};
-#define FAKE_OPCODE_HIGH_BIT 7  // fake opcode has to fall into bit 0~7
-#define F_NEXT_AVAILABLE_STUB_MARKER 369  // must be less than 2^^9 (512)
-#define STUB_MARKER_HIGH_BIT 9  // stub marker has to fall into bit 0~9
 // -----------------------------------------------------------------------------
 // Addressing modes and instruction variants.
 
@@ -398,6 +404,13 @@ enum CRBit { CR_LT = 0, CR_GT = 1, CR_EQ = 2, CR_SO = 3, CR_FU = 3 };
 
 #define CRWIDTH 4
 
+// These are the documented bit positions biased down by 32
+enum FPSCRBit {
+  VXSOFT = 21,  // 53: Software-Defined Condition
+  VXSQRT = 22,  // 54: Invalid Square Root
+  VXCVI = 23    // 55: Invalid Integer Convert
+};
+
 // -----------------------------------------------------------------------------
 // Supervisor Call (svc) specific support.
 
@@ -411,9 +424,7 @@ enum SoftwareInterruptCodes {
   // break point
   kBreakpoint = 0x821008,  // bits23-0 of 0x7d821008 = twge r2, r2
   // stop
-  kStopCode = 1 << 23,
-  // info
-  kInfo = 0x9ff808  // bits23-0 of 0x7d9ff808 = twge r31, r31
+  kStopCode = 1 << 23
 };
 const uint32_t kStopCodeMask = kStopCode - 1;
 const uint32_t kMaxStopCode = kStopCode - 1;
@@ -566,35 +577,23 @@ class Instruction {
 // Helper functions for converting between register numbers and names.
 class Registers {
  public:
-  // Return the name of the register.
-  static const char* Name(int reg);
-
   // Lookup the register number for the name provided.
   static int Number(const char* name);
-
-  struct RegisterAlias {
-    int reg;
-    const char* name;
-  };
 
  private:
   static const char* names_[kNumRegisters];
-  static const RegisterAlias aliases_[];
 };
 
 // Helper functions for converting between FP register numbers and names.
-class FPRegisters {
+class DoubleRegisters {
  public:
-  // Return the name of the register.
-  static const char* Name(int reg);
-
   // Lookup the register number for the name provided.
   static int Number(const char* name);
 
  private:
-  static const char* names_[kNumFPRegisters];
+  static const char* names_[kNumDoubleRegisters];
 };
-}
-}  // namespace v8::internal
+}  // namespace internal
+}  // namespace v8
 
 #endif  // V8_PPC_CONSTANTS_PPC_H_

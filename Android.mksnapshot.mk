@@ -20,8 +20,8 @@ V8_LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES :=
 include $(LOCAL_PATH)/Android.v8common.mk
 
 LOCAL_SRC_FILES += \
-  src/mksnapshot.cc \
-  src/snapshot-empty.cc
+  src/snapshot/mksnapshot.cc \
+  src/snaphot/snapshot-empty.cc
 
 ifneq (,$(filter $(HOST_ARCH),x86 x86_64))
 LOCAL_SRC_FILES += src/base/atomicops_internals_x86_gcc.cc

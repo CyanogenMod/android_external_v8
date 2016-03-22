@@ -13,10 +13,8 @@ namespace internal {
 enum GCIdleTimeActionType {
   DONE,
   DO_NOTHING,
-  DO_INCREMENTAL_MARKING,
-  DO_SCAVENGE,
+  DO_INCREMENTAL_STEP,
   DO_FULL_GC,
-  DO_FINALIZE_SWEEPING
 };
 
 
@@ -25,7 +23,6 @@ class GCIdleTimeAction {
   static GCIdleTimeAction Done() {
     GCIdleTimeAction result;
     result.type = DONE;
-    result.parameter = 0;
     result.additional_work = false;
     return result;
   }
@@ -33,23 +30,13 @@ class GCIdleTimeAction {
   static GCIdleTimeAction Nothing() {
     GCIdleTimeAction result;
     result.type = DO_NOTHING;
-    result.parameter = 0;
     result.additional_work = false;
     return result;
   }
 
-  static GCIdleTimeAction IncrementalMarking(intptr_t step_size) {
+  static GCIdleTimeAction IncrementalStep() {
     GCIdleTimeAction result;
-    result.type = DO_INCREMENTAL_MARKING;
-    result.parameter = step_size;
-    result.additional_work = false;
-    return result;
-  }
-
-  static GCIdleTimeAction Scavenge() {
-    GCIdleTimeAction result;
-    result.type = DO_SCAVENGE;
-    result.parameter = 0;
+    result.type = DO_INCREMENTAL_STEP;
     result.additional_work = false;
     return result;
   }
@@ -57,15 +44,6 @@ class GCIdleTimeAction {
   static GCIdleTimeAction FullGC() {
     GCIdleTimeAction result;
     result.type = DO_FULL_GC;
-    result.parameter = 0;
-    result.additional_work = false;
-    return result;
-  }
-
-  static GCIdleTimeAction FinalizeSweeping() {
-    GCIdleTimeAction result;
-    result.type = DO_FINALIZE_SWEEPING;
-    result.parameter = 0;
     result.additional_work = false;
     return result;
   }
@@ -73,12 +51,20 @@ class GCIdleTimeAction {
   void Print();
 
   GCIdleTimeActionType type;
-  intptr_t parameter;
   bool additional_work;
 };
 
 
-class GCTracer;
+class GCIdleTimeHeapState {
+ public:
+  void Print();
+
+  int contexts_disposed;
+  double contexts_disposal_rate;
+  size_t size_of_objects;
+  bool incremental_marking_stopped;
+};
+
 
 // The idle time handler makes decisions about which garbage collection
 // operations are executing during IdleNotification.
@@ -111,23 +97,18 @@ class GCIdleTimeHandler {
   // EstimateFinalIncrementalMarkCompactTime.
   static const size_t kMaxFinalIncrementalMarkCompactTimeInMs;
 
-  // Minimum time to finalize sweeping phase. The main thread may wait for
-  // sweeper threads.
-  static const size_t kMinTimeForFinalizeSweeping;
+  // This is the maximum scheduled idle time. Note that it can be more than
+  // 16.66 ms when there is currently no rendering going on.
+  static const size_t kMaxScheduledIdleTime = 50;
 
-  // Number of idle mark-compact events, after which idle handler will finish
-  // idle round.
-  static const int kMaxMarkCompactsInIdleRound;
+  // The maximum idle time when frames are rendered is 16.66ms.
+  static const size_t kMaxFrameRenderingIdleTime = 17;
 
-  // Number of scavenges that will trigger start of new idle round.
-  static const int kIdleScavengeThreshold;
+  static const int kMinBackgroundIdleTime = 900;
 
-  // That is the maximum idle time we will have during frame rendering.
-  static const size_t kMaxFrameRenderingIdleTime = 16;
-
-  // If we haven't recorded any scavenger events yet, we use a conservative
-  // lower bound for the scavenger speed.
-  static const size_t kInitialConservativeScavengeSpeed = 100 * KB;
+  // An allocation throughput below kLowAllocationThroughput bytes/ms is
+  // considered low
+  static const size_t kLowAllocationThroughput = 1000;
 
   // If contexts are disposed at a higher rate a full gc is triggered.
   static const double kHighContextDisposalRate;
@@ -135,42 +116,19 @@ class GCIdleTimeHandler {
   // Incremental marking step time.
   static const size_t kIncrementalMarkingStepTimeInMs = 1;
 
-  class HeapState {
-   public:
-    void Print();
+  static const size_t kMinTimeForOverApproximatingWeakClosureInMs;
 
-    int contexts_disposed;
-    double contexts_disposal_rate;
-    size_t size_of_objects;
-    bool incremental_marking_stopped;
-    bool can_start_incremental_marking;
-    bool sweeping_in_progress;
-    size_t mark_compact_speed_in_bytes_per_ms;
-    size_t incremental_marking_speed_in_bytes_per_ms;
-    size_t final_incremental_mark_compact_speed_in_bytes_per_ms;
-    size_t scavenge_speed_in_bytes_per_ms;
-    size_t used_new_space_size;
-    size_t new_space_capacity;
-    size_t new_space_allocation_throughput_in_bytes_per_ms;
-  };
+  // Number of times we will return a Nothing action in the current mode
+  // despite having idle time available before we returning a Done action to
+  // ensure we don't keep scheduling idle tasks and making no progress.
+  static const int kMaxNoProgressIdleTimes = 10;
 
-  GCIdleTimeHandler()
-      : mark_compacts_since_idle_round_started_(0),
-        scavenges_since_last_idle_round_(0) {}
+  GCIdleTimeHandler() : idle_times_which_made_no_progress_(0) {}
 
-  GCIdleTimeAction Compute(double idle_time_in_ms, HeapState heap_state);
+  GCIdleTimeAction Compute(double idle_time_in_ms,
+                           GCIdleTimeHeapState heap_state);
 
-  void NotifyIdleMarkCompact() {
-    if (mark_compacts_since_idle_round_started_ < kMaxMarkCompactsInIdleRound) {
-      ++mark_compacts_since_idle_round_started_;
-      if (mark_compacts_since_idle_round_started_ ==
-          kMaxMarkCompactsInIdleRound) {
-        scavenges_since_last_idle_round_ = 0;
-      }
-    }
-  }
-
-  void NotifyScavenge() { ++scavenges_since_last_idle_round_; }
+  void ResetNoProgressCounter() { idle_times_which_made_no_progress_ = 0; }
 
   static size_t EstimateMarkingStepSize(size_t idle_time_in_ms,
                                         size_t marking_speed_in_bytes_per_ms);
@@ -192,23 +150,13 @@ class GCIdleTimeHandler {
       size_t idle_time_in_ms, size_t size_of_objects,
       size_t final_incremental_mark_compact_speed_in_bytes_per_ms);
 
-  static bool ShouldDoScavenge(
-      size_t idle_time_in_ms, size_t new_space_size, size_t used_new_space_size,
-      size_t scavenger_speed_in_bytes_per_ms,
-      size_t new_space_allocation_throughput_in_bytes_per_ms);
+  static bool ShouldDoOverApproximateWeakClosure(size_t idle_time_in_ms);
 
  private:
-  void StartIdleRound() { mark_compacts_since_idle_round_started_ = 0; }
-  bool IsMarkCompactIdleRoundFinished() {
-    return mark_compacts_since_idle_round_started_ ==
-           kMaxMarkCompactsInIdleRound;
-  }
-  bool EnoughGarbageSinceLastIdleRound() {
-    return scavenges_since_last_idle_round_ >= kIdleScavengeThreshold;
-  }
+  GCIdleTimeAction NothingOrDone(double idle_time_in_ms);
 
-  int mark_compacts_since_idle_round_started_;
-  int scavenges_since_last_idle_round_;
+  // Idle notifications with no progress.
+  int idle_times_which_made_no_progress_;
 
   DISALLOW_COPY_AND_ASSIGN(GCIdleTimeHandler);
 };

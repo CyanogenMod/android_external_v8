@@ -12,27 +12,30 @@ namespace v8 {
 namespace internal {
 namespace compiler {
 
-class MoveOptimizer FINAL {
+class MoveOptimizer final {
  public:
   MoveOptimizer(Zone* local_zone, InstructionSequence* code);
   void Run();
 
  private:
   typedef ZoneVector<MoveOperands*> MoveOpVector;
+  typedef ZoneVector<Instruction*> Instructions;
 
   InstructionSequence* code() const { return code_; }
   Zone* local_zone() const { return local_zone_; }
   Zone* code_zone() const { return code()->zone(); }
+  MoveOpVector& local_vector() { return local_vector_; }
 
-  void CompressMoves(MoveOpVector* eliminated, ParallelMove* left,
-                     ParallelMove* right);
-  void FinalizeMoves(MoveOpVector* loads, MoveOpVector* new_moves,
-                     GapInstruction* gap);
+  void CompressBlock(InstructionBlock* blocke);
+  void CompressMoves(ParallelMove* left, ParallelMove* right);
+  const Instruction* LastInstruction(const InstructionBlock* block) const;
+  void OptimizeMerge(InstructionBlock* block);
+  void FinalizeMoves(Instruction* instr);
 
   Zone* const local_zone_;
   InstructionSequence* const code_;
-  MoveOpVector temp_vector_0_;
-  MoveOpVector temp_vector_1_;
+  Instructions to_finalize_;
+  MoveOpVector local_vector_;
 
   DISALLOW_COPY_AND_ASSIGN(MoveOptimizer);
 };

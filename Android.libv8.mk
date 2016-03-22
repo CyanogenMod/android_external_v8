@@ -59,6 +59,25 @@ $(GEN2): $(LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES) $(JS2C_PY)
 	python $(SCRIPT) $@ EXPERIMENTAL $(LOCAL_JS_EXPERIMENTAL_LIBRARY_FILES)
 V8_GENERATED_LIBRARIES += $(generated_sources)/experimental-libraries.cc
 
+# Generate extra-libraries.cc
+GEN3 := $(generated_sources)/extra-libraries.cc
+$(GEN3): SCRIPT := $(generated_sources)/js2c.py
+$(GEN3): $(JS2C_PY)
+	@echo "Generating extra-libraries.cc"
+	@mkdir -p $(dir $@)
+	python $(SCRIPT) $@ EXTRAS
+V8_GENERATED_LIBRARIES += $(generated_sources)/extra-libraries.cc
+
+# Generate iexperimental-extra-libraries.cc
+GEN3 := $(generated_sources)/experimental-extra-libraries.cc
+$(GEN3): SCRIPT := $(generated_sources)/js2c.py
+$(GEN3): $(JS2C_PY)
+	@echo "Generating experimental-extra-libraries.cc"
+	@mkdir -p $(dir $@)
+	python $(SCRIPT) $@ EXPERIMENTAL_EXTRAS
+V8_GENERATED_LIBRARIES += $(generated_sources)/experimental-extra-libraries.cc
+
+
 LOCAL_GENERATED_SOURCES += $(V8_GENERATED_LIBRARIES)
 
 # Generate snapshot.cc
@@ -82,7 +101,7 @@ endif # TARGET_2ND_ARCH
 
 else
 LOCAL_SRC_FILES += \
-  src/snapshot-empty.cc
+	src/snapshot/snapshot-empty.cc \
 endif # ENABLE_V8_SNAPSHOT
 
 # The -fvisibility=hidden option below prevents exporting of symbols from
@@ -91,13 +110,14 @@ LOCAL_CFLAGS += \
 	-Wno-endif-labels \
 	-Wno-import \
 	-Wno-format \
+	-Wno-unused-parameter \
 	-fno-exceptions \
 	-fvisibility=hidden \
 	-DENABLE_DEBUGGER_SUPPORT \
 	-DENABLE_LOGGING_AND_PROFILING \
 	-DENABLE_VMSTATE_TRACKING \
 	-DV8_NATIVE_REGEXP \
-	-Wno-unused-parameter \
+	-DV8_I18N_SUPPORT \
 	-std=gnu++0x
 
 LOCAL_CFLAGS_arm += -DV8_TARGET_ARCH_ARM
@@ -129,7 +149,7 @@ endif
 
 LOCAL_SRC_FILES_$(TARGET_ARCH) += $(v8_local_src_files_$(TARGET_ARCH))
 
-LOCAL_SHARED_LIBRARIES += libicuuc libicui18n
+LOCAL_SHARED_LIBRARIES := libicuuc libicui18n
 
 LOCAL_C_INCLUDES += $(LOCAL_PATH)/src
 

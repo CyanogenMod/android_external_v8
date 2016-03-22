@@ -13,10 +13,10 @@
 
 namespace v8 {
 
-std::ostream& operator<<(std::ostream&, ExternalArrayType);
+class ArrayBufferAllocator;
 
 
-class TestWithIsolate : public ::testing::Test {
+class TestWithIsolate : public virtual ::testing::Test {
  public:
   TestWithIsolate();
   virtual ~TestWithIsolate();
@@ -27,6 +27,7 @@ class TestWithIsolate : public ::testing::Test {
   static void TearDownTestCase();
 
  private:
+  static ArrayBufferAllocator* array_buffer_allocator_;
   static Isolate* isolate_;
   Isolate::Scope isolate_scope_;
   HandleScope handle_scope_;
@@ -90,9 +91,9 @@ class TestWithIsolate : public virtual ::v8::TestWithIsolate {
 };
 
 
-class TestWithZone : public TestWithIsolate {
+class TestWithZone : public virtual ::testing::Test {
  public:
-  TestWithZone() : zone_(isolate()) {}
+  TestWithZone() {}
   virtual ~TestWithZone();
 
   Zone* zone() { return &zone_; }
@@ -101,6 +102,20 @@ class TestWithZone : public TestWithIsolate {
   Zone zone_;
 
   DISALLOW_COPY_AND_ASSIGN(TestWithZone);
+};
+
+
+class TestWithIsolateAndZone : public virtual TestWithIsolate {
+ public:
+  TestWithIsolateAndZone() {}
+  virtual ~TestWithIsolateAndZone();
+
+  Zone* zone() { return &zone_; }
+
+ private:
+  Zone zone_;
+
+  DISALLOW_COPY_AND_ASSIGN(TestWithIsolateAndZone);
 };
 
 }  // namespace internal

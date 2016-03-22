@@ -7,8 +7,9 @@
 
 #include <iosfwd>
 
-#include "src/compiler/machine-type.h"
 #include "src/handles.h"
+#include "src/machine-type.h"
+#include "src/objects.h"
 
 namespace v8 {
 namespace internal {
@@ -34,7 +35,7 @@ std::ostream& operator<<(std::ostream&, BaseTaggedness);
 
 
 // An access descriptor for loads/stores of array buffers.
-class BufferAccess FINAL {
+class BufferAccess final {
  public:
   explicit BufferAccess(ExternalArrayType external_array_type)
       : external_array_type_(external_array_type) {}
@@ -124,11 +125,9 @@ ElementAccess const& ElementAccessOf(const Operator* op) WARN_UNUSED_RESULT;
 //   - Bool: a tagged pointer to either the canonical JS #false or
 //           the canonical JS #true object
 //   - Bit: an untagged integer 0 or 1, but word-sized
-class SimplifiedOperatorBuilder FINAL {
+class SimplifiedOperatorBuilder final : public ZoneObject {
  public:
   explicit SimplifiedOperatorBuilder(Zone* zone);
-
-  const Operator* AnyToBoolean();
 
   const Operator* BooleanNot();
   const Operator* BooleanToNumber();
@@ -141,15 +140,23 @@ class SimplifiedOperatorBuilder FINAL {
   const Operator* NumberMultiply();
   const Operator* NumberDivide();
   const Operator* NumberModulus();
+  const Operator* NumberBitwiseOr();
+  const Operator* NumberBitwiseXor();
+  const Operator* NumberBitwiseAnd();
+  const Operator* NumberShiftLeft();
+  const Operator* NumberShiftRight();
+  const Operator* NumberShiftRightLogical();
   const Operator* NumberToInt32();
   const Operator* NumberToUint32();
+  const Operator* NumberIsHoleNaN();
+
+  const Operator* PlainPrimitiveToNumber();
 
   const Operator* ReferenceEqual(Type* type);
 
   const Operator* StringEqual();
   const Operator* StringLessThan();
   const Operator* StringLessThanOrEqual();
-  const Operator* StringAdd();
 
   const Operator* ChangeTaggedToInt32();
   const Operator* ChangeTaggedToUint32();
@@ -160,8 +167,10 @@ class SimplifiedOperatorBuilder FINAL {
   const Operator* ChangeBoolToBit();
   const Operator* ChangeBitToBool();
 
+  const Operator* ObjectIsNumber();
   const Operator* ObjectIsSmi();
-  const Operator* ObjectIsNonNegativeSmi();
+
+  const Operator* Allocate(PretenureFlag pretenure = NOT_TENURED);
 
   const Operator* LoadField(FieldAccess const&);
   const Operator* StoreField(FieldAccess const&);
