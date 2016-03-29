@@ -80,29 +80,8 @@ V8_GENERATED_LIBRARIES += $(generated_sources)/experimental-extra-libraries.cc
 
 LOCAL_GENERATED_SOURCES += $(V8_GENERATED_LIBRARIES)
 
-# Generate snapshot.cc
-ifeq ($(ENABLE_V8_SNAPSHOT),true)
-
-SNAP_GEN := $(generated_sources)/snapshot_$(TARGET_ARCH).cc
-MKSNAPSHOT := $(HOST_OUT_EXECUTABLES)/v8_mksnapshot.$(TARGET_ARCH)
-$(SNAP_GEN): PRIVATE_CUSTOM_TOOL = $(HOST_OUT_EXECUTABLES)/v8_mksnapshot.$(TARGET_ARCH) --log-snapshot-positions --logfile $(dir $@)/v8-snapshot_$(TARGET_ARCH).log $@
-$(SNAP_GEN): $(MKSNAPSHOT)
-	$(transform-generated-source)
-LOCAL_GENERATED_SOURCES_$(TARGET_ARCH) += $(SNAP_GEN)
-
-ifdef TARGET_2ND_ARCH
-SNAP_GEN := $(generated_sources)/snapshot_$(TARGET_2ND_ARCH).cc
-MKSNAPSHOT := $(HOST_OUT_EXECUTABLES)/v8_mksnapshot.$(TARGET_2ND_ARCH)
-$(SNAP_GEN): PRIVATE_CUSTOM_TOOL = $(HOST_OUT_EXECUTABLES)/v8_mksnapshot.$(TARGET_2ND_ARCH) --log-snapshot-positions --logfile $(dir $@)/v8-snapshot_$(TARGET_2ND_ARCH).log $@
-$(SNAP_GEN): $(MKSNAPSHOT)
-	$(transform-generated-source)
-LOCAL_GENERATED_SOURCES_$(TARGET_2ND_ARCH) += $(SNAP_GEN)
-endif # TARGET_2ND_ARCH
-
-else
 LOCAL_SRC_FILES += \
 	src/snapshot/snapshot-empty.cc \
-endif # ENABLE_V8_SNAPSHOT
 
 # The -fvisibility=hidden option below prevents exporting of symbols from
 # libv8.a.
