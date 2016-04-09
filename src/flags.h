@@ -58,10 +58,12 @@ class FlagList {
   // Set flags as consequence of being implied by another flag.
   static void EnforceFlagImplications();
 
-  // Hash of current flags (to quickly determine flag changes).
+  // Hash of flags (to quickly determine mismatching flag expectations).
+  // This hash is calculated during V8::Initialize and cached.
   static uint32_t Hash();
 };
 
-} }  // namespace v8::internal
+}  // namespace internal
+}  // namespace v8
 
 #endif  // V8_FLAGS_H_

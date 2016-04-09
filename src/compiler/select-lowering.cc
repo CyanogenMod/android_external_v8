@@ -8,6 +8,7 @@
 #include "src/compiler/diamond.h"
 #include "src/compiler/graph.h"
 #include "src/compiler/node.h"
+#include "src/compiler/node-properties.h"
 
 namespace v8 {
 namespace internal {
@@ -51,10 +52,10 @@ Reduction SelectLowering::Reduce(Node* node) {
   }
 
   // Create a Phi hanging off the previously determined merge.
-  node->set_op(common()->Phi(p.type(), 2));
   node->ReplaceInput(0, vthen);
   node->ReplaceInput(1, velse);
   node->ReplaceInput(2, merge);
+  NodeProperties::ChangeOp(node, common()->Phi(p.representation(), 2));
   return Changed(node);
 }
 
@@ -62,7 +63,7 @@ Reduction SelectLowering::Reduce(Node* node) {
 bool SelectLowering::ReachableFrom(Node* const sink, Node* const source) {
   // TODO(turbofan): This is probably horribly expensive, and it should be moved
   // into node.h or somewhere else?!
-  Zone zone(graph()->zone()->isolate());
+  Zone zone;
   std::queue<Node*, NodeDeque> queue((NodeDeque(&zone)));
   BoolVector visited(graph()->NodeCount(), false, &zone);
   queue.push(source);

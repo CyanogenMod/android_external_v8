@@ -5,7 +5,6 @@
 #ifndef V8_REGISTER_ALLOCATOR_VERIFIER_H_
 #define V8_REGISTER_ALLOCATOR_VERIFIER_H_
 
-#include "src/v8.h"
 #include "src/zone-containers.h"
 
 namespace v8 {
@@ -15,7 +14,7 @@ namespace compiler {
 class InstructionOperand;
 class InstructionSequence;
 
-class RegisterAllocatorVerifier FINAL : public ZoneObject {
+class RegisterAllocatorVerifier final : public ZoneObject {
  public:
   RegisterAllocatorVerifier(Zone* zone, const RegisterConfiguration* config,
                             const InstructionSequence* sequence);
@@ -31,15 +30,20 @@ class RegisterAllocatorVerifier FINAL : public ZoneObject {
     kFixedRegister,
     kDoubleRegister,
     kFixedDoubleRegister,
+    kSlot,
+    kDoubleSlot,
     kFixedSlot,
     kNone,
     kNoneDouble,
-    kSameAsFirst
+    kExplicit,
+    kSameAsFirst,
+    kRegisterAndSlot
   };
 
   struct OperandConstraint {
     ConstraintType type_;
     int value_;  // subkind index when relevant
+    int spilled_slot_;
     int virtual_register_;
   };
 
@@ -49,10 +53,9 @@ class RegisterAllocatorVerifier FINAL : public ZoneObject {
     OperandConstraint* operand_constraints_;
   };
 
-  class OutgoingMapping;
+  class BlockMaps;
 
   typedef ZoneVector<InstructionConstraint> Constraints;
-  typedef ZoneVector<OutgoingMapping*> OutgoingMappings;
 
   Zone* zone() const { return zone_; }
   const RegisterConfiguration* config() { return config_; }
@@ -68,8 +71,7 @@ class RegisterAllocatorVerifier FINAL : public ZoneObject {
   void CheckConstraint(const InstructionOperand* op,
                        const OperandConstraint* constraint);
 
-  void ConstructOutgoingMappings(OutgoingMappings* outgoing_mappings,
-                                 bool initial_pass);
+  void VerifyGapMoves(BlockMaps* outgoing_mappings, bool initial_pass);
 
   Zone* const zone_;
   const RegisterConfiguration* config_;

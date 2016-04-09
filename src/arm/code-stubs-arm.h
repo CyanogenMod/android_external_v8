@@ -5,6 +5,8 @@
 #ifndef V8_ARM_CODE_STUBS_ARM_H_
 #define V8_ARM_CODE_STUBS_ARM_H_
 
+#include "src/arm/frames-arm.h"
+
 namespace v8 {
 namespace internal {
 
@@ -74,7 +76,7 @@ class RecordWriteStub: public PlatformCodeStub {
     INCREMENTAL_COMPACTION
   };
 
-  bool SometimesSetsUpAFrame() OVERRIDE { return false; }
+  bool SometimesSetsUpAFrame() override { return false; }
 
   static void PatchBranchIntoNop(MacroAssembler* masm, int pos) {
     masm->instr_at_put(pos, (masm->instr_at(pos) & ~B27) | (B24 | B20));
@@ -107,9 +109,8 @@ class RecordWriteStub: public PlatformCodeStub {
   }
 
   static void Patch(Code* stub, Mode mode) {
-    MacroAssembler masm(NULL,
-                        stub->instruction_start(),
-                        stub->instruction_size());
+    MacroAssembler masm(stub->GetIsolate(), stub->instruction_start(),
+                        stub->instruction_size(), CodeObjectRequired::kNo);
     switch (mode) {
       case STORE_BUFFER_ONLY:
         DCHECK(GetMode(stub) == INCREMENTAL ||
@@ -127,8 +128,8 @@ class RecordWriteStub: public PlatformCodeStub {
         break;
     }
     DCHECK(GetMode(stub) == mode);
-    CpuFeatures::FlushICache(stub->instruction_start(),
-                             2 * Assembler::kInstrSize);
+    Assembler::FlushICache(stub->GetIsolate(), stub->instruction_start(),
+                           2 * Assembler::kInstrSize);
   }
 
   DEFINE_NULL_CALL_INTERFACE_DESCRIPTOR();
@@ -197,9 +198,9 @@ class RecordWriteStub: public PlatformCodeStub {
     kUpdateRememberedSetOnNoNeedToInformIncrementalMarker
   };
 
-  inline Major MajorKey() const FINAL { return RecordWrite; }
+  inline Major MajorKey() const final { return RecordWrite; }
 
-  void Generate(MacroAssembler* masm) OVERRIDE;
+  void Generate(MacroAssembler* masm) override;
   void GenerateIncremental(MacroAssembler* masm, Mode mode);
   void CheckNeedsToInformIncrementalMarker(
       MacroAssembler* masm,
@@ -207,7 +208,7 @@ class RecordWriteStub: public PlatformCodeStub {
       Mode mode);
   void InformIncrementalMarker(MacroAssembler* masm);
 
-  void Activate(Code* code) OVERRIDE {
+  void Activate(Code* code) override {
     code->GetHeap()->incremental_marking()->ActivateGeneratedStub(code);
   }
 
@@ -255,7 +256,7 @@ class DirectCEntryStub: public PlatformCodeStub {
   void GenerateCall(MacroAssembler* masm, Register target);
 
  private:
-  bool NeedsImmovableCode() OVERRIDE { return true; }
+  bool NeedsImmovableCode() override { return true; }
 
   DEFINE_NULL_CALL_INTERFACE_DESCRIPTOR();
   DEFINE_PLATFORM_CODE_STUB(DirectCEntry, PlatformCodeStub);
@@ -287,7 +288,7 @@ class NameDictionaryLookupStub: public PlatformCodeStub {
                                      Register r0,
                                      Register r1);
 
-  bool SometimesSetsUpAFrame() OVERRIDE { return false; }
+  bool SometimesSetsUpAFrame() override { return false; }
 
  private:
   static const int kInlinedProbes = 4;
@@ -309,6 +310,7 @@ class NameDictionaryLookupStub: public PlatformCodeStub {
   DEFINE_PLATFORM_CODE_STUB(NameDictionaryLookup, PlatformCodeStub);
 };
 
-} }  // namespace v8::internal
+}  // namespace internal
+}  // namespace v8
 
 #endif  // V8_ARM_CODE_STUBS_ARM_H_

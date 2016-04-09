@@ -13,12 +13,12 @@ namespace v8 {
 namespace internal {
 namespace compiler {
 
-class InstructionSequenceTest : public TestWithZone {
+class InstructionSequenceTest : public TestWithIsolateAndZone {
  public:
-  static const int kDefaultNRegs = 4;
+  static const int kDefaultNRegs = 8;
   static const int kNoValue = kMinInt;
 
-  typedef BasicBlock::RpoNumber Rpo;
+  typedef RpoNumber Rpo;
 
   struct VReg {
     VReg() : value_(kNoValue) {}
@@ -27,6 +27,8 @@ class InstructionSequenceTest : public TestWithZone {
     int value_;
   };
 
+  typedef std::pair<VReg, VReg> VRegPair;
+
   enum TestOperandType {
     kInvalid,
     kSameAsFirst,
@@ -34,6 +36,7 @@ class InstructionSequenceTest : public TestWithZone {
     kFixedRegister,
     kSlot,
     kFixedSlot,
+    kExplicit,
     kImmediate,
     kNone,
     kConstant,
@@ -54,6 +57,11 @@ class InstructionSequenceTest : public TestWithZone {
   };
 
   static TestOperand Same() { return TestOperand(kSameAsFirst, VReg()); }
+
+  static TestOperand ExplicitReg(int index) {
+    TestOperandType type = kExplicit;
+    return TestOperand(type, VReg(), index);
+  }
 
   static TestOperand Reg(VReg vreg, int index = kNoValue) {
     TestOperandType type = kRegister;
@@ -124,43 +132,47 @@ class InstructionSequenceTest : public TestWithZone {
 
   void StartLoop(int loop_blocks);
   void EndLoop();
-  void StartBlock();
-  int EndBlock(BlockCompletion completion = FallThrough());
+  void StartBlock(bool deferred = false);
+  Instruction* EndBlock(BlockCompletion completion = FallThrough());
 
   TestOperand Imm(int32_t imm = 0);
   VReg Define(TestOperand output_op);
   VReg Parameter(TestOperand output_op = Reg()) { return Define(output_op); }
 
-  int Return(TestOperand input_op_0);
-  int Return(VReg vreg) { return Return(Reg(vreg, 0)); }
+  Instruction* Return(TestOperand input_op_0);
+  Instruction* Return(VReg vreg) { return Return(Reg(vreg, 0)); }
 
   PhiInstruction* Phi(VReg incoming_vreg_0 = VReg(),
                       VReg incoming_vreg_1 = VReg(),
                       VReg incoming_vreg_2 = VReg(),
                       VReg incoming_vreg_3 = VReg());
-  void Extend(PhiInstruction* phi, VReg vreg);
+  PhiInstruction* Phi(VReg incoming_vreg_0, size_t input_count);
+  void SetInput(PhiInstruction* phi, size_t input, VReg vreg);
 
   VReg DefineConstant(int32_t imm = 0);
-  int EmitNop();
-  int EmitI(size_t input_size, TestOperand* inputs);
-  int EmitI(TestOperand input_op_0 = TestOperand(),
-            TestOperand input_op_1 = TestOperand(),
-            TestOperand input_op_2 = TestOperand(),
-            TestOperand input_op_3 = TestOperand());
+  Instruction* EmitNop();
+  Instruction* EmitI(size_t input_size, TestOperand* inputs);
+  Instruction* EmitI(TestOperand input_op_0 = TestOperand(),
+                     TestOperand input_op_1 = TestOperand(),
+                     TestOperand input_op_2 = TestOperand(),
+                     TestOperand input_op_3 = TestOperand());
   VReg EmitOI(TestOperand output_op, size_t input_size, TestOperand* inputs);
   VReg EmitOI(TestOperand output_op, TestOperand input_op_0 = TestOperand(),
               TestOperand input_op_1 = TestOperand(),
               TestOperand input_op_2 = TestOperand(),
               TestOperand input_op_3 = TestOperand());
+  VRegPair EmitOOI(TestOperand output_op_0, TestOperand output_op_1,
+                   size_t input_size, TestOperand* inputs);
+  VRegPair EmitOOI(TestOperand output_op_0, TestOperand output_op_1,
+                   TestOperand input_op_0 = TestOperand(),
+                   TestOperand input_op_1 = TestOperand(),
+                   TestOperand input_op_2 = TestOperand(),
+                   TestOperand input_op_3 = TestOperand());
   VReg EmitCall(TestOperand output_op, size_t input_size, TestOperand* inputs);
   VReg EmitCall(TestOperand output_op, TestOperand input_op_0 = TestOperand(),
                 TestOperand input_op_1 = TestOperand(),
                 TestOperand input_op_2 = TestOperand(),
                 TestOperand input_op_3 = TestOperand());
-
-  // Get defining instruction vreg or value returned at instruction creation
-  // time when there is no return value.
-  const Instruction* GetInstruction(int instruction_index);
 
   InstructionBlock* current_block() const { return current_block_; }
   int num_general_registers() const { return num_general_registers_; }
@@ -171,42 +183,42 @@ class InstructionSequenceTest : public TestWithZone {
 
  private:
   VReg NewReg() { return VReg(sequence()->NextVirtualRegister()); }
-  int NewIndex() { return current_instruction_index_--; }
 
   static TestOperand Invalid() { return TestOperand(kInvalid, VReg()); }
 
-  int EmitBranch(TestOperand input_op);
-  int EmitFallThrough();
-  int EmitJump();
+  Instruction* EmitBranch(TestOperand input_op);
+  Instruction* EmitFallThrough();
+  Instruction* EmitJump();
   Instruction* NewInstruction(InstructionCode code, size_t outputs_size,
-                              InstructionOperand** outputs,
+                              InstructionOperand* outputs,
                               size_t inputs_size = 0,
-                              InstructionOperand* *inputs = nullptr,
+                              InstructionOperand* inputs = nullptr,
                               size_t temps_size = 0,
-                              InstructionOperand* *temps = nullptr);
-  InstructionOperand* Unallocated(TestOperand op,
-                                  UnallocatedOperand::ExtendedPolicy policy);
-  InstructionOperand* Unallocated(TestOperand op,
-                                  UnallocatedOperand::ExtendedPolicy policy,
-                                  UnallocatedOperand::Lifetime lifetime);
-  InstructionOperand* Unallocated(TestOperand op,
-                                  UnallocatedOperand::ExtendedPolicy policy,
-                                  int index);
-  InstructionOperand* Unallocated(TestOperand op,
-                                  UnallocatedOperand::BasicPolicy policy,
-                                  int index);
-  InstructionOperand** ConvertInputs(size_t input_size, TestOperand* inputs);
-  InstructionOperand* ConvertInputOp(TestOperand op);
-  InstructionOperand* ConvertOutputOp(VReg vreg, TestOperand op);
-  InstructionBlock* NewBlock();
+                              InstructionOperand* temps = nullptr);
+  InstructionOperand Unallocated(TestOperand op,
+                                 UnallocatedOperand::ExtendedPolicy policy);
+  InstructionOperand Unallocated(TestOperand op,
+                                 UnallocatedOperand::ExtendedPolicy policy,
+                                 UnallocatedOperand::Lifetime lifetime);
+  InstructionOperand Unallocated(TestOperand op,
+                                 UnallocatedOperand::ExtendedPolicy policy,
+                                 int index);
+  InstructionOperand Unallocated(TestOperand op,
+                                 UnallocatedOperand::BasicPolicy policy,
+                                 int index);
+  InstructionOperand* ConvertInputs(size_t input_size, TestOperand* inputs);
+  InstructionOperand ConvertInputOp(TestOperand op);
+  InstructionOperand ConvertOutputOp(VReg vreg, TestOperand op);
+  InstructionBlock* NewBlock(bool deferred = false);
   void WireBlock(size_t block_offset, int jump_offset);
 
-  int Emit(int instruction_index, InstructionCode code, size_t outputs_size = 0,
-           InstructionOperand* *outputs = nullptr, size_t inputs_size = 0,
-           InstructionOperand* *inputs = nullptr, size_t temps_size = 0,
-           InstructionOperand* *temps = nullptr, bool is_call = false);
+  Instruction* Emit(InstructionCode code, size_t outputs_size = 0,
+                    InstructionOperand* outputs = nullptr,
+                    size_t inputs_size = 0,
+                    InstructionOperand* inputs = nullptr, size_t temps_size = 0,
+                    InstructionOperand* temps = nullptr, bool is_call = false);
 
-  int AddInstruction(int instruction_index, Instruction* instruction);
+  Instruction* AddInstruction(Instruction* instruction);
 
   struct LoopData {
     Rpo loop_header_;
@@ -217,7 +229,7 @@ class InstructionSequenceTest : public TestWithZone {
   typedef std::map<int, const Instruction*> Instructions;
   typedef std::vector<BlockCompletion> Completions;
 
-  SmartPointer<RegisterConfiguration> config_;
+  base::SmartPointer<RegisterConfiguration> config_;
   InstructionSequence* sequence_;
   int num_general_registers_;
   int num_double_registers_;
@@ -225,7 +237,6 @@ class InstructionSequenceTest : public TestWithZone {
   // Block building state.
   InstructionBlocks instruction_blocks_;
   Instructions instructions_;
-  int current_instruction_index_;
   Completions completions_;
   LoopBlocks loop_blocks_;
   InstructionBlock* current_block_;

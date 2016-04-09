@@ -39,6 +39,8 @@
 
     'v8_trace_maps%': 0,
 
+    # Enable the snapshot feature, for fast context creation.
+    # http://v8project.blogspot.com/2015/09/custom-startup-snapshots.html
     'v8_use_snapshot%': 'true',
 
     'v8_enable_verify_predictable%': 0,
@@ -59,8 +61,14 @@
     # Enable compiler warnings when using V8_DEPRECATED apis.
     'v8_deprecation_warnings%': 0,
 
+    # Enable compiler warnings when using V8_DEPRECATE_SOON apis.
+    'v8_imminent_deprecation_warnings%': 0,
+
     # Set to 1 to enable DCHECKs in release builds.
     'dcheck_always_on%': 0,
+
+    # Enable/disable JavaScript API accessors.
+    'v8_js_accessors%': 0,
   },
   'target_defaults': {
     'conditions': [
@@ -88,10 +96,13 @@
       ['v8_deprecation_warnings==1', {
         'defines': ['V8_DEPRECATION_WARNINGS',],
       }],
+      ['v8_imminent_deprecation_warnings==1', {
+        'defines': ['V8_IMMINENT_DEPRECATION_WARNINGS',],
+      }],
       ['v8_enable_i18n_support==1', {
         'defines': ['V8_I18N_SUPPORT',],
       }],
-      ['v8_use_external_startup_data==1', {
+      ['v8_use_snapshot=="true" and v8_use_external_startup_data==1', {
         'defines': ['V8_USE_EXTERNAL_STARTUP_DATA',],
       }],
       ['dcheck_always_on!=0', {
@@ -102,13 +113,9 @@
       'DebugBaseCommon': {
         'abstract': 1,
         'variables': {
-          'v8_enable_extra_checks%': 1,
           'v8_enable_handle_zapping%': 1,
         },
         'conditions': [
-          ['v8_enable_extra_checks==1', {
-            'defines': ['ENABLE_EXTRA_CHECKS',],
-          }],
           ['v8_enable_handle_zapping==1', {
             'defines': ['ENABLE_HANDLE_ZAPPING',],
           }],
@@ -116,13 +123,9 @@
       },  # Debug
       'Release': {
         'variables': {
-          'v8_enable_extra_checks%': 0,
           'v8_enable_handle_zapping%': 0,
         },
         'conditions': [
-          ['v8_enable_extra_checks==1', {
-            'defines': ['ENABLE_EXTRA_CHECKS',],
-          }],
           ['v8_enable_handle_zapping==1', {
             'defines': ['ENABLE_HANDLE_ZAPPING',],
           }],

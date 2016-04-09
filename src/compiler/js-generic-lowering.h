@@ -5,11 +5,8 @@
 #ifndef V8_COMPILER_JS_GENERIC_LOWERING_H_
 #define V8_COMPILER_JS_GENERIC_LOWERING_H_
 
-#include "src/allocation.h"
 #include "src/code-factory.h"
-#include "src/compiler/graph.h"
 #include "src/compiler/graph-reducer.h"
-#include "src/compiler/js-graph.h"
 #include "src/compiler/linkage.h"
 #include "src/compiler/opcodes.h"
 
@@ -19,17 +16,18 @@ namespace compiler {
 
 // Forward declarations.
 class CommonOperatorBuilder;
+class JSGraph;
 class MachineOperatorBuilder;
 class Linkage;
 
 
 // Lowers JS-level operators to runtime and IC calls in the "generic" case.
-class JSGenericLowering FINAL : public Reducer {
+class JSGenericLowering final : public Reducer {
  public:
-  JSGenericLowering(CompilationInfo* info, JSGraph* graph);
-  ~JSGenericLowering() FINAL {}
+  JSGenericLowering(bool is_typing_enabled, JSGraph* jsgraph);
+  ~JSGenericLowering() final;
 
-  Reduction Reduce(Node* node) FINAL;
+  Reduction Reduce(Node* node) final;
 
  protected:
 #define DECLARE_LOWER(x) void Lower##x(Node* node);
@@ -37,32 +35,21 @@ class JSGenericLowering FINAL : public Reducer {
   JS_OP_LIST(DECLARE_LOWER)
 #undef DECLARE_LOWER
 
-  // Helpers to patch existing nodes in the graph.
-  void PatchOperator(Node* node, const Operator* new_op);
-  void PatchInsertInput(Node* node, int index, Node* input);
-
   // Helpers to replace existing nodes with a generic call.
-  void ReplaceWithCompareIC(Node* node, Token::Value token);
+  void ReplaceWithCompareIC(Node* node, Token::Value token, Strength strength);
   void ReplaceWithStubCall(Node* node, Callable c, CallDescriptor::Flags flags);
-  void ReplaceWithBuiltinCall(Node* node, Builtins::JavaScript id, int args);
   void ReplaceWithRuntimeCall(Node* node, Runtime::FunctionId f, int args = -1);
 
-  // Helper for optimization of JSCallFunction.
-  bool TryLowerDirectJSCall(Node* node);
-
-  Zone* zone() const { return graph()->zone(); }
-  Isolate* isolate() const { return zone()->isolate(); }
+  Zone* zone() const;
+  Isolate* isolate() const;
   JSGraph* jsgraph() const { return jsgraph_; }
-  Graph* graph() const { return jsgraph()->graph(); }
-  Linkage* linkage() const { return linkage_; }
-  CompilationInfo* info() const { return info_; }
-  CommonOperatorBuilder* common() const { return jsgraph()->common(); }
-  MachineOperatorBuilder* machine() const { return jsgraph()->machine(); }
+  Graph* graph() const;
+  CommonOperatorBuilder* common() const;
+  MachineOperatorBuilder* machine() const;
 
  private:
-  CompilationInfo* info_;
-  JSGraph* jsgraph_;
-  Linkage* linkage_;
+  bool const is_typing_enabled_;
+  JSGraph* const jsgraph_;
 };
 
 }  // namespace compiler

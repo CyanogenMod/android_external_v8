@@ -5,12 +5,8 @@
 #ifndef V8_COMPILER_GRAPH_H_
 #define V8_COMPILER_GRAPH_H_
 
-#include <map>
-#include <set>
-
-#include "src/compiler/node.h"
-#include "src/compiler/node-aux-data.h"
-#include "src/compiler/source-position.h"
+#include "src/zone.h"
+#include "src/zone-containers.h"
 
 namespace v8 {
 namespace internal {
@@ -18,6 +14,19 @@ namespace compiler {
 
 // Forward declarations.
 class GraphDecorator;
+class Node;
+class Operator;
+
+
+// Marks are used during traversal of the graph to distinguish states of nodes.
+// Each node has a mark which is a monotonically increasing integer, and a
+// {NodeMarker} has a range of values that indicate states of a node.
+typedef uint32_t Mark;
+
+
+// NodeIds are identifying numbers for nodes that can be used to index auxiliary
+// out-of-line data associated with each node.
+typedef uint32_t NodeId;
 
 
 class Graph : public ZoneObject {
@@ -25,6 +34,10 @@ class Graph : public ZoneObject {
   explicit Graph(Zone* zone);
 
   // Base implementation used by all factory methods.
+  Node* NewNodeUnchecked(const Operator* op, int input_count, Node** inputs,
+                         bool incomplete = false);
+
+  // Factory that checks the input count.
   Node* NewNode(const Operator* op, int input_count, Node** inputs,
                 bool incomplete = false);
 
@@ -60,9 +73,19 @@ class Graph : public ZoneObject {
     Node* nodes[] = {n1, n2, n3, n4, n5, n6, n7};
     return NewNode(op, arraysize(nodes), nodes);
   }
+  Node* NewNode(const Operator* op, Node* n1, Node* n2, Node* n3, Node* n4,
+                Node* n5, Node* n6, Node* n7, Node* n8) {
+    Node* nodes[] = {n1, n2, n3, n4, n5, n6, n7, n8};
+    return NewNode(op, arraysize(nodes), nodes);
+  }
+  Node* NewNode(const Operator* op, Node* n1, Node* n2, Node* n3, Node* n4,
+                Node* n5, Node* n6, Node* n7, Node* n8, Node* n9) {
+    Node* nodes[] = {n1, n2, n3, n4, n5, n6, n7, n8, n9};
+    return NewNode(op, arraysize(nodes), nodes);
+  }
 
-  template <class Visitor>
-  inline void VisitNodeInputsFromEnd(Visitor* visitor);
+  // Clone the {node}, and assign a new node id to the copy.
+  Node* CloneNode(const Node* node);
 
   Zone* zone() const { return zone_; }
   Node* start() const { return start_; }
@@ -71,27 +94,18 @@ class Graph : public ZoneObject {
   void SetStart(Node* start) { start_ = start; }
   void SetEnd(Node* end) { end_ = end; }
 
-  NodeId NextNodeID() { return next_node_id_++; }
-  NodeId NodeCount() const { return next_node_id_; }
+  size_t NodeCount() const { return next_node_id_; }
 
   void Decorate(Node* node);
-
-  void AddDecorator(GraphDecorator* decorator) {
-    decorators_.push_back(decorator);
-  }
-
-  void RemoveDecorator(GraphDecorator* decorator) {
-    ZoneVector<GraphDecorator*>::iterator it =
-        std::find(decorators_.begin(), decorators_.end(), decorator);
-    DCHECK(it != decorators_.end());
-    decorators_.erase(it, it + 1);
-  }
+  void AddDecorator(GraphDecorator* decorator);
+  void RemoveDecorator(GraphDecorator* decorator);
 
  private:
-  template <typename State>
-  friend class NodeMarker;
+  friend class NodeMarkerBase;
 
-  Zone* zone_;
+  inline NodeId NextNodeId();
+
+  Zone* const zone_;
   Node* start_;
   Node* end_;
   Mark mark_max_;
@@ -99,40 +113,6 @@ class Graph : public ZoneObject {
   ZoneVector<GraphDecorator*> decorators_;
 
   DISALLOW_COPY_AND_ASSIGN(Graph);
-};
-
-
-// A NodeMarker uses monotonically increasing marks to assign local "states"
-// to nodes. Only one NodeMarker per graph is valid at a given time.
-template <typename State>
-class NodeMarker BASE_EMBEDDED {
- public:
-  NodeMarker(Graph* graph, uint32_t num_states)
-      : mark_min_(graph->mark_max_), mark_max_(graph->mark_max_ += num_states) {
-    DCHECK(num_states > 0);         // user error!
-    DCHECK(mark_max_ > mark_min_);  // check for wraparound.
-  }
-
-  State Get(Node* node) {
-    Mark mark = node->mark();
-    if (mark < mark_min_) {
-      mark = mark_min_;
-      node->set_mark(mark_min_);
-    }
-    DCHECK_LT(mark, mark_max_);
-    return static_cast<State>(mark - mark_min_);
-  }
-
-  void Set(Node* node, State state) {
-    Mark local = static_cast<Mark>(state);
-    DCHECK(local < (mark_max_ - mark_min_));
-    DCHECK_LT(node->mark(), mark_max_);
-    node->set_mark(local + mark_min_);
-  }
-
- private:
-  Mark mark_min_;
-  Mark mark_max_;
 };
 
 
