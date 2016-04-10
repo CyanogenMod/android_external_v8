@@ -5,24 +5,22 @@
 #ifndef V8_COMPILER_PIPELINE_H_
 #define V8_COMPILER_PIPELINE_H_
 
-#include "src/v8.h"
-
+// Clients of this interface shouldn't depend on lots of compiler internals.
+// Do not include anything from src/compiler here!
 #include "src/compiler.h"
-
-// Note: TODO(turbofan) implies a performance improvement opportunity,
-//   and TODO(name) implies an incomplete implementation
 
 namespace v8 {
 namespace internal {
+
+class RegisterConfiguration;
+
 namespace compiler {
 
-// Clients of this interface shouldn't depend on lots of compiler internals.
 class CallDescriptor;
 class Graph;
 class InstructionSequence;
 class Linkage;
 class PipelineData;
-class RegisterConfiguration;
 class Schedule;
 
 class Pipeline {
@@ -32,15 +30,17 @@ class Pipeline {
   // Run the entire pipeline and generate a handle to a code object.
   Handle<Code> GenerateCode();
 
-  // Run the pipeline on a machine graph and generate code. If {schedule} is
-  // {nullptr}, then compute a new schedule for code generation.
-  static Handle<Code> GenerateCodeForTesting(CompilationInfo* info,
-                                             Graph* graph,
-                                             Schedule* schedule = nullptr);
+  // Run the pipeline on a machine graph and generate code. The {schedule} must
+  // be valid, hence the given {graph} does not need to be schedulable.
+  static Handle<Code> GenerateCodeForCodeStub(Isolate* isolate,
+                                              CallDescriptor* call_descriptor,
+                                              Graph* graph, Schedule* schedule,
+                                              Code::Kind kind,
+                                              const char* debug_name);
 
   // Run the pipeline on a machine graph and generate code. If {schedule} is
   // {nullptr}, then compute a new schedule for code generation.
-  static Handle<Code> GenerateCodeForTesting(CallDescriptor* call_descriptor,
+  static Handle<Code> GenerateCodeForTesting(CompilationInfo* info,
                                              Graph* graph,
                                              Schedule* schedule = nullptr);
 
@@ -49,17 +49,14 @@ class Pipeline {
                                           InstructionSequence* sequence,
                                           bool run_verifier);
 
-  static inline bool SupportedBackend() { return V8_TURBOFAN_BACKEND != 0; }
-  static inline bool SupportedTarget() { return V8_TURBOFAN_TARGET != 0; }
-
-  static void SetUp();
-  static void TearDown();
-
- private:
+  // Run the pipeline on a machine graph and generate code. If {schedule} is
+  // {nullptr}, then compute a new schedule for code generation.
   static Handle<Code> GenerateCodeForTesting(CompilationInfo* info,
                                              CallDescriptor* call_descriptor,
-                                             Graph* graph, Schedule* schedule);
+                                             Graph* graph,
+                                             Schedule* schedule = nullptr);
 
+ private:
   CompilationInfo* info_;
   PipelineData* data_;
 
@@ -74,9 +71,9 @@ class Pipeline {
 
   void BeginPhaseKind(const char* phase_kind);
   void RunPrintAndVerify(const char* phase, bool untyped = false);
-  void GenerateCode(Linkage* linkage);
+  Handle<Code> ScheduleAndGenerateCode(CallDescriptor* call_descriptor);
   void AllocateRegisters(const RegisterConfiguration* config,
-                         bool run_verifier);
+                         CallDescriptor* descriptor, bool run_verifier);
 };
 
 }  // namespace compiler

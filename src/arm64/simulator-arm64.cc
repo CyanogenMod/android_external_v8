@@ -5,13 +5,13 @@
 #include <stdlib.h>
 #include <cmath>
 #include <cstdarg>
-#include "src/v8.h"
 
 #if V8_TARGET_ARCH_ARM64
 
 #include "src/arm64/decoder-arm64-inl.h"
 #include "src/arm64/simulator-arm64.h"
 #include "src/assembler.h"
+#include "src/codegen.h"
 #include "src/disasm.h"
 #include "src/macro-assembler.h"
 #include "src/ostreams.h"
@@ -177,14 +177,14 @@ double Simulator::CallDouble(byte* entry, CallArgument* args) {
 
 
 int64_t Simulator::CallJS(byte* entry,
-                          byte* function_entry,
-                          JSFunction* func,
+                          Object* new_target,
+                          Object* target,
                           Object* revc,
                           int64_t argc,
                           Object*** argv) {
   CallArgument args[] = {
-    CallArgument(function_entry),
-    CallArgument(func),
+    CallArgument(new_target),
+    CallArgument(target),
     CallArgument(revc),
     CallArgument(argc),
     CallArgument(argv),
@@ -192,6 +192,7 @@ int64_t Simulator::CallJS(byte* entry,
   };
   return CallInt64(entry, args);
 }
+
 
 int64_t Simulator::CallRegExp(byte* entry,
                               String* input,
@@ -222,6 +223,9 @@ int64_t Simulator::CallRegExp(byte* entry,
 
 
 void Simulator::CheckPCSComplianceAndRun() {
+  // Adjust JS-based stack limit to C-based stack limit.
+  isolate_->stack_guard()->AdjustStackLimitForSimulator();
+
 #ifdef DEBUG
   CHECK_EQ(kNumberOfCalleeSavedRegisters, kCalleeSaved.Count());
   CHECK_EQ(kNumberOfCalleeSavedFPRegisters, kCalleeSavedFP.Count());
@@ -332,9 +336,15 @@ uintptr_t Simulator::PopAddress() {
 
 
 // Returns the limit of the stack area to enable checking for stack overflows.
-uintptr_t Simulator::StackLimit() const {
-  // Leave a safety margin of 1024 bytes to prevent overrunning the stack when
-  // pushing values.
+uintptr_t Simulator::StackLimit(uintptr_t c_limit) const {
+  // The simulator uses a separate JS stack. If we have exhausted the C stack,
+  // we also drop down the JS limit to reflect the exhaustion on the JS stack.
+  if (GetCurrentStackPosition() < c_limit) {
+    return reinterpret_cast<uintptr_t>(get_sp());
+  }
+
+  // Otherwise the limit is the JS stack. Leave a safety margin of 1024 bytes
+  // to prevent overrunning the stack when pushing values.
   return stack_limit_ + 1024;
 }
 
@@ -452,13 +462,11 @@ void Simulator::RunFrom(Instruction* start) {
 // offset from the svc instruction so the simulator knows what to call.
 class Redirection {
  public:
-  Redirection(void* external_function, ExternalReference::Type type)
-      : external_function_(external_function),
-        type_(type),
-        next_(NULL) {
+  Redirection(Isolate* isolate, void* external_function,
+              ExternalReference::Type type)
+      : external_function_(external_function), type_(type), next_(NULL) {
     redirect_call_.SetInstructionBits(
         HLT | Assembler::ImmException(kImmExceptionIsRedirectedCall));
-    Isolate* isolate = Isolate::Current();
     next_ = isolate->simulator_redirection();
     // TODO(all): Simulator flush I cache
     isolate->set_simulator_redirection(this);
@@ -473,9 +481,8 @@ class Redirection {
 
   ExternalReference::Type type() { return type_; }
 
-  static Redirection* Get(void* external_function,
+  static Redirection* Get(Isolate* isolate, void* external_function,
                           ExternalReference::Type type) {
-    Isolate* isolate = Isolate::Current();
     Redirection* current = isolate->simulator_redirection();
     for (; current != NULL; current = current->next_) {
       if (current->external_function_ == external_function) {
@@ -483,13 +490,13 @@ class Redirection {
         return current;
       }
     }
-    return new Redirection(external_function, type);
+    return new Redirection(isolate, external_function, type);
   }
 
   static Redirection* FromHltInstruction(Instruction* redirect_call) {
     char* addr_of_hlt = reinterpret_cast<char*>(redirect_call);
     char* addr_of_redirection =
-        addr_of_hlt - OFFSET_OF(Redirection, redirect_call_);
+        addr_of_hlt - offsetof(Redirection, redirect_call_);
     return reinterpret_cast<Redirection*>(addr_of_redirection);
   }
 
@@ -499,12 +506,26 @@ class Redirection {
     return redirection->external_function<void*>();
   }
 
+  static void DeleteChain(Redirection* redirection) {
+    while (redirection != nullptr) {
+      Redirection* next = redirection->next_;
+      delete redirection;
+      redirection = next;
+    }
+  }
+
  private:
   void* external_function_;
   Instruction redirect_call_;
   ExternalReference::Type type_;
   Redirection* next_;
 };
+
+
+// static
+void Simulator::TearDown(HashMap* i_cache, Redirection* first) {
+  Redirection::DeleteChain(first);
+}
 
 
 // Calls into the V8 runtime are based on this very simple interface.
@@ -724,9 +745,10 @@ void Simulator::DoRuntimeCall(Instruction* instr) {
 }
 
 
-void* Simulator::RedirectExternalReference(void* external_function,
+void* Simulator::RedirectExternalReference(Isolate* isolate,
+                                           void* external_function,
                                            ExternalReference::Type type) {
-  Redirection* redirection = Redirection::Get(external_function, type);
+  Redirection* redirection = Redirection::Get(isolate, external_function, type);
   return redirection->address_of_redirect_call();
 }
 
@@ -902,10 +924,11 @@ T Simulator::ShiftOperand(T value, Shift shift_type, unsigned amount) {
       return static_cast<unsignedT>(value) >> amount;
     case ASR:
       return value >> amount;
-    case ROR:
+    case ROR: {
+      unsignedT mask = (static_cast<unsignedT>(1) << amount) - 1;
       return (static_cast<unsignedT>(value) >> amount) |
-              ((value & ((1L << amount) - 1L)) <<
-                  (sizeof(unsignedT) * 8 - amount));
+             ((value & mask) << (sizeof(mask) * 8 - amount));
+    }
     default:
       UNIMPLEMENTED();
       return 0;
@@ -1398,7 +1421,8 @@ void Simulator::VisitAddSubShifted(Instruction* instr) {
     int64_t op2 = ShiftOperand(xreg(instr->Rm()), shift_type, shift_amount);
     AddSubHelper(instr, op2);
   } else {
-    int32_t op2 = ShiftOperand(wreg(instr->Rm()), shift_type, shift_amount);
+    int32_t op2 = static_cast<int32_t>(
+        ShiftOperand(wreg(instr->Rm()), shift_type, shift_amount));
     AddSubHelper(instr, op2);
   }
 }
@@ -1409,7 +1433,7 @@ void Simulator::VisitAddSubImmediate(Instruction* instr) {
   if (instr->SixtyFourBits()) {
     AddSubHelper<int64_t>(instr, op2);
   } else {
-    AddSubHelper<int32_t>(instr, op2);
+    AddSubHelper<int32_t>(instr, static_cast<int32_t>(op2));
   }
 }
 
@@ -1456,7 +1480,7 @@ void Simulator::VisitLogicalImmediate(Instruction* instr) {
   if (instr->SixtyFourBits()) {
     LogicalHelper<int64_t>(instr, instr->ImmLogical());
   } else {
-    LogicalHelper<int32_t>(instr, instr->ImmLogical());
+    LogicalHelper<int32_t>(instr, static_cast<int32_t>(instr->ImmLogical()));
   }
 }
 
@@ -1656,11 +1680,6 @@ void Simulator::VisitLoadStorePairPreIndex(Instruction* instr) {
 
 void Simulator::VisitLoadStorePairPostIndex(Instruction* instr) {
   LoadStorePairHelper(instr, PostIndex);
-}
-
-
-void Simulator::VisitLoadStorePairNonTemporal(Instruction* instr) {
-  LoadStorePairHelper(instr, Offset);
 }
 
 
@@ -1878,7 +1897,7 @@ void Simulator::VisitMoveWideImmediate(Instruction* instr) {
 
   // Get the shifted immediate.
   int64_t shift = instr->ShiftMoveWide() * 16;
-  int64_t shifted_imm16 = instr->ImmMoveWide() << shift;
+  int64_t shifted_imm16 = static_cast<int64_t>(instr->ImmMoveWide()) << shift;
 
   // Compute the new value.
   switch (mov_op) {
@@ -1911,25 +1930,32 @@ void Simulator::VisitMoveWideImmediate(Instruction* instr) {
 
 
 void Simulator::VisitConditionalSelect(Instruction* instr) {
+  uint64_t new_val = xreg(instr->Rn());
   if (ConditionFailed(static_cast<Condition>(instr->Condition()))) {
-    uint64_t new_val = xreg(instr->Rm());
+    new_val = xreg(instr->Rm());
     switch (instr->Mask(ConditionalSelectMask)) {
-      case CSEL_w: set_wreg(instr->Rd(), new_val); break;
-      case CSEL_x: set_xreg(instr->Rd(), new_val); break;
-      case CSINC_w: set_wreg(instr->Rd(), new_val + 1); break;
-      case CSINC_x: set_xreg(instr->Rd(), new_val + 1); break;
-      case CSINV_w: set_wreg(instr->Rd(), ~new_val); break;
-      case CSINV_x: set_xreg(instr->Rd(), ~new_val); break;
-      case CSNEG_w: set_wreg(instr->Rd(), -new_val); break;
-      case CSNEG_x: set_xreg(instr->Rd(), -new_val); break;
+      case CSEL_w:
+      case CSEL_x:
+        break;
+      case CSINC_w:
+      case CSINC_x:
+        new_val++;
+        break;
+      case CSINV_w:
+      case CSINV_x:
+        new_val = ~new_val;
+        break;
+      case CSNEG_w:
+      case CSNEG_x:
+        new_val = -new_val;
+        break;
       default: UNIMPLEMENTED();
     }
+  }
+  if (instr->SixtyFourBits()) {
+    set_xreg(instr->Rd(), new_val);
   } else {
-    if (instr->SixtyFourBits()) {
-      set_xreg(instr->Rd(), xreg(instr->Rn()));
-    } else {
-      set_wreg(instr->Rd(), wreg(instr->Rn()));
-    }
+    set_wreg(instr->Rd(), static_cast<uint32_t>(new_val));
   }
 }
 
@@ -1939,13 +1965,27 @@ void Simulator::VisitDataProcessing1Source(Instruction* instr) {
   unsigned src = instr->Rn();
 
   switch (instr->Mask(DataProcessing1SourceMask)) {
-    case RBIT_w: set_wreg(dst, ReverseBits(wreg(src), kWRegSizeInBits)); break;
-    case RBIT_x: set_xreg(dst, ReverseBits(xreg(src), kXRegSizeInBits)); break;
-    case REV16_w: set_wreg(dst, ReverseBytes(wreg(src), Reverse16)); break;
-    case REV16_x: set_xreg(dst, ReverseBytes(xreg(src), Reverse16)); break;
-    case REV_w: set_wreg(dst, ReverseBytes(wreg(src), Reverse32)); break;
-    case REV32_x: set_xreg(dst, ReverseBytes(xreg(src), Reverse32)); break;
-    case REV_x: set_xreg(dst, ReverseBytes(xreg(src), Reverse64)); break;
+    case RBIT_w:
+      set_wreg(dst, ReverseBits(wreg(src)));
+      break;
+    case RBIT_x:
+      set_xreg(dst, ReverseBits(xreg(src)));
+      break;
+    case REV16_w:
+      set_wreg(dst, ReverseBytes(wreg(src), 1));
+      break;
+    case REV16_x:
+      set_xreg(dst, ReverseBytes(xreg(src), 1));
+      break;
+    case REV_w:
+      set_wreg(dst, ReverseBytes(wreg(src), 2));
+      break;
+    case REV32_x:
+      set_xreg(dst, ReverseBytes(xreg(src), 2));
+      break;
+    case REV_x:
+      set_xreg(dst, ReverseBytes(xreg(src), 3));
+      break;
     case CLZ_w: set_wreg(dst, CountLeadingZeros(wreg(src), kWRegSizeInBits));
                 break;
     case CLZ_x: set_xreg(dst, CountLeadingZeros(xreg(src), kXRegSizeInBits));
@@ -1960,44 +2000,6 @@ void Simulator::VisitDataProcessing1Source(Instruction* instr) {
     }
     default: UNIMPLEMENTED();
   }
-}
-
-
-uint64_t Simulator::ReverseBits(uint64_t value, unsigned num_bits) {
-  DCHECK((num_bits == kWRegSizeInBits) || (num_bits == kXRegSizeInBits));
-  uint64_t result = 0;
-  for (unsigned i = 0; i < num_bits; i++) {
-    result = (result << 1) | (value & 1);
-    value >>= 1;
-  }
-  return result;
-}
-
-
-uint64_t Simulator::ReverseBytes(uint64_t value, ReverseByteMode mode) {
-  // Split the 64-bit value into an 8-bit array, where b[0] is the least
-  // significant byte, and b[7] is the most significant.
-  uint8_t bytes[8];
-  uint64_t mask = 0xff00000000000000UL;
-  for (int i = 7; i >= 0; i--) {
-    bytes[i] = (value & mask) >> (i * 8);
-    mask >>= 8;
-  }
-
-  // Permutation tables for REV instructions.
-  //  permute_table[Reverse16] is used by REV16_x, REV16_w
-  //  permute_table[Reverse32] is used by REV32_x, REV_w
-  //  permute_table[Reverse64] is used by REV_x
-  DCHECK((Reverse16 == 0) && (Reverse32 == 1) && (Reverse64 == 2));
-  static const uint8_t permute_table[3][8] = { {6, 7, 4, 5, 2, 3, 0, 1},
-                                               {4, 5, 6, 7, 0, 1, 2, 3},
-                                               {0, 1, 2, 3, 4, 5, 6, 7} };
-  uint64_t result = 0;
-  for (int i = 0; i < 8; i++) {
-    result <<= 8;
-    result |= bytes[permute_table[mode][i]];
-  }
-  return result;
 }
 
 
@@ -2120,7 +2122,7 @@ void Simulator::VisitDataProcessing3Source(Instruction* instr) {
   if (instr->SixtyFourBits()) {
     set_xreg(instr->Rd(), result);
   } else {
-    set_wreg(instr->Rd(), result);
+    set_wreg(instr->Rd(), static_cast<int32_t>(result));
   }
 }
 
@@ -2137,8 +2139,9 @@ void Simulator::BitfieldHelper(Instruction* instr) {
     mask = diff < reg_size - 1 ? (static_cast<T>(1) << (diff + 1)) - 1
                                : static_cast<T>(-1);
   } else {
-    mask = ((1L << (S + 1)) - 1);
-    mask = (static_cast<uint64_t>(mask) >> R) | (mask << (reg_size - R));
+    uint64_t umask = ((1L << (S + 1)) - 1);
+    umask = (umask >> R) | (umask << (reg_size - R));
+    mask = static_cast<T>(umask);
     diff += reg_size;
   }
 
@@ -2562,7 +2565,7 @@ static T FPRound(int64_t sign, int64_t exponent, uint64_t mantissa,
 
   // Bail out early for zero inputs.
   if (mantissa == 0) {
-    return sign << sign_offset;
+    return static_cast<T>(sign << sign_offset);
   }
 
   // If all bits in the exponent are set, the value is infinite or NaN.
@@ -2579,9 +2582,9 @@ static T FPRound(int64_t sign, int64_t exponent, uint64_t mantissa,
     // FPTieEven rounding mode handles overflows using infinities.
     exponent = infinite_exponent;
     mantissa = 0;
-    return (sign << sign_offset) |
-           (exponent << exponent_offset) |
-           (mantissa << mantissa_offset);
+    return static_cast<T>((sign << sign_offset) |
+                          (exponent << exponent_offset) |
+                          (mantissa << mantissa_offset));
   }
 
   // Calculate the shift required to move the top mantissa bit to the proper
@@ -2604,7 +2607,7 @@ static T FPRound(int64_t sign, int64_t exponent, uint64_t mantissa,
     // non-zero result after rounding.
     if (shift > (highest_significant_bit + 1)) {
       // The result will always be +/-0.0.
-      return sign << sign_offset;
+      return static_cast<T>(sign << sign_offset);
     }
 
     // Properly encode the exponent for a subnormal output.
@@ -2623,9 +2626,9 @@ static T FPRound(int64_t sign, int64_t exponent, uint64_t mantissa,
     uint64_t adjusted = mantissa - (halfbit_mantissa & ~onebit_mantissa);
     T halfbit_adjusted = (adjusted >> (shift-1)) & 1;
 
-    T result = (sign << sign_offset) |
-               (exponent << exponent_offset) |
-               ((mantissa >> shift) << mantissa_offset);
+    T result =
+        static_cast<T>((sign << sign_offset) | (exponent << exponent_offset) |
+                       ((mantissa >> shift) << mantissa_offset));
 
     // A very large mantissa can overflow during rounding. If this happens, the
     // exponent should be incremented and the mantissa set to 1.0 (encoded as
@@ -2640,9 +2643,9 @@ static T FPRound(int64_t sign, int64_t exponent, uint64_t mantissa,
     // We have to shift the mantissa to the left (or not at all). The input
     // mantissa is exactly representable in the output mantissa, so apply no
     // rounding correction.
-    return (sign << sign_offset) |
-           (exponent << exponent_offset) |
-           ((mantissa << -shift) << mantissa_offset);
+    return static_cast<T>((sign << sign_offset) |
+                          (exponent << exponent_offset) |
+                          ((mantissa << -shift) << mantissa_offset));
   }
 }
 
@@ -2756,7 +2759,7 @@ double Simulator::FPRoundInt(double value, FPRounding round_mode) {
       // If the error is greater than 0.5, or is equal to 0.5 and the integer
       // result is odd, round up.
       } else if ((error > 0.5) ||
-          ((error == 0.5) && (fmod(int_result, 2) != 0))) {
+                 ((error == 0.5) && (modulo(int_result, 2) != 0))) {
         int_result++;
       }
       break;
@@ -2837,7 +2840,8 @@ float Simulator::FPToFloat(double value, FPRounding round_mode) {
 
       uint32_t sign = raw >> 63;
       uint32_t exponent = (1 << 8) - 1;
-      uint32_t payload = unsigned_bitextract_64(50, 52 - 23, raw);
+      uint32_t payload =
+          static_cast<uint32_t>(unsigned_bitextract_64(50, 52 - 23, raw));
       payload |= (1 << 22);   // Force a quiet NaN.
 
       return rawbits_to_float((sign << 31) | (exponent << 23) | payload);
@@ -2858,7 +2862,8 @@ float Simulator::FPToFloat(double value, FPRounding round_mode) {
       // Extract the IEEE-754 double components.
       uint32_t sign = raw >> 63;
       // Extract the exponent and remove the IEEE-754 encoding bias.
-      int32_t exponent = unsigned_bitextract_64(62, 52, raw) - 1023;
+      int32_t exponent =
+          static_cast<int32_t>(unsigned_bitextract_64(62, 52, raw)) - 1023;
       // Extract the mantissa and add the implicit '1' bit.
       uint64_t mantissa = unsigned_bitextract_64(51, 0, raw);
       if (std::fpclassify(value) == FP_NORMAL) {
@@ -3100,7 +3105,8 @@ T Simulator::FPSqrt(T op) {
   } else if (op < 0.0) {
     return FPDefaultNaN<T>();
   } else {
-    return std::sqrt(op);
+    lazily_initialize_fast_sqrt(isolate_);
+    return fast_sqrt(op, isolate_);
   }
 }
 
@@ -3209,11 +3215,11 @@ void Simulator::VisitSystem(Instruction* instr) {
       case MSR: {
         switch (instr->ImmSystemRegister()) {
           case NZCV:
-            nzcv().SetRawValue(xreg(instr->Rt()));
+            nzcv().SetRawValue(wreg(instr->Rt()));
             LogSystemRegister(NZCV);
             break;
           case FPCR:
-            fpcr().SetRawValue(xreg(instr->Rt()));
+            fpcr().SetRawValue(wreg(instr->Rt()));
             LogSystemRegister(FPCR);
             break;
           default: UNIMPLEMENTED();
@@ -3503,7 +3509,7 @@ void Simulator::Debug() {
                  reinterpret_cast<uint64_t>(cur), *cur, *cur);
           HeapObject* obj = reinterpret_cast<HeapObject*>(*cur);
           int64_t value = *cur;
-          Heap* current_heap = v8::internal::Isolate::Current()->heap();
+          Heap* current_heap = isolate_->heap();
           if (((value & 1) == 0) || current_heap->Contains(obj)) {
             PrintF(" (");
             if ((value & kSmiTagMask) == 0) {
@@ -3834,6 +3840,7 @@ void Simulator::DoPrintf(Instruction* instr) {
 
 #endif  // USE_SIMULATOR
 
-} }  // namespace v8::internal
+}  // namespace internal
+}  // namespace v8
 
 #endif  // V8_TARGET_ARCH_ARM64

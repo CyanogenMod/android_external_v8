@@ -98,9 +98,14 @@ struct ObjectGroupRetainerInfo {
 
 
 enum WeaknessType {
-  NORMAL_WEAK,          // Embedder gets a handle to the dying object.
-  PHANTOM_WEAK,         // Embedder gets the parameter they passed in earlier.
-  INTERNAL_FIELDS_WEAK  // Embedder gets 2 internal fields from dying object.
+  NORMAL_WEAK,  // Embedder gets a handle to the dying object.
+  // In the following cases, the embedder gets the parameter they passed in
+  // earlier, and 0 or 2 first internal fields. Note that the internal
+  // fields must contain aligned non-V8 pointers.  Getting pointers to V8
+  // objects through this interface would be GC unsafe so in that case the
+  // embedder gets a null pointer instead.
+  PHANTOM_WEAK,
+  PHANTOM_WEAK_2_INTERNAL_FIELDS
 };
 
 
@@ -139,14 +144,9 @@ class GlobalHandles {
 
   // It would be nice to template this one, but it's really hard to get
   // the template instantiator to work right if you do.
-  static void MakePhantom(Object** location, void* parameter,
-                          PhantomCallbackData<void>::Callback weak_callback);
-
-  static void MakePhantom(
-      Object** location,
-      v8::InternalFieldsCallbackData<void, void>::Callback weak_callback,
-      int16_t internal_field_index1,
-      int16_t internal_field_index2 = v8::Object::kNoInternalFieldIndex);
+  static void MakeWeak(Object** location, void* parameter,
+                       WeakCallbackInfo<void>::Callback weak_callback,
+                       v8::WeakCallbackType type);
 
   void RecordStats(HeapStats* stats);
 
@@ -161,10 +161,6 @@ class GlobalHandles {
   int global_handles_count() const {
     return number_of_global_handles_;
   }
-
-  // Collect up data for the weak handle callbacks after GC has completed, but
-  // before memory is reclaimed.
-  void CollectPhantomCallbackData();
 
   // Clear the weakness of a global handle.
   static void* ClearWeakness(Object** location);
@@ -185,7 +181,8 @@ class GlobalHandles {
 
   // Process pending weak handles.
   // Returns the number of freed nodes.
-  int PostGarbageCollectionProcessing(GarbageCollector collector);
+  int PostGarbageCollectionProcessing(
+      GarbageCollector collector, const v8::GCCallbackFlags gc_callback_flags);
 
   // Iterates over all strong handles.
   void IterateStrongRoots(ObjectVisitor* v);
@@ -200,6 +197,10 @@ class GlobalHandles {
   // class ID.
   void IterateAllRootsInNewSpaceWithClassIds(ObjectVisitor* v);
 
+  // Iterate over all handles in the new space that are weak, unmodified
+  // and have class IDs
+  void IterateWeakRootsInNewSpaceWithClassIds(ObjectVisitor* v);
+
   // Iterates over all weak roots in heap.
   void IterateWeakRoots(ObjectVisitor* v);
 
@@ -207,7 +208,7 @@ class GlobalHandles {
   // them as pending.
   void IdentifyWeakHandles(WeakSlotCallback f);
 
-  // NOTE: Three ...NewSpace... functions below are used during
+  // NOTE: Five ...NewSpace... functions below are used during
   // scavenge collections and iterate over sets of handles that are
   // guaranteed to contain all handles holding new space objects (but
   // may also include old space objects).
@@ -222,6 +223,19 @@ class GlobalHandles {
   // Iterates over weak independent or partially independent handles.
   // See the note above.
   void IterateNewSpaceWeakIndependentRoots(ObjectVisitor* v);
+
+  // Finds weak independent or unmodified handles satisfying
+  // the callback predicate and marks them as pending. See the note above.
+  void MarkNewSpaceWeakUnmodifiedObjectsPending(
+      WeakSlotCallbackWithHeap is_unscavenged);
+
+  // Iterates over weak independent or unmodified handles.
+  // See the note above.
+  void IterateNewSpaceWeakUnmodifiedRoots(ObjectVisitor* v);
+
+  // Identify unmodified objects that are in weak state and marks them
+  // unmodified
+  void IdentifyWeakUnmodifiedObjects(WeakSlotCallback is_unmodified);
 
   // Iterate over objects in object groups that have at least one object
   // which requires visiting. The callback has to return true if objects
@@ -291,18 +305,21 @@ class GlobalHandles {
   // don't assign any initial capacity.
   static const int kObjectGroupConnectionsCapacity = 20;
 
+  class PendingPhantomCallback;
+
   // Helpers for PostGarbageCollectionProcessing.
+  static void InvokeSecondPassPhantomCallbacks(
+      List<PendingPhantomCallback>* callbacks, Isolate* isolate);
   int PostScavengeProcessing(int initial_post_gc_processing_count);
   int PostMarkSweepProcessing(int initial_post_gc_processing_count);
-  int DispatchPendingPhantomCallbacks();
+  int DispatchPendingPhantomCallbacks(bool synchronous_second_pass);
   void UpdateListOfNewSpaceNodes();
 
   // Internal node structures.
   class Node;
   class NodeBlock;
   class NodeIterator;
-  class PendingPhantomCallback;
-  class PendingInternalFieldsCallback;
+  class PendingPhantomCallbacksSecondPassTask;
 
   Isolate* isolate_;
 
@@ -336,7 +353,6 @@ class GlobalHandles {
   List<ObjectGroupConnection> implicit_ref_connections_;
 
   List<PendingPhantomCallback> pending_phantom_callbacks_;
-  List<PendingInternalFieldsCallback> pending_internal_fields_callbacks_;
 
   friend class Isolate;
 
@@ -346,32 +362,26 @@ class GlobalHandles {
 
 class GlobalHandles::PendingPhantomCallback {
  public:
-  typedef PhantomCallbackData<void> Data;
-  PendingPhantomCallback(Node* node, Data data, Data::Callback callback)
-      : node_(node), data_(data), callback_(callback) {}
+  typedef v8::WeakCallbackInfo<void> Data;
+  PendingPhantomCallback(
+      Node* node, Data::Callback callback, void* parameter,
+      void* internal_fields[v8::kInternalFieldsInWeakCallback])
+      : node_(node), callback_(callback), parameter_(parameter) {
+    for (int i = 0; i < v8::kInternalFieldsInWeakCallback; ++i) {
+      internal_fields_[i] = internal_fields[i];
+    }
+  }
 
-  void invoke();
+  void Invoke(Isolate* isolate);
 
   Node* node() { return node_; }
+  Data::Callback callback() { return callback_; }
 
  private:
   Node* node_;
-  Data data_;
   Data::Callback callback_;
-};
-
-
-class GlobalHandles::PendingInternalFieldsCallback {
- public:
-  typedef InternalFieldsCallbackData<void, void> Data;
-  PendingInternalFieldsCallback(Data data, Data::Callback callback)
-      : data_(data), callback_(callback) {}
-
-  void invoke() { callback_(data_); }
-
- private:
-  Data data_;
-  Data::Callback callback_;
+  void* parameter_;
+  void* internal_fields_[v8::kInternalFieldsInWeakCallback];
 };
 
 
@@ -445,6 +455,7 @@ class EternalHandles {
 };
 
 
-} }  // namespace v8::internal
+}  // namespace internal
+}  // namespace v8
 
 #endif  // V8_GLOBAL_HANDLES_H_

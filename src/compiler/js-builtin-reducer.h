@@ -6,7 +6,6 @@
 #define V8_COMPILER_JS_BUILTIN_REDUCER_H_
 
 #include "src/compiler/graph-reducer.h"
-#include "src/compiler/simplified-operator.h"
 
 namespace v8 {
 namespace internal {
@@ -16,32 +15,30 @@ namespace compiler {
 class CommonOperatorBuilder;
 class JSGraph;
 class MachineOperatorBuilder;
+class SimplifiedOperatorBuilder;
 
 
-class JSBuiltinReducer FINAL : public Reducer {
+class JSBuiltinReducer final : public AdvancedReducer {
  public:
-  explicit JSBuiltinReducer(JSGraph* jsgraph);
-  ~JSBuiltinReducer() FINAL {}
+  explicit JSBuiltinReducer(Editor* editor, JSGraph* jsgraph);
+  ~JSBuiltinReducer() final {}
 
-  Reduction Reduce(Node* node) FINAL;
+  Reduction Reduce(Node* node) final;
 
  private:
-  Reduction ReduceMathAbs(Node* node);
-  Reduction ReduceMathSqrt(Node* node);
+  Reduction ReduceFunctionCall(Node* node);
   Reduction ReduceMathMax(Node* node);
   Reduction ReduceMathImul(Node* node);
   Reduction ReduceMathFround(Node* node);
-  Reduction ReduceMathFloor(Node* node);
-  Reduction ReduceMathCeil(Node* node);
 
-  JSGraph* jsgraph() const { return jsgraph_; }
   Graph* graph() const;
+  JSGraph* jsgraph() const { return jsgraph_; }
+  Isolate* isolate() const;
   CommonOperatorBuilder* common() const;
   MachineOperatorBuilder* machine() const;
-  SimplifiedOperatorBuilder* simplified() { return &simplified_; }
+  SimplifiedOperatorBuilder* simplified() const;
 
   JSGraph* jsgraph_;
-  SimplifiedOperatorBuilder simplified_;
 };
 
 }  // namespace compiler

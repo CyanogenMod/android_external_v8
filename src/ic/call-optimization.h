@@ -38,11 +38,16 @@ class CallOptimization BASE_EMBEDDED {
 
   enum HolderLookup { kHolderNotFound, kHolderIsReceiver, kHolderFound };
   Handle<JSObject> LookupHolderOfExpectedType(
-      Handle<Map> receiver_map, HolderLookup* holder_lookup) const;
+      Handle<Map> receiver_map, HolderLookup* holder_lookup,
+      int* holder_depth_in_prototype_chain = NULL) const;
 
   // Check if the api holder is between the receiver and the holder.
   bool IsCompatibleReceiver(Handle<Object> receiver,
                             Handle<JSObject> holder) const;
+
+  // Check if the api holder is between the receiver and the holder.
+  bool IsCompatibleReceiverMap(Handle<Map> receiver_map,
+                               Handle<JSObject> holder) const;
 
  private:
   void Initialize(Handle<JSFunction> function);
@@ -56,7 +61,7 @@ class CallOptimization BASE_EMBEDDED {
   Handle<FunctionTemplateInfo> expected_receiver_type_;
   Handle<CallHandlerInfo> api_call_info_;
 };
-}
-}  // namespace v8::internal
+}  // namespace internal
+}  // namespace v8
 
 #endif  // V8_IC_CALL_OPTIMIZATION_H_

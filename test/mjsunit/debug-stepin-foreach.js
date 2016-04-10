@@ -27,7 +27,7 @@ function listener(event, exec_state, event_data, data) {
                  "Expected: // Break " + break_count + ".");
       ++break_count;
       if (break_count !== expected_breaks) {
-        exec_state.prepareStep(Debug.StepAction.StepIn, 1);
+        exec_state.prepareStep(Debug.StepAction.StepIn);
       }
     }
   } catch(e) {
@@ -37,15 +37,17 @@ function listener(event, exec_state, event_data, data) {
 };
 
 Debug.setListener(listener);
+var bound_callback = callback.bind(null);
 
 debugger; // Break 0.
 [1,2].forEach(callback); // Break 1.
+[3,4].forEach(bound_callback); // Break 6.
 
 function callback(x) {
-  return x; // Break 2. // Break 4.
-} // Break 3. // Break 5.
+  return x; // Break 2. // Break 4. // Break 7. // Break 9.
+} // Break 3. // Break 5. // Break 8. // Break 10.
 
-assertNull(exception); // Break 6.
+assertNull(exception); // Break 11.
 assertEquals(expected_breaks, break_count);
 
 Debug.setListener(null);

@@ -12,12 +12,7 @@ function test() {
   assertEquals("function", typeof function() {});
   assertEquals("object", typeof null);
   assertEquals("object", typeof {});
-
-  assertTrue(%_IsObject({}));
-  assertTrue(%_IsObject(null));
-  assertTrue(%_IsObject(/regex/));
-  assertFalse(%_IsObject(0));
-  assertFalse(%_IsObject(""));
+  assertEquals("object", typeof /regex/);
 
   assertTrue(%_IsSmi(1));
   assertFalse(%_IsSmi(1.1));
@@ -32,8 +27,8 @@ function test() {
   assertTrue(%_IsFunction(function() {}));
   assertFalse(%_IsFunction(null));
 
-  assertTrue(%_IsSpecObject(new Date()));
-  assertFalse(%_IsSpecObject(1));
+  assertTrue(%_IsJSReceiver(new Date()));
+  assertFalse(%_IsJSReceiver(1));
 
   assertTrue(%_IsMinusZero(-0.0));
   assertFalse(%_IsMinusZero(1));
