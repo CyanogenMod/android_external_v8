@@ -5,6 +5,12 @@
 #ifndef V8_ARM_CONSTANTS_ARM_H_
 #define V8_ARM_CONSTANTS_ARM_H_
 
+#include <stdint.h>
+
+#include "src/base/logging.h"
+#include "src/base/macros.h"
+#include "src/globals.h"
+
 // ARM EABI is required.
 #if defined(__arm__) && !defined(__ARM_EABI__)
 #error ARM EABI support is required.
@@ -41,6 +47,11 @@ const int kNumVFPRegisters = kNumVFPSingleRegisters + kNumVFPDoubleRegisters;
 // PC is register 15.
 const int kPCRegister = 15;
 const int kNoRegister = -1;
+
+// Used in embedded constant pool builder - max reach in bits for
+// various load instructions (unsigned)
+const int kLdrMaxReachBits = 12;
+const int kVldrMaxReachBits = 10;
 
 // -----------------------------------------------------------------------------
 // Conditions.
@@ -172,6 +183,7 @@ enum {
   U = 1 << 23,  // Positive (or negative) offset/index.
   P = 1 << 24,  // Offset/pre-indexed addressing (or post-indexed addressing).
   I = 1 << 25,  // Immediate shifter operand (or not).
+  B0 = 1 << 0,
   B4 = 1 << 4,
   B5 = 1 << 5,
   B6 = 1 << 6,
@@ -690,6 +702,7 @@ class VFPRegisters {
 };
 
 
-} }  // namespace v8::internal
+}  // namespace internal
+}  // namespace v8
 
 #endif  // V8_ARM_CONSTANTS_ARM_H_

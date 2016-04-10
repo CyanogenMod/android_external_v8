@@ -568,7 +568,7 @@ PERF_EVENT_HEADER_DESC = Descriptor([
 ])
 
 
-# Reference: kernel/events/core.c
+# Reference: kernel/tools/perf/util/event.h
 PERF_MMAP_EVENT_BODY_DESC = Descriptor([
   ("pid", "u32"),
   ("tid", "u32"),
@@ -577,6 +577,20 @@ PERF_MMAP_EVENT_BODY_DESC = Descriptor([
   ("pgoff", "u64")
 ])
 
+# Reference: kernel/tools/perf/util/event.h
+PERF_MMAP2_EVENT_BODY_DESC = Descriptor([
+  ("pid", "u32"),
+  ("tid", "u32"),
+  ("addr", "u64"),
+  ("len", "u64"),
+  ("pgoff", "u64"),
+  ("maj", "u32"),
+  ("min", "u32"),
+  ("ino", "u64"),
+  ("ino_generation", "u64"),
+  ("prot", "u32"),
+  ("flags","u32")
+])
 
 # perf_event_attr.sample_type bits control the set of
 # perf_sample_event fields.
@@ -616,6 +630,7 @@ PERF_SAMPLE_EVENT_IP_FORMAT = "u64"
 
 
 PERF_RECORD_MMAP = 1
+PERF_RECORD_MMAP2 = 10
 PERF_RECORD_SAMPLE = 9
 
 
@@ -658,6 +673,15 @@ class TraceReader(object):
   def ReadMmap(self, header, offset):
     mmap_info = PERF_MMAP_EVENT_BODY_DESC.Read(self.trace,
                                                offset + self.header_size)
+    # Read null-terminated filename.
+    filename = self.trace[offset + self.header_size + ctypes.sizeof(mmap_info):
+                          offset + header.size]
+    mmap_info.filename = HOST_ROOT + filename[:filename.find(chr(0))]
+    return mmap_info
+
+  def ReadMmap2(self, header, offset):
+    mmap_info = PERF_MMAP2_EVENT_BODY_DESC.Read(self.trace,
+                                                offset + self.header_size)
     # Read null-terminated filename.
     filename = self.trace[offset + self.header_size + ctypes.sizeof(mmap_info):
                           offset + header.size]
@@ -711,6 +735,23 @@ class LibraryRepo(object):
     self.names = set()
     self.ticks = {}
 
+
+  def HasDynamicSymbols(self, filename):
+    if filename.endswith(".ko"): return False
+    process = subprocess.Popen(
+      "%s -h %s" % (OBJDUMP_BIN, filename),
+      shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    pipe = process.stdout
+    try:
+      for line in pipe:
+        match = OBJDUMP_SECTION_HEADER_RE.match(line)
+        if match and match.group(1) == 'dynsym': return True
+    finally:
+      pipe.close()
+    assert process.wait() == 0, "Failed to objdump -h %s" % filename
+    return False
+
+
   def Load(self, mmap_info, code_map, options):
     # Skip kernel mmaps when requested using the fact that their tid
     # is 0.
@@ -730,10 +771,10 @@ class LibraryRepo(object):
     # Unfortunately, section headers span two lines, so we have to
     # keep the just seen section name (from the first line in each
     # section header) in the after_section variable.
-    if mmap_info.filename.endswith(".ko"):
-      dynamic_symbols = ""
-    else:
+    if self.HasDynamicSymbols(mmap_info.filename):
       dynamic_symbols = "-T"
+    else:
+      dynamic_symbols = ""
     process = subprocess.Popen(
       "%s -h -t %s -C %s" % (OBJDUMP_BIN, dynamic_symbols, mmap_info.filename),
       shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -951,6 +992,14 @@ if __name__ == "__main__":
     if header.type == PERF_RECORD_MMAP:
       start = time.time()
       mmap_info = trace_reader.ReadMmap(header, offset)
+      if mmap_info.filename == HOST_ROOT + V8_GC_FAKE_MMAP:
+        log_reader.ReadUpToGC()
+      else:
+        library_repo.Load(mmap_info, code_map, options)
+      mmap_time += time.time() - start
+    elif header.type == PERF_RECORD_MMAP2:
+      start = time.time()
+      mmap_info = trace_reader.ReadMmap2(header, offset)
       if mmap_info.filename == HOST_ROOT + V8_GC_FAKE_MMAP:
         log_reader.ReadUpToGC()
       else:

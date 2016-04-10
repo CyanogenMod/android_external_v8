@@ -36,24 +36,6 @@ TEST(OS, GetCurrentProcessId) {
 
 namespace {
 
-class SelfJoinThread FINAL : public Thread {
- public:
-  SelfJoinThread() : Thread(Options("SelfJoinThread")) {}
-  void Run() FINAL { Join(); }
-};
-
-}  // namespace
-
-
-TEST(Thread, DISABLE_ON_ANDROID(SelfJoin)) {
-  SelfJoinThread thread;
-  thread.Start();
-  thread.Join();
-}
-
-
-namespace {
-
 class ThreadLocalStorageTest : public Thread, public ::testing::Test {
  public:
   ThreadLocalStorageTest() : Thread(Options("ThreadLocalStorageTest")) {
@@ -67,7 +49,7 @@ class ThreadLocalStorageTest : public Thread, public ::testing::Test {
     }
   }
 
-  void Run() FINAL {
+  void Run() final {
     for (size_t i = 0; i < arraysize(keys_); i++) {
       CHECK(!Thread::HasThreadLocal(keys_[i]));
     }

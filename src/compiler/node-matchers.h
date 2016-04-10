@@ -7,9 +7,10 @@
 
 #include <cmath>
 
+// TODO(turbofan): Move ExternalReference out of assembler.h
+#include "src/assembler.h"
 #include "src/compiler/node.h"
 #include "src/compiler/operator.h"
-#include "src/unique.h"
 
 namespace v8 {
 namespace internal {
@@ -27,6 +28,10 @@ struct NodeMatcher {
     return op()->HasProperty(property);
   }
   Node* InputAt(int index) const { return node()->InputAt(index); }
+
+  bool Equals(const Node* node) const { return node_ == node; }
+
+  bool IsComparison() const;
 
 #define DEFINE_IS_OPCODE(Opcode) \
   bool Is##Opcode() const { return opcode() == IrOpcode::k##Opcode; }
@@ -56,18 +61,22 @@ struct ValueMatcher : public NodeMatcher {
     return value_;
   }
 
-  bool Is(const T& value) const {
-    return this->HasValue() && this->Value() == value;
-  }
-
-  bool IsInRange(const T& low, const T& high) const {
-    return this->HasValue() && low <= this->Value() && this->Value() <= high;
-  }
-
  private:
   T value_;
   bool has_value_;
 };
+
+
+template <>
+inline ValueMatcher<uint32_t, IrOpcode::kInt32Constant>::ValueMatcher(
+    Node* node)
+    : NodeMatcher(node),
+      value_(),
+      has_value_(opcode() == IrOpcode::kInt32Constant) {
+  if (has_value_) {
+    value_ = static_cast<uint32_t>(OpParameter<int32_t>(node));
+  }
+}
 
 
 template <>
@@ -88,10 +97,10 @@ inline ValueMatcher<uint64_t, IrOpcode::kInt64Constant>::ValueMatcher(
     Node* node)
     : NodeMatcher(node), value_(), has_value_(false) {
   if (opcode() == IrOpcode::kInt32Constant) {
-    value_ = OpParameter<uint32_t>(node);
+    value_ = static_cast<uint32_t>(OpParameter<int32_t>(node));
     has_value_ = true;
   } else if (opcode() == IrOpcode::kInt64Constant) {
-    value_ = OpParameter<uint64_t>(node);
+    value_ = static_cast<uint64_t>(OpParameter<int64_t>(node));
     has_value_ = true;
   }
 }
@@ -99,9 +108,15 @@ inline ValueMatcher<uint64_t, IrOpcode::kInt64Constant>::ValueMatcher(
 
 // A pattern matcher for integer constants.
 template <typename T, IrOpcode::Value kOpcode>
-struct IntMatcher FINAL : public ValueMatcher<T, kOpcode> {
+struct IntMatcher final : public ValueMatcher<T, kOpcode> {
   explicit IntMatcher(Node* node) : ValueMatcher<T, kOpcode>(node) {}
 
+  bool Is(const T& value) const {
+    return this->HasValue() && this->Value() == value;
+  }
+  bool IsInRange(const T& low, const T& high) const {
+    return this->HasValue() && low <= this->Value() && this->Value() <= high;
+  }
   bool IsMultipleOf(T n) const {
     return this->HasValue() && (this->Value() % n) == 0;
   }
@@ -130,13 +145,20 @@ typedef Uint64Matcher UintPtrMatcher;
 
 // A pattern matcher for floating point constants.
 template <typename T, IrOpcode::Value kOpcode>
-struct FloatMatcher FINAL : public ValueMatcher<T, kOpcode> {
+struct FloatMatcher final : public ValueMatcher<T, kOpcode> {
   explicit FloatMatcher(Node* node) : ValueMatcher<T, kOpcode>(node) {}
 
+  bool Is(const T& value) const {
+    return this->HasValue() && this->Value() == value;
+  }
+  bool IsInRange(const T& low, const T& high) const {
+    return this->HasValue() && low <= this->Value() && this->Value() <= high;
+  }
   bool IsMinusZero() const {
     return this->Is(0.0) && std::signbit(this->Value());
   }
   bool IsNaN() const { return this->HasValue() && std::isnan(this->Value()); }
+  bool IsZero() const { return this->Is(0.0) && !std::signbit(this->Value()); }
 };
 
 typedef FloatMatcher<float, IrOpcode::kFloat32Constant> Float32Matcher;
@@ -145,11 +167,39 @@ typedef FloatMatcher<double, IrOpcode::kNumberConstant> NumberMatcher;
 
 
 // A pattern matcher for heap object constants.
-template <typename T>
-struct HeapObjectMatcher FINAL
-    : public ValueMatcher<Unique<T>, IrOpcode::kHeapConstant> {
+struct HeapObjectMatcher final
+    : public ValueMatcher<Handle<HeapObject>, IrOpcode::kHeapConstant> {
   explicit HeapObjectMatcher(Node* node)
-      : ValueMatcher<Unique<T>, IrOpcode::kHeapConstant>(node) {}
+      : ValueMatcher<Handle<HeapObject>, IrOpcode::kHeapConstant>(node) {}
+};
+
+
+// A pattern matcher for external reference constants.
+struct ExternalReferenceMatcher final
+    : public ValueMatcher<ExternalReference, IrOpcode::kExternalConstant> {
+  explicit ExternalReferenceMatcher(Node* node)
+      : ValueMatcher<ExternalReference, IrOpcode::kExternalConstant>(node) {}
+  bool Is(const ExternalReference& value) const {
+    return this->HasValue() && this->Value() == value;
+  }
+};
+
+
+// For shorter pattern matching code, this struct matches the inputs to
+// machine-level load operations.
+template <typename Object>
+struct LoadMatcher : public NodeMatcher {
+  explicit LoadMatcher(Node* node)
+      : NodeMatcher(node), object_(InputAt(0)), index_(InputAt(1)) {}
+
+  typedef Object ObjectMatcher;
+
+  Object const& object() const { return object_; }
+  IntPtrMatcher const& index() const { return index_; }
+
+ private:
+  Object const object_;
+  IntPtrMatcher const index_;
 };
 
 
@@ -200,6 +250,7 @@ typedef BinopMatcher<Int64Matcher, Int64Matcher> Int64BinopMatcher;
 typedef BinopMatcher<Uint64Matcher, Uint64Matcher> Uint64BinopMatcher;
 typedef BinopMatcher<IntPtrMatcher, IntPtrMatcher> IntPtrBinopMatcher;
 typedef BinopMatcher<UintPtrMatcher, UintPtrMatcher> UintPtrBinopMatcher;
+typedef BinopMatcher<Float32Matcher, Float32Matcher> Float32BinopMatcher;
 typedef BinopMatcher<Float64Matcher, Float64Matcher> Float64BinopMatcher;
 typedef BinopMatcher<NumberMatcher, NumberMatcher> NumberBinopMatcher;
 
@@ -333,19 +384,19 @@ template <class AddMatcher>
 struct BaseWithIndexAndDisplacementMatcher {
   BaseWithIndexAndDisplacementMatcher(Node* node, bool allow_input_swap)
       : matches_(false),
-        index_(NULL),
+        index_(nullptr),
         scale_(0),
-        base_(NULL),
-        displacement_(NULL) {
+        base_(nullptr),
+        displacement_(nullptr) {
     Initialize(node, allow_input_swap);
   }
 
   explicit BaseWithIndexAndDisplacementMatcher(Node* node)
       : matches_(false),
-        index_(NULL),
+        index_(nullptr),
         scale_(0),
-        base_(NULL),
-        displacement_(NULL) {
+        base_(nullptr),
+        displacement_(nullptr) {
     Initialize(node, node->op()->HasProperty(Operator::kCommutative));
   }
 
@@ -383,10 +434,10 @@ struct BaseWithIndexAndDisplacementMatcher {
     AddMatcher m(node, allow_input_swap);
     Node* left = m.left().node();
     Node* right = m.right().node();
-    Node* displacement = NULL;
-    Node* base = NULL;
-    Node* index = NULL;
-    Node* scale_expression = NULL;
+    Node* displacement = nullptr;
+    Node* base = nullptr;
+    Node* index = nullptr;
+    Node* scale_expression = nullptr;
     bool power_of_two_plus_one = false;
     int scale = 0;
     if (m.HasIndexInput() && left->OwnedBy(node)) {
@@ -468,7 +519,7 @@ struct BaseWithIndexAndDisplacementMatcher {
       }
     }
     int64_t value = 0;
-    if (displacement != NULL) {
+    if (displacement != nullptr) {
       switch (displacement->opcode()) {
         case IrOpcode::kInt32Constant: {
           value = OpParameter<int32_t>(displacement);
@@ -483,11 +534,11 @@ struct BaseWithIndexAndDisplacementMatcher {
           break;
       }
       if (value == 0) {
-        displacement = NULL;
+        displacement = nullptr;
       }
     }
     if (power_of_two_plus_one) {
-      if (base != NULL) {
+      if (base != nullptr) {
         // If the scale requires explicitly using the index as the base, but a
         // base is already part of the match, then the (1 << N + 1) scale factor
         // can't be folded into the match and the entire index * scale
@@ -510,6 +561,54 @@ typedef BaseWithIndexAndDisplacementMatcher<Int32AddMatcher>
     BaseWithIndexAndDisplacement32Matcher;
 typedef BaseWithIndexAndDisplacementMatcher<Int64AddMatcher>
     BaseWithIndexAndDisplacement64Matcher;
+
+struct BranchMatcher : public NodeMatcher {
+  explicit BranchMatcher(Node* branch);
+
+  bool Matched() const { return if_true_ && if_false_; }
+
+  Node* Branch() const { return node(); }
+  Node* IfTrue() const { return if_true_; }
+  Node* IfFalse() const { return if_false_; }
+
+ private:
+  Node* if_true_;
+  Node* if_false_;
+};
+
+
+struct DiamondMatcher : public NodeMatcher {
+  explicit DiamondMatcher(Node* merge);
+
+  bool Matched() const { return branch_; }
+  bool IfProjectionsAreOwned() const {
+    return if_true_->OwnedBy(node()) && if_false_->OwnedBy(node());
+  }
+
+  Node* Branch() const { return branch_; }
+  Node* IfTrue() const { return if_true_; }
+  Node* IfFalse() const { return if_false_; }
+  Node* Merge() const { return node(); }
+
+  Node* TrueInputOf(Node* phi) const {
+    DCHECK(IrOpcode::IsPhiOpcode(phi->opcode()));
+    DCHECK_EQ(3, phi->InputCount());
+    DCHECK_EQ(Merge(), phi->InputAt(2));
+    return phi->InputAt(if_true_ == Merge()->InputAt(0) ? 0 : 1);
+  }
+
+  Node* FalseInputOf(Node* phi) const {
+    DCHECK(IrOpcode::IsPhiOpcode(phi->opcode()));
+    DCHECK_EQ(3, phi->InputCount());
+    DCHECK_EQ(Merge(), phi->InputAt(2));
+    return phi->InputAt(if_true_ == Merge()->InputAt(0) ? 1 : 0);
+  }
+
+ private:
+  Node* branch_;
+  Node* if_true_;
+  Node* if_false_;
+};
 
 }  // namespace compiler
 }  // namespace internal

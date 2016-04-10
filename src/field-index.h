@@ -17,8 +17,10 @@ class Map;
 // from a property index. When available, the wrapper class captures additional
 // information to allow the field index to be translated back into the property
 // index it was originally generated from.
-class FieldIndex FINAL {
+class FieldIndex final {
  public:
+  FieldIndex() : bit_field_(0) {}
+
   static FieldIndex ForPropertyIndex(Map* map,
                                      int index,
                                      bool is_double = false);
@@ -111,6 +113,7 @@ class FieldIndex FINAL {
   int bit_field_;
 };
 
-} }  // namespace v8::internal
+}  // namespace internal
+}  // namespace v8
 
 #endif
