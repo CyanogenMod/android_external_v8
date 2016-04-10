@@ -27,31 +27,5 @@ endif
 
 # Build libv8 and d8
 
-ENABLE_V8_SNAPSHOT = false
-mksnapshot_arch := $(TARGET_ARCH)
-ifeq ($(HOST_IS_64_BIT),true)
-ifeq ($(TARGET_IS_64_BIT),true)
-mksnapshot_multilib := 64
-else  # Target is 32-bit.
-mksnapshot_multilib := 32
-endif
-endif
-
-include $(BASE_PATH)/Android.mksnapshot.mk
-
-ifdef TARGET_2ND_ARCH
-
-ifeq ($(HOST_IS_64_BIT),true)
-ifeq ($(2ND_TARGET_IS_64_BIT),true)
-mksnapshot_multilib := 64
-else  # Target is 32-bit.
-mksnapshot_multilib := 32
-endif
-endif
-
-mksnapshot_arch := $(TARGET_2ND_ARCH)
-include $(BASE_PATH)/Android.mksnapshot.mk
-endif
-
 include $(BASE_PATH)/Android.libv8.mk
 include $(BASE_PATH)/Android.d8.mk

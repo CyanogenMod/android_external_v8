@@ -12,31 +12,33 @@
 
 namespace v8 {
 namespace internal {
+
+// Forward declarations.
+class TypeCache;
+
+
 namespace compiler {
 
 // Forward declarations.
 class RepresentationChanger;
+class SourcePositionTable;
 
-
-class SimplifiedLowering FINAL {
+class SimplifiedLowering final {
  public:
-  SimplifiedLowering(JSGraph* jsgraph, Zone* zone)
-      : jsgraph_(jsgraph), zone_(zone) {}
+  SimplifiedLowering(JSGraph* jsgraph, Zone* zone,
+                     SourcePositionTable* source_positions);
   ~SimplifiedLowering() {}
 
   void LowerAllNodes();
 
-  // TODO(titzer): These are exposed for direct testing. Use a friend class.
-  void DoLoadField(Node* node);
-  void DoStoreField(Node* node);
-  // TODO(turbofan): The output_type can be removed once the result of the
+  // TODO(turbofan): The representation can be removed once the result of the
   // representation analysis is stored in the node bounds.
-  void DoLoadBuffer(Node* node, MachineType output_type,
+  void DoLoadBuffer(Node* node, MachineRepresentation rep,
                     RepresentationChanger* changer);
   void DoStoreBuffer(Node* node);
-  void DoLoadElement(Node* node);
-  void DoStoreElement(Node* node);
-  void DoStringAdd(Node* node);
+  void DoObjectIsNumber(Node* node);
+  void DoObjectIsSmi(Node* node);
+  void DoShift(Node* node, Operator const* op, Type* rhs_type);
   void DoStringEqual(Node* node);
   void DoStringLessThan(Node* node);
   void DoStringLessThanOrEqual(Node* node);
@@ -44,13 +46,16 @@ class SimplifiedLowering FINAL {
  private:
   JSGraph* const jsgraph_;
   Zone* const zone_;
+  TypeCache const& type_cache_;
 
-  Node* SmiTag(Node* node);
-  Node* IsTagged(Node* node);
-  Node* Untag(Node* node);
-  Node* OffsetMinusTagConstant(int32_t offset);
-  Node* ComputeIndex(const ElementAccess& access, Node* const key);
-  Node* StringComparison(Node* node, bool requires_ordering);
+  // TODO(danno): SimplifiedLowering shouldn't know anything about the source
+  // positions table, but must for now since there currently is no other way to
+  // pass down source position information to nodes created during
+  // lowering. Once this phase becomes a vanilla reducer, it should get source
+  // position information via the SourcePositionWrapper like all other reducers.
+  SourcePositionTable* source_positions_;
+
+  Node* StringComparison(Node* node);
   Node* Int32Div(Node* const node);
   Node* Int32Mod(Node* const node);
   Node* Uint32Div(Node* const node);
@@ -58,6 +63,7 @@ class SimplifiedLowering FINAL {
 
   friend class RepresentationSelector;
 
+  Isolate* isolate() { return jsgraph_->isolate(); }
   Zone* zone() { return jsgraph_->zone(); }
   JSGraph* jsgraph() { return jsgraph_; }
   Graph* graph() { return jsgraph()->graph(); }

@@ -2,11 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/v8.h"
-
-#include "src/api.h"
 #include "src/global-handles.h"
 
+#include "src/api.h"
+#include "src/v8.h"
 #include "src/vm-state-inl.h"
 
 namespace v8 {
@@ -39,13 +38,13 @@ class GlobalHandles::Node {
 
   // Maps handle location (slot) to the containing node.
   static Node* FromLocation(Object** location) {
-    DCHECK(OFFSET_OF(Node, object_) == 0);
+    DCHECK(offsetof(Node, object_) == 0);
     return reinterpret_cast<Node*>(location);
   }
 
   Node() {
-    DCHECK(OFFSET_OF(Node, class_id_) == Internals::kNodeClassIdOffset);
-    DCHECK(OFFSET_OF(Node, flags_) == Internals::kNodeFlagsOffset);
+    DCHECK(offsetof(Node, class_id_) == Internals::kNodeClassIdOffset);
+    DCHECK(offsetof(Node, flags_) == Internals::kNodeFlagsOffset);
     STATIC_ASSERT(static_cast<int>(NodeState::kMask) ==
                   Internals::kNodeStateMask);
     STATIC_ASSERT(WEAK == Internals::kNodeStateIsWeakValue);
@@ -55,6 +54,8 @@ class GlobalHandles::Node {
                   Internals::kNodeIsIndependentShift);
     STATIC_ASSERT(static_cast<int>(IsPartiallyDependent::kShift) ==
                   Internals::kNodeIsPartiallyDependentShift);
+    STATIC_ASSERT(static_cast<int>(IsActive::kShift) ==
+                  Internals::kNodeIsActiveShift);
   }
 
 #ifdef ENABLE_HANDLE_ZAPPING
@@ -65,7 +66,11 @@ class GlobalHandles::Node {
     class_id_ = v8::HeapProfiler::kPersistentHandleNoClassId;
     index_ = 0;
     set_independent(false);
-    set_partially_dependent(false);
+    if (FLAG_scavenge_reclaim_unmodified_objects) {
+      set_active(false);
+    } else {
+      set_partially_dependent(false);
+    }
     set_in_new_space_list(false);
     parameter_or_next_free_.next_free = NULL;
     weak_callback_ = NULL;
@@ -73,9 +78,11 @@ class GlobalHandles::Node {
 #endif
 
   void Initialize(int index, Node** first_free) {
+    object_ = reinterpret_cast<Object*>(kGlobalHandleZapValue);
     index_ = static_cast<uint8_t>(index);
     DCHECK(static_cast<int>(index_) == index);
     set_state(FREE);
+    set_weakness_type(NORMAL_WEAK);
     set_in_new_space_list(false);
     parameter_or_next_free_.next_free = *first_free;
     *first_free = this;
@@ -86,7 +93,11 @@ class GlobalHandles::Node {
     object_ = object;
     class_id_ = v8::HeapProfiler::kPersistentHandleNoClassId;
     set_independent(false);
-    set_partially_dependent(false);
+    if (FLAG_scavenge_reclaim_unmodified_objects) {
+      set_active(false);
+    } else {
+      set_partially_dependent(false);
+    }
     set_state(NORMAL);
     parameter_or_next_free_.parameter = NULL;
     weak_callback_ = NULL;
@@ -106,7 +117,11 @@ class GlobalHandles::Node {
     object_ = reinterpret_cast<Object*>(kGlobalHandleZapValue);
     class_id_ = v8::HeapProfiler::kPersistentHandleNoClassId;
     set_independent(false);
-    set_partially_dependent(false);
+    if (FLAG_scavenge_reclaim_unmodified_objects) {
+      set_active(false);
+    } else {
+      set_partially_dependent(false);
+    }
     weak_callback_ = NULL;
     DecreaseBlockUses();
   }
@@ -140,10 +155,21 @@ class GlobalHandles::Node {
   }
 
   bool is_partially_dependent() {
+    CHECK(!FLAG_scavenge_reclaim_unmodified_objects);
     return IsPartiallyDependent::decode(flags_);
   }
   void set_partially_dependent(bool v) {
+    CHECK(!FLAG_scavenge_reclaim_unmodified_objects);
     flags_ = IsPartiallyDependent::update(flags_, v);
+  }
+
+  bool is_active() {
+    CHECK(FLAG_scavenge_reclaim_unmodified_objects);
+    return IsActive::decode(flags_);
+  }
+  void set_active(bool v) {
+    CHECK(FLAG_scavenge_reclaim_unmodified_objects);
+    flags_ = IsActive::update(flags_, v);
   }
 
   bool is_in_new_space_list() {
@@ -169,12 +195,16 @@ class GlobalHandles::Node {
 
   bool IsInUse() const { return state() != FREE; }
 
-  bool IsRetainer() const { return state() != FREE; }
+  bool IsRetainer() const {
+    return state() != FREE &&
+           !(state() == NEAR_DEATH && weakness_type() != NORMAL_WEAK);
+  }
 
   bool IsStrongRetainer() const { return state() == NORMAL; }
 
   bool IsWeakRetainer() const {
-    return state() == WEAK || state() == PENDING || state() == NEAR_DEATH;
+    return state() == WEAK || state() == PENDING ||
+           (state() == NEAR_DEATH && weakness_type() == NORMAL_WEAK);
   }
 
   void MarkPending() {
@@ -203,36 +233,11 @@ class GlobalHandles::Node {
   // Callback parameter accessors.
   void set_parameter(void* parameter) {
     DCHECK(IsInUse());
-    DCHECK(weakness_type() == NORMAL_WEAK || weakness_type() == PHANTOM_WEAK);
     parameter_or_next_free_.parameter = parameter;
   }
   void* parameter() const {
     DCHECK(IsInUse());
     return parameter_or_next_free_.parameter;
-  }
-
-  void set_internal_fields(int internal_field_index1,
-                           int internal_field_index2) {
-    DCHECK(weakness_type() == INTERNAL_FIELDS_WEAK);
-    // These are stored in an int16_t.
-    DCHECK(internal_field_index1 < 1 << 16);
-    DCHECK(internal_field_index1 >= -(1 << 16));
-    DCHECK(internal_field_index2 < 1 << 16);
-    DCHECK(internal_field_index2 >= -(1 << 16));
-    parameter_or_next_free_.internal_field_indeces.internal_field1 =
-        static_cast<int16_t>(internal_field_index1);
-    parameter_or_next_free_.internal_field_indeces.internal_field2 =
-        static_cast<int16_t>(internal_field_index2);
-  }
-
-  int internal_field1() const {
-    DCHECK(weakness_type() == INTERNAL_FIELDS_WEAK);
-    return parameter_or_next_free_.internal_field_indeces.internal_field1;
-  }
-
-  int internal_field2() const {
-    DCHECK(weakness_type() == INTERNAL_FIELDS_WEAK);
-    return parameter_or_next_free_.internal_field_indeces.internal_field2;
   }
 
   // Accessors for next free node in the free list.
@@ -246,32 +251,31 @@ class GlobalHandles::Node {
   }
 
   void MakeWeak(void* parameter, WeakCallback weak_callback) {
-    DCHECK(weak_callback != NULL);
+    DCHECK(weak_callback != nullptr);
     DCHECK(IsInUse());
-    CHECK(object_ != NULL);
+    CHECK_NE(object_, reinterpret_cast<Object*>(kGlobalHandleZapValue));
     set_state(WEAK);
     set_weakness_type(NORMAL_WEAK);
     set_parameter(parameter);
     weak_callback_ = weak_callback;
   }
 
-  void MakePhantom(void* parameter,
-                   PhantomCallbackData<void>::Callback phantom_callback,
-                   int16_t internal_field_index1,
-                   int16_t internal_field_index2) {
-    DCHECK(phantom_callback != NULL);
+  void MakeWeak(void* parameter,
+                WeakCallbackInfo<void>::Callback phantom_callback,
+                v8::WeakCallbackType type) {
+    DCHECK(phantom_callback != nullptr);
     DCHECK(IsInUse());
-    CHECK(object_ != NULL);
+    CHECK_NE(object_, reinterpret_cast<Object*>(kGlobalHandleZapValue));
     set_state(WEAK);
-    if (parameter == NULL) {
-      set_weakness_type(INTERNAL_FIELDS_WEAK);
-      set_internal_fields(internal_field_index1, internal_field_index2);
-    } else {
-      DCHECK(internal_field_index1 == v8::Object::kNoInternalFieldIndex);
-      DCHECK(internal_field_index2 == v8::Object::kNoInternalFieldIndex);
-      set_weakness_type(PHANTOM_WEAK);
-      set_parameter(parameter);
+    switch (type) {
+      case v8::WeakCallbackType::kParameter:
+        set_weakness_type(PHANTOM_WEAK);
+        break;
+      case v8::WeakCallbackType::kInternalFields:
+      set_weakness_type(PHANTOM_WEAK_2_INTERNAL_FIELDS);
+      break;
     }
+    set_parameter(parameter);
     weak_callback_ = reinterpret_cast<WeakCallback>(phantom_callback);
   }
 
@@ -284,63 +288,37 @@ class GlobalHandles::Node {
   }
 
   void CollectPhantomCallbackData(
-      Isolate* isolate, List<PendingPhantomCallback>* pending_phantom_callbacks,
-      List<PendingInternalFieldsCallback>* pending_internal_fields_callbacks) {
-    if (state() != Node::PENDING) return;
-    bool do_release = true;
-    if (weak_callback_ != NULL) {
-      if (weakness_type() == NORMAL_WEAK) return;
+      Isolate* isolate,
+      List<PendingPhantomCallback>* pending_phantom_callbacks) {
+    DCHECK(weakness_type() == PHANTOM_WEAK ||
+           weakness_type() == PHANTOM_WEAK_2_INTERNAL_FIELDS);
+    DCHECK(state() == PENDING);
 
-      v8::Isolate* api_isolate = reinterpret_cast<v8::Isolate*>(isolate);
-
-      if (weakness_type() == PHANTOM_WEAK) {
-        // Phantom weak pointer case. Zap with harmless value.
-        DCHECK(*location() == Smi::FromInt(0));
-        typedef PhantomCallbackData<void> Data;
-
-        Data data(api_isolate, parameter());
-        Data::Callback callback =
-            reinterpret_cast<Data::Callback>(weak_callback_);
-
-        pending_phantom_callbacks->Add(
-            PendingPhantomCallback(this, data, callback));
-
-        // Postpone the release of the handle. The embedder can't use the
-        // handle (it's zapped), but it may be using the location, and we
-        // don't want to confuse things by reusing that.
-        do_release = false;
-      } else {
-        DCHECK(weakness_type() == INTERNAL_FIELDS_WEAK);
-        typedef InternalFieldsCallbackData<void, void> Data;
-
-        // Phantom weak pointer case, passing internal fields instead of
-        // parameter. Don't use a handle here during GC, because it will
-        // create a handle pointing to a dying object, which can confuse
-        // the next GC.
-        JSObject* jsobject = reinterpret_cast<JSObject*>(object());
-        DCHECK(jsobject->IsJSObject());
-        Data data(api_isolate, jsobject->GetInternalField(internal_field1()),
-                  jsobject->GetInternalField(internal_field2()));
-        Data::Callback callback =
-            reinterpret_cast<Data::Callback>(weak_callback_);
-
-        // In the future, we want to delay the callback. In that case we will
-        // zap when we queue up, to stop the C++ side accessing the dead V8
-        // object, but we will call Release only after the callback (allowing
-        // the node to be reused).
-        pending_internal_fields_callbacks->Add(
-            PendingInternalFieldsCallback(data, callback));
+    void* internal_fields[v8::kInternalFieldsInWeakCallback] = {nullptr,
+                                                                nullptr};
+    if (weakness_type() != PHANTOM_WEAK && object()->IsJSObject()) {
+      auto jsobject = JSObject::cast(object());
+      int field_count = jsobject->GetInternalFieldCount();
+      for (int i = 0; i < v8::kInternalFieldsInWeakCallback; ++i) {
+        if (field_count == i) break;
+        auto field = jsobject->GetInternalField(i);
+        if (field->IsSmi()) internal_fields[i] = field;
       }
     }
-    // TODO(erikcorry): At the moment the callbacks are not postponed much,
-    // but if we really postpone them until after the mutator has run, we
-    // need to divide things up, so that an early callback clears the handle,
-    // while a later one destroys the objects involved, possibley triggering
-    // some work when decremented ref counts hit zero.
-    if (do_release) Release();
+
+    // Zap with something dangerous.
+    *location() = reinterpret_cast<Object*>(0x6057ca11);
+
+    typedef v8::WeakCallbackInfo<void> Data;
+    auto callback = reinterpret_cast<Data::Callback>(weak_callback_);
+    pending_phantom_callbacks->Add(
+        PendingPhantomCallback(this, callback, parameter(), internal_fields));
+    DCHECK(IsInUse());
+    set_state(NEAR_DEATH);
   }
 
   bool PostGarbageCollectionProcessing(Isolate* isolate) {
+    // Handles only weak handles (not phantom) that are dying.
     if (state() != Node::PENDING) return false;
     if (weak_callback_ == NULL) {
       Release();
@@ -354,11 +332,11 @@ class GlobalHandles::Node {
            ExternalOneByteString::cast(object_)->resource() != NULL);
     DCHECK(!object_->IsExternalTwoByteString() ||
            ExternalTwoByteString::cast(object_)->resource() != NULL);
+    if (weakness_type() != NORMAL_WEAK) return false;
+
     // Leaving V8.
     VMState<EXTERNAL> vmstate(isolate);
     HandleScope handle_scope(isolate);
-    if (weakness_type() == PHANTOM_WEAK) return false;
-    DCHECK(weakness_type() == NORMAL_WEAK);
     Object** object = location();
     Handle<Object> handle(*object, isolate);
     v8::WeakCallbackData<v8::Value, void> data(
@@ -397,6 +375,8 @@ class GlobalHandles::Node {
   // in_new_space_list) and a State.
   class NodeState : public BitField<State, 0, 3> {};
   class IsIndependent : public BitField<bool, 3, 1> {};
+  // The following two fields are mutually exclusive
+  class IsActive : public BitField<bool, 4, 1> {};
   class IsPartiallyDependent : public BitField<bool, 4, 1> {};
   class IsInNewSpaceList : public BitField<bool, 5, 1> {};
   class NodeWeaknessType : public BitField<WeaknessType, 6, 2> {};
@@ -410,10 +390,6 @@ class GlobalHandles::Node {
   // the free list link.
   union {
     void* parameter;
-    struct {
-      int16_t internal_field1;
-      int16_t internal_field2;
-    } internal_field_indeces;
     Node* next_free;
   } parameter_or_next_free_;
 
@@ -546,6 +522,31 @@ class GlobalHandles::NodeIterator {
   DISALLOW_COPY_AND_ASSIGN(NodeIterator);
 };
 
+class GlobalHandles::PendingPhantomCallbacksSecondPassTask
+    : public v8::internal::CancelableTask {
+ public:
+  // Takes ownership of the contents of pending_phantom_callbacks, leaving it in
+  // the same state it would be after a call to Clear().
+  PendingPhantomCallbacksSecondPassTask(
+      List<PendingPhantomCallback>* pending_phantom_callbacks, Isolate* isolate)
+      : CancelableTask(isolate) {
+    pending_phantom_callbacks_.Swap(pending_phantom_callbacks);
+  }
+
+  void RunInternal() override {
+    isolate()->heap()->CallGCPrologueCallbacks(
+        GCType::kGCTypeProcessWeakCallbacks, kNoGCCallbackFlags);
+    InvokeSecondPassPhantomCallbacks(&pending_phantom_callbacks_, isolate());
+    isolate()->heap()->CallGCEpilogueCallbacks(
+        GCType::kGCTypeProcessWeakCallbacks, kNoGCCallbackFlags);
+  }
+
+ private:
+  List<PendingPhantomCallback> pending_phantom_callbacks_;
+
+  DISALLOW_COPY_AND_ASSIGN(PendingPhantomCallbacksSecondPassTask);
+};
+
 
 GlobalHandles::GlobalHandles(Isolate* isolate)
     : isolate_(isolate),
@@ -604,33 +605,13 @@ void GlobalHandles::MakeWeak(Object** location, void* parameter,
 }
 
 
-typedef PhantomCallbackData<void>::Callback GenericCallback;
+typedef v8::WeakCallbackInfo<void>::Callback GenericCallback;
 
 
-void GlobalHandles::MakePhantom(
-    Object** location,
-    v8::InternalFieldsCallbackData<void, void>::Callback phantom_callback,
-    int16_t internal_field_index1, int16_t internal_field_index2) {
-  Node::FromLocation(location)
-      ->MakePhantom(NULL, reinterpret_cast<GenericCallback>(phantom_callback),
-                    internal_field_index1, internal_field_index2);
-}
-
-
-void GlobalHandles::MakePhantom(Object** location, void* parameter,
-                                GenericCallback phantom_callback) {
-  Node::FromLocation(location)->MakePhantom(parameter, phantom_callback,
-                                            v8::Object::kNoInternalFieldIndex,
-                                            v8::Object::kNoInternalFieldIndex);
-}
-
-
-void GlobalHandles::CollectPhantomCallbackData() {
-  for (NodeIterator it(this); !it.done(); it.Advance()) {
-    Node* node = it.node();
-    node->CollectPhantomCallbackData(isolate(), &pending_phantom_callbacks_,
-                                     &pending_internal_fields_callbacks_);
-  }
+void GlobalHandles::MakeWeak(Object** location, void* parameter,
+                             GenericCallback phantom_callback,
+                             v8::WeakCallbackType type) {
+  Node::FromLocation(location)->MakeWeak(parameter, phantom_callback, type);
 }
 
 
@@ -668,27 +649,12 @@ void GlobalHandles::IterateWeakRoots(ObjectVisitor* v) {
   for (NodeIterator it(this); !it.done(); it.Advance()) {
     Node* node = it.node();
     if (node->IsWeakRetainer()) {
-      // Weakness type can be normal, phantom or internal fields.
-      // For normal weakness we mark through the handle so that
-      // the object and things reachable from it are available
-      // to the callback.
-      // In the case of phantom we can zap the object handle now
-      // and we won't need it, so we don't need to mark through it.
-      // In the internal fields case we will need the internal
-      // fields, so we can't zap the handle, but we don't need to
-      // mark through it, because it will die in this GC round.
-      if (node->state() == Node::PENDING) {
-        if (node->weakness_type() == PHANTOM_WEAK) {
-          *(node->location()) = Smi::FromInt(0);
-        } else if (node->weakness_type() == NORMAL_WEAK) {
-          v->VisitPointer(node->location());
-        } else {
-          DCHECK(node->weakness_type() == INTERNAL_FIELDS_WEAK);
-        }
+      // Pending weak phantom handles die immediately. Everything else survives.
+      if (node->state() == Node::PENDING &&
+          node->weakness_type() != NORMAL_WEAK) {
+          node->CollectPhantomCallbackData(isolate(),
+                                           &pending_phantom_callbacks_);
       } else {
-        // Node is not pending, so that means the object survived.  We still
-        // need to visit the pointer in case the object moved, eg. because of
-        // compaction.
         v->VisitPointer(node->location());
       }
     }
@@ -708,10 +674,18 @@ void GlobalHandles::IdentifyWeakHandles(WeakSlotCallback f) {
 void GlobalHandles::IterateNewSpaceStrongAndDependentRoots(ObjectVisitor* v) {
   for (int i = 0; i < new_space_nodes_.length(); ++i) {
     Node* node = new_space_nodes_[i];
-    if (node->IsStrongRetainer() ||
-        (node->IsWeakRetainer() && !node->is_independent() &&
-         !node->is_partially_dependent())) {
+    if (FLAG_scavenge_reclaim_unmodified_objects) {
+      if (node->IsStrongRetainer() ||
+          (node->IsWeakRetainer() && !node->is_independent() &&
+           node->is_active())) {
         v->VisitPointer(node->location());
+      }
+    } else {
+      if (node->IsStrongRetainer() ||
+          (node->IsWeakRetainer() && !node->is_independent() &&
+           !node->is_partially_dependent())) {
+        v->VisitPointer(node->location());
+      }
     }
   }
 }
@@ -736,19 +710,56 @@ void GlobalHandles::IterateNewSpaceWeakIndependentRoots(ObjectVisitor* v) {
     DCHECK(node->is_in_new_space_list());
     if ((node->is_independent() || node->is_partially_dependent()) &&
         node->IsWeakRetainer()) {
-      if (node->weakness_type() == PHANTOM_WEAK) {
-        *(node->location()) = Smi::FromInt(0);
-      } else if (node->weakness_type() == NORMAL_WEAK) {
-        v->VisitPointer(node->location());
+      // Pending weak phantom handles die immediately. Everything else survives.
+      if (node->state() == Node::PENDING &&
+          node->weakness_type() != NORMAL_WEAK) {
+        node->CollectPhantomCallbackData(isolate(),
+                                         &pending_phantom_callbacks_);
       } else {
-        DCHECK(node->weakness_type() == INTERNAL_FIELDS_WEAK);
-        // For this case we only need to trace if it's alive: The tracing of
-        // something that is already alive is just to get the pointer updated
-        // to the new location of the object).
-        DCHECK(node->state() != Node::NEAR_DEATH);
-        if (node->state() != Node::PENDING) {
-          v->VisitPointer(node->location());
-        }
+        v->VisitPointer(node->location());
+      }
+    }
+  }
+}
+
+
+void GlobalHandles::IdentifyWeakUnmodifiedObjects(
+    WeakSlotCallback is_unmodified) {
+  for (int i = 0; i < new_space_nodes_.length(); ++i) {
+    Node* node = new_space_nodes_[i];
+    if (node->IsWeak() && !is_unmodified(node->location())) {
+      node->set_active(true);
+    }
+  }
+}
+
+
+void GlobalHandles::MarkNewSpaceWeakUnmodifiedObjectsPending(
+    WeakSlotCallbackWithHeap is_unscavenged) {
+  for (int i = 0; i < new_space_nodes_.length(); ++i) {
+    Node* node = new_space_nodes_[i];
+    DCHECK(node->is_in_new_space_list());
+    if ((node->is_independent() || !node->is_active()) && node->IsWeak() &&
+        is_unscavenged(isolate_->heap(), node->location())) {
+      node->MarkPending();
+    }
+  }
+}
+
+
+void GlobalHandles::IterateNewSpaceWeakUnmodifiedRoots(ObjectVisitor* v) {
+  for (int i = 0; i < new_space_nodes_.length(); ++i) {
+    Node* node = new_space_nodes_[i];
+    DCHECK(node->is_in_new_space_list());
+    if ((node->is_independent() || !node->is_active()) &&
+        node->IsWeakRetainer()) {
+      // Pending weak phantom handles die immediately. Everything else survives.
+      if (node->state() == Node::PENDING &&
+          node->weakness_type() != NORMAL_WEAK) {
+        node->CollectPhantomCallbackData(isolate(),
+                                         &pending_phantom_callbacks_);
+      } else {
+        v->VisitPointer(node->location());
       }
     }
   }
@@ -801,6 +812,19 @@ bool GlobalHandles::IterateObjectGroups(ObjectVisitor* v,
 }
 
 
+void GlobalHandles::InvokeSecondPassPhantomCallbacks(
+    List<PendingPhantomCallback>* callbacks, Isolate* isolate) {
+  while (callbacks->length() != 0) {
+    auto callback = callbacks->RemoveLast();
+    DCHECK(callback.node() == nullptr);
+    // No second pass callback required.
+    if (callback.callback() == nullptr) continue;
+    // Fire second pass callback
+    callback.Invoke(isolate);
+  }
+}
+
+
 int GlobalHandles::PostScavengeProcessing(
     const int initial_post_gc_processing_count) {
   int freed_nodes = 0;
@@ -812,13 +836,23 @@ int GlobalHandles::PostScavengeProcessing(
       // the freed_nodes.
       continue;
     }
-    // Skip dependent handles. Their weak callbacks might expect to be
+    // Skip dependent or unmodified handles. Their weak callbacks might expect
+    // to be
     // called between two global garbage collection callbacks which
     // are not called for minor collections.
-    if (!node->is_independent() && !node->is_partially_dependent()) {
-      continue;
+    if (FLAG_scavenge_reclaim_unmodified_objects) {
+      if (!node->is_independent() && (node->is_active())) {
+        node->set_active(false);
+        continue;
+      }
+      node->set_active(false);
+    } else {
+      if (!node->is_independent() && !node->is_partially_dependent()) {
+        continue;
+      }
+      node->clear_partially_dependent();
     }
-    node->clear_partially_dependent();
+
     if (node->PostGarbageCollectionProcessing(isolate_)) {
       if (initial_post_gc_processing_count != post_gc_processing_count_) {
         // Weak callback triggered another GC and another round of
@@ -845,7 +879,11 @@ int GlobalHandles::PostMarkSweepProcessing(
       // the freed_nodes.
       continue;
     }
-    it.node()->clear_partially_dependent();
+    if (FLAG_scavenge_reclaim_unmodified_objects) {
+      it.node()->set_active(false);
+    } else {
+      it.node()->clear_partially_dependent();
+    }
     if (it.node()->PostGarbageCollectionProcessing(isolate_)) {
       if (initial_post_gc_processing_count != post_gc_processing_count_) {
         // See the comment above.
@@ -879,56 +917,95 @@ void GlobalHandles::UpdateListOfNewSpaceNodes() {
     }
   }
   new_space_nodes_.Rewind(last);
+  new_space_nodes_.Trim();
 }
 
 
-int GlobalHandles::DispatchPendingPhantomCallbacks() {
+int GlobalHandles::DispatchPendingPhantomCallbacks(
+    bool synchronous_second_pass) {
   int freed_nodes = 0;
-  while (pending_phantom_callbacks_.length() != 0) {
-    PendingPhantomCallback callback = pending_phantom_callbacks_.RemoveLast();
-    callback.invoke();
-    freed_nodes++;
+  {
+    // The initial pass callbacks must simply clear the nodes.
+    for (auto i = pending_phantom_callbacks_.begin();
+         i != pending_phantom_callbacks_.end(); ++i) {
+      auto callback = i;
+      // Skip callbacks that have already been processed once.
+      if (callback->node() == nullptr) continue;
+      callback->Invoke(isolate());
+      freed_nodes++;
+    }
   }
-  while (pending_internal_fields_callbacks_.length() != 0) {
-    PendingInternalFieldsCallback callback =
-        pending_internal_fields_callbacks_.RemoveLast();
-    callback.invoke();
-    freed_nodes++;
+  if (pending_phantom_callbacks_.length() > 0) {
+    if (FLAG_optimize_for_size || FLAG_predictable || synchronous_second_pass) {
+      isolate()->heap()->CallGCPrologueCallbacks(
+          GCType::kGCTypeProcessWeakCallbacks, kNoGCCallbackFlags);
+      InvokeSecondPassPhantomCallbacks(&pending_phantom_callbacks_, isolate());
+      isolate()->heap()->CallGCEpilogueCallbacks(
+          GCType::kGCTypeProcessWeakCallbacks, kNoGCCallbackFlags);
+    } else {
+      auto task = new PendingPhantomCallbacksSecondPassTask(
+          &pending_phantom_callbacks_, isolate());
+      V8::GetCurrentPlatform()->CallOnForegroundThread(
+          reinterpret_cast<v8::Isolate*>(isolate()), task);
+    }
   }
+  pending_phantom_callbacks_.Clear();
   return freed_nodes;
 }
 
 
-int GlobalHandles::PostGarbageCollectionProcessing(GarbageCollector collector) {
+void GlobalHandles::PendingPhantomCallback::Invoke(Isolate* isolate) {
+  Data::Callback* callback_addr = nullptr;
+  if (node_ != nullptr) {
+    // Initialize for first pass callback.
+    DCHECK(node_->state() == Node::NEAR_DEATH);
+    callback_addr = &callback_;
+  }
+  Data data(reinterpret_cast<v8::Isolate*>(isolate), parameter_,
+            internal_fields_, callback_addr);
+  Data::Callback callback = callback_;
+  callback_ = nullptr;
+  callback(data);
+  if (node_ != nullptr) {
+    // Transition to second pass state.
+    DCHECK(node_->state() == Node::FREE);
+    node_ = nullptr;
+  }
+}
+
+
+int GlobalHandles::PostGarbageCollectionProcessing(
+    GarbageCollector collector, const v8::GCCallbackFlags gc_callback_flags) {
   // Process weak global handle callbacks. This must be done after the
   // GC is completely done, because the callbacks may invoke arbitrary
   // API functions.
   DCHECK(isolate_->heap()->gc_state() == Heap::NOT_IN_GC);
   const int initial_post_gc_processing_count = ++post_gc_processing_count_;
   int freed_nodes = 0;
+  bool synchronous_second_pass =
+      (gc_callback_flags &
+       (kGCCallbackFlagForced |
+        kGCCallbackFlagSynchronousPhantomCallbackProcessing)) != 0;
+  freed_nodes += DispatchPendingPhantomCallbacks(synchronous_second_pass);
+  if (initial_post_gc_processing_count != post_gc_processing_count_) {
+    // If the callbacks caused a nested GC, then return.  See comment in
+    // PostScavengeProcessing.
+    return freed_nodes;
+  }
   if (collector == SCAVENGER) {
-    freed_nodes = PostScavengeProcessing(initial_post_gc_processing_count);
+    freed_nodes += PostScavengeProcessing(initial_post_gc_processing_count);
   } else {
-    freed_nodes = PostMarkSweepProcessing(initial_post_gc_processing_count);
+    freed_nodes += PostMarkSweepProcessing(initial_post_gc_processing_count);
   }
   if (initial_post_gc_processing_count != post_gc_processing_count_) {
     // If the callbacks caused a nested GC, then return.  See comment in
     // PostScavengeProcessing.
     return freed_nodes;
   }
-  freed_nodes += DispatchPendingPhantomCallbacks();
   if (initial_post_gc_processing_count == post_gc_processing_count_) {
     UpdateListOfNewSpaceNodes();
   }
   return freed_nodes;
-}
-
-
-void GlobalHandles::PendingPhantomCallback::invoke() {
-  if (node_->state() == Node::FREE) return;
-  DCHECK(node_->state() == Node::NEAR_DEATH);
-  callback_(data_);
-  if (node_->state() != Node::FREE) node_->Release();
 }
 
 
@@ -966,6 +1043,16 @@ void GlobalHandles::IterateAllRootsInNewSpaceWithClassIds(ObjectVisitor* v) {
     if (node->IsRetainer() && node->has_wrapper_class_id()) {
       v->VisitEmbedderReference(node->location(),
                                 node->wrapper_class_id());
+    }
+  }
+}
+
+
+void GlobalHandles::IterateWeakRootsInNewSpaceWithClassIds(ObjectVisitor* v) {
+  for (int i = 0; i < new_space_nodes_.length(); ++i) {
+    Node* node = new_space_nodes_[i];
+    if (node->has_wrapper_class_id() && node->IsWeak()) {
+      v->VisitEmbedderReference(node->location(), node->wrapper_class_id());
     }
   }
 }
@@ -1295,4 +1382,5 @@ void EternalHandles::Create(Isolate* isolate, Object* object, int* index) {
 }
 
 
-} }  // namespace v8::internal
+}  // namespace internal
+}  // namespace v8

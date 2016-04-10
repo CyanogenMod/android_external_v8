@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --harmony-arrays --harmony-classes
+// Flags: --harmony-concat-spreadable --harmony-proxies --harmony-reflect
 
 (function testArrayConcatArity() {
   "use strict";
@@ -194,12 +194,34 @@ assertThrows(function() {
 
 (function testConcatArraySubclass() {
   "use strict";
+  // If @@isConcatSpreadable is not used, the value of IsArray(O)
+  // is used to determine the spreadable property.
+  class A extends Array {}
+  var obj = [].concat(new A(1, 2, 3), new A(4, 5, 6), new A(7, 8, 9));
+  assertEquals(9, obj.length);
+  for (var i = 0; i < obj.length; ++i) {
+    assertEquals(i + 1, obj[i]);
+  }
+
   // TODO(caitp): when concat is called on instances of classes which extend
   // Array, they should:
   //
   // - return an instance of the class, rather than an Array instance (if from
   //   same Realm)
   // - always treat such classes as concat-spreadable
+})();
+
+
+(function testConcatArraySubclassOptOut() {
+  "use strict";
+  class A extends Array {
+    get [Symbol.isConcatSpreadable]() { return false; }
+  }
+  var obj = [].concat(new A(1, 2, 3), new A(4, 5, 6), new A(7, 8, 9));
+  assertEquals(3, obj.length);
+  assertEquals(3, obj[0].length);
+  assertEquals(3, obj[1].length);
+  assertEquals(3, obj[2].length);
 })();
 
 
@@ -245,7 +267,7 @@ function testConcatTypedArray(type, elems, modulo) {
 }
 
 (function testConcatSmallTypedArray() {
-  var max = [2^8, 2^16, 2^32, false, false];
+  var max = [Math.pow(2, 8), Math.pow(2, 16), Math.pow(2, 32), false, false];
   [
     Uint8Array,
     Uint16Array,
@@ -259,7 +281,7 @@ function testConcatTypedArray(type, elems, modulo) {
 
 
 (function testConcatLargeTypedArray() {
-  var max = [2^8, 2^16, 2^32, false, false];
+  var max = [Math.pow(2, 8), Math.pow(2, 16), Math.pow(2, 32), false, false];
   [
     Uint8Array,
     Uint16Array,
@@ -683,4 +705,170 @@ function testConcatTypedArray(type, elems, modulo) {
   var r4 = [0].concat(arr3, arr3);
   assertEquals(1 + arr3.length * 2, r4.length);
   assertEquals(expectedTrace, trace);
+
+  // Clean up.
+  delete Array.prototype[123];
+  delete Array.prototype["123"];
+  delete Array.prototype["moe"];
+})();
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////
+// Tests with proxies
+
+// Note: concat does not currently support species so there is no difference
+// between [].concat(foo) and Array.prototype.concat.apply(foo).
+
+
+var log = [];
+var logger = {};
+var handler = new Proxy({}, logger);
+
+logger.get = function(t, trap, r) {
+  return function(...args) {
+    log.push([trap, ...args]);
+    return Reflect[trap](...args);
+  }
+};
+
+
+(function testUnspreadableNonArrayLikeProxy() {
+  var target = {0: "a", 1: "b"};
+  var obj = new Proxy(target, handler);
+
+  log.length = 0;
+  assertEquals([obj], [].concat(obj));
+  assertEquals(1, log.length);
+  for (var i in log) assertSame(target, log[i][1]);
+  assertEquals(["get", target, Symbol.isConcatSpreadable, obj], log[0]);
+
+  log.length = 0;
+  assertEquals([obj], Array.prototype.concat.apply(obj));
+  assertEquals(1, log.length);
+  for (var i in log) assertSame(target, log[i][1]);
+  assertEquals(["get", target, Symbol.isConcatSpreadable, obj], log[0]);
+})();
+
+
+(function testSpreadableNonArrayLikeProxy() {
+  var target = {0: "a", 1: "b", [Symbol.isConcatSpreadable]: "truish"};
+  var obj = new Proxy(target, handler);
+
+  log.length = 0;
+  assertEquals([], [].concat(obj));
+  assertEquals(2, log.length);
+  for (var i in log) assertSame(target, log[i][1]);
+  assertEquals(["get", target, Symbol.isConcatSpreadable, obj], log[0]);
+  assertEquals(["get", target, "length", obj], log[1]);
+
+  log.length = 0;
+  assertEquals([], Array.prototype.concat.apply(obj));
+  assertEquals(2, log.length);
+  for (var i in log) assertSame(target, log[i][1]);
+  assertEquals(["get", target, Symbol.isConcatSpreadable, obj], log[0]);
+  assertEquals(["get", target, "length", obj], log[1]);
+
+  target.length = 3;
+
+  log.length = 0;
+  assertEquals(["a", "b", undefined], [].concat(obj));
+  assertEquals(7, log.length);
+  for (var i in log) assertSame(target, log[i][1]);
+  assertEquals(["get", target, Symbol.isConcatSpreadable, obj], log[0]);
+  assertEquals(["get", target, "length", obj], log[1]);
+  assertEquals(["has", target, "0"], log[2]);
+  assertEquals(["get", target, "0", obj], log[3]);
+  assertEquals(["has", target, "1"], log[4]);
+  assertEquals(["get", target, "1", obj], log[5]);
+  assertEquals(["has", target, "2"], log[6]);
+
+  log.length = 0;
+  assertEquals(["a", "b", undefined], Array.prototype.concat.apply(obj));
+  assertEquals(7, log.length);
+  for (var i in log) assertSame(target, log[i][1]);
+  assertEquals(["get", target, Symbol.isConcatSpreadable, obj], log[0]);
+  assertEquals(["get", target, "length", obj], log[1]);
+  assertEquals(["has", target, "0"], log[2]);
+  assertEquals(["get", target, "0", obj], log[3]);
+  assertEquals(["has", target, "1"], log[4]);
+  assertEquals(["get", target, "1", obj], log[5]);
+  assertEquals(["has", target, "2"], log[6]);
+})();
+
+
+(function testUnspreadableArrayLikeProxy() {
+  var target = ["a", "b"];
+  target[Symbol.isConcatSpreadable] = "";
+  var obj = new Proxy(target, handler);
+
+  log.length = 0;
+  assertEquals([obj], [].concat(obj));
+  assertEquals(1, log.length);
+  for (var i in log) assertSame(target, log[i][1]);
+  assertEquals(["get", target, Symbol.isConcatSpreadable, obj], log[0]);
+
+  log.length = 0;
+  assertEquals([obj], Array.prototype.concat.apply(obj));
+  assertEquals(1, log.length);
+  for (var i in log) assertSame(target, log[i][1]);
+  assertEquals(["get", target, Symbol.isConcatSpreadable, obj], log[0]);
+})();
+
+
+(function testSpreadableArrayLikeProxy() {
+  var target = ["a", "b"];
+  target[Symbol.isConcatSpreadable] = undefined;
+  var obj = new Proxy(target, handler);
+
+  log.length = 0;
+  assertEquals(["a", "b"], [].concat(obj));
+  assertEquals(6, log.length);
+  for (var i in log) assertSame(target, log[i][1]);
+  assertEquals(["get", target, Symbol.isConcatSpreadable, obj], log[0]);
+  assertEquals(["get", target, "length", obj], log[1]);
+  assertEquals(["has", target, "0"], log[2]);
+  assertEquals(["get", target, "0", obj], log[3]);
+  assertEquals(["has", target, "1"], log[4]);
+  assertEquals(["get", target, "1", obj], log[5]);
+
+  log.length = 0;
+  assertEquals(["a", "b"], Array.prototype.concat.apply(obj));
+  assertEquals(6, log.length);
+  for (var i in log) assertSame(target, log[i][1]);
+  assertEquals(["get", target, Symbol.isConcatSpreadable, obj], log[0]);
+  assertEquals(["get", target, "length", obj], log[1]);
+  assertEquals(["has", target, "0"], log[2]);
+  assertEquals(["get", target, "0", obj], log[3]);
+  assertEquals(["has", target, "1"], log[4]);
+  assertEquals(["get", target, "1", obj], log[5]);
+})();
+
+
+(function testSpreadableArrayLikeProxyWithNontrivialLength() {
+  var getTrap = function(t, key) {
+    if (key === "length") return {[Symbol.toPrimitive]() {return 3}};
+    if (key === "2") return "baz";
+    if (key === "3") return "bar";
+  };
+  var target = [];
+  var obj = new Proxy(target, {get: getTrap, has: () => true});
+
+  assertEquals([undefined, undefined, "baz"], [].concat(obj));
+  assertEquals([undefined, undefined, "baz"], Array.prototype.concat.apply(obj))
+})();
+
+
+(function testSpreadableArrayLikeProxyWithBogusLength() {
+  var getTrap = function(t, key) {
+    if (key === "length") return Symbol();
+    if (key === "2") return "baz";
+    if (key === "3") return "bar";
+  };
+  var target = [];
+  var obj = new Proxy(target, {get: getTrap, has: () => true});
+
+  assertThrows(() => [].concat(obj), TypeError);
+  assertThrows(() => Array.prototype.concat.apply(obj), TypeError);
 })();
